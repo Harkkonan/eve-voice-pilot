@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+import json
+import re
+from pathlib import Path
+
+
+NORMALIZE_RE = re.compile(r"[^a-z0-9 ]+")
+SPACE_RE = re.compile(r"\s+")
+
+
+def normalize_phrase(value: str) -> str:
+    value = value.lower().strip()
+    value = NORMALIZE_RE.sub(" ", value)
+    return SPACE_RE.sub(" ", value).strip()
+
+
+@dataclass
+class VoiceCommand:
+    name: str
+    phrases: list[str]
+    key: str
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "VoiceCommand":
+        return cls(
+            name=str(data.get("name", "")).strip(),
+            phrases=[str(item).strip() for item in data.get("phrases", []) if str(item).strip()],
+            key=str(data.get("key", "")).strip().upper(),
+        )
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "phrases": self.phrases, "key": self.key}
+
+
+@dataclass
+class CommandProfile:
+    name: str = "EVE commands"
+    commands: list[VoiceCommand] = field(default_factory=list)
+
+    @classmethod
+    def load(cls, path: Path) -> "CommandProfile":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        commands = [VoiceCommand.from_dict(item) for item in data.get("commands", [])]
+        return cls(name=str(data.get("name", "EVE commands")), commands=commands)
+
+    def save(self, path: Path) -> None:
+        data = {"name": self.name, "commands": [command.to_dict() for command in self.commands]}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+@dataclass
+class CommandMatch:
+    command: VoiceCommand
+    phrase: str
+    score: float
+
+
+def find_command_match(
+    transcript: str,
+    commands: list[VoiceCommand],
+    threshold: float = 0.84,
+    ambiguity_gap: float = 0.04,
+) -> CommandMatch | None:
+    heard = normalize_phrase(transcript)
+    if not heard:
+        return None
+
+    matches: list[CommandMatch] = []
+    for command in commands:
+        for phrase in command.phrases:
+            normalized = normalize_phrase(phrase)
+            if not normalized:
+                continue
+            score = SequenceMatcher(None, heard, normalized).ratio()
+            if normalized in heard:
+                score = max(score, 0.96)
+            matches.append(CommandMatch(command=command, phrase=phrase, score=score))
+
+    matches.sort(key=lambda item: item.score, reverse=True)
+    if not matches or matches[0].score < threshold:
+        return None
+    if len(matches) > 1 and matches[0].score - matches[1].score < ambiguity_gap:
+        return None
+    return matches[0]
+

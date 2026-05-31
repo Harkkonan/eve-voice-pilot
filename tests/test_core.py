@@ -1,0 +1,39 @@
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from eve_voice_pilot.commands import VoiceCommand, find_command_match, normalize_phrase
+from eve_voice_pilot.input_sender import parse_key_chord
+
+
+def test_normalize_phrase_removes_punctuation():
+    assert normalize_phrase("D-Scan!") == "d scan"
+
+
+def test_find_command_match_exact_phrase():
+    command = VoiceCommand("Stop ship", ["stop ship"], "CTRL+SPACE")
+    match = find_command_match("stop ship", [command])
+    assert match is not None
+    assert match.command.name == "Stop ship"
+
+
+def test_find_command_match_rejects_weak_match():
+    command = VoiceCommand("Stop ship", ["stop ship"], "CTRL+SPACE")
+    assert find_command_match("open map", [command]) is None
+
+
+def test_parse_key_chord_allows_modifier_and_key():
+    parsed = parse_key_chord("CTRL+SPACE")
+    assert parsed.modifiers == ("CTRL",)
+    assert parsed.key_name == "SPACE"
+
+
+def test_parse_key_chord_rejects_two_normal_keys():
+    try:
+        parse_key_chord("F1+F2")
+    except ValueError:
+        return
+    raise AssertionError("Expected ValueError")
+
