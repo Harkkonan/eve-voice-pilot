@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 import winsound
 
-from .commands import CommandProfile, VoiceCommand, find_command_match
+from .commands import DEFAULT_HOLD_SECONDS, CommandProfile, VoiceCommand, find_command_match
 from .config import load_settings, save_settings
 from .hotkey import GlobalHotkey
 from .input_sender import active_window_title, parse_key_chord, send_key_chord
@@ -30,15 +30,18 @@ class CommandDialog(simpledialog.Dialog):
     def body(self, master):
         ttk.Label(master, text="Name").grid(row=0, column=0, sticky="w", padx=6, pady=5)
         ttk.Label(master, text="Spoken phrases").grid(row=1, column=0, sticky="w", padx=6, pady=5)
-        ttk.Label(master, text="Key").grid(row=2, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Keybind").grid(row=2, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Hold seconds").grid(row=3, column=0, sticky="w", padx=6, pady=5)
 
         self.name_var = tk.StringVar(value=self.command.name if self.command else "")
         self.phrases_var = tk.StringVar(value=", ".join(self.command.phrases) if self.command else "")
         self.key_var = tk.StringVar(value=self.command.key if self.command else "")
+        self.hold_var = tk.StringVar(value=f"{self.command.hold_seconds:.2f}" if self.command else f"{DEFAULT_HOLD_SECONDS:.2f}")
 
         name_entry = ttk.Entry(master, textvariable=self.name_var, width=42)
         ttk.Entry(master, textvariable=self.phrases_var, width=42).grid(row=1, column=1, sticky="ew", padx=6, pady=5)
         ttk.Entry(master, textvariable=self.key_var, width=20).grid(row=2, column=1, sticky="w", padx=6, pady=5)
+        ttk.Entry(master, textvariable=self.hold_var, width=10).grid(row=3, column=1, sticky="w", padx=6, pady=5)
         name_entry.grid(row=0, column=1, sticky="ew", padx=6, pady=5)
         return name_entry
 
@@ -57,7 +60,15 @@ class CommandDialog(simpledialog.Dialog):
         except ValueError as exc:
             messagebox.showerror("Key problem", str(exc), parent=self)
             return False
-        self.result_command = VoiceCommand(name=name, phrases=phrases, key=key)
+        try:
+            hold_seconds = float(self.hold_var.get())
+        except ValueError:
+            messagebox.showerror("Hold problem", "Hold seconds should be a number, like 0.10.", parent=self)
+            return False
+        if not 0.01 <= hold_seconds <= 2.0:
+            messagebox.showerror("Hold problem", "Hold seconds should be between 0.01 and 2.0.", parent=self)
+            return False
+        self.result_command = VoiceCommand(name=name, phrases=phrases, key=key, hold_seconds=hold_seconds)
         return True
 
 
@@ -72,6 +83,9 @@ class EveVoicePilotApp(tk.Tk):
         self.profile_path = Path(self.settings.get("profile_path", str(USER_PROFILE)))
         self.profile = self._load_profile()
         self.hotkey: GlobalHotkey | None = None
+        self.transcriber: RealtimeTranscriber | None = None
+        self.transcriber_api_key = ""
+        self.transcriber_lock = threading.RLock()
         self.listening_thread: threading.Thread | None = None
         self.stop_listening = threading.Event()
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -79,6 +93,7 @@ class EveVoicePilotApp(tk.Tk):
         self._build_ui()
         self._refresh_commands()
         self._register_hotkey()
+        self.after(500, self._warm_connection_if_possible)
         self.after(100, self._poll_events)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -133,13 +148,15 @@ class EveVoicePilotApp(tk.Tk):
         command_frame.rowconfigure(0, weight=1)
         command_frame.columnconfigure(0, weight=1)
 
-        self.command_tree = ttk.Treeview(command_frame, columns=("phrases", "key"), show="tree headings", height=12)
+        self.command_tree = ttk.Treeview(command_frame, columns=("phrases", "key", "hold"), show="tree headings", height=12)
         self.command_tree.heading("#0", text="Name")
         self.command_tree.heading("phrases", text="Spoken phrases")
-        self.command_tree.heading("key", text="Key")
+        self.command_tree.heading("key", text="Keybind")
+        self.command_tree.heading("hold", text="Hold")
         self.command_tree.column("#0", width=150, stretch=True)
         self.command_tree.column("phrases", width=280, stretch=True)
-        self.command_tree.column("key", width=90, stretch=False)
+        self.command_tree.column("key", width=120, stretch=False)
+        self.command_tree.column("hold", width=70, stretch=False)
         self.command_tree.grid(row=0, column=0, sticky="nsew")
 
         command_buttons = ttk.Frame(command_frame)
@@ -199,7 +216,13 @@ class EveVoicePilotApp(tk.Tk):
     def _refresh_commands(self) -> None:
         self.command_tree.delete(*self.command_tree.get_children())
         for index, command in enumerate(self.profile.commands):
-            self.command_tree.insert("", "end", iid=str(index), text=command.name, values=(", ".join(command.phrases), command.key))
+            self.command_tree.insert(
+                "",
+                "end",
+                iid=str(index),
+                text=command.name,
+                values=(", ".join(command.phrases), command.key, f"{command.hold_seconds:.2f}s"),
+            )
 
     def _selected_index(self) -> int | None:
         selection = self.command_tree.selection()
@@ -256,17 +279,21 @@ class EveVoicePilotApp(tk.Tk):
         except OSError as exc:
             messagebox.showerror("Save problem", str(exc), parent=self)
             return
+        if self.transcriber_api_key and self.transcriber_api_key != settings["api_key"]:
+            self._close_transcriber()
         self._register_hotkey()
         self.log("Saved settings.")
+        self._warm_connection_if_possible()
 
     def start_listening(self) -> None:
         if self.listening_thread and self.listening_thread.is_alive():
             return
         self.stop_listening.clear()
-        self.status_var.set("Listening")
+        self.status_var.set("Connecting")
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
-        self.listening_thread = threading.Thread(target=self._listen_worker, name="listen-worker", daemon=True)
+        api_key = self.api_key_var.get().strip()
+        self.listening_thread = threading.Thread(target=self._listen_worker, args=(api_key,), name="listen-worker", daemon=True)
         self.listening_thread.start()
 
     def stop(self) -> None:
@@ -275,14 +302,46 @@ class EveVoicePilotApp(tk.Tk):
             self.status_var.set("Finishing")
             winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
-    def _listen_worker(self) -> None:
+    def _listen_worker(self, api_key: str) -> None:
         try:
-            transcriber = RealtimeTranscriber(self.api_key_var.get(), self.log_threadsafe)
-            winsound.MessageBeep(winsound.MB_OK)
-            transcript = transcriber.record_until_stopped(self.stop_listening)
+            transcriber = self._get_transcriber(api_key)
+            transcript = transcriber.record_until_stopped(self.stop_listening, on_ready=self._listening_ready)
             self.events.put(("transcript", transcript))
         except Exception as exc:
             self.events.put(("error", str(exc)))
+
+    def _get_transcriber(self, api_key: str) -> RealtimeTranscriber:
+        with self.transcriber_lock:
+            if not self.transcriber or self.transcriber_api_key != api_key:
+                self._close_transcriber()
+                self.transcriber = RealtimeTranscriber(api_key, self.log_threadsafe)
+                self.transcriber_api_key = api_key
+            return self.transcriber
+
+    def _close_transcriber(self) -> None:
+        with self.transcriber_lock:
+            if self.transcriber:
+                self.transcriber.close()
+            self.transcriber = None
+            self.transcriber_api_key = ""
+
+    def _warm_connection_if_possible(self) -> None:
+        api_key = self.api_key_var.get().strip()
+        if not api_key:
+            return
+        if self.listening_thread and self.listening_thread.is_alive():
+            return
+        threading.Thread(target=self._warm_connection_worker, args=(api_key,), name="warm-openai-worker", daemon=True).start()
+
+    def _warm_connection_worker(self, api_key: str) -> None:
+        try:
+            self._get_transcriber(api_key).warm_up()
+        except Exception as exc:
+            self.events.put(("log", f"Could not warm OpenAI connection: {exc}"))
+
+    def _listening_ready(self) -> None:
+        self.events.put(("status", "Listening"))
+        winsound.MessageBeep(winsound.MB_OK)
 
     def _handle_transcript(self, transcript: str) -> None:
         self.last_heard_var.set(transcript or "(No speech recognized)")
@@ -295,11 +354,12 @@ class EveVoicePilotApp(tk.Tk):
         action = f"{match.command.name} -> {match.command.key}"
         self.last_action_var.set(action)
         self.log(f"Matched {match.phrase!r} at {match.score:.0%}: {action}")
-        self._send_or_practice(match.command.key)
+        self._send_or_practice(match.command)
 
-    def _send_or_practice(self, key: str) -> None:
+    def _send_or_practice(self, command: VoiceCommand) -> None:
+        key = command.key
         if self.practice_mode_var.get():
-            self.log(f"Practice mode: would send {key}.")
+            self.log(f"Practice mode: would send {key} for {command.hold_seconds:.2f}s.")
             return
 
         if self.require_target_var.get():
@@ -310,8 +370,8 @@ class EveVoicePilotApp(tk.Tk):
                 return
 
         try:
-            send_key_chord(key)
-            self.log(f"Sent {key}.")
+            send_key_chord(key, press_seconds=command.hold_seconds)
+            self.log(f"Sent {key} for {command.hold_seconds:.2f}s.")
         except Exception as exc:
             self.log(f"Could not send {key}: {exc}")
 
@@ -320,7 +380,7 @@ class EveVoicePilotApp(tk.Tk):
         if index is None:
             messagebox.showinfo("Pick a command", "Select a command first.", parent=self)
             return
-        self._send_or_practice(self.profile.commands[index].key)
+        self._send_or_practice(self.profile.commands[index])
 
     def _poll_events(self) -> None:
         while True:
@@ -335,6 +395,8 @@ class EveVoicePilotApp(tk.Tk):
                     self.start_listening()
             elif event == "log":
                 self.log(str(payload))
+            elif event == "status":
+                self.status_var.set(str(payload))
             elif event == "transcript":
                 self.status_var.set("Ready")
                 self.start_button.configure(state="normal")
@@ -360,6 +422,7 @@ class EveVoicePilotApp(tk.Tk):
         if self.hotkey:
             self.hotkey.stop()
         self.stop_listening.set()
+        self._close_transcriber()
         self.destroy()
 
 

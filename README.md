@@ -5,6 +5,7 @@ EVE Voice Pilot is a small Windows voice-command prototype for EVE Online.
 The first version is intentionally cautious:
 
 - One spoken command maps to one key or key chord.
+- Keybinds can include left/right modifiers, like `LEFT SHIFT+P`, `LEFT CTRL+LEFT SHIFT`, or `LEFT SHIFT AND P`.
 - Practice mode is on by default, so it recognizes commands without sending keys.
 - Key sending is blocked unless the active window title contains `EVE`, unless you turn that check off.
 - It does not do timed chains, repeats, mouse moves, input broadcasting, or multi-client automation.
@@ -36,6 +37,7 @@ The command list is editable inside the app. Each command has:
 - Name: a label you recognize.
 - Spoken phrases: one or more phrases separated by commas.
 - Key: one key chord, such as `F1`, `V`, or `CTRL+SPACE`.
+- Hold seconds: how long to hold the keybind before release. `0.10` is a good starting point.
 
 Your editable command profile is saved at `profiles/my_eve_commands.json`.
 

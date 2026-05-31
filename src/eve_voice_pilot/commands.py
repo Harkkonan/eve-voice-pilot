@@ -9,6 +9,7 @@ from pathlib import Path
 
 NORMALIZE_RE = re.compile(r"[^a-z0-9 ]+")
 SPACE_RE = re.compile(r"\s+")
+DEFAULT_HOLD_SECONDS = 0.10
 
 
 def normalize_phrase(value: str) -> str:
@@ -22,17 +23,29 @@ class VoiceCommand:
     name: str
     phrases: list[str]
     key: str
+    hold_seconds: float = DEFAULT_HOLD_SECONDS
 
     @classmethod
     def from_dict(cls, data: dict) -> "VoiceCommand":
+        try:
+            hold_seconds = float(data.get("hold_seconds", DEFAULT_HOLD_SECONDS))
+        except (TypeError, ValueError):
+            hold_seconds = DEFAULT_HOLD_SECONDS
+        hold_seconds = min(max(hold_seconds, 0.01), 2.0)
         return cls(
             name=str(data.get("name", "")).strip(),
             phrases=[str(item).strip() for item in data.get("phrases", []) if str(item).strip()],
             key=str(data.get("key", "")).strip().upper(),
+            hold_seconds=hold_seconds,
         )
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "phrases": self.phrases, "key": self.key}
+        return {
+            "name": self.name,
+            "phrases": self.phrases,
+            "key": self.key,
+            "hold_seconds": round(self.hold_seconds, 3),
+        }
 
 
 @dataclass
@@ -86,4 +99,3 @@ def find_command_match(
     if len(matches) > 1 and matches[0].score - matches[1].score < ambiguity_gap:
         return None
     return matches[0]
-

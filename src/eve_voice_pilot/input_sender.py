@@ -3,25 +3,65 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ctypes
 from ctypes import wintypes
+import re
 import time
 
 
 INPUT_KEYBOARD = 1
+KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
 MAPVK_VK_TO_VSC = 0
 
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 
-MODIFIER_VKS = {
-    "CTRL": 0x11,
-    "CONTROL": 0x11,
-    "SHIFT": 0x10,
-    "ALT": 0x12,
-    "WIN": 0x5B,
+CHORD_SPLIT_RE = re.compile(r"\s*\+\s*")
+CHORD_AND_RE = re.compile(r"\s+(?:AND|&)\s+", re.IGNORECASE)
+SPACE_RE = re.compile(r"\s+")
+
+MODIFIER_ALIASES = {
+    "CTRL": "LEFT CTRL",
+    "CONTROL": "LEFT CTRL",
+    "LEFT CTRL": "LEFT CTRL",
+    "LEFT CONTROL": "LEFT CTRL",
+    "LCTRL": "LEFT CTRL",
+    "LCONTROL": "LEFT CTRL",
+    "RIGHT CTRL": "RIGHT CTRL",
+    "RIGHT CONTROL": "RIGHT CTRL",
+    "RCTRL": "RIGHT CTRL",
+    "RCONTROL": "RIGHT CTRL",
+    "SHIFT": "LEFT SHIFT",
+    "LEFT SHIFT": "LEFT SHIFT",
+    "LSHIFT": "LEFT SHIFT",
+    "RIGHT SHIFT": "RIGHT SHIFT",
+    "RSHIFT": "RIGHT SHIFT",
+    "ALT": "LEFT ALT",
+    "MENU": "LEFT ALT",
+    "LEFT ALT": "LEFT ALT",
+    "LEFT MENU": "LEFT ALT",
+    "LALT": "LEFT ALT",
+    "RIGHT ALT": "RIGHT ALT",
+    "RIGHT MENU": "RIGHT ALT",
+    "RALT": "RIGHT ALT",
+    "WIN": "LEFT WIN",
+    "WINDOWS": "LEFT WIN",
+    "LEFT WIN": "LEFT WIN",
+    "LEFT WINDOWS": "LEFT WIN",
+    "LWIN": "LEFT WIN",
+    "RIGHT WIN": "RIGHT WIN",
+    "RIGHT WINDOWS": "RIGHT WIN",
+    "RWIN": "RIGHT WIN",
 }
 
 VK_CODES = {
+    "LEFT CTRL": 0xA2,
+    "RIGHT CTRL": 0xA3,
+    "LEFT SHIFT": 0xA0,
+    "RIGHT SHIFT": 0xA1,
+    "LEFT ALT": 0xA4,
+    "RIGHT ALT": 0xA5,
+    "LEFT WIN": 0x5B,
+    "RIGHT WIN": 0x5C,
     "BACKSPACE": 0x08,
     "TAB": 0x09,
     "ENTER": 0x0D,
@@ -39,6 +79,24 @@ VK_CODES = {
     "DOWN": 0x28,
     "INSERT": 0x2D,
     "DELETE": 0x2E,
+    "PLUS": 0xBB,
+    "EQUALS": 0xBB,
+    "MINUS": 0xBD,
+    "COMMA": 0xBC,
+    "PERIOD": 0xBE,
+    "DOT": 0xBE,
+    "SLASH": 0xBF,
+    "FORWARD SLASH": 0xBF,
+    "BACKSLASH": 0xDC,
+    "SEMICOLON": 0xBA,
+    "APOSTROPHE": 0xDE,
+    "QUOTE": 0xDE,
+    "GRAVE": 0xC0,
+    "BACKTICK": 0xC0,
+    "LEFT BRACKET": 0xDB,
+    "RIGHT BRACKET": 0xDD,
+    "LBRACKET": 0xDB,
+    "RBRACKET": 0xDD,
 }
 
 for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
@@ -47,6 +105,23 @@ for char in "0123456789":
     VK_CODES[char] = ord(char)
 for index in range(1, 25):
     VK_CODES[f"F{index}"] = 0x70 + index - 1
+
+EXTENDED_VKS = {
+    0x21,
+    0x22,
+    0x23,
+    0x24,
+    0x25,
+    0x26,
+    0x27,
+    0x28,
+    0x2D,
+    0x2E,
+    0x5B,
+    0x5C,
+    0xA3,
+    0xA5,
+}
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -98,35 +173,85 @@ user32.MapVirtualKeyW.restype = wintypes.UINT
 
 
 @dataclass(frozen=True)
+class ParsedKey:
+    name: str
+    vk: int
+    is_modifier: bool
+
+
+@dataclass(frozen=True)
 class ParsedKeyChord:
-    modifiers: tuple[str, ...]
-    key_name: str
-    key_vk: int
+    keys: tuple[ParsedKey, ...]
+
+    @property
+    def modifiers(self) -> tuple[str, ...]:
+        modifiers: list[str] = []
+        for key in self.keys:
+            if not key.is_modifier:
+                continue
+            generic = _generic_modifier_name(key.name)
+            if generic not in modifiers:
+                modifiers.append(generic)
+        return tuple(modifiers)
+
+    @property
+    def trigger_key(self) -> ParsedKey | None:
+        for key in self.keys:
+            if not key.is_modifier:
+                return key
+        return None
+
+    @property
+    def key_name(self) -> str:
+        trigger = self.trigger_key or self.keys[-1]
+        return trigger.name
+
+    @property
+    def key_vk(self) -> int:
+        trigger = self.trigger_key or self.keys[-1]
+        return trigger.vk
 
 
-def parse_key_chord(chord: str) -> ParsedKeyChord:
-    parts = [part.strip().upper() for part in chord.replace("-", "+").split("+") if part.strip()]
+def parse_key_chord(chord: str, require_trigger_key: bool = False) -> ParsedKeyChord:
+    chord = CHORD_AND_RE.sub("+", chord.strip())
+    parts = [part.strip() for part in CHORD_SPLIT_RE.split(chord) if part.strip()]
     if not parts:
-        raise ValueError("Enter a key, like F1 or CTRL+SPACE.")
+        raise ValueError("Enter a keybind, like F1, LEFT SHIFT+P, or CTRL+SPACE.")
 
-    modifiers: list[str] = []
-    key_names: list[str] = []
+    keys: list[ParsedKey] = []
+    seen: set[str] = set()
     for part in parts:
-        canonical = "CTRL" if part == "CONTROL" else part
-        if canonical in {"CTRL", "SHIFT", "ALT", "WIN"}:
-            if canonical not in modifiers:
-                modifiers.append(canonical)
-        else:
-            key_names.append(canonical)
+        canonical = _canonical_key_name(part)
+        key_vk = VK_CODES.get(canonical)
+        if key_vk is None:
+            raise ValueError(f"Unsupported key '{canonical}'. Try F1, LEFT SHIFT+P, SPACE, ENTER, or similar.")
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        keys.append(ParsedKey(canonical, key_vk, canonical in MODIFIER_ALIASES.values()))
 
-    if len(key_names) != 1:
-        raise ValueError("Use one normal key plus optional CTRL, ALT, SHIFT, or WIN.")
+    parsed = ParsedKeyChord(tuple(keys))
+    if require_trigger_key and not parsed.trigger_key:
+        raise ValueError("A global hotkey needs one normal key, like F9 or CTRL+SPACE.")
+    return parsed
 
-    key_name = key_names[0]
-    key_vk = VK_CODES.get(key_name)
-    if key_vk is None:
-        raise ValueError(f"Unsupported key '{key_name}'. Try F1, A, SPACE, ENTER, or similar.")
-    return ParsedKeyChord(tuple(modifiers), key_name, key_vk)
+
+def _canonical_key_name(value: str) -> str:
+    value = value.strip().upper().replace("_", " ").replace("-", " ")
+    value = SPACE_RE.sub(" ", value)
+    return MODIFIER_ALIASES.get(value, value)
+
+
+def _generic_modifier_name(value: str) -> str:
+    if "CTRL" in value:
+        return "CTRL"
+    if "SHIFT" in value:
+        return "SHIFT"
+    if "ALT" in value:
+        return "ALT"
+    if "WIN" in value:
+        return "WIN"
+    return value
 
 
 def _send_vk(vk: int, keyup: bool = False) -> None:
@@ -135,6 +260,8 @@ def _send_vk(vk: int, keyup: bool = False) -> None:
         raise OSError(0, f"Could not map virtual key {vk} to a scan code")
 
     flags = KEYEVENTF_SCANCODE
+    if vk in EXTENDED_VKS:
+        flags |= KEYEVENTF_EXTENDEDKEY
     if keyup:
         flags |= KEYEVENTF_KEYUP
 
@@ -149,15 +276,12 @@ def _send_vk(vk: int, keyup: bool = False) -> None:
 
 def send_key_chord(chord: str, press_seconds: float = 0.04) -> None:
     parsed = parse_key_chord(chord)
-    modifier_vks = [MODIFIER_VKS[name] for name in parsed.modifiers]
 
-    for vk in modifier_vks:
-        _send_vk(vk)
-    _send_vk(parsed.key_vk)
+    for key in parsed.keys:
+        _send_vk(key.vk)
     time.sleep(press_seconds)
-    _send_vk(parsed.key_vk, keyup=True)
-    for vk in reversed(modifier_vks):
-        _send_vk(vk, keyup=True)
+    for key in reversed(parsed.keys):
+        _send_vk(key.vk, keyup=True)
 
 
 def active_window_title() -> str:

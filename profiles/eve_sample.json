@@ -4,33 +4,38 @@
     {
       "name": "Stop ship",
       "phrases": ["stop ship", "full stop", "stop the ship"],
-      "key": "CTRL+SPACE"
+      "key": "CTRL+SPACE",
+      "hold_seconds": 0.1
     },
     {
       "name": "Module 1",
       "phrases": ["module one", "activate module one", "fire one"],
-      "key": "F1"
+      "key": "F1",
+      "hold_seconds": 0.1
     },
     {
       "name": "Module 2",
       "phrases": ["module two", "activate module two", "fire two"],
-      "key": "F2"
+      "key": "F2",
+      "hold_seconds": 0.1
     },
     {
       "name": "Module 3",
       "phrases": ["module three", "activate module three", "fire three"],
-      "key": "F3"
+      "key": "F3",
+      "hold_seconds": 0.1
     },
     {
       "name": "Directional scan",
       "phrases": ["d scan", "scan", "directional scan"],
-      "key": "V"
+      "key": "V",
+      "hold_seconds": 0.1
     },
     {
       "name": "Open map",
       "phrases": ["open map", "map"],
-      "key": "F10"
+      "key": "F10",
+      "hold_seconds": 0.1
     }
   ]
 }
-

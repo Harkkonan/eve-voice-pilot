@@ -32,12 +32,30 @@ def test_parse_key_chord_allows_modifier_and_key():
     assert parsed.key_name == "SPACE"
 
 
-def test_parse_key_chord_rejects_two_normal_keys():
+def test_parse_key_chord_allows_left_shift_letter():
+    parsed = parse_key_chord("left shift and p")
+    assert [key.name for key in parsed.keys] == ["LEFT SHIFT", "P"]
+    assert parsed.modifiers == ("SHIFT",)
+    assert parsed.key_name == "P"
+
+
+def test_parse_key_chord_allows_modifier_only_command():
+    parsed = parse_key_chord("Left Ctrl+Left Shift")
+    assert [key.name for key in parsed.keys] == ["LEFT CTRL", "LEFT SHIFT"]
+    assert parsed.trigger_key is None
+
+
+def test_parse_key_chord_requires_trigger_for_global_hotkey():
     try:
-        parse_key_chord("F1+F2")
+        parse_key_chord("LEFT SHIFT", require_trigger_key=True)
     except ValueError:
         return
     raise AssertionError("Expected ValueError")
+
+
+def test_parse_key_chord_allows_multi_key_command():
+    parsed = parse_key_chord("F1+F2")
+    assert [key.name for key in parsed.keys] == ["F1", "F2"]
 
 
 def test_audio_rms_detects_louder_audio():

@@ -35,7 +35,7 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 
 def hotkey_to_register_args(hotkey: str) -> tuple[int, int]:
-    parsed = parse_key_chord(hotkey)
+    parsed = parse_key_chord(hotkey, require_trigger_key=True)
     modifiers = MOD_NOREPEAT
     for modifier in parsed.modifiers:
         if modifier == "ALT":
@@ -46,7 +46,10 @@ def hotkey_to_register_args(hotkey: str) -> tuple[int, int]:
             modifiers |= MOD_SHIFT
         elif modifier == "WIN":
             modifiers |= MOD_WIN
-    return modifiers, parsed.key_vk
+    trigger = parsed.trigger_key
+    if not trigger:
+        raise ValueError("A global hotkey needs one normal key, like F9 or CTRL+SPACE.")
+    return modifiers, trigger.vk
 
 
 class GlobalHotkey:
@@ -94,4 +97,3 @@ class GlobalHotkey:
                     self.callback()
         finally:
             user32.UnregisterHotKey(None, HOTKEY_ID)
-

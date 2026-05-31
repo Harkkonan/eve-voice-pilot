@@ -56,8 +56,11 @@ class RealtimeTranscriber:
     def __init__(self, api_key: str, log: Callable[[str], None]):
         self.api_key = api_key
         self.log = log
+        self.ws = None
+        self.connected = False
+        self.lock = threading.RLock()
 
-    def record_until_stopped(self, stop_event: threading.Event) -> str:
+    def record_until_stopped(self, stop_event: threading.Event, on_ready: Callable[[], None] | None = None) -> str:
         if not self.api_key.strip():
             raise RuntimeError("Add your OpenAI API key first.")
 
@@ -69,31 +72,8 @@ class RealtimeTranscriber:
                 status_messages.put(str(status))
             audio_queue.put(bytes(indata))
 
-        headers = [
-            f"Authorization: Bearer {self.api_key.strip()}",
-            "OpenAI-Safety-Identifier: eve-voice-pilot-local-user",
-        ]
-
-        ws = websocket.create_connection(REALTIME_URL, header=headers, timeout=10)
+        ws = self._connect()
         try:
-            ws.send(json.dumps({
-                "type": "session.update",
-                "session": {
-                    "type": "transcription",
-                    "audio": {
-                        "input": {
-                            "format": {"type": "audio/pcm", "rate": API_RATE},
-                            "transcription": {
-                                "model": "gpt-realtime-whisper",
-                                "language": "en",
-                                "delay": "low"
-                            }
-                        }
-                    }
-                }
-            }))
-            self._raise_if_openai_error(ws)
-
             with sd.RawInputStream(
                 samplerate=CAPTURE_RATE,
                 channels=CHANNELS,
@@ -101,6 +81,8 @@ class RealtimeTranscriber:
                 blocksize=BLOCK_SIZE,
                 callback=audio_callback,
             ):
+                if on_ready:
+                    on_ready()
                 self.log("Listening. Speak one command.")
                 started_at = time.monotonic()
                 last_speech_at: float | None = None
@@ -128,11 +110,56 @@ class RealtimeTranscriber:
 
             ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
             return self._receive_transcript(ws)
-        finally:
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        with self.lock:
+            ws = self.ws
+            self.ws = None
+            self.connected = False
+        if ws:
             try:
                 ws.close()
             except Exception:
                 pass
+
+    def warm_up(self) -> None:
+        self._connect()
+
+    def _connect(self):
+        with self.lock:
+            if self.ws and self.connected:
+                return self.ws
+
+            headers = [
+                f"Authorization: Bearer {self.api_key.strip()}",
+                "OpenAI-Safety-Identifier: eve-voice-pilot-local-user",
+            ]
+
+            self.log("Connecting to OpenAI.")
+            self.ws = websocket.create_connection(REALTIME_URL, header=headers, timeout=10)
+            self.ws.send(json.dumps({
+                "type": "session.update",
+                "session": {
+                    "type": "transcription",
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": API_RATE},
+                            "transcription": {
+                                "model": "gpt-realtime-whisper",
+                                "language": "en",
+                                "delay": "low"
+                            }
+                        }
+                    }
+                }
+            }))
+            self._raise_if_openai_error(self.ws)
+            self.connected = True
+            self.log("OpenAI connection ready.")
+            return self.ws
 
     def _send_audio_queue(self, ws, audio_queue: queue.Queue[bytes]) -> float:
         sent_any = False
@@ -196,6 +223,8 @@ class RealtimeTranscriber:
                 event = json.loads(ws.recv())
                 if event.get("type") == "error":
                     raise RuntimeError(self._format_openai_error(event))
+                if event.get("type") in {"session.updated", "transcription_session.updated"}:
+                    return
         except websocket.WebSocketTimeoutException:
             return
         finally:
