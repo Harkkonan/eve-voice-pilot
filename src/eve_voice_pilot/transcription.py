@@ -98,7 +98,6 @@ class RealtimeTranscriber:
             ):
                 if on_ready:
                     on_ready()
-                self.log("Listening. Speak one command.")
                 started_at = time.monotonic()
                 last_speech_at: float | None = None
                 partial_transcript = ""
@@ -119,13 +118,16 @@ class RealtimeTranscriber:
                         self.log("Silence detected. Processing command.")
                         break
                     elif not last_speech_at and now - started_at >= INITIAL_SILENCE_SECONDS:
-                        self.log("No speech heard. Processing what was captured.")
                         break
                     elif now - started_at >= MAX_RECORD_SECONDS:
                         self.log("Recording limit reached. Processing command.")
                         break
                     self._log_status(status_messages)
                     time.sleep(0.01)
+
+                if stop_event.is_set():
+                    self._clear_input_buffer(ws)
+                    return ""
 
                 drain_until = time.monotonic() + DRAIN_SECONDS
                 while time.monotonic() < drain_until:

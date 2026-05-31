@@ -26,10 +26,18 @@ Paste your API key into the app. If you check `Remember on this PC`, the app sav
 ## How To Test Safely
 
 1. Leave `Practice mode` turned on.
-2. Press `F9`, speak one command, then wait a moment.
-3. Check `Last heard`, `Last action`, and the log.
-4. When the command matching looks right, turn off `Practice mode`.
-5. Put EVE in the foreground before using real key sending.
+2. Press `F9` or click `Arm Listening`.
+3. Speak commands. After each command, the app automatically listens again.
+4. Press `F9` again or click `Pause` when you want it to stop listening.
+5. Check `Last heard`, `Last action`, and the log.
+6. When the command matching looks right, turn off `Practice mode`.
+7. Put EVE in the foreground before using real key sending.
+
+## Armed Listening
+
+`Arm Listening` means the app is actively waiting for voice commands. It keeps the OpenAI connection warm and restarts listening after each command, which is faster than clicking Start every time.
+
+Use `Pause` when you are done. While armed, the app uses the microphone and may use API credits even when no command is spoken.
 
 ## Commands
 

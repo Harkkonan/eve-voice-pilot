@@ -89,6 +89,7 @@ class EveVoicePilotApp(tk.Tk):
         self.listening_thread: threading.Thread | None = None
         self.stop_listening = threading.Event()
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.armed = False
 
         self._build_ui()
         self._refresh_commands()
@@ -120,8 +121,8 @@ class EveVoicePilotApp(tk.Tk):
         ttk.Label(top, text="Status").grid(row=0, column=0, sticky="w")
         ttk.Label(top, textvariable=self.status_var, font=("Segoe UI", 16, "bold")).grid(row=0, column=1, sticky="w", padx=10)
 
-        self.start_button = ttk.Button(top, text="Start Listening", command=self.start_listening)
-        self.stop_button = ttk.Button(top, text="Stop", command=self.stop, state="disabled")
+        self.start_button = ttk.Button(top, text="Arm Listening", command=self.arm_listening)
+        self.stop_button = ttk.Button(top, text="Pause", command=self.stop, state="disabled")
         self.start_button.grid(row=0, column=2, padx=4)
         self.stop_button.grid(row=0, column=3, padx=4)
 
@@ -287,7 +288,18 @@ class EveVoicePilotApp(tk.Tk):
         self.log("Saved settings.")
         self._warm_connection_if_possible()
 
-    def start_listening(self) -> None:
+    def arm_listening(self) -> None:
+        if self.armed:
+            return
+        self.armed = True
+        self.start_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.log(f"Armed listening on. Press {self.hotkey_var.get().strip().upper() or DEFAULT_HOTKEY} again, or Pause, to stop.")
+        self._start_listening_cycle()
+
+    def _start_listening_cycle(self) -> None:
+        if not self.armed:
+            return
         if self.listening_thread and self.listening_thread.is_alive():
             return
         self.stop_listening.clear()
@@ -308,10 +320,16 @@ class EveVoicePilotApp(tk.Tk):
         self.listening_thread.start()
 
     def stop(self) -> None:
+        self.armed = False
         if self.listening_thread and self.listening_thread.is_alive():
             self.stop_listening.set()
-            self.status_var.set("Finishing")
+            self.status_var.set("Pausing")
             winsound.MessageBeep(winsound.MB_ICONASTERISK)
+            return
+        self.status_var.set("Paused")
+        self.start_button.configure(state="normal")
+        self.stop_button.configure(state="disabled")
+        self._close_transcriber()
 
     def _listen_worker(
         self,
@@ -387,6 +405,9 @@ class EveVoicePilotApp(tk.Tk):
 
     def _handle_transcript(self, transcript: str) -> None:
         self.last_heard_var.set(transcript or "(No speech recognized)")
+        if not transcript.strip():
+            self.last_action_var.set("No action.")
+            return
         match = find_command_match(transcript, self.profile.commands)
         if not match:
             self.last_action_var.set("No command matched.")
@@ -444,30 +465,42 @@ class EveVoicePilotApp(tk.Tk):
             except queue.Empty:
                 break
             if event == "hotkey":
-                if self.listening_thread and self.listening_thread.is_alive():
-                    self.log("Already listening. Speak one command and wait a moment.")
+                if self.armed:
+                    self.stop()
                 else:
-                    self.start_listening()
+                    self.arm_listening()
             elif event == "log":
                 self.log(str(payload))
             elif event == "status":
-                self.status_var.set(str(payload))
+                if self.armed:
+                    self.status_var.set(str(payload))
             elif event == "transcript":
-                self.status_var.set("Ready")
-                self.start_button.configure(state="normal")
-                self.stop_button.configure(state="disabled")
                 self._handle_transcript(str(payload))
+                self._finish_listening_cycle()
             elif event == "fast_transcript":
-                self.status_var.set("Ready")
-                self.start_button.configure(state="normal")
-                self.stop_button.configure(state="disabled")
                 self._handle_fast_transcript(payload)
+                self._finish_listening_cycle()
             elif event == "error":
-                self.status_var.set("Ready")
+                self.armed = False
+                self.status_var.set("Paused")
                 self.start_button.configure(state="normal")
                 self.stop_button.configure(state="disabled")
+                self._close_transcriber()
                 self.log(str(payload))
         self.after(50, self._poll_events)
+
+    def _finish_listening_cycle(self) -> None:
+        if self.armed:
+            self.status_var.set("Armed")
+            self.start_button.configure(state="disabled")
+            self.stop_button.configure(state="normal")
+            self.after(60, self._start_listening_cycle)
+            return
+
+        self.status_var.set("Paused")
+        self.start_button.configure(state="normal")
+        self.stop_button.configure(state="disabled")
+        self._close_transcriber()
 
     def _handle_fast_transcript(self, payload: object) -> None:
         if not isinstance(payload, dict):
@@ -493,6 +526,7 @@ class EveVoicePilotApp(tk.Tk):
         self.log_text.configure(state="disabled")
 
     def _on_close(self) -> None:
+        self.armed = False
         if self.hotkey:
             self.hotkey.stop()
         self.stop_listening.set()
