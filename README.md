@@ -24,7 +24,7 @@ Paste your API key into the app. If you check `Remember on this PC`, the app sav
 ## How To Test Safely
 
 1. Leave `Practice mode` turned on.
-2. Press `F9`, speak one command, then press `F9` again.
+2. Press `F9`, speak one command, then wait a moment.
 3. Check `Last heard`, `Last action`, and the log.
 4. When the command matching looks right, turn off `Practice mode`.
 5. Put EVE in the foreground before using real key sending.

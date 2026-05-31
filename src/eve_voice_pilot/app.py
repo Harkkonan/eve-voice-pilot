@@ -239,7 +239,7 @@ class EveVoicePilotApp(tk.Tk):
 
     def save_settings(self) -> None:
         try:
-            parse_key_chord(self.hotkey_var.get().strip().upper() or "F12")
+            parse_key_chord(self.hotkey_var.get().strip().upper() or DEFAULT_HOTKEY)
         except ValueError as exc:
             messagebox.showerror("Hotkey problem", str(exc), parent=self)
             return
@@ -263,7 +263,7 @@ class EveVoicePilotApp(tk.Tk):
         if self.listening_thread and self.listening_thread.is_alive():
             return
         self.stop_listening.clear()
-        self.status_var.set("Connecting")
+        self.status_var.set("Listening")
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.listening_thread = threading.Thread(target=self._listen_worker, name="listen-worker", daemon=True)
@@ -330,7 +330,7 @@ class EveVoicePilotApp(tk.Tk):
                 break
             if event == "hotkey":
                 if self.listening_thread and self.listening_thread.is_alive():
-                    self.stop()
+                    self.log("Already listening. Speak one command and wait a moment.")
                 else:
                     self.start_listening()
             elif event == "log":

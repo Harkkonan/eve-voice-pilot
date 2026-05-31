@@ -6,6 +6,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from eve_voice_pilot.commands import VoiceCommand, find_command_match, normalize_phrase
 from eve_voice_pilot.input_sender import parse_key_chord
+from eve_voice_pilot.transcription import audio_rms
 
 
 def test_normalize_phrase_removes_punctuation():
@@ -37,3 +38,9 @@ def test_parse_key_chord_rejects_two_normal_keys():
         return
     raise AssertionError("Expected ValueError")
 
+
+def test_audio_rms_detects_louder_audio():
+    quiet = (0).to_bytes(2, "little", signed=True) * 20
+    loud = (1000).to_bytes(2, "little", signed=True) * 20
+    assert audio_rms(quiet) == 0
+    assert audio_rms(loud) > 900

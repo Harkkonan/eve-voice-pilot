@@ -3,6 +3,7 @@ from __future__ import annotations
 from array import array
 import base64
 import json
+import math
 import queue
 import sys
 import threading
@@ -18,6 +19,10 @@ CAPTURE_RATE = 48000
 API_RATE = 24000
 CHANNELS = 1
 BLOCK_SIZE = 2400
+SPEECH_RMS_THRESHOLD = 450
+AUTO_STOP_SILENCE_SECONDS = 0.85
+INITIAL_SILENCE_SECONDS = 4.0
+MAX_RECORD_SECONDS = 7.0
 
 
 def downsample_48k_to_24k(raw: bytes) -> bytes:
@@ -34,6 +39,17 @@ def downsample_48k_to_24k(raw: bytes) -> bytes:
     if sys.byteorder != "little":
         output.byteswap()
     return output.tobytes()
+
+
+def audio_rms(raw: bytes) -> float:
+    samples = array("h")
+    samples.frombytes(raw)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        return 0.0
+    mean_square = sum(sample * sample for sample in samples) / len(samples)
+    return math.sqrt(mean_square)
 
 
 class RealtimeTranscriber:
@@ -85,9 +101,23 @@ class RealtimeTranscriber:
                 blocksize=BLOCK_SIZE,
                 callback=audio_callback,
             ):
-                self.log("Listening. Speak one command, then press the hotkey again.")
+                self.log("Listening. Speak one command.")
+                started_at = time.monotonic()
+                last_speech_at: float | None = None
                 while not stop_event.is_set():
-                    self._send_audio_queue(ws, audio_queue)
+                    rms = self._send_audio_queue(ws, audio_queue)
+                    now = time.monotonic()
+                    if rms >= SPEECH_RMS_THRESHOLD:
+                        last_speech_at = now
+                    elif last_speech_at and now - last_speech_at >= AUTO_STOP_SILENCE_SECONDS:
+                        self.log("Silence detected. Processing command.")
+                        break
+                    elif not last_speech_at and now - started_at >= INITIAL_SILENCE_SECONDS:
+                        self.log("No speech heard. Processing what was captured.")
+                        break
+                    elif now - started_at >= MAX_RECORD_SECONDS:
+                        self.log("Recording limit reached. Processing command.")
+                        break
                     self._log_status(status_messages)
                     time.sleep(0.01)
 
@@ -104,13 +134,15 @@ class RealtimeTranscriber:
             except Exception:
                 pass
 
-    def _send_audio_queue(self, ws, audio_queue: queue.Queue[bytes]) -> None:
+    def _send_audio_queue(self, ws, audio_queue: queue.Queue[bytes]) -> float:
         sent_any = False
+        max_rms = 0.0
         while True:
             try:
                 raw = audio_queue.get_nowait()
             except queue.Empty:
                 break
+            max_rms = max(max_rms, audio_rms(raw))
             pcm_24k = downsample_48k_to_24k(raw)
             if not pcm_24k:
                 continue
@@ -131,6 +163,7 @@ class RealtimeTranscriber:
                 pass
             finally:
                 ws.settimeout(10)
+        return max_rms
 
     def _receive_transcript(self, ws) -> str:
         deadline = time.monotonic() + 12
