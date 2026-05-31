@@ -63,10 +63,9 @@ def audio_rms(raw: bytes) -> float:
 
 
 class RealtimeTranscriber:
-    def __init__(self, api_key: str, log: Callable[[str], None], prompt: str = ""):
+    def __init__(self, api_key: str, log: Callable[[str], None]):
         self.api_key = api_key
         self.log = log
-        self.prompt = prompt
         self.ws = None
         self.connected = False
         self.lock = threading.RLock()
@@ -182,8 +181,7 @@ class RealtimeTranscriber:
                             "transcription": {
                                 "model": "gpt-realtime-whisper",
                                 "language": "en",
-                                "delay": "low",
-                                "prompt": self.prompt
+                                "delay": "low"
                             }
                         }
                     }

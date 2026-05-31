@@ -85,7 +85,6 @@ class EveVoicePilotApp(tk.Tk):
         self.hotkey: GlobalHotkey | None = None
         self.transcriber: RealtimeTranscriber | None = None
         self.transcriber_api_key = ""
-        self.transcriber_prompt = ""
         self.transcriber_lock = threading.RLock()
         self.listening_thread: threading.Thread | None = None
         self.stop_listening = threading.Event()
@@ -354,13 +353,11 @@ class EveVoicePilotApp(tk.Tk):
             self.events.put(("error", str(exc)))
 
     def _get_transcriber(self, api_key: str, commands: list[VoiceCommand]) -> RealtimeTranscriber:
-        prompt = self._build_transcription_prompt(commands)
         with self.transcriber_lock:
-            if not self.transcriber or self.transcriber_api_key != api_key or self.transcriber_prompt != prompt:
+            if not self.transcriber or self.transcriber_api_key != api_key:
                 self._close_transcriber()
-                self.transcriber = RealtimeTranscriber(api_key, self.log_threadsafe, prompt=prompt)
+                self.transcriber = RealtimeTranscriber(api_key, self.log_threadsafe)
                 self.transcriber_api_key = api_key
-                self.transcriber_prompt = prompt
             return self.transcriber
 
     def _close_transcriber(self) -> None:
@@ -369,7 +366,6 @@ class EveVoicePilotApp(tk.Tk):
                 self.transcriber.close()
             self.transcriber = None
             self.transcriber_api_key = ""
-            self.transcriber_prompt = ""
 
     def _warm_connection_if_possible(self) -> None:
         api_key = self.api_key_var.get().strip()
@@ -486,21 +482,6 @@ class EveVoicePilotApp(tk.Tk):
             self.log(f"Fast matched {match.phrase!r}: {action}")
         if result:
             self.log(result)
-
-    def _build_transcription_prompt(self, commands: list[VoiceCommand]) -> str:
-        phrases: list[str] = []
-        for command in commands:
-            phrases.extend(command.phrases)
-        unique_phrases = []
-        seen = set()
-        for phrase in phrases:
-            normalized = phrase.lower().strip()
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                unique_phrases.append(phrase)
-        if not unique_phrases:
-            return ""
-        return "EVE Online voice command phrases: " + ", ".join(unique_phrases[:120])
 
     def log_threadsafe(self, message: str) -> None:
         self.events.put(("log", message))
