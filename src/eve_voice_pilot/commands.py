@@ -99,3 +99,31 @@ def find_command_match(
     if len(matches) > 1 and matches[0].score - matches[1].score < ambiguity_gap:
         return None
     return matches[0]
+
+
+def find_exact_phrase_match(transcript: str, commands: list[VoiceCommand]) -> CommandMatch | None:
+    heard = normalize_phrase(transcript)
+    if not heard:
+        return None
+
+    padded_heard = f" {heard} "
+    matches: list[CommandMatch] = []
+    for command in commands:
+        for phrase in command.phrases:
+            normalized = normalize_phrase(phrase)
+            if normalized and f" {normalized} " in padded_heard:
+                matches.append(CommandMatch(command=command, phrase=phrase, score=1.0))
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda item: (len(normalize_phrase(item.phrase).split()), len(item.phrase)), reverse=True)
+    best = matches[0]
+    best_length = len(normalize_phrase(best.phrase).split())
+    competing_commands = [
+        item for item in matches[1:]
+        if len(normalize_phrase(item.phrase).split()) == best_length and item.command.name != best.command.name
+    ]
+    if competing_commands:
+        return None
+    return best

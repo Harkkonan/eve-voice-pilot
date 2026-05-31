@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from array import array
 import base64
+from dataclasses import dataclass
 import json
 import math
 import queue
@@ -18,11 +19,20 @@ REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 CAPTURE_RATE = 48000
 API_RATE = 24000
 CHANNELS = 1
-BLOCK_SIZE = 2400
+BLOCK_SIZE = 960
 SPEECH_RMS_THRESHOLD = 450
-AUTO_STOP_SILENCE_SECONDS = 0.85
+AUTO_STOP_SILENCE_SECONDS = 0.30
 INITIAL_SILENCE_SECONDS = 4.0
-MAX_RECORD_SECONDS = 7.0
+MAX_RECORD_SECONDS = 4.0
+DRAIN_SECONDS = 0.05
+
+
+@dataclass
+class AudioPumpResult:
+    max_rms: float
+    partial_transcript: str
+    completed_transcript: str | None = None
+    fast_matched: bool = False
 
 
 def downsample_48k_to_24k(raw: bytes) -> bytes:
@@ -53,14 +63,20 @@ def audio_rms(raw: bytes) -> float:
 
 
 class RealtimeTranscriber:
-    def __init__(self, api_key: str, log: Callable[[str], None]):
+    def __init__(self, api_key: str, log: Callable[[str], None], prompt: str = ""):
         self.api_key = api_key
         self.log = log
+        self.prompt = prompt
         self.ws = None
         self.connected = False
         self.lock = threading.RLock()
 
-    def record_until_stopped(self, stop_event: threading.Event, on_ready: Callable[[], None] | None = None) -> str:
+    def record_until_stopped(
+        self,
+        stop_event: threading.Event,
+        on_ready: Callable[[], None] | None = None,
+        on_partial_match: Callable[[str], bool] | None = None,
+    ) -> str:
         if not self.api_key.strip():
             raise RuntimeError("Add your OpenAI API key first.")
 
@@ -86,8 +102,17 @@ class RealtimeTranscriber:
                 self.log("Listening. Speak one command.")
                 started_at = time.monotonic()
                 last_speech_at: float | None = None
+                partial_transcript = ""
                 while not stop_event.is_set():
-                    rms = self._send_audio_queue(ws, audio_queue)
+                    pump = self._send_audio_queue(ws, audio_queue, partial_transcript, on_partial_match)
+                    partial_transcript = pump.partial_transcript
+                    if pump.completed_transcript:
+                        return pump.completed_transcript
+                    if pump.fast_matched:
+                        self.log("Fast command phrase detected.")
+                        self._clear_input_buffer(ws)
+                        return partial_transcript
+                    rms = pump.max_rms
                     now = time.monotonic()
                     if rms >= SPEECH_RMS_THRESHOLD:
                         last_speech_at = now
@@ -103,13 +128,20 @@ class RealtimeTranscriber:
                     self._log_status(status_messages)
                     time.sleep(0.01)
 
-                drain_until = time.monotonic() + 0.25
+                drain_until = time.monotonic() + DRAIN_SECONDS
                 while time.monotonic() < drain_until:
-                    self._send_audio_queue(ws, audio_queue)
+                    pump = self._send_audio_queue(ws, audio_queue, partial_transcript, on_partial_match)
+                    partial_transcript = pump.partial_transcript
+                    if pump.completed_transcript:
+                        return pump.completed_transcript
+                    if pump.fast_matched:
+                        self.log("Fast command phrase detected.")
+                        self._clear_input_buffer(ws)
+                        return partial_transcript
                     time.sleep(0.01)
 
             ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-            return self._receive_transcript(ws)
+            return self._receive_transcript(ws, partial_transcript, on_partial_match)
         except Exception:
             self.close()
             raise
@@ -150,7 +182,8 @@ class RealtimeTranscriber:
                             "transcription": {
                                 "model": "gpt-realtime-whisper",
                                 "language": "en",
-                                "delay": "low"
+                                "delay": "low",
+                                "prompt": self.prompt
                             }
                         }
                     }
@@ -161,9 +194,17 @@ class RealtimeTranscriber:
             self.log("OpenAI connection ready.")
             return self.ws
 
-    def _send_audio_queue(self, ws, audio_queue: queue.Queue[bytes]) -> float:
+    def _send_audio_queue(
+        self,
+        ws,
+        audio_queue: queue.Queue[bytes],
+        partial_transcript: str,
+        on_partial_match: Callable[[str], bool] | None,
+    ) -> AudioPumpResult:
         sent_any = False
         max_rms = 0.0
+        completed_transcript: str | None = None
+        fast_matched = False
         while True:
             try:
                 raw = audio_queue.get_nowait()
@@ -184,17 +225,31 @@ class RealtimeTranscriber:
                 while True:
                     message = ws.recv()
                     event = json.loads(message)
-                    if event.get("type") == "error":
+                    event_type = event.get("type")
+                    if event_type == "conversation.item.input_audio_transcription.delta":
+                        partial_transcript += str(event.get("delta", ""))
+                        if on_partial_match and on_partial_match(partial_transcript):
+                            fast_matched = True
+                            break
+                    elif event_type == "conversation.item.input_audio_transcription.completed":
+                        completed_transcript = str(event.get("transcript", "")).strip()
+                        break
+                    elif event_type == "error":
                         raise RuntimeError(self._format_openai_error(event))
             except websocket.WebSocketTimeoutException:
                 pass
             finally:
                 ws.settimeout(10)
-        return max_rms
+        return AudioPumpResult(max_rms, partial_transcript, completed_transcript, fast_matched)
 
-    def _receive_transcript(self, ws) -> str:
-        deadline = time.monotonic() + 12
-        last_delta = ""
+    def _receive_transcript(
+        self,
+        ws,
+        partial_transcript: str = "",
+        on_partial_match: Callable[[str], bool] | None = None,
+    ) -> str:
+        deadline = time.monotonic() + 4
+        last_delta = partial_transcript
         while time.monotonic() < deadline:
             ws.settimeout(max(0.5, deadline - time.monotonic()))
             message = ws.recv()
@@ -202,11 +257,19 @@ class RealtimeTranscriber:
             event_type = event.get("type")
             if event_type == "conversation.item.input_audio_transcription.delta":
                 last_delta += str(event.get("delta", ""))
+                if on_partial_match and on_partial_match(last_delta):
+                    return last_delta.strip()
             elif event_type == "conversation.item.input_audio_transcription.completed":
                 return str(event.get("transcript", "")).strip()
             elif event_type == "error":
                 raise RuntimeError(self._format_openai_error(event))
         return last_delta.strip()
+
+    def _clear_input_buffer(self, ws) -> None:
+        try:
+            ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
+        except Exception:
+            pass
 
     def _log_status(self, status_messages: queue.Queue[str]) -> None:
         while True:

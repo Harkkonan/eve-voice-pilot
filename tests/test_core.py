@@ -5,7 +5,7 @@ import ctypes
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from eve_voice_pilot.commands import VoiceCommand, find_command_match, normalize_phrase
+from eve_voice_pilot.commands import VoiceCommand, find_command_match, find_exact_phrase_match, normalize_phrase
 from eve_voice_pilot.input_sender import INPUT, INPUT_UNION, KEYBDINPUT, parse_key_chord
 from eve_voice_pilot.transcription import audio_rms
 
@@ -24,6 +24,18 @@ def test_find_command_match_exact_phrase():
 def test_find_command_match_rejects_weak_match():
     command = VoiceCommand("Stop ship", ["stop ship"], "CTRL+SPACE")
     assert find_command_match("open map", [command]) is None
+
+
+def test_find_exact_phrase_match_prefers_longest_phrase():
+    command = VoiceCommand("Open map", ["map", "open map"], "F10")
+    match = find_exact_phrase_match("please open map now", [command])
+    assert match is not None
+    assert match.phrase == "open map"
+
+
+def test_find_exact_phrase_match_rejects_partial_word():
+    command = VoiceCommand("Open map", ["map"], "F10")
+    assert find_exact_phrase_match("mapped route", [command]) is None
 
 
 def test_parse_key_chord_allows_modifier_and_key():

@@ -8,6 +8,7 @@ The first version is intentionally cautious:
 - Keybinds can include left/right modifiers, like `LEFT SHIFT+P`, `LEFT CTRL+LEFT SHIFT`, or `LEFT SHIFT AND P`.
 - Practice mode is on by default, so it recognizes commands without sending keys.
 - Key sending is blocked unless the active window title contains `EVE`, unless you turn that check off.
+- Exact command phrases can fire from partial live transcription before the final transcript is ready.
 - It does not do timed chains, repeats, mouse moves, input broadcasting, or multi-client automation.
 
 ## First Run

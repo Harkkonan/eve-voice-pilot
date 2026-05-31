@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 import winsound
 
-from .commands import DEFAULT_HOLD_SECONDS, CommandProfile, VoiceCommand, find_command_match
+from .commands import DEFAULT_HOLD_SECONDS, CommandProfile, VoiceCommand, find_command_match, find_exact_phrase_match
 from .config import load_settings, save_settings
 from .hotkey import GlobalHotkey
 from .input_sender import active_window_title, parse_key_chord, send_key_chord
@@ -85,6 +85,7 @@ class EveVoicePilotApp(tk.Tk):
         self.hotkey: GlobalHotkey | None = None
         self.transcriber: RealtimeTranscriber | None = None
         self.transcriber_api_key = ""
+        self.transcriber_prompt = ""
         self.transcriber_lock = threading.RLock()
         self.listening_thread: threading.Thread | None = None
         self.stop_listening = threading.Event()
@@ -94,7 +95,7 @@ class EveVoicePilotApp(tk.Tk):
         self._refresh_commands()
         self._register_hotkey()
         self.after(500, self._warm_connection_if_possible)
-        self.after(100, self._poll_events)
+        self.after(50, self._poll_events)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _load_profile(self) -> CommandProfile:
@@ -258,7 +259,9 @@ class EveVoicePilotApp(tk.Tk):
 
     def save_profile(self) -> None:
         self.profile.save(self.profile_path)
+        self._close_transcriber()
         self.log(f"Saved commands to {self.profile_path}")
+        self._warm_connection_if_possible()
 
     def save_settings(self) -> None:
         try:
@@ -293,7 +296,16 @@ class EveVoicePilotApp(tk.Tk):
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         api_key = self.api_key_var.get().strip()
-        self.listening_thread = threading.Thread(target=self._listen_worker, args=(api_key,), name="listen-worker", daemon=True)
+        commands = list(self.profile.commands)
+        practice_mode = self.practice_mode_var.get()
+        require_target = self.require_target_var.get()
+        target_title = self.target_title_var.get().strip() or "EVE"
+        self.listening_thread = threading.Thread(
+            target=self._listen_worker,
+            args=(api_key, commands, practice_mode, require_target, target_title),
+            name="listen-worker",
+            daemon=True,
+        )
         self.listening_thread.start()
 
     def stop(self) -> None:
@@ -302,20 +314,53 @@ class EveVoicePilotApp(tk.Tk):
             self.status_var.set("Finishing")
             winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
-    def _listen_worker(self, api_key: str) -> None:
+    def _listen_worker(
+        self,
+        api_key: str,
+        commands: list[VoiceCommand],
+        practice_mode: bool,
+        require_target: bool,
+        target_title: str,
+    ) -> None:
+        fast_result: dict | None = None
+
+        def on_partial_match(transcript: str) -> bool:
+            nonlocal fast_result
+            if fast_result:
+                return True
+            match = find_exact_phrase_match(transcript, commands)
+            if not match:
+                return False
+            result = self._send_or_practice_worker(match.command, practice_mode, require_target, target_title)
+            fast_result = {
+                "transcript": transcript,
+                "match": match,
+                "result": result,
+            }
+            return True
+
         try:
-            transcriber = self._get_transcriber(api_key)
-            transcript = transcriber.record_until_stopped(self.stop_listening, on_ready=self._listening_ready)
-            self.events.put(("transcript", transcript))
+            transcriber = self._get_transcriber(api_key, commands)
+            transcript = transcriber.record_until_stopped(
+                self.stop_listening,
+                on_ready=self._listening_ready,
+                on_partial_match=on_partial_match,
+            )
+            if fast_result:
+                self.events.put(("fast_transcript", fast_result))
+            else:
+                self.events.put(("transcript", transcript))
         except Exception as exc:
             self.events.put(("error", str(exc)))
 
-    def _get_transcriber(self, api_key: str) -> RealtimeTranscriber:
+    def _get_transcriber(self, api_key: str, commands: list[VoiceCommand]) -> RealtimeTranscriber:
+        prompt = self._build_transcription_prompt(commands)
         with self.transcriber_lock:
-            if not self.transcriber or self.transcriber_api_key != api_key:
+            if not self.transcriber or self.transcriber_api_key != api_key or self.transcriber_prompt != prompt:
                 self._close_transcriber()
-                self.transcriber = RealtimeTranscriber(api_key, self.log_threadsafe)
+                self.transcriber = RealtimeTranscriber(api_key, self.log_threadsafe, prompt=prompt)
                 self.transcriber_api_key = api_key
+                self.transcriber_prompt = prompt
             return self.transcriber
 
     def _close_transcriber(self) -> None:
@@ -324,6 +369,7 @@ class EveVoicePilotApp(tk.Tk):
                 self.transcriber.close()
             self.transcriber = None
             self.transcriber_api_key = ""
+            self.transcriber_prompt = ""
 
     def _warm_connection_if_possible(self) -> None:
         api_key = self.api_key_var.get().strip()
@@ -335,7 +381,7 @@ class EveVoicePilotApp(tk.Tk):
 
     def _warm_connection_worker(self, api_key: str) -> None:
         try:
-            self._get_transcriber(api_key).warm_up()
+            self._get_transcriber(api_key, list(self.profile.commands)).warm_up()
         except Exception as exc:
             self.events.put(("log", f"Could not warm OpenAI connection: {exc}"))
 
@@ -357,23 +403,36 @@ class EveVoicePilotApp(tk.Tk):
         self._send_or_practice(match.command)
 
     def _send_or_practice(self, command: VoiceCommand) -> None:
-        key = command.key
-        if self.practice_mode_var.get():
-            self.log(f"Practice mode: would send {key} for {command.hold_seconds:.2f}s.")
-            return
+        result = self._send_or_practice_worker(
+            command,
+            self.practice_mode_var.get(),
+            self.require_target_var.get(),
+            self.target_title_var.get().strip() or "EVE",
+        )
+        self.log(result)
 
-        if self.require_target_var.get():
+    def _send_or_practice_worker(
+        self,
+        command: VoiceCommand,
+        practice_mode: bool,
+        require_target: bool,
+        target_title: str,
+    ) -> str:
+        key = command.key
+        if practice_mode:
+            return f"Practice mode: would send {key} for {command.hold_seconds:.2f}s."
+
+        if require_target:
             title = active_window_title()
-            required = self.target_title_var.get().strip().lower() or "eve"
+            required = target_title.lower() or "eve"
             if required not in title.lower():
-                self.log(f"Did not send {key}; active window is {title!r}.")
-                return
+                return f"Did not send {key}; active window is {title!r}."
 
         try:
             send_key_chord(key, press_seconds=command.hold_seconds)
-            self.log(f"Sent {key} for {command.hold_seconds:.2f}s.")
+            return f"Sent {key} for {command.hold_seconds:.2f}s."
         except Exception as exc:
-            self.log(f"Could not send {key}: {exc}")
+            return f"Could not send {key}: {exc}"
 
     def test_selected(self) -> None:
         index = self._selected_index()
@@ -402,12 +461,46 @@ class EveVoicePilotApp(tk.Tk):
                 self.start_button.configure(state="normal")
                 self.stop_button.configure(state="disabled")
                 self._handle_transcript(str(payload))
+            elif event == "fast_transcript":
+                self.status_var.set("Ready")
+                self.start_button.configure(state="normal")
+                self.stop_button.configure(state="disabled")
+                self._handle_fast_transcript(payload)
             elif event == "error":
                 self.status_var.set("Ready")
                 self.start_button.configure(state="normal")
                 self.stop_button.configure(state="disabled")
                 self.log(str(payload))
-        self.after(100, self._poll_events)
+        self.after(50, self._poll_events)
+
+    def _handle_fast_transcript(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        transcript = str(payload.get("transcript", "")).strip()
+        match = payload.get("match")
+        result = str(payload.get("result", ""))
+        self.last_heard_var.set(transcript or "(Fast command)")
+        if match:
+            action = f"{match.command.name} -> {match.command.key}"
+            self.last_action_var.set(action)
+            self.log(f"Fast matched {match.phrase!r}: {action}")
+        if result:
+            self.log(result)
+
+    def _build_transcription_prompt(self, commands: list[VoiceCommand]) -> str:
+        phrases: list[str] = []
+        for command in commands:
+            phrases.extend(command.phrases)
+        unique_phrases = []
+        seen = set()
+        for phrase in phrases:
+            normalized = phrase.lower().strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                unique_phrases.append(phrase)
+        if not unique_phrases:
+            return ""
+        return "EVE Online voice command phrases: " + ", ".join(unique_phrases[:120])
 
     def log_threadsafe(self, message: str) -> None:
         self.events.put(("log", message))
