@@ -8,6 +8,10 @@ import time
 
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_SCANCODE = 0x0008
+MAPVK_VK_TO_VSC = 0
+
+ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 
 MODIFIER_VKS = {
     "CTRL": 0x11,
@@ -51,12 +55,35 @@ class KEYBDINPUT(ctypes.Structure):
         ("wScan", wintypes.WORD),
         ("dwFlags", wintypes.DWORD),
         ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
     ]
 
 
 class INPUT_UNION(ctypes.Union):
-    _fields_ = [("ki", KEYBDINPUT)]
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
 
 
 class INPUT(ctypes.Structure):
@@ -64,6 +91,10 @@ class INPUT(ctypes.Structure):
 
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
+user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
+user32.SendInput.restype = wintypes.UINT
+user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
+user32.MapVirtualKeyW.restype = wintypes.UINT
 
 
 @dataclass(frozen=True)
@@ -98,11 +129,18 @@ def parse_key_chord(chord: str) -> ParsedKeyChord:
     return ParsedKeyChord(tuple(modifiers), key_name, key_vk)
 
 
-def _send_vk(vk: int, flags: int = 0) -> None:
-    extra = ctypes.c_ulong(0)
+def _send_vk(vk: int, keyup: bool = False) -> None:
+    scan_code = user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)
+    if not scan_code:
+        raise OSError(0, f"Could not map virtual key {vk} to a scan code")
+
+    flags = KEYEVENTF_SCANCODE
+    if keyup:
+        flags |= KEYEVENTF_KEYUP
+
     event = INPUT(
         type=INPUT_KEYBOARD,
-        union=INPUT_UNION(ki=KEYBDINPUT(vk, 0, flags, 0, ctypes.pointer(extra))),
+        union=INPUT_UNION(ki=KEYBDINPUT(0, scan_code, flags, 0, 0)),
     )
     sent = user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(event))
     if sent != 1:
@@ -117,9 +155,9 @@ def send_key_chord(chord: str, press_seconds: float = 0.04) -> None:
         _send_vk(vk)
     _send_vk(parsed.key_vk)
     time.sleep(press_seconds)
-    _send_vk(parsed.key_vk, KEYEVENTF_KEYUP)
+    _send_vk(parsed.key_vk, keyup=True)
     for vk in reversed(modifier_vks):
-        _send_vk(vk, KEYEVENTF_KEYUP)
+        _send_vk(vk, keyup=True)
 
 
 def active_window_title() -> str:
@@ -130,4 +168,3 @@ def active_window_title() -> str:
     buffer = ctypes.create_unicode_buffer(length + 1)
     user32.GetWindowTextW(hwnd, buffer, length + 1)
     return buffer.value
-

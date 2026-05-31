@@ -1,11 +1,12 @@
 from pathlib import Path
 import sys
+import ctypes
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from eve_voice_pilot.commands import VoiceCommand, find_command_match, normalize_phrase
-from eve_voice_pilot.input_sender import parse_key_chord
+from eve_voice_pilot.input_sender import INPUT, INPUT_UNION, KEYBDINPUT, parse_key_chord
 from eve_voice_pilot.transcription import audio_rms
 
 
@@ -44,3 +45,9 @@ def test_audio_rms_detects_louder_audio():
     loud = (1000).to_bytes(2, "little", signed=True) * 20
     assert audio_rms(quiet) == 0
     assert audio_rms(loud) > 900
+
+
+def test_windows_input_union_has_full_size():
+    assert ctypes.sizeof(KEYBDINPUT) == 24
+    assert ctypes.sizeof(INPUT_UNION) >= ctypes.sizeof(KEYBDINPUT)
+    assert ctypes.sizeof(INPUT) >= 40
