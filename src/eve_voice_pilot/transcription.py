@@ -13,7 +13,7 @@ import sounddevice as sd
 import websocket
 
 
-REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2"
+REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 CAPTURE_RATE = 48000
 API_RATE = 24000
 CHANNELS = 1
