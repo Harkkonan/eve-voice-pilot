@@ -18,6 +18,7 @@ from .transcription import RealtimeTranscriber
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROFILE = ROOT / "profiles" / "eve_sample.json"
 USER_PROFILE = ROOT / "profiles" / "my_eve_commands.json"
+DEFAULT_HOTKEY = "F9"
 
 
 class CommandDialog(simpledialog.Dialog):
@@ -155,7 +156,10 @@ class EveVoicePilotApp(tk.Tk):
 
         self.api_key_var = tk.StringVar(value=self.settings.get("api_key", ""))
         self.remember_key_var = tk.BooleanVar(value=bool(self.settings.get("api_key_protected")))
-        self.hotkey_var = tk.StringVar(value=self.settings.get("hotkey", "F12"))
+        saved_hotkey = str(self.settings.get("hotkey", DEFAULT_HOTKEY)).strip().upper() or DEFAULT_HOTKEY
+        if saved_hotkey == "F12":
+            saved_hotkey = DEFAULT_HOTKEY
+        self.hotkey_var = tk.StringVar(value=saved_hotkey)
         self.practice_mode_var = tk.BooleanVar(value=self.settings.get("practice_mode", True))
         self.require_target_var = tk.BooleanVar(value=self.settings.get("require_target", True))
         self.target_title_var = tk.StringVar(value=self.settings.get("target_title", "EVE"))
@@ -186,7 +190,7 @@ class EveVoicePilotApp(tk.Tk):
         if self.hotkey:
             self.hotkey.stop()
         self.hotkey = GlobalHotkey(
-            self.hotkey_var.get().strip().upper() or "F12",
+            self.hotkey_var.get().strip().upper() or DEFAULT_HOTKEY,
             callback=lambda: self.events.put(("hotkey", None)),
             on_error=lambda message: self.events.put(("error", message)),
         )
@@ -241,7 +245,7 @@ class EveVoicePilotApp(tk.Tk):
             return
         settings = {
             "api_key": self.api_key_var.get().strip(),
-            "hotkey": self.hotkey_var.get().strip().upper() or "F12",
+            "hotkey": self.hotkey_var.get().strip().upper() or DEFAULT_HOTKEY,
             "practice_mode": self.practice_mode_var.get(),
             "require_target": self.require_target_var.get(),
             "target_title": self.target_title_var.get().strip() or "EVE",

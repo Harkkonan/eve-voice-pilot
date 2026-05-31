@@ -24,7 +24,7 @@ Paste your API key into the app. If you check `Remember on this PC`, the app sav
 ## How To Test Safely
 
 1. Leave `Practice mode` turned on.
-2. Press `F12`, speak one command, then press `F12` again.
+2. Press `F9`, speak one command, then press `F9` again.
 3. Check `Last heard`, `Last action`, and the log.
 4. When the command matching looks right, turn off `Practice mode`.
 5. Put EVE in the foreground before using real key sending.
@@ -42,4 +42,3 @@ Your editable command profile is saved at `profiles/my_eve_commands.json`.
 ## Notes
 
 If EVE is running as administrator and this app is not, Windows may block simulated keypresses. Usually both apps should run normally, without administrator mode.
-

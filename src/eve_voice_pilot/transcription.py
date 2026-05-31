@@ -13,7 +13,7 @@ import sounddevice as sd
 import websocket
 
 
-REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-whisper"
+REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2"
 CAPTURE_RATE = 48000
 API_RATE = 24000
 CHANNELS = 1
@@ -76,6 +76,7 @@ class RealtimeTranscriber:
                     }
                 }
             }))
+            self._raise_if_openai_error(ws)
 
             with sd.RawInputStream(
                 samplerate=CAPTURE_RATE,
@@ -125,8 +126,8 @@ class RealtimeTranscriber:
                     message = ws.recv()
                     event = json.loads(message)
                     if event.get("type") == "error":
-                        self.log(f"OpenAI error: {event}")
-            except Exception:
+                        raise RuntimeError(self._format_openai_error(event))
+            except websocket.WebSocketTimeoutException:
                 pass
             finally:
                 ws.settimeout(10)
@@ -144,7 +145,7 @@ class RealtimeTranscriber:
             elif event_type == "conversation.item.input_audio_transcription.completed":
                 return str(event.get("transcript", "")).strip()
             elif event_type == "error":
-                raise RuntimeError(str(event.get("error", event)))
+                raise RuntimeError(self._format_openai_error(event))
         return last_delta.strip()
 
     def _log_status(self, status_messages: queue.Queue[str]) -> None:
@@ -155,3 +156,25 @@ class RealtimeTranscriber:
                 return
             self.log(f"Microphone notice: {message}")
 
+    def _raise_if_openai_error(self, ws) -> None:
+        ws.settimeout(1)
+        try:
+            while True:
+                event = json.loads(ws.recv())
+                if event.get("type") == "error":
+                    raise RuntimeError(self._format_openai_error(event))
+        except websocket.WebSocketTimeoutException:
+            return
+        finally:
+            ws.settimeout(10)
+
+    def _format_openai_error(self, event: dict) -> str:
+        error = event.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            code = error.get("code")
+            if message and code:
+                return f"OpenAI error ({code}): {message}"
+            if message:
+                return f"OpenAI error: {message}"
+        return f"OpenAI error: {event}"

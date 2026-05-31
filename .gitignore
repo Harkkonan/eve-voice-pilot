@@ -8,4 +8,4 @@ dist/
 build/
 *.egg-info/
 local_settings.json
-
+profiles/my_eve_commands.json
