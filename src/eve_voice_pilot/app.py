@@ -4,15 +4,25 @@ from pathlib import Path
 import queue
 import shutil
 import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
+import sounddevice as sd
 import winsound
 
 from .commands import DEFAULT_HOLD_SECONDS, CommandProfile, VoiceCommand, find_exact_phrase_match
 from .config import load_settings, save_settings
 from .hotkey import GlobalHotkey
 from .input_sender import active_window_title, parse_key_chord, send_key_chord
-from .transcription import RealtimeTranscriber
+from .transcription import (
+    RealtimeTranscriber,
+    audio_rms,
+    block_size_for_rate,
+    capture_rate_for_device,
+    default_input_device_index,
+    list_input_devices,
+    resolve_input_device_label,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,10 +95,13 @@ class EveVoicePilotApp(tk.Tk):
         self.hotkey: GlobalHotkey | None = None
         self.transcriber: RealtimeTranscriber | None = None
         self.transcriber_api_key = ""
+        self.transcriber_input_device_index: int | None = None
         self.transcriber_lock = threading.RLock()
         self.listening_thread: threading.Thread | None = None
+        self.mic_test_thread: threading.Thread | None = None
         self.stop_listening = threading.Event()
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.input_devices = list_input_devices()
         self.armed = False
 
         self._build_ui()
@@ -108,6 +121,31 @@ class EveVoicePilotApp(tk.Tk):
             return CommandProfile.load(path)
         except Exception:
             return CommandProfile.load(DEFAULT_PROFILE)
+
+    def _input_device_labels(self) -> list[str]:
+        return [device.label for device in self.input_devices]
+
+    def _preferred_input_device_label(self) -> str:
+        labels = self._input_device_labels()
+        saved_label = str(self.settings.get("input_device", "")).strip()
+        if saved_label in labels:
+            return saved_label
+
+        saved_index = resolve_input_device_label(saved_label)
+        if saved_index is not None:
+            for device in self.input_devices:
+                if device.index == saved_index:
+                    return device.label
+
+        default_index = default_input_device_index()
+        if default_index is not None:
+            for device in self.input_devices:
+                if device.index == default_index:
+                    return device.label
+        return labels[0] if labels else ""
+
+    def _selected_input_device_index(self) -> int | None:
+        return resolve_input_device_label(self.mic_var.get())
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -178,6 +216,9 @@ class EveVoicePilotApp(tk.Tk):
         if saved_hotkey == "F12":
             saved_hotkey = DEFAULT_HOTKEY
         self.hotkey_var = tk.StringVar(value=saved_hotkey)
+        self.mic_var = tk.StringVar(value=self._preferred_input_device_label())
+        self.mic_level_var = tk.DoubleVar(value=0)
+        self.mic_status_var = tk.StringVar(value="Use Test Mic and speak normally.")
         self.practice_mode_var = tk.BooleanVar(value=self.settings.get("practice_mode", True))
         self.require_target_var = tk.BooleanVar(value=self.settings.get("require_target", True))
         self.target_title_var = tk.StringVar(value=self.settings.get("target_title", "EVE"))
@@ -186,13 +227,24 @@ class EveVoicePilotApp(tk.Tk):
         ttk.Entry(settings, textvariable=self.api_key_var, show="*", width=28).grid(row=0, column=1, sticky="ew", pady=5)
         ttk.Checkbutton(settings, text="Remember on this PC", variable=self.remember_key_var).grid(row=1, column=1, sticky="w")
 
-        ttk.Label(settings, text="Hotkey").grid(row=2, column=0, sticky="w", pady=5)
-        ttk.Entry(settings, textvariable=self.hotkey_var, width=16).grid(row=2, column=1, sticky="w", pady=5)
+        ttk.Label(settings, text="Microphone").grid(row=2, column=0, sticky="w", pady=5)
+        self.mic_combo = ttk.Combobox(settings, textvariable=self.mic_var, values=self._input_device_labels(), state="readonly")
+        self.mic_combo.grid(row=2, column=1, sticky="ew", pady=5)
+        mic_buttons = ttk.Frame(settings)
+        mic_buttons.grid(row=3, column=0, columnspan=2, sticky="ew")
+        self.mic_test_button = ttk.Button(mic_buttons, text="Test Mic", command=self.test_microphone)
+        self.mic_test_button.pack(side="left")
+        ttk.Button(mic_buttons, text="Refresh Mics", command=self.refresh_microphones).pack(side="left", padx=5)
+        ttk.Progressbar(settings, variable=self.mic_level_var, maximum=100).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Label(settings, textvariable=self.mic_status_var, wraplength=360).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(2, 8))
 
-        ttk.Checkbutton(settings, text="Practice mode", variable=self.practice_mode_var).grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
-        ttk.Checkbutton(settings, text="Only when this window title is active", variable=self.require_target_var).grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
-        ttk.Entry(settings, textvariable=self.target_title_var).grid(row=5, column=0, columnspan=2, sticky="ew", pady=4)
-        ttk.Button(settings, text="Save Settings", command=self.save_settings).grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Label(settings, text="Hotkey").grid(row=6, column=0, sticky="w", pady=5)
+        ttk.Entry(settings, textvariable=self.hotkey_var, width=16).grid(row=6, column=1, sticky="w", pady=5)
+
+        ttk.Checkbutton(settings, text="Practice mode", variable=self.practice_mode_var).grid(row=7, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Checkbutton(settings, text="Only when this window title is active", variable=self.require_target_var).grid(row=8, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Entry(settings, textvariable=self.target_title_var).grid(row=9, column=0, columnspan=2, sticky="ew", pady=4)
+        ttk.Button(settings, text="Save Settings", command=self.save_settings).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
         log_frame = ttk.LabelFrame(right, text="Log", padding=8)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
@@ -263,6 +315,71 @@ class EveVoicePilotApp(tk.Tk):
         self.log(f"Saved commands to {self.profile_path}")
         self._warm_connection_if_possible()
 
+    def refresh_microphones(self) -> None:
+        previous = self.mic_var.get()
+        self.input_devices = list_input_devices()
+        labels = self._input_device_labels()
+        self.mic_combo.configure(values=labels)
+        if previous in labels:
+            self.mic_var.set(previous)
+        else:
+            self.mic_var.set(self._preferred_input_device_label())
+        self.mic_status_var.set("Microphone list refreshed.")
+
+    def test_microphone(self) -> None:
+        if self.armed or (self.listening_thread and self.listening_thread.is_alive()):
+            messagebox.showinfo("Pause first", "Pause Armed Listening before testing the microphone.", parent=self)
+            return
+        if self.mic_test_thread and self.mic_test_thread.is_alive():
+            return
+
+        device_index = self._selected_input_device_index()
+        self.mic_level_var.set(0)
+        self.mic_status_var.set("Testing microphone. Speak normally for a few seconds.")
+        self.mic_test_button.configure(state="disabled")
+        self.mic_test_thread = threading.Thread(target=self._mic_test_worker, args=(device_index,), name="mic-test-worker", daemon=True)
+        self.mic_test_thread.start()
+
+    def _mic_test_worker(self, device_index: int | None) -> None:
+        audio_queue: queue.Queue[bytes] = queue.Queue()
+
+        def audio_callback(indata, frames, time_info, status) -> None:
+            audio_queue.put(bytes(indata))
+
+        try:
+            capture_rate = capture_rate_for_device(device_index)
+            block_size = block_size_for_rate(capture_rate)
+            peak_rms = 0.0
+            with sd.RawInputStream(
+                samplerate=capture_rate,
+                device=device_index,
+                channels=1,
+                dtype="int16",
+                blocksize=block_size,
+                callback=audio_callback,
+            ):
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        raw = audio_queue.get(timeout=0.15)
+                    except queue.Empty:
+                        continue
+                    rms = audio_rms(raw)
+                    peak_rms = max(peak_rms, rms)
+                    level = min(100, rms / 2500 * 100)
+                    self.events.put(("mic_level", (level, rms)))
+            if peak_rms < 450:
+                result = "Mic test done. The level looks low; pick a different mic or raise input volume."
+            elif peak_rms > 9000:
+                result = "Mic test done. The level looks very loud; lower input volume if recognition is messy."
+            else:
+                result = "Mic test done. The level looks usable."
+            if capture_rate < 16000:
+                result += " This mic reports a low sample rate; choose a higher-quality headset input if one is listed."
+            self.events.put(("mic_test_done", f"{result} Peak RMS {peak_rms:.0f}."))
+        except Exception as exc:
+            self.events.put(("mic_test_done", f"Mic test failed: {exc}"))
+
     def save_settings(self) -> None:
         try:
             parse_key_chord(self.hotkey_var.get().strip().upper() or DEFAULT_HOTKEY)
@@ -272,6 +389,7 @@ class EveVoicePilotApp(tk.Tk):
         settings = {
             "api_key": self.api_key_var.get().strip(),
             "hotkey": self.hotkey_var.get().strip().upper() or DEFAULT_HOTKEY,
+            "input_device": self.mic_var.get().strip(),
             "practice_mode": self.practice_mode_var.get(),
             "require_target": self.require_target_var.get(),
             "target_title": self.target_title_var.get().strip() or "EVE",
@@ -283,6 +401,9 @@ class EveVoicePilotApp(tk.Tk):
             messagebox.showerror("Save problem", str(exc), parent=self)
             return
         if self.transcriber_api_key and self.transcriber_api_key != settings["api_key"]:
+            self._close_transcriber()
+        selected_device = self._selected_input_device_index()
+        if self.transcriber and self.transcriber_input_device_index != selected_device:
             self._close_transcriber()
         self._register_hotkey()
         self.log("Saved settings.")
@@ -311,9 +432,10 @@ class EveVoicePilotApp(tk.Tk):
         practice_mode = self.practice_mode_var.get()
         require_target = self.require_target_var.get()
         target_title = self.target_title_var.get().strip() or "EVE"
+        input_device_index = self._selected_input_device_index()
         self.listening_thread = threading.Thread(
             target=self._listen_worker,
-            args=(api_key, commands, practice_mode, require_target, target_title),
+            args=(api_key, commands, practice_mode, require_target, target_title, input_device_index),
             name="listen-worker",
             daemon=True,
         )
@@ -338,6 +460,7 @@ class EveVoicePilotApp(tk.Tk):
         practice_mode: bool,
         require_target: bool,
         target_title: str,
+        input_device_index: int | None,
     ) -> None:
         fast_result: dict | None = None
 
@@ -357,7 +480,7 @@ class EveVoicePilotApp(tk.Tk):
             return True
 
         try:
-            transcriber = self._get_transcriber(api_key, commands)
+            transcriber = self._get_transcriber(api_key, commands, input_device_index)
             transcript = transcriber.record_until_stopped(
                 self.stop_listening,
                 on_ready=self._listening_ready,
@@ -370,12 +493,22 @@ class EveVoicePilotApp(tk.Tk):
         except Exception as exc:
             self.events.put(("error", str(exc)))
 
-    def _get_transcriber(self, api_key: str, commands: list[VoiceCommand]) -> RealtimeTranscriber:
+    def _get_transcriber(
+        self,
+        api_key: str,
+        commands: list[VoiceCommand],
+        input_device_index: int | None,
+    ) -> RealtimeTranscriber:
         with self.transcriber_lock:
-            if not self.transcriber or self.transcriber_api_key != api_key:
+            if (
+                not self.transcriber
+                or self.transcriber_api_key != api_key
+                or self.transcriber_input_device_index != input_device_index
+            ):
                 self._close_transcriber()
-                self.transcriber = RealtimeTranscriber(api_key, self.log_threadsafe)
+                self.transcriber = RealtimeTranscriber(api_key, self.log_threadsafe, input_device_index=input_device_index)
                 self.transcriber_api_key = api_key
+                self.transcriber_input_device_index = input_device_index
             return self.transcriber
 
     def _close_transcriber(self) -> None:
@@ -384,6 +517,7 @@ class EveVoicePilotApp(tk.Tk):
                 self.transcriber.close()
             self.transcriber = None
             self.transcriber_api_key = ""
+            self.transcriber_input_device_index = None
 
     def _warm_connection_if_possible(self) -> None:
         api_key = self.api_key_var.get().strip()
@@ -391,11 +525,18 @@ class EveVoicePilotApp(tk.Tk):
             return
         if self.listening_thread and self.listening_thread.is_alive():
             return
-        threading.Thread(target=self._warm_connection_worker, args=(api_key,), name="warm-openai-worker", daemon=True).start()
+        commands = list(self.profile.commands)
+        input_device_index = self._selected_input_device_index()
+        threading.Thread(
+            target=self._warm_connection_worker,
+            args=(api_key, commands, input_device_index),
+            name="warm-openai-worker",
+            daemon=True,
+        ).start()
 
-    def _warm_connection_worker(self, api_key: str) -> None:
+    def _warm_connection_worker(self, api_key: str, commands: list[VoiceCommand], input_device_index: int | None) -> None:
         try:
-            self._get_transcriber(api_key, list(self.profile.commands)).warm_up()
+            self._get_transcriber(api_key, commands, input_device_index).warm_up()
         except Exception as exc:
             self.events.put(("log", f"Could not warm OpenAI connection: {exc}"))
 
@@ -474,6 +615,13 @@ class EveVoicePilotApp(tk.Tk):
             elif event == "status":
                 if self.armed:
                     self.status_var.set(str(payload))
+            elif event == "mic_level":
+                level, rms = payload
+                self.mic_level_var.set(float(level))
+                self.mic_status_var.set(f"Level {float(level):.0f}%  RMS {float(rms):.0f}")
+            elif event == "mic_test_done":
+                self.mic_test_button.configure(state="normal")
+                self.mic_status_var.set(str(payload))
             elif event == "transcript":
                 self._handle_transcript(str(payload))
                 self._finish_listening_cycle()

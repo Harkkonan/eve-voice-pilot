@@ -24,6 +24,12 @@ This app needs an OpenAI API key. A ChatGPT subscription does not automatically 
 
 Paste your API key into the app. If you check `Remember on this PC`, the app saves it in your Windows user profile using Windows data protection.
 
+## Microphone Check
+
+Windows voice training does not affect this app. Pick your headset mic in `Microphone`, click `Test Mic`, and speak normally.
+
+If the test says the level is low, try a different listed microphone or raise the Windows input volume. If it says the mic has a low sample rate, pick a higher-quality headset input if one is available.
+
 ## How To Test Safely
 
 1. Leave `Practice mode` turned on.

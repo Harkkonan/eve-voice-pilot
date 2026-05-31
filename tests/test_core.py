@@ -7,7 +7,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from eve_voice_pilot.commands import VoiceCommand, find_command_match, find_exact_phrase_match, normalize_phrase
 from eve_voice_pilot.input_sender import INPUT, INPUT_UNION, KEYBDINPUT, parse_key_chord
-from eve_voice_pilot.transcription import audio_rms
+from eve_voice_pilot.transcription import audio_rms, block_size_for_rate, resample_pcm_to_24k
 
 
 def test_normalize_phrase_removes_punctuation():
@@ -87,6 +87,20 @@ def test_audio_rms_detects_louder_audio():
     loud = (1000).to_bytes(2, "little", signed=True) * 20
     assert audio_rms(quiet) == 0
     assert audio_rms(loud) > 900
+
+
+def test_resample_pcm_to_24k_downsamples_48k_audio():
+    raw = (1000).to_bytes(2, "little", signed=True) * 48
+    assert len(resample_pcm_to_24k(raw, 48000)) == 48
+
+
+def test_resample_pcm_to_24k_keeps_24k_audio_length():
+    raw = (1000).to_bytes(2, "little", signed=True) * 48
+    assert len(resample_pcm_to_24k(raw, 24000)) == len(raw)
+
+
+def test_block_size_for_rate_has_reasonable_minimum():
+    assert block_size_for_rate(8000) == 160
 
 
 def test_windows_input_union_has_full_size():

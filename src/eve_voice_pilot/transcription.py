@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from array import array
 import base64
+from collections import deque
 from dataclasses import dataclass
 import json
 import math
@@ -16,10 +17,11 @@ import websocket
 
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
-CAPTURE_RATE = 48000
 API_RATE = 24000
 CHANNELS = 1
-BLOCK_SIZE = 960
+FALLBACK_CAPTURE_RATE = 48000
+BLOCK_SECONDS = 0.02
+PRE_ROLL_SECONDS = 0.25
 SPEECH_RMS_THRESHOLD = 450
 AUTO_STOP_SILENCE_SECONDS = 0.30
 INITIAL_SILENCE_SECONDS = 4.0
@@ -36,17 +38,100 @@ class AudioPumpResult:
     saw_speech: bool = False
 
 
-def downsample_48k_to_24k(raw: bytes) -> bytes:
+@dataclass(frozen=True)
+class InputDevice:
+    index: int
+    name: str
+    sample_rate: int
+    channels: int
+
+    @property
+    def label(self) -> str:
+        return f"{self.index}: {self.name} ({self.sample_rate} Hz)"
+
+
+def list_input_devices() -> list[InputDevice]:
+    devices: list[InputDevice] = []
+    try:
+        raw_devices = sd.query_devices()
+    except Exception:
+        return devices
+    for index, device in enumerate(raw_devices):
+        channels = int(device.get("max_input_channels", 0))
+        if channels <= 0:
+            continue
+        sample_rate = _sample_rate_from_device(device)
+        name = str(device.get("name", f"Input {index}"))
+        devices.append(InputDevice(index=index, name=name, sample_rate=sample_rate, channels=channels))
+    return devices
+
+
+def default_input_device_index() -> int | None:
+    default_device = sd.default.device
+    if isinstance(default_device, (list, tuple)):
+        index = default_device[0]
+    else:
+        index = default_device
+    try:
+        return int(index)
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_input_device_label(label: str) -> int | None:
+    prefix = label.split(":", 1)[0].strip()
+    try:
+        return int(prefix)
+    except ValueError:
+        return None
+
+
+def capture_rate_for_device(device_index: int | None) -> int:
+    try:
+        if device_index is None:
+            device = sd.query_devices(kind="input")
+        else:
+            device = sd.query_devices(device_index, kind="input")
+        return _sample_rate_from_device(device)
+    except Exception:
+        return FALLBACK_CAPTURE_RATE
+
+
+def block_size_for_rate(sample_rate: int) -> int:
+    return max(160, int(sample_rate * BLOCK_SECONDS))
+
+
+def _sample_rate_from_device(device: dict) -> int:
+    try:
+        sample_rate = int(float(device.get("default_samplerate", FALLBACK_CAPTURE_RATE)))
+    except (TypeError, ValueError):
+        return FALLBACK_CAPTURE_RATE
+    return sample_rate if sample_rate > 0 else FALLBACK_CAPTURE_RATE
+
+
+def resample_pcm_to_24k(raw: bytes, source_rate: int) -> bytes:
+    if source_rate <= 0:
+        source_rate = FALLBACK_CAPTURE_RATE
     samples = array("h")
     samples.frombytes(raw)
     if sys.byteorder != "little":
         samples.byteswap()
-    if len(samples) < 2:
+    if not samples:
         return b""
+    if source_rate == API_RATE:
+        if sys.byteorder != "little":
+            samples.byteswap()
+        return samples.tobytes()
 
+    output_len = max(1, int(len(samples) * API_RATE / source_rate))
     output = array("h")
-    for index in range(0, len(samples) - 1, 2):
-        output.append((samples[index] + samples[index + 1]) // 2)
+    for output_index in range(output_len):
+        source_pos = output_index * source_rate / API_RATE
+        left_index = int(source_pos)
+        right_index = min(left_index + 1, len(samples) - 1)
+        fraction = source_pos - left_index
+        sample = int(samples[left_index] * (1 - fraction) + samples[right_index] * fraction)
+        output.append(sample)
     if sys.byteorder != "little":
         output.byteswap()
     return output.tobytes()
@@ -64,9 +149,10 @@ def audio_rms(raw: bytes) -> float:
 
 
 class RealtimeTranscriber:
-    def __init__(self, api_key: str, log: Callable[[str], None]):
+    def __init__(self, api_key: str, log: Callable[[str], None], input_device_index: int | None = None):
         self.api_key = api_key
         self.log = log
+        self.input_device_index = input_device_index
         self.ws = None
         self.connected = False
         self.lock = threading.RLock()
@@ -89,12 +175,16 @@ class RealtimeTranscriber:
             audio_queue.put(bytes(indata))
 
         ws = self._connect()
+        capture_rate = capture_rate_for_device(self.input_device_index)
+        block_size = block_size_for_rate(capture_rate)
+        pre_roll: deque[bytes] = deque(maxlen=max(1, int(PRE_ROLL_SECONDS / BLOCK_SECONDS)))
         try:
             with sd.RawInputStream(
-                samplerate=CAPTURE_RATE,
+                samplerate=capture_rate,
+                device=self.input_device_index,
                 channels=CHANNELS,
                 dtype="int16",
-                blocksize=BLOCK_SIZE,
+                blocksize=block_size,
                 callback=audio_callback,
             ):
                 if on_ready:
@@ -110,6 +200,8 @@ class RealtimeTranscriber:
                         partial_transcript,
                         on_partial_match,
                         send_audio=speech_started,
+                        pre_roll=pre_roll,
+                        source_rate=capture_rate,
                     )
                     partial_transcript = pump.partial_transcript
                     if pump.saw_speech:
@@ -148,6 +240,8 @@ class RealtimeTranscriber:
                         partial_transcript,
                         on_partial_match,
                         send_audio=speech_started,
+                        pre_roll=pre_roll,
+                        source_rate=capture_rate,
                     )
                     partial_transcript = pump.partial_transcript
                     if pump.completed_transcript:
@@ -218,6 +312,8 @@ class RealtimeTranscriber:
         partial_transcript: str,
         on_partial_match: Callable[[str], bool] | None,
         send_audio: bool,
+        pre_roll: deque[bytes],
+        source_rate: int,
     ) -> AudioPumpResult:
         sent_any = False
         max_rms = 0.0
@@ -234,8 +330,16 @@ class RealtimeTranscriber:
             if rms >= SPEECH_RMS_THRESHOLD:
                 saw_speech = True
             if not send_audio and not saw_speech:
+                pre_roll.append(raw)
                 continue
-            pcm_24k = downsample_48k_to_24k(raw)
+
+            pending_audio: list[bytes] = []
+            if not send_audio and saw_speech:
+                pending_audio.extend(pre_roll)
+                pre_roll.clear()
+            pending_audio.append(raw)
+
+            pcm_24k = b"".join(resample_pcm_to_24k(item, source_rate) for item in pending_audio)
             if not pcm_24k:
                 continue
             ws.send(json.dumps({
