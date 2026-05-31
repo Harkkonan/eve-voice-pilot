@@ -111,7 +111,14 @@ def find_exact_phrase_match(transcript: str, commands: list[VoiceCommand]) -> Co
     for command in commands:
         for phrase in command.phrases:
             normalized = normalize_phrase(phrase)
-            if normalized and f" {normalized} " in padded_heard:
+            if not normalized:
+                continue
+            phrase_word_count = len(normalized.split())
+            if phrase_word_count == 1 and heard != normalized:
+                continue
+            if phrase_word_count > 1 and f" {normalized} " not in padded_heard:
+                continue
+            if normalized:
                 matches.append(CommandMatch(command=command, phrase=phrase, score=1.0))
 
     if not matches:

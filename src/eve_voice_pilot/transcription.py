@@ -33,6 +33,7 @@ class AudioPumpResult:
     partial_transcript: str
     completed_transcript: str | None = None
     fast_matched: bool = False
+    saw_speech: bool = False
 
 
 def downsample_48k_to_24k(raw: bytes) -> bytes:
@@ -100,10 +101,19 @@ class RealtimeTranscriber:
                     on_ready()
                 started_at = time.monotonic()
                 last_speech_at: float | None = None
+                speech_started = False
                 partial_transcript = ""
                 while not stop_event.is_set():
-                    pump = self._send_audio_queue(ws, audio_queue, partial_transcript, on_partial_match)
+                    pump = self._send_audio_queue(
+                        ws,
+                        audio_queue,
+                        partial_transcript,
+                        on_partial_match,
+                        send_audio=speech_started,
+                    )
                     partial_transcript = pump.partial_transcript
+                    if pump.saw_speech:
+                        speech_started = True
                     if pump.completed_transcript:
                         return pump.completed_transcript
                     if pump.fast_matched:
@@ -118,8 +128,9 @@ class RealtimeTranscriber:
                         self.log("Silence detected. Processing command.")
                         break
                     elif not last_speech_at and now - started_at >= INITIAL_SILENCE_SECONDS:
-                        break
-                    elif now - started_at >= MAX_RECORD_SECONDS:
+                        self._clear_input_buffer(ws)
+                        return ""
+                    elif speech_started and now - started_at >= MAX_RECORD_SECONDS:
                         self.log("Recording limit reached. Processing command.")
                         break
                     self._log_status(status_messages)
@@ -131,7 +142,13 @@ class RealtimeTranscriber:
 
                 drain_until = time.monotonic() + DRAIN_SECONDS
                 while time.monotonic() < drain_until:
-                    pump = self._send_audio_queue(ws, audio_queue, partial_transcript, on_partial_match)
+                    pump = self._send_audio_queue(
+                        ws,
+                        audio_queue,
+                        partial_transcript,
+                        on_partial_match,
+                        send_audio=speech_started,
+                    )
                     partial_transcript = pump.partial_transcript
                     if pump.completed_transcript:
                         return pump.completed_transcript
@@ -200,17 +217,24 @@ class RealtimeTranscriber:
         audio_queue: queue.Queue[bytes],
         partial_transcript: str,
         on_partial_match: Callable[[str], bool] | None,
+        send_audio: bool,
     ) -> AudioPumpResult:
         sent_any = False
         max_rms = 0.0
         completed_transcript: str | None = None
         fast_matched = False
+        saw_speech = False
         while True:
             try:
                 raw = audio_queue.get_nowait()
             except queue.Empty:
                 break
-            max_rms = max(max_rms, audio_rms(raw))
+            rms = audio_rms(raw)
+            max_rms = max(max_rms, rms)
+            if rms >= SPEECH_RMS_THRESHOLD:
+                saw_speech = True
+            if not send_audio and not saw_speech:
+                continue
             pcm_24k = downsample_48k_to_24k(raw)
             if not pcm_24k:
                 continue
@@ -240,7 +264,7 @@ class RealtimeTranscriber:
                 pass
             finally:
                 ws.settimeout(10)
-        return AudioPumpResult(max_rms, partial_transcript, completed_transcript, fast_matched)
+        return AudioPumpResult(max_rms, partial_transcript, completed_transcript, fast_matched, saw_speech)
 
     def _receive_transcript(
         self,

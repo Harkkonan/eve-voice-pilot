@@ -38,6 +38,18 @@ def test_find_exact_phrase_match_rejects_partial_word():
     assert find_exact_phrase_match("mapped route", [command]) is None
 
 
+def test_find_exact_phrase_match_rejects_single_word_inside_sentence():
+    command = VoiceCommand("Open map", ["map"], "F10")
+    assert find_exact_phrase_match("show the map", [command]) is None
+
+
+def test_find_exact_phrase_match_allows_single_word_as_whole_command():
+    command = VoiceCommand("Open map", ["map"], "F10")
+    match = find_exact_phrase_match("map", [command])
+    assert match is not None
+    assert match.phrase == "map"
+
+
 def test_parse_key_chord_allows_modifier_and_key():
     parsed = parse_key_chord("CTRL+SPACE")
     assert parsed.modifiers == ("CTRL",)

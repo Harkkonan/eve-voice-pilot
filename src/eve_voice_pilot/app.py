@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 import winsound
 
-from .commands import DEFAULT_HOLD_SECONDS, CommandProfile, VoiceCommand, find_command_match, find_exact_phrase_match
+from .commands import DEFAULT_HOLD_SECONDS, CommandProfile, VoiceCommand, find_exact_phrase_match
 from .config import load_settings, save_settings
 from .hotkey import GlobalHotkey
 from .input_sender import active_window_title, parse_key_chord, send_key_chord
@@ -408,15 +408,15 @@ class EveVoicePilotApp(tk.Tk):
         if not transcript.strip():
             self.last_action_var.set("No action.")
             return
-        match = find_command_match(transcript, self.profile.commands)
+        match = find_exact_phrase_match(transcript, self.profile.commands)
         if not match:
-            self.last_action_var.set("No command matched.")
-            self.log(f"Heard: {transcript!r}; no command matched.")
+            self.last_action_var.set("No exact command matched.")
+            self.log(f"Heard: {transcript!r}; no exact command matched.")
             return
 
         action = f"{match.command.name} -> {match.command.key}"
         self.last_action_var.set(action)
-        self.log(f"Matched {match.phrase!r} at {match.score:.0%}: {action}")
+        self.log(f"Matched exact phrase {match.phrase!r}: {action}")
         self._send_or_practice(match.command)
 
     def _send_or_practice(self, command: VoiceCommand) -> None:

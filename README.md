@@ -9,6 +9,7 @@ The first version is intentionally cautious:
 - Practice mode is on by default, so it recognizes commands without sending keys.
 - Key sending is blocked unless the active window title contains `EVE`, unless you turn that check off.
 - Exact command phrases can fire from partial live transcription before the final transcript is ready.
+- Live command matching is strict. Use clear phrases like `open map` instead of short one-word aliases for important actions.
 - It does not do timed chains, repeats, mouse moves, input broadcasting, or multi-client automation.
 
 ## First Run
