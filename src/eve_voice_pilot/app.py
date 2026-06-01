@@ -220,6 +220,7 @@ class EveVoicePilotApp(tk.Tk):
 
         left.rowconfigure(0, weight=0)
         left.rowconfigure(1, weight=0)
+        left.rowconfigure(2, weight=1)
         left.columnconfigure(0, weight=0)
         left.columnconfigure(1, weight=1)
 
@@ -229,6 +230,17 @@ class EveVoicePilotApp(tk.Tk):
         ttk.Label(left, textvariable=self.last_heard_var, wraplength=640).grid(row=0, column=1, sticky="ew", padx=8)
         ttk.Label(left, text="Last action").grid(row=1, column=0, sticky="nw", pady=(8, 0))
         ttk.Label(left, textvariable=self.last_action_var, wraplength=640).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
+
+        command_results = ttk.LabelFrame(left, text="Command Results", padding=8)
+        command_results.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
+        command_results.rowconfigure(0, weight=1)
+        command_results.columnconfigure(0, weight=1)
+
+        self.command_result_text = tk.Text(command_results, height=7, wrap="word", state="disabled", font=self.log_font)
+        command_result_scroll = ttk.Scrollbar(command_results, orient="vertical", command=self.command_result_text.yview)
+        self.command_result_text.configure(yscrollcommand=command_result_scroll.set)
+        self.command_result_text.grid(row=0, column=0, sticky="nsew")
+        command_result_scroll.grid(row=0, column=1, sticky="ns")
 
         command_frame.rowconfigure(0, weight=1)
         command_frame.columnconfigure(0, weight=1)
@@ -309,7 +321,7 @@ class EveVoicePilotApp(tk.Tk):
         ttk.Entry(settings, textvariable=self.target_title_var).grid(row=9, column=0, columnspan=2, sticky="ew", pady=4)
         ttk.Button(settings, text="Save Settings", command=self.save_settings).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
-        log_frame = ttk.LabelFrame(right, text="Log", padding=8)
+        log_frame = ttk.LabelFrame(right, text="System Log", padding=8)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
         right.rowconfigure(1, weight=1)
         right.columnconfigure(0, weight=1)
@@ -611,19 +623,26 @@ class EveVoicePilotApp(tk.Tk):
         self.last_heard_var.set(transcript or "(No speech recognized)")
         if not transcript.strip():
             self.last_action_var.set("No action.")
+            self.record_command_result("invalid", "no speech recognized")
             return
         match = find_exact_phrase_match(transcript, self.profile.commands)
         if not match:
             self.last_action_var.set("No exact command matched.")
             self.log(f"Heard: {transcript!r}; no exact command matched.")
+            self.record_command_result("invalid", transcript)
             return
 
         action = f"{match.command.name} -> {match.command.key}"
         self.last_action_var.set(action)
         self.log(f"Matched exact phrase {match.phrase!r}: {action}")
-        self._send_or_practice(match.command)
+        result = self._send_or_practice(match.command)
+        self.record_command_result(
+            self._command_result_status(result),
+            transcript,
+            f"{match.command.name} ({match.command.key})",
+        )
 
-    def _send_or_practice(self, command: VoiceCommand) -> None:
+    def _send_or_practice(self, command: VoiceCommand) -> str:
         result = self._send_or_practice_worker(
             command,
             self.practice_mode_var.get(),
@@ -631,6 +650,7 @@ class EveVoicePilotApp(tk.Tk):
             self.target_title_var.get().strip() or "EVE",
         )
         self.log(result)
+        return result
 
     def _send_or_practice_worker(
         self,
@@ -724,8 +744,30 @@ class EveVoicePilotApp(tk.Tk):
             action = f"{match.command.name} -> {match.command.key}"
             self.last_action_var.set(action)
             self.log(f"Fast matched {match.phrase!r}: {action}")
+            self.record_command_result(
+                self._command_result_status(result),
+                transcript,
+                f"{match.command.name} ({match.command.key})",
+            )
         if result:
             self.log(result)
+
+    def _command_result_status(self, result: str) -> str:
+        if result.startswith("Sent "):
+            return "valid - sent"
+        return "valid - not sent"
+
+    def record_command_result(self, status: str, heard: str, detail: str = "") -> None:
+        heard_text = " ".join((heard or "").strip().split()) or "no speech recognized"
+        line = f"{status} | {heard_text}"
+        if detail:
+            line += f" -> {detail}"
+
+        self.command_result_text.configure(state="normal")
+        self.command_result_text.insert("end", line + "\n")
+        self._trim_text_widget(self.command_result_text, max_lines=200)
+        self.command_result_text.see("end")
+        self.command_result_text.configure(state="disabled")
 
     def log_threadsafe(self, message: str) -> None:
         self.events.put(("log", message))
@@ -735,6 +777,11 @@ class EveVoicePilotApp(tk.Tk):
         self.log_text.insert("end", message + "\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _trim_text_widget(self, widget: tk.Text, max_lines: int) -> None:
+        line_count = int(widget.index("end-1c").split(".", 1)[0])
+        if line_count > max_lines:
+            widget.delete("1.0", f"{line_count - max_lines + 1}.0")
 
     def _on_close(self) -> None:
         self.armed = False
