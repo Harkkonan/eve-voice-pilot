@@ -13,10 +13,54 @@ const EVE_SHEET = Object.freeze({
   PURCHASE_LEDGER: 'Purchase Ledger',
   PURCHASE_GROUPS: 'Purchase Groups',
   MODULE_SPEND: 'Module Spend Summary',
+  MISSION_TRACKER: 'Mission Tracker',
   TYPE_CACHE: 'Type Cache',
 });
 
 const EVE_HEADERS = Object.freeze({
+  MISSION_TRACKER: [
+    'Date',
+    'Character',
+    'Mission Name',
+    'Agent',
+    'Agent Level',
+    'Corp/Faction',
+    'Mission Type',
+    'System',
+    'Security',
+    'Ship Used',
+    'Fit/Group ID',
+    'Start Time',
+    'End Time',
+    'Duration Minutes',
+    'Travel Minutes',
+    'Combat Minutes',
+    'Salvage/Loot Minutes',
+    'Reward ISK',
+    'Bonus ISK',
+    'Bounties ISK',
+    'LP Earned',
+    'ISK/LP',
+    'LP Value ISK',
+    'Loot Value ISK',
+    'Salvage Value ISK',
+    'Tags/Other ISK',
+    'Ammo/Drone Cost',
+    'Repair Cost',
+    'Ship Loss Cost',
+    'Other Cost',
+    'Total Cash Income ISK',
+    'Total Effective Income ISK',
+    'Total Cost ISK',
+    'Net Effective ISK',
+    'Cash ISK/Hour',
+    'Effective ISK/Hour',
+    'LP/Hour',
+    'Outcome',
+    'Difficulty',
+    'Risk',
+    'Notes',
+  ],
   LEDGER: [
     'transaction_id',
     'date',
@@ -82,6 +126,17 @@ function onOpen() {
     .addItem('Append Wallet Transactions', 'appendWalletTransactions')
     .addItem('Rebuild Purchase Groups', 'rebuildPurchaseGroups')
     .addToUi();
+
+  ui.createMenu('EVE Missions')
+    .addItem('Set Up Mission Tracker', 'setupMissionTracker')
+    .addToUi();
+}
+
+function setupMissionTracker() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ensureSheet_(ss, EVE_SHEET.MISSION_TRACKER);
+  setupMissionTrackerSheet_(sheet);
+  SpreadsheetApp.getUi().alert('Mission Tracker is ready. Enter each mission as one row starting on row 11.');
 }
 
 function setupWalletSheets() {
@@ -427,6 +482,134 @@ function setupModuleSpendSheet_(sheet) {
   sheet.getRange(3, 1, 1, headers.length).setValues([headers]);
   styleHeader_(sheet.getRange(3, 1, 1, headers.length));
   sheet.setFrozenRows(3);
+}
+
+function setupMissionTrackerSheet_(sheet) {
+  const headers = EVE_HEADERS.MISSION_TRACKER;
+  const startRow = 11;
+  const formulaRows = 990;
+
+  sheet.getRange('A1').setValue('Mission Income Tracker');
+  sheet.getRange('A2').setValue('Track mission payout, LP, loot, costs, and time so you can compare actual ISK/hour.');
+  sheet.getRange('A3').setValue('Default ISK/LP');
+  sheet.getRange('A4').setValue('Target Effective ISK/hour');
+  sheet.getRange('A5').setValue('Default Character');
+  sheet.getRange('A6').setValue('Notes');
+  if (sheet.getRange('B3').isBlank()) sheet.getRange('B3').setValue(1000);
+  if (sheet.getRange('B4').isBlank()) sheet.getRange('B4').setValue(100000000);
+
+  sheet.getRange('D3').setValue('Total Missions');
+  sheet.getRange('D4').setValue('Total Hours');
+  sheet.getRange('D5').setValue('Total Cash ISK');
+  sheet.getRange('D6').setValue('Total LP');
+  sheet.getRange('D7').setValue('Total Net Effective ISK');
+  sheet.getRange('E3').setFormula('=COUNTIF(C11:C1000,"<>")');
+  sheet.getRange('E4').setFormula('=SUM(N11:N1000)/60');
+  sheet.getRange('E5').setFormula('=SUM(AE11:AE1000)');
+  sheet.getRange('E6').setFormula('=SUM(U11:U1000)');
+  sheet.getRange('E7').setFormula('=SUM(AH11:AH1000)');
+
+  sheet.getRange('G3').setValue('Avg Effective ISK/hour');
+  sheet.getRange('G4').setValue('Avg Cash ISK/hour');
+  sheet.getRange('G5').setValue('Best Mission');
+  sheet.getRange('G6').setValue('Best Mission ISK/hour');
+  sheet.getRange('G7').setValue('Avg LP/hour');
+  sheet.getRange('H3').setFormula('=IFERROR(SUM(AH11:AH1000)/(SUM(N11:N1000)/60),"")');
+  sheet.getRange('H4').setFormula('=IFERROR((SUM(AE11:AE1000)-SUM(AG11:AG1000))/(SUM(N11:N1000)/60),"")');
+  sheet.getRange('H5').setFormula('=IFERROR(INDEX(SORT(FILTER({C11:C1000,AJ11:AJ1000},C11:C1000<>"",AJ11:AJ1000<>""),2,FALSE),1,1),"")');
+  sheet.getRange('H6').setFormula('=IFERROR(MAX(AJ11:AJ1000),"")');
+  sheet.getRange('H7').setFormula('=IFERROR(SUM(U11:U1000)/(SUM(N11:N1000)/60),"")');
+
+  sheet.getRange(10, 1, 1, headers.length).setValues([headers]);
+  styleHeader_(sheet.getRange(10, 1, 1, headers.length));
+  sheet.setFrozenRows(10);
+
+  setMissionFormulaColumns_(sheet, startRow, formulaRows);
+  setMissionDropdowns_(sheet, startRow, formulaRows);
+  formatMissionTracker_(sheet, headers.length);
+  setMissionConditionalFormats_(sheet);
+  applyFilter_(sheet, 10, 1, formulaRows + 1, headers.length);
+}
+
+function setMissionFormulaColumns_(sheet, startRow, formulaRows) {
+  sheet.getRange(startRow, 14, formulaRows, 1)
+    .setFormulaR1C1('=IF(OR(RC[-2]="",RC[-1]=""),"",IF(RC[-1]<RC[-2],RC[-1]+1-RC[-2],RC[-1]-RC[-2])*1440)');
+  sheet.getRange(startRow, 23, formulaRows, 1)
+    .setFormulaR1C1('=IF(RC[-2]="","",RC[-2]*IF(RC[-1]="",R3C2,RC[-1]))');
+  sheet.getRange(startRow, 31, formulaRows, 1)
+    .setFormulaR1C1('=IF(COUNTA(RC[-13]:RC[-5])=0,"",SUM(RC[-13]:RC[-11],RC[-7]:RC[-5]))');
+  sheet.getRange(startRow, 32, formulaRows, 1)
+    .setFormulaR1C1('=IF(RC[-1]="","",RC[-1]+N(RC[-9]))');
+  sheet.getRange(startRow, 33, formulaRows, 1)
+    .setFormulaR1C1('=IF(COUNTA(RC[-6]:RC[-3])=0,"",SUM(RC[-6]:RC[-3]))');
+  sheet.getRange(startRow, 34, formulaRows, 1)
+    .setFormulaR1C1('=IF(RC[-2]="","",RC[-2]-N(RC[-1]))');
+  sheet.getRange(startRow, 35, formulaRows, 1)
+    .setFormulaR1C1('=IF(OR(RC[-21]="",RC[-21]=0,RC[-4]=""),"",(RC[-4]-N(RC[-2]))/(RC[-21]/60))');
+  sheet.getRange(startRow, 36, formulaRows, 1)
+    .setFormulaR1C1('=IF(OR(RC[-22]="",RC[-22]=0,RC[-2]=""),"",RC[-2]/(RC[-22]/60))');
+  sheet.getRange(startRow, 37, formulaRows, 1)
+    .setFormulaR1C1('=IF(OR(RC[-23]="",RC[-23]=0,RC[-16]=""),"",RC[-16]/(RC[-23]/60))');
+}
+
+function setMissionDropdowns_(sheet, startRow, formulaRows) {
+  setDropdown_(sheet.getRange(startRow, 5, formulaRows, 1), ['1', '2', '3', '4', '5']);
+  setDropdown_(sheet.getRange(startRow, 7, formulaRows, 1), ['Security', 'Distribution', 'Mining', 'Storyline', 'Epic Arc', 'COSMOS', 'Anomic/Burner', 'Other']);
+  setDropdown_(sheet.getRange(startRow, 9, formulaRows, 1), ['Highsec', 'Lowsec', 'Nullsec', 'Wormhole', 'Pochven']);
+  setDropdown_(sheet.getRange(startRow, 38, formulaRows, 1), ['Completed', 'Blitzed', 'Declined', 'Failed', 'Abandoned']);
+  setDropdown_(sheet.getRange(startRow, 39, formulaRows, 1), ['Easy', 'Normal', 'Hard', 'Very Hard']);
+  setDropdown_(sheet.getRange(startRow, 40, formulaRows, 1), ['Low', 'Medium', 'High', 'Ship Lost']);
+}
+
+function formatMissionTracker_(sheet, width) {
+  sheet.getRange('A1:H2').breakApart();
+  sheet.getRange('A1:H1').mergeAcross();
+  sheet.getRange('A1').setFontWeight('bold').setFontSize(16).setBackground('#dbeafe');
+  sheet.getRange('A2:H2').mergeAcross().setBackground('#f8fafc');
+  sheet.getRange('A3:A6').setFontWeight('bold');
+  sheet.getRange('D3:D7').setFontWeight('bold');
+  sheet.getRange('G3:G7').setFontWeight('bold');
+  sheet.getRange('B3:B4').setNumberFormat('#,##0');
+  sheet.getRange('E3:E7').setNumberFormat('#,##0.00');
+  sheet.getRange('H3:H7').setNumberFormat('#,##0.00');
+  sheet.getRange('A11:A1000').setNumberFormat('yyyy-mm-dd');
+  sheet.getRange('L11:M1000').setNumberFormat('yyyy-mm-dd hh:mm');
+  sheet.getRange('N11:Q1000').setNumberFormat('0.0');
+  sheet.getRange('R11:AJ1000').setNumberFormat('#,##0.00');
+  sheet.getRange('AK11:AK1000').setNumberFormat('#,##0.00');
+  sheet.getRange(10, 1, 991, width).setWrap(true);
+  sheet.autoResizeColumns(1, width);
+}
+
+function setMissionConditionalFormats_(sheet) {
+  const effectiveHourly = sheet.getRange('AJ11:AJ1000');
+  const profit = sheet.getRange('AH11:AH1000');
+  const rules = [
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=AND($AJ11<>"",$AJ11>=$B$4)')
+      .setBackground('#dcfce7')
+      .setRanges([effectiveHourly])
+      .build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=AND($AJ11<>"",$AJ11<$B$4)')
+      .setBackground('#fee2e2')
+      .setRanges([effectiveHourly])
+      .build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenNumberLessThan(0)
+      .setBackground('#fecaca')
+      .setRanges([profit])
+      .build(),
+  ];
+  sheet.setConditionalFormatRules(rules);
+}
+
+function setDropdown_(range, values) {
+  const rule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(values, true)
+    .setAllowInvalid(true)
+    .build();
+  range.setDataValidation(rule);
 }
 
 function readWalletImportRows_(sheet) {
