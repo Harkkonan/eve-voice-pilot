@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CATALOG_PATH = ROOT / "data" / "eve_shortcuts_catalog.csv"
 HOLD_SECONDS = 0.10
 AURA_SUFFIX = "Aura"
+NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
 NUMBER_WORDS = {
     1: "one",
     2: "two",
@@ -29,6 +32,29 @@ GROUP_ORDER = [
     "Windows",
     "Fleet",
 ]
+PRIORITY_ORDER = ["App", "Critical", "High", "Medium", "Low", "Rare"]
+SHORTCUT_ALIASES = {
+    "\\": "BACKSLASH",
+    "ALT": "ALT",
+    "CTRL": "CTRL",
+    "CONTROL": "CTRL",
+    "SHIFT": "SHIFT",
+    "ESC": "ESC",
+    "ESCAPE": "ESC",
+    "ENTER": "ENTER",
+    "RETURN": "ENTER",
+    "SPACE": "SPACE",
+    "TAB": "TAB",
+    "BACKSPACE": "BACKSPACE",
+    "PAGE UP": "PAGE UP",
+    "PAGE DOWN": "PAGE DOWN",
+    "SYS REQ": "PRINTSCREEN",
+    "SYSREQ": "PRINTSCREEN",
+    "PRINT SCREEN": "PRINTSCREEN",
+    "PRINTSCREEN": "PRINTSCREEN",
+    "MOUSE4": "MOUSE4",
+    "MOUSE5": "MOUSE5",
+}
 
 
 def aura_response(text: str) -> dict:
@@ -45,6 +71,76 @@ def numbered_phrases(*prefixes: str, index: int) -> str:
         phrases.append(f"{prefix} {index}")
         phrases.append(f"{prefix} {number}")
     return "|".join(phrases)
+
+
+def normalize_name(value: str) -> str:
+    return " ".join(NORMALIZE_RE.sub(" ", value.lower()).split())
+
+
+def normalize_shortcut(shortcut: str) -> str:
+    value = shortcut.strip()
+    if not value or value == "(None)":
+        return ""
+
+    upper = value.upper()
+    if upper.startswith("NUM "):
+        suffix = upper[4:].strip()
+        if suffix == "+":
+            return "NUMPLUS"
+        if suffix == "-":
+            return "NUMMINUS"
+        if suffix.isdigit():
+            return f"NUM{suffix}"
+
+    if upper in SHORTCUT_ALIASES:
+        return SHORTCUT_ALIASES[upper]
+
+    parts = [part.strip() for part in value.split("-") if part.strip()]
+    return "+".join(normalize_shortcut_part(part) for part in parts)
+
+
+def normalize_shortcut_part(part: str) -> str:
+    upper = re.sub(r"\s+", " ", part.strip().upper())
+    return SHORTCUT_ALIASES.get(upper, upper)
+
+
+def load_catalog_rows() -> list[dict]:
+    with CATALOG_PATH.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def add_catalog_rows() -> None:
+    existing = {normalize_name(row["eve_command"]) for row in STANDARD_ROWS}
+    for record in load_catalog_rows():
+        shortcut = normalize_shortcut(record.get("shortcut", ""))
+        if not shortcut:
+            continue
+
+        eve_command = record["command"].strip()
+        normalized_command = normalize_name(eve_command)
+        if normalized_command in existing:
+            continue
+        existing.add(normalized_command)
+
+        phrase = record.get("voice_phrase_suggestion", "").strip() or eve_command.lower()
+        action = "Verify this shortcut in EVE."
+        medium_overheat = re.fullmatch(r"Toggle Overload on Medium Power Slot ([1-8])", eve_command)
+        if medium_overheat:
+            shortcut = f"ALT+SHIFT+{medium_overheat.group(1)}"
+            action = "Change in EVE. This avoids the Alt-F4 style overheat pattern."
+        row = {
+            "priority": record.get("frequency_tier", "Low").strip() or "Low",
+            "group": record.get("function_group", "Other").strip() or "Other",
+            "eve_category": record.get("game_category", "Unknown").strip() or "Unknown",
+            "eve_command": eve_command,
+            "standard_shortcut": shortcut,
+            "voice_phrases": phrase,
+            "action": action,
+        }
+        if eve_command == "Autopilot":
+            row["voice_phrases"] = "autopilot|toggle autopilot|auto pilot"
+            row.update(aura_response("I have the helm."))
+        STANDARD_ROWS.append(row)
 
 
 STANDARD_ROWS = [
@@ -512,8 +608,8 @@ def ordered_rows() -> list[dict]:
         STANDARD_ROWS,
         key=lambda row: (
             order.get(row["group"], len(order)),
-            ["App", "Critical", "High", "Medium", "Low"].index(row["priority"])
-            if row["priority"] in {"App", "Critical", "High", "Medium", "Low"}
+            PRIORITY_ORDER.index(row["priority"])
+            if row["priority"] in PRIORITY_ORDER
             else 99,
             row["eve_command"],
         ),
@@ -539,14 +635,16 @@ def write_docs(path: Path) -> None:
         "- Keep EVE defaults where they are already good.",
         "- Use `PAUSE` for EVE Voice Pilot arm/pause, so EVE keeps `F9` for Solar System Map.",
         "- Remap medium slots to `Alt+1` through `Alt+8` to avoid the risky default `Alt+F4` pattern.",
-        "- Leave overheat commands out of the voice profile for now; accidental overheat is costly.",
+        "- Include every catalog row that has a real shortcut, with explicit phrases for risky commands.",
         "",
         "Enter or verify the rows below in EVE Settings > Shortcuts. Rows marked `Add this shortcut in EVE` or `Change in EVE` are the important manual edits.",
         "",
     ]
-    rows_by_group = {group: [row for row in ordered_rows() if row["group"] == group] for group in GROUP_ORDER}
-    for group, rows in rows_by_group.items():
-        if not rows:
+    rows = ordered_rows()
+    extra_groups = sorted({row["group"] for row in rows if row["group"] not in GROUP_ORDER})
+    for group in [*GROUP_ORDER, *extra_groups]:
+        group_rows = [row for row in rows if row["group"] == group]
+        if not group_rows:
             continue
         lines.extend([
             f"## {group}",
@@ -554,7 +652,7 @@ def write_docs(path: Path) -> None:
             "| Priority | EVE category | EVE command | Standard shortcut | Voice phrases | Voice response | Action |",
             "|---|---|---|---|---|---|---|",
         ])
-        for row in rows:
+        for row in group_rows:
             voice_phrases = row["voice_phrases"].replace("|", ", ")
             response = ""
             if row.get("response_suffix"):
@@ -572,6 +670,7 @@ def write_docs(path: Path) -> None:
 
 def main() -> None:
     add_module_rows()
+    add_catalog_rows()
     data_dir = ROOT / "data"
     docs_dir = ROOT / "docs"
     profiles_dir = ROOT / "profiles"

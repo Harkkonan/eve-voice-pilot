@@ -79,6 +79,12 @@ def test_parse_key_chord_allows_modifier_and_key():
     assert parsed.key_name == "SPACE"
 
 
+def test_parse_key_chord_allows_catalog_hyphen_shortcut():
+    parsed = parse_key_chord("Ctrl-Shift-Page Down")
+    assert parsed.modifiers == ("CTRL", "SHIFT")
+    assert parsed.key_name == "PAGE DOWN"
+
+
 def test_parse_key_chord_allows_left_shift_letter():
     parsed = parse_key_chord("left shift and p")
     assert [key.name for key in parsed.keys] == ["LEFT SHIFT", "P"]
@@ -103,6 +109,20 @@ def test_parse_key_chord_requires_trigger_for_global_hotkey():
 def test_parse_key_chord_allows_multi_key_command():
     parsed = parse_key_chord("F1+F2")
     assert [key.name for key in parsed.keys] == ["F1", "F2"]
+
+
+def test_parse_key_chord_allows_catalog_special_keys():
+    assert parse_key_chord("Num +").key_name == "NUM +"
+    assert parse_key_chord("Num 9").key_name == "NUM 9"
+    assert parse_key_chord("\\").key_name == "\\"
+    assert parse_key_chord("Sys Req").key_name == "SYS REQ"
+
+
+def test_parse_key_chord_allows_mouse_side_button():
+    parsed = parse_key_chord("MOUSE4")
+    assert parsed.key_name == "MOUSE4"
+    assert parsed.trigger_key is not None
+    assert parsed.trigger_key.kind == "mouse"
 
 
 def test_parse_key_chord_allows_pause_hotkey():
@@ -138,14 +158,16 @@ def test_block_size_for_rate_has_reasonable_minimum():
 
 def test_voice_standard_profile_keys_parse():
     profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
-    assert len(profile.commands) == 64
+    assert len(profile.commands) == 178
     for command in profile.commands:
         parse_key_chord(command.key)
 
 
 def test_voice_standard_avoids_alt_f4_medium_slot():
     profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
-    assert all(command.key != "ALT+F4" for command in profile.commands)
+    assert all(command.key not in {"ALT+F4", "ALT+SHIFT+F4"} for command in profile.commands)
+    shortcuts = {command.name: command.key for command in profile.commands}
+    assert shortcuts["Toggle Overload on Medium Power Slot 4"] == "ALT+SHIFT+4"
 
 
 def test_voice_standard_includes_initial_aura_responses():
@@ -171,6 +193,7 @@ def test_response_cache_separates_openai_and_windows_clips():
 def test_voice_standard_includes_added_catalog_shortcuts():
     profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
     shortcuts = {command.name: command.key for command in profile.commands}
+    assert shortcuts["Autopilot"] == "CTRL+S"
     assert shortcuts["Contracts"] == "CTRL+ALT+C"
     assert shortcuts["Open Drone Bay Of Active Ship"] == "ALT+SHIFT+D"
     assert shortcuts["Open Fighter Bay Of Active Ship"] == "ALT+SHIFT+F"

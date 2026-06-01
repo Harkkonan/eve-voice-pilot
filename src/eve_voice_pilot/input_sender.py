@@ -7,15 +7,21 @@ import re
 import time
 
 
+INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
 MAPVK_VK_TO_VSC = 0
+MOUSEEVENTF_XDOWN = 0x0080
+MOUSEEVENTF_XUP = 0x0100
+XBUTTON1 = 0x0001
+XBUTTON2 = 0x0002
 
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 
 CHORD_SPLIT_RE = re.compile(r"\s*\+\s*")
+CHORD_HYPHEN_RE = re.compile(r"\s*-\s*")
 CHORD_AND_RE = re.compile(r"\s+(?:AND|&)\s+", re.IGNORECASE)
 SPACE_RE = re.compile(r"\s+")
 
@@ -72,13 +78,21 @@ VK_CODES = {
     "ESCAPE": 0x1B,
     "SPACE": 0x20,
     "PAGEUP": 0x21,
+    "PAGE UP": 0x21,
+    "PGUP": 0x21,
     "PAGEDOWN": 0x22,
+    "PAGE DOWN": 0x22,
+    "PGDN": 0x22,
     "END": 0x23,
     "HOME": 0x24,
     "LEFT": 0x25,
     "UP": 0x26,
     "RIGHT": 0x27,
     "DOWN": 0x28,
+    "PRINTSCREEN": 0x2C,
+    "PRINT SCREEN": 0x2C,
+    "SYSREQ": 0x2C,
+    "SYS REQ": 0x2C,
     "INSERT": 0x2D,
     "DELETE": 0x2E,
     "SCROLLLOCK": 0x91,
@@ -97,16 +111,31 @@ VK_CODES = {
     "QUOTE": 0xDE,
     "GRAVE": 0xC0,
     "BACKTICK": 0xC0,
+    "\\": 0xDC,
     "LEFT BRACKET": 0xDB,
     "RIGHT BRACKET": 0xDD,
     "LBRACKET": 0xDB,
     "RBRACKET": 0xDD,
+    "NUMPLUS": 0x6B,
+    "NUM +": 0x6B,
+    "NUMPAD PLUS": 0x6B,
+    "NUMPAD ADD": 0x6B,
+    "NUMMINUS": 0x6D,
+    "NUM -": 0x6D,
+    "NUMPAD MINUS": 0x6D,
+    "NUMPAD SUBTRACT": 0x6D,
 }
 
 for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
     VK_CODES[char] = ord(char)
 for char in "0123456789":
     VK_CODES[char] = ord(char)
+for index in range(10):
+    vk = 0x60 + index
+    VK_CODES[f"NUM{index}"] = vk
+    VK_CODES[f"NUM {index}"] = vk
+    VK_CODES[f"NUMPAD{index}"] = vk
+    VK_CODES[f"NUMPAD {index}"] = vk
 for index in range(1, 25):
     VK_CODES[f"F{index}"] = 0x70 + index - 1
 
@@ -121,10 +150,18 @@ EXTENDED_VKS = {
     0x28,
     0x2D,
     0x2E,
+    0x2C,
     0x5B,
     0x5C,
     0xA3,
     0xA5,
+}
+
+MOUSE_BUTTONS = {
+    "MOUSE4": XBUTTON1,
+    "XBUTTON1": XBUTTON1,
+    "MOUSE5": XBUTTON2,
+    "XBUTTON2": XBUTTON2,
 }
 
 
@@ -181,6 +218,7 @@ class ParsedKey:
     name: str
     vk: int
     is_modifier: bool
+    kind: str = "keyboard"
 
 
 @dataclass(frozen=True)
@@ -217,18 +255,23 @@ class ParsedKeyChord:
 
 
 def parse_key_chord(chord: str, require_trigger_key: bool = False) -> ParsedKeyChord:
-    chord = CHORD_AND_RE.sub("+", chord.strip())
-    parts = [part.strip() for part in CHORD_SPLIT_RE.split(chord) if part.strip()]
+    parts = _split_chord(chord)
     if not parts:
-        raise ValueError("Enter a keybind, like F1, LEFT SHIFT+P, or CTRL+SPACE.")
+        raise ValueError("Enter a keybind, like F1, LEFT SHIFT+P, CTRL-S, or CTRL+SPACE.")
 
     keys: list[ParsedKey] = []
     seen: set[str] = set()
     for part in parts:
         canonical = _canonical_key_name(part)
+        if canonical in MOUSE_BUTTONS:
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            keys.append(ParsedKey(canonical, 0, False, "mouse"))
+            continue
         key_vk = VK_CODES.get(canonical)
         if key_vk is None:
-            raise ValueError(f"Unsupported key '{canonical}'. Try F1, LEFT SHIFT+P, SPACE, ENTER, or similar.")
+            raise ValueError(f"Unsupported key '{canonical}'. Try F1, CTRL-S, LEFT SHIFT+P, SPACE, ENTER, or similar.")
         if canonical in seen:
             continue
         seen.add(canonical)
@@ -238,6 +281,23 @@ def parse_key_chord(chord: str, require_trigger_key: bool = False) -> ParsedKeyC
     if require_trigger_key and not parsed.trigger_key:
         raise ValueError("A global hotkey needs one normal key, like F9 or CTRL+SPACE.")
     return parsed
+
+
+def _split_chord(chord: str) -> list[str]:
+    chord = chord.strip()
+    if not chord:
+        return []
+
+    canonical = _canonical_key_name(chord)
+    if canonical in VK_CODES or canonical in MOUSE_BUTTONS:
+        return [chord]
+
+    chord = CHORD_AND_RE.sub("+", chord)
+    if "+" in chord:
+        return [part.strip() for part in CHORD_SPLIT_RE.split(chord) if part.strip()]
+    if "-" in chord:
+        return [part.strip() for part in CHORD_HYPHEN_RE.split(chord) if part.strip()]
+    return [chord]
 
 
 def _canonical_key_name(value: str) -> str:
@@ -278,14 +338,33 @@ def _send_vk(vk: int, keyup: bool = False) -> None:
         raise OSError(ctypes.get_last_error(), "SendInput failed")
 
 
+def _send_mouse_button(name: str, keyup: bool = False) -> None:
+    button = MOUSE_BUTTONS[name]
+    flags = MOUSEEVENTF_XUP if keyup else MOUSEEVENTF_XDOWN
+    event = INPUT(
+        type=INPUT_MOUSE,
+        union=INPUT_UNION(mi=MOUSEINPUT(0, 0, button, flags, 0, 0)),
+    )
+    sent = user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(event))
+    if sent != 1:
+        raise OSError(ctypes.get_last_error(), "SendInput failed")
+
+
+def _send_parsed_key(key: ParsedKey, keyup: bool = False) -> None:
+    if key.kind == "mouse":
+        _send_mouse_button(key.name, keyup=keyup)
+        return
+    _send_vk(key.vk, keyup=keyup)
+
+
 def send_key_chord(chord: str, press_seconds: float = 0.04) -> None:
     parsed = parse_key_chord(chord)
 
     for key in parsed.keys:
-        _send_vk(key.vk)
+        _send_parsed_key(key)
     time.sleep(press_seconds)
     for key in reversed(parsed.keys):
-        _send_vk(key.vk, keyup=True)
+        _send_parsed_key(key, keyup=True)
 
 
 def active_window_title() -> str:

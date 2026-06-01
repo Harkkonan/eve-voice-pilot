@@ -96,6 +96,50 @@
       "hold_seconds": 0.1
     },
     {
+      "name": "Autopilot",
+      "phrases": [
+        "autopilot",
+        "toggle autopilot",
+        "auto pilot"
+      ],
+      "key": "CTRL+S",
+      "hold_seconds": 0.1,
+      "response_suffix": "Aura",
+      "response_text": "I have the helm."
+    },
+    {
+      "name": "Accelerate",
+      "phrases": [
+        "accelerate"
+      ],
+      "key": "NUMPLUS",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Decelerate",
+      "phrases": [
+        "decelerate"
+      ],
+      "key": "NUMMINUS",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Turn Left",
+      "phrases": [
+        "turn left"
+      ],
+      "key": "LEFT",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Turn Right",
+      "phrases": [
+        "turn right"
+      ],
+      "key": "RIGHT",
+      "hold_seconds": 0.1
+    },
+    {
       "name": "All Drones: Engage",
       "phrases": [
         "drones engage",
@@ -174,12 +218,36 @@
       "hold_seconds": 0.1
     },
     {
+      "name": "Locations",
+      "phrases": [
+        "locations"
+      ],
+      "key": "L",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Set Overview Focus",
+      "phrases": [
+        "set overview focus"
+      ],
+      "key": "ALT+SPACE",
+      "hold_seconds": 0.1
+    },
+    {
       "name": "Solar System Map",
       "phrases": [
         "open system map",
         "system map"
       ],
       "key": "F9",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Map Browser",
+      "phrases": [
+        "map browser"
+      ],
+      "key": "F11",
       "hold_seconds": 0.1
     },
     {
@@ -643,6 +711,854 @@
         "broadcast need backup"
       ],
       "key": "CTRL+ALT+4",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Activate Defense Mode",
+      "phrases": [
+        "activate defense mode"
+      ],
+      "key": "SHIFT+1",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Activate Propulsion Mode",
+      "phrases": [
+        "activate propulsion mode"
+      ],
+      "key": "SHIFT+3",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Activate Sharpshooter Mode",
+      "phrases": [
+        "activate sharpshooter mode"
+      ],
+      "key": "SHIFT+2",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Character Sheet",
+      "phrases": [
+        "character sheet"
+      ],
+      "key": "ALT+A",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Close Active Window",
+      "phrases": [
+        "close active window"
+      ],
+      "key": "CTRL+W",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Close All Windows",
+      "phrases": [
+        "close all windows"
+      ],
+      "key": "CTRL+ALT+W",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Industry",
+      "phrases": [
+        "open industry"
+      ],
+      "key": "ALT+S",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Look at",
+      "phrases": [
+        "look at"
+      ],
+      "key": "ALT",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Mail",
+      "phrases": [
+        "open mail"
+      ],
+      "key": "ALT+1",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Market Orders",
+      "phrases": [
+        "market orders"
+      ],
+      "key": "ALT+0",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Neocom Menu",
+      "phrases": [
+        "neocom menu"
+      ],
+      "key": "BACKSLASH",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Open Item Hangar",
+      "phrases": [
+        "open item hangar"
+      ],
+      "key": "ALT+G",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Open Mineral Hold Of Active Ship",
+      "phrases": [
+        "open mineral hold of active ship"
+      ],
+      "key": "NUM9",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Open Ship Hangar",
+      "phrases": [
+        "open ship hangar"
+      ],
+      "key": "ALT+N",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Opportunities",
+      "phrases": [
+        "open opportunities"
+      ],
+      "key": "ALT+J",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Personal Assets",
+      "phrases": [
+        "personal assets"
+      ],
+      "key": "ALT+T",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Save Location...",
+      "phrases": [
+        "save location"
+      ],
+      "key": "CTRL+B",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Select",
+      "phrases": [
+        "select"
+      ],
+      "key": "SHIFT",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Sensor Overlay",
+      "phrases": [
+        "sensor overlay"
+      ],
+      "key": "CTRL+O",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Set Chat Channel Focus",
+      "phrases": [
+        "set chat channel focus"
+      ],
+      "key": "SPACE",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tag item as: 1",
+      "phrases": [
+        "tag item as 1"
+      ],
+      "key": "1",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tag item as: 2",
+      "phrases": [
+        "tag item as 2"
+      ],
+      "key": "2",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tag item as: 3",
+      "phrases": [
+        "tag item as 3"
+      ],
+      "key": "3",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tag item as: A",
+      "phrases": [
+        "tag item as a"
+      ],
+      "key": "4",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tag item as: B",
+      "phrases": [
+        "tag item as b"
+      ],
+      "key": "5",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tag item as: C",
+      "phrases": [
+        "tag item as c"
+      ],
+      "key": "6",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tag item from sequence: 1, 2 or 3",
+      "phrases": [
+        "tag item from sequence 1, 2 or 3"
+      ],
+      "key": "7",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tag item from sequence: A, B or C",
+      "phrases": [
+        "tag item from sequence a, b or c"
+      ],
+      "key": "8",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tag item from sequence: X, Y or Z",
+      "phrases": [
+        "tag item from sequence x, y or z"
+      ],
+      "key": "9",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "The Agency",
+      "phrases": [
+        "the agency"
+      ],
+      "key": "ALT+M",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on High Power Rack",
+      "phrases": [
+        "toggle overload on high power rack"
+      ],
+      "key": "CTRL+3",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on High Power Slot 1",
+      "phrases": [
+        "toggle overload on high power slot 1"
+      ],
+      "key": "SHIFT+F1",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on High Power Slot 2",
+      "phrases": [
+        "toggle overload on high power slot 2"
+      ],
+      "key": "SHIFT+F2",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on High Power Slot 3",
+      "phrases": [
+        "toggle overload on high power slot 3"
+      ],
+      "key": "SHIFT+F3",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on High Power Slot 4",
+      "phrases": [
+        "toggle overload on high power slot 4"
+      ],
+      "key": "SHIFT+F4",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on High Power Slot 5",
+      "phrases": [
+        "toggle overload on high power slot 5"
+      ],
+      "key": "SHIFT+F5",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on High Power Slot 6",
+      "phrases": [
+        "toggle overload on high power slot 6"
+      ],
+      "key": "SHIFT+F6",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on High Power Slot 7",
+      "phrases": [
+        "toggle overload on high power slot 7"
+      ],
+      "key": "SHIFT+F7",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on High Power Slot 8",
+      "phrases": [
+        "toggle overload on high power slot 8"
+      ],
+      "key": "SHIFT+F8",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Low Power Rack",
+      "phrases": [
+        "toggle overload on low power rack"
+      ],
+      "key": "CTRL+1",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Low Power Slot 1",
+      "phrases": [
+        "toggle overload on low power slot 1"
+      ],
+      "key": "CTRL+SHIFT+F1",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Low Power Slot 2",
+      "phrases": [
+        "toggle overload on low power slot 2"
+      ],
+      "key": "CTRL+SHIFT+F2",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Low Power Slot 3",
+      "phrases": [
+        "toggle overload on low power slot 3"
+      ],
+      "key": "CTRL+SHIFT+F3",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Low Power Slot 4",
+      "phrases": [
+        "toggle overload on low power slot 4"
+      ],
+      "key": "CTRL+SHIFT+F4",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Low Power Slot 5",
+      "phrases": [
+        "toggle overload on low power slot 5"
+      ],
+      "key": "CTRL+SHIFT+F5",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Low Power Slot 6",
+      "phrases": [
+        "toggle overload on low power slot 6"
+      ],
+      "key": "CTRL+SHIFT+F6",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Low Power Slot 7",
+      "phrases": [
+        "toggle overload on low power slot 7"
+      ],
+      "key": "CTRL+SHIFT+F7",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Low Power Slot 8",
+      "phrases": [
+        "toggle overload on low power slot 8"
+      ],
+      "key": "CTRL+SHIFT+F8",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Medium Power Rack",
+      "phrases": [
+        "toggle overload on medium power rack"
+      ],
+      "key": "CTRL+2",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Medium Power Slot 1",
+      "phrases": [
+        "toggle overload on medium power slot 1"
+      ],
+      "key": "ALT+SHIFT+1",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Medium Power Slot 2",
+      "phrases": [
+        "toggle overload on medium power slot 2"
+      ],
+      "key": "ALT+SHIFT+2",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Medium Power Slot 3",
+      "phrases": [
+        "toggle overload on medium power slot 3"
+      ],
+      "key": "ALT+SHIFT+3",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Medium Power Slot 4",
+      "phrases": [
+        "toggle overload on medium power slot 4"
+      ],
+      "key": "ALT+SHIFT+4",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Medium Power Slot 5",
+      "phrases": [
+        "toggle overload on medium power slot 5"
+      ],
+      "key": "ALT+SHIFT+5",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Medium Power Slot 6",
+      "phrases": [
+        "toggle overload on medium power slot 6"
+      ],
+      "key": "ALT+SHIFT+6",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Medium Power Slot 7",
+      "phrases": [
+        "toggle overload on medium power slot 7"
+      ],
+      "key": "ALT+SHIFT+7",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Overload on Medium Power Slot 8",
+      "phrases": [
+        "toggle overload on medium power slot 8"
+      ],
+      "key": "ALT+SHIFT+8",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Back",
+      "phrases": [
+        "back"
+      ],
+      "key": "MOUSE4",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Browse Window Menu",
+      "phrases": [
+        "browse window menu"
+      ],
+      "key": "CTRL+TAB",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Browse Window Menu Upwards",
+      "phrases": [
+        "browse window menu upwards"
+      ],
+      "key": "CTRL+SHIFT+TAB",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Close modal windows and open config menu",
+      "phrases": [
+        "close modal windows and open config menu"
+      ],
+      "key": "ESC",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Confirm",
+      "phrases": [
+        "confirm"
+      ],
+      "key": "ENTER",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Contacts",
+      "phrases": [
+        "open contacts"
+      ],
+      "key": "ALT+E",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Copy",
+      "phrases": [
+        "copy"
+      ],
+      "key": "CTRL+C",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Cut",
+      "phrases": [
+        "cut"
+      ],
+      "key": "CTRL+X",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "EVE Help",
+      "phrases": [
+        "eve help"
+      ],
+      "key": "F12",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "First Person Camera",
+      "phrases": [
+        "first person camera"
+      ],
+      "key": "ALT+3",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Force fade from black",
+      "phrases": [
+        "force fade from black"
+      ],
+      "key": "SHIFT+BACKSPACE",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Forward",
+      "phrases": [
+        "forward"
+      ],
+      "key": "MOUSE5",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Hide Mouse Cursor",
+      "phrases": [
+        "hide mouse cursor"
+      ],
+      "key": "ALT+F9",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "New Eden Store",
+      "phrases": [
+        "new eden store"
+      ],
+      "key": "ALT+4",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Next Tab",
+      "phrases": [
+        "next tab"
+      ],
+      "key": "CTRL+PAGE DOWN",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Next stacked window",
+      "phrases": [
+        "next stacked window"
+      ],
+      "key": "CTRL+SHIFT+PAGE DOWN",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Open FPS Monitor",
+      "phrases": [
+        "open fps monitor"
+      ],
+      "key": "CTRL+F",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Open Monitor",
+      "phrases": [
+        "open monitor"
+      ],
+      "key": "CTRL+ALT+SHIFT+M",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Orbit Camera",
+      "phrases": [
+        "orbit camera"
+      ],
+      "key": "ALT+2",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Paste",
+      "phrases": [
+        "paste"
+      ],
+      "key": "CTRL+V",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Pitch Down",
+      "phrases": [
+        "pitch down"
+      ],
+      "key": "DOWN",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Pitch Up",
+      "phrases": [
+        "pitch up"
+      ],
+      "key": "UP",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Previous Tab",
+      "phrases": [
+        "previous tab"
+      ],
+      "key": "CTRL+PAGE UP",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Previous stacked window",
+      "phrases": [
+        "previous stacked window"
+      ],
+      "key": "CTRL+SHIFT+PAGE UP",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Print screen",
+      "phrases": [
+        "print screen"
+      ],
+      "key": "PRINTSCREEN",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Quit Game",
+      "phrases": [
+        "quit game"
+      ],
+      "key": "ALT+SHIFT+Q",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Redeem Items",
+      "phrases": [
+        "redeem items"
+      ],
+      "key": "ALT+Y",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Reset Monitor",
+      "phrases": [
+        "reset monitor"
+      ],
+      "key": "CTRL+ALT+ENTER",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Select All",
+      "phrases": [
+        "select all"
+      ],
+      "key": "CTRL+A",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Set Search Bar Focus",
+      "phrases": [
+        "set search bar focus"
+      ],
+      "key": "SHIFT+S",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tab to next edit field",
+      "phrases": [
+        "tab to next edit field"
+      ],
+      "key": "TAB",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tab to previous edit field",
+      "phrases": [
+        "tab to previous edit field"
+      ],
+      "key": "SHIFT+TAB",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Tactical Camera",
+      "phrases": [
+        "tactical camera"
+      ],
+      "key": "ALT+1",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle 3D view",
+      "phrases": [
+        "toggle 3d view"
+      ],
+      "key": "CTRL+SHIFT+F9",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Audio",
+      "phrases": [
+        "toggle audio"
+      ],
+      "key": "CTRL+ALT+SHIFT+F12",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Auto Tracking",
+      "phrases": [
+        "toggle auto tracking"
+      ],
+      "key": "SHIFT+C",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Special Bracket Display",
+      "phrases": [
+        "toggle special bracket display"
+      ],
+      "key": "ALT+SHIFT+X",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle User Interface Visibility",
+      "phrases": [
+        "toggle user interface visibility"
+      ],
+      "key": "CTRL+F9",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle Windowed",
+      "phrases": [
+        "toggle windowed"
+      ],
+      "key": "ALT+ENTER",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle effects",
+      "phrases": [
+        "toggle effects"
+      ],
+      "key": "CTRL+ALT+SHIFT+E",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle show all brackets",
+      "phrases": [
+        "toggle show all brackets"
+      ],
+      "key": "ALT+Z",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle show no brackets",
+      "phrases": [
+        "toggle show no brackets"
+      ],
+      "key": "ALT+SHIFT+Z",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Toggle turret effects",
+      "phrases": [
+        "toggle turret effects"
+      ],
+      "key": "CTRL+ALT+SHIFT+T",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Zoom In",
+      "phrases": [
+        "zoom in"
+      ],
+      "key": "CTRL+SHIFT+A",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Zoom Out",
+      "phrases": [
+        "zoom out"
+      ],
+      "key": "CTRL+SHIFT+Z",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Pick Portrait 1",
+      "phrases": [
+        "pick portrait 1"
+      ],
+      "key": "F1",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Pick Portrait 2",
+      "phrases": [
+        "pick portrait 2"
+      ],
+      "key": "F2",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Pick Portrait 3",
+      "phrases": [
+        "pick portrait 3"
+      ],
+      "key": "F3",
+      "hold_seconds": 0.1
+    },
+    {
+      "name": "Pick Portrait 4",
+      "phrases": [
+        "pick portrait 4"
+      ],
+      "key": "F4",
       "hold_seconds": 0.1
     }
   ]
