@@ -109,6 +109,9 @@ class EveVoicePilotApp(tk.Tk):
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.input_devices = list_input_devices()
         self.armed = False
+        self.command_sort_column: str | None = None
+        self.command_sort_descending = False
+        self.command_heading_labels: dict[str, str] = {}
 
         self._build_ui()
         self._refresh_commands()
@@ -265,10 +268,14 @@ class EveVoicePilotApp(tk.Tk):
         command_x_scroll = ttk.Scrollbar(command_table, orient="horizontal", command=self.command_tree.xview)
         self.command_tree.configure(yscrollcommand=command_y_scroll.set, xscrollcommand=command_x_scroll.set)
 
-        self.command_tree.heading("#0", text="Name")
-        self.command_tree.heading("phrases", text="Spoken phrases")
-        self.command_tree.heading("key", text="Keybind")
-        self.command_tree.heading("hold", text="Hold")
+        self.command_heading_labels = {
+            "#0": "Name",
+            "phrases": "Spoken phrases",
+            "key": "Keybind",
+            "hold": "Hold",
+        }
+        for column, label in self.command_heading_labels.items():
+            self.command_tree.heading(column, text=label, command=lambda selected=column: self._sort_commands_by(selected))
         self.command_tree.column("#0", width=230, minwidth=170, stretch=True)
         self.command_tree.column("phrases", width=460, minwidth=320, stretch=True)
         self.command_tree.column("key", width=150, minwidth=115, stretch=False)
@@ -368,6 +375,53 @@ class EveVoicePilotApp(tk.Tk):
                 text=command.name,
                 values=(", ".join(command.phrases), command.key, f"{command.hold_seconds:.2f}s"),
             )
+        self._apply_command_sort()
+
+    def _sort_commands_by(self, column: str) -> None:
+        if self.command_sort_column == column:
+            self.command_sort_descending = not self.command_sort_descending
+        else:
+            self.command_sort_column = column
+            self.command_sort_descending = False
+        self._apply_command_sort()
+
+    def _apply_command_sort(self) -> None:
+        if not self.command_sort_column:
+            self._refresh_command_headings()
+            return
+
+        item_ids = list(self.command_tree.get_children(""))
+        item_ids.sort(key=lambda item_id: int(item_id))
+        item_ids.sort(
+            key=lambda item_id: self._command_sort_value(item_id, self.command_sort_column or "#0"),
+            reverse=self.command_sort_descending,
+        )
+        for position, item_id in enumerate(item_ids):
+            self.command_tree.move(item_id, "", position)
+        self._refresh_command_headings()
+
+    def _command_sort_value(self, item_id: str, column: str) -> str | float:
+        if column == "#0":
+            return str(self.command_tree.item(item_id, "text")).casefold()
+
+        values = self.command_tree.item(item_id, "values")
+        if column == "hold":
+            try:
+                return float(str(values[2]).rstrip("s"))
+            except (IndexError, ValueError):
+                return 0.0
+        try:
+            value = values[{"phrases": 0, "key": 1}[column]]
+        except (IndexError, KeyError):
+            return ""
+        return str(value).casefold()
+
+    def _refresh_command_headings(self) -> None:
+        for column, label in self.command_heading_labels.items():
+            suffix = ""
+            if self.command_sort_column == column:
+                suffix = " v" if self.command_sort_descending else " ^"
+            self.command_tree.heading(column, text=f"{label}{suffix}", command=lambda selected=column: self._sort_commands_by(selected))
 
     def _selected_index(self) -> int | None:
         selection = self.command_tree.selection()

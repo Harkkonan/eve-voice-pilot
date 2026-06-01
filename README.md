@@ -60,6 +60,8 @@ The command list is editable inside the app. Each command has:
 - Key: one key chord, such as `F1`, `V`, or `CTRL+SPACE`.
 - Hold seconds: how long to hold the keybind before release. `0.10` is a good starting point.
 
+Click a command list column header to sort the visible list. Sorting is only for viewing; it does not change the saved command order.
+
 Your editable command profile is saved at `profiles/my_eve_commands.json`.
 
 ## Keybind Standard
