@@ -1,0 +1,295 @@
+row_id,command,shortcut,game_category,function_group,frequency_tier,frequency_score,voice_phrase_suggestion,source_note
+EVP-142,Abort Undock,(None),General,Text and Window Controls,Low,2,abort undock,screenshot
+EVP-182,Accelerate,Num +,Navigation,Ship Movement,Low,2,accelerate,screenshot
+EVP-001,Access Lists,(None),Window,Core UI Windows,Low,2,access lists,screenshot
+EVP-104,Activate Defense Mode,Shift-1,Combat,Combat Modes,Medium,3,activate defense mode,screenshot
+EVP-219,Activate High Power Slot 1,F1,Modules,Modules and Weapons,High,4,activate high power slot 1,screenshot
+EVP-220,Activate High Power Slot 2,F2,Modules,Modules and Weapons,High,4,activate high power slot 2,screenshot
+EVP-221,Activate High Power Slot 3,F3,Modules,Modules and Weapons,High,4,activate high power slot 3,screenshot
+EVP-222,Activate High Power Slot 4,F4,Modules,Modules and Weapons,High,4,activate high power slot 4,screenshot
+EVP-223,Activate High Power Slot 5,F5,Modules,Modules and Weapons,High,4,activate high power slot 5,screenshot
+EVP-224,Activate High Power Slot 6,F6,Modules,Modules and Weapons,High,4,activate high power slot 6,screenshot
+EVP-225,Activate High Power Slot 7,F7,Modules,Modules and Weapons,High,4,activate high power slot 7,screenshot
+EVP-226,Activate High Power Slot 8,F8,Modules,Modules and Weapons,High,4,activate high power slot 8,screenshot
+EVP-227,Activate Low Power Slot 1,Ctrl-F1,Modules,Modules and Weapons,High,4,activate low power slot 1,screenshot
+EVP-228,Activate Low Power Slot 2,Ctrl-F2,Modules,Modules and Weapons,High,4,activate low power slot 2,screenshot
+EVP-229,Activate Low Power Slot 3,Ctrl-F3,Modules,Modules and Weapons,High,4,activate low power slot 3,screenshot
+EVP-230,Activate Low Power Slot 4,Ctrl-F4,Modules,Modules and Weapons,High,4,activate low power slot 4,screenshot
+EVP-231,Activate Low Power Slot 5,Ctrl-F5,Modules,Modules and Weapons,High,4,activate low power slot 5,screenshot
+EVP-232,Activate Low Power Slot 6,Ctrl-F6,Modules,Modules and Weapons,High,4,activate low power slot 6,screenshot
+EVP-233,Activate Low Power Slot 7,Ctrl-F7,Modules,Modules and Weapons,High,4,activate low power slot 7,screenshot
+EVP-234,Activate Low Power Slot 8,Ctrl-F8,Modules,Modules and Weapons,High,4,activate low power slot 8,screenshot
+EVP-235,Activate Medium Power Slot 1,Alt-F1,Modules,Modules and Weapons,High,4,activate medium power slot 1,screenshot
+EVP-236,Activate Medium Power Slot 2,Alt-F2,Modules,Modules and Weapons,High,4,activate medium power slot 2,screenshot
+EVP-237,Activate Medium Power Slot 3,Alt-F3,Modules,Modules and Weapons,High,4,activate medium power slot 3,screenshot
+EVP-238,Activate Medium Power Slot 4,Alt-F4,Modules,Modules and Weapons,High,4,activate medium power slot 4,screenshot
+EVP-239,Activate Medium Power Slot 5,Alt-F5,Modules,Modules and Weapons,High,4,activate medium power slot 5,screenshot
+EVP-240,Activate Medium Power Slot 6,Alt-F6,Modules,Modules and Weapons,High,4,activate medium power slot 6,screenshot
+EVP-241,Activate Medium Power Slot 7,Alt-F7,Modules,Modules and Weapons,High,4,activate medium power slot 7,screenshot
+EVP-242,Activate Medium Power Slot 8,Alt-F8,Modules,Modules and Weapons,High,4,activate medium power slot 8,screenshot
+EVP-105,Activate Propulsion Mode,Shift-3,Combat,Combat Modes,Medium,3,activate propulsion mode,screenshot
+EVP-106,Activate Sharpshooter Mode,Shift-2,Combat,Combat Modes,Medium,3,activate sharpshooter mode,screenshot
+EVP-002,AIR Career Program,(None),Window,Core UI Windows,Low,2,air career program,screenshot
+EVP-107,Align to,A,Combat,Ship Movement,High,4,align,screenshot
+EVP-272,All Drones: Engage,F,Drones,Drones,High,4,drones engage,screenshot
+EVP-273,All Drones: Return and Orbit,Shift-Alt-R,Drones,Drones,High,4,drones orbit,screenshot
+EVP-274,All Drones: Return to Drone Bay,Shift-R,Drones,Drones,Critical,5,recall drones,screenshot
+EVP-108,Approach,Q,Combat,Ship Movement,High,4,approach,screenshot
+EVP-183,Autopilot,Ctrl-S,Navigation,Ship Movement,Medium,3,autopilot,screenshot
+EVP-143,Back,MOUSE4,General,Text and Window Controls,Low,2,back,screenshot
+EVP-144,Broadcast Radial Menu,(None),General,Text and Window Controls,Low,2,broadcast radial menu,screenshot
+EVP-184,Broadcast: Align to,(None),Navigation,Fleet Broadcasts,Low,2,broadcast align to,screenshot
+EVP-185,Broadcast: At Location,(None),Navigation,Fleet Broadcasts,Low,2,broadcast at location,screenshot
+EVP-186,Broadcast: Cycle Fleet Broadcast Recipients,(None),Navigation,Fleet Broadcasts,Low,2,broadcast cycle fleet broadcast recipients,screenshot
+EVP-187,Broadcast: In Position at,(None),Navigation,Fleet Broadcasts,Low,2,broadcast in position at,screenshot
+EVP-189,Broadcast: Jump to,(None),Navigation,Fleet Broadcasts,Low,2,broadcast jump to,screenshot
+EVP-188,Broadcast: Jump to Beacon,(None),Navigation,Fleet Broadcasts,Low,2,broadcast jump to beacon,screenshot
+EVP-190,Broadcast: Need Armor,(None),Navigation,Emergency and Survival,High,4,broadcast need armor,screenshot
+EVP-191,Broadcast: Need Backup,(None),Navigation,Fleet Broadcasts,Low,2,broadcast need backup,screenshot
+EVP-192,Broadcast: Need Capacitor,(None),Navigation,Emergency and Survival,High,4,broadcast need capacitor,screenshot
+EVP-193,Broadcast: Need Shield,(None),Navigation,Emergency and Survival,High,4,broadcast need shield,screenshot
+EVP-194,Broadcast: Repair Target (Selected),(None),Navigation,Fleet Broadcasts,Low,2,broadcast repair target selected,screenshot
+EVP-195,Broadcast: Request That the Fleet Hold Position,(None),Navigation,Fleet Broadcasts,Low,2,broadcast request that the fleet hold position,screenshot
+EVP-196,Broadcast: Spotted an Enemy,Z,Navigation,Fleet Broadcasts,High,4,broadcast spotted an enemy,screenshot
+EVP-197,Broadcast: Target (Selected),X,Navigation,Fleet Broadcasts,High,4,broadcast target selected,screenshot
+EVP-198,Broadcast: Warp to,(None),Navigation,Fleet Broadcasts,Low,2,broadcast warp to,screenshot
+EVP-146,Browse Window Menu,Ctrl-Tab,General,Text and Window Controls,Low,2,browse window menu,screenshot
+EVP-145,Browse Window Menu Upwards,Ctrl-Shift-Tab,General,Text and Window Controls,Low,2,browse window menu upwards,screenshot
+EVP-003,Calculator,(None),Window,Core UI Windows,Low,2,open calculator,screenshot
+EVP-004,Calendar,(None),Window,"Social, Character and Corporation",Low,2,open calendar,screenshot
+EVP-005,Character Customization,(None),Window,"Social, Character and Corporation",Low,2,character customization,screenshot
+EVP-006,Character Sheet,Alt-A,Window,"Social, Character and Corporation",Medium,3,character sheet,screenshot
+EVP-007,Chat Channels,(None),Window,"Social, Character and Corporation",Low,2,chat channels,screenshot
+EVP-199,Clear Broadcast Icons in Watch List,(None),Navigation,Fleet Broadcasts,Low,2,clear broadcast icons in watch list,screenshot
+EVP-008,Clone Bay,(None),Window,"Inventory, Assets and Holds",Low,2,clone bay,screenshot
+EVP-009,Close Active Window,Ctrl-W,Window,Settings and System,Medium,3,close active window,screenshot
+EVP-010,Close All Windows,Ctrl-Alt-W,Window,Settings and System,Medium,3,close all windows,screenshot
+EVP-147,Close modal windows and open config menu,Esc,General,Text and Window Controls,Low,2,close modal windows and open config menu,screenshot
+EVP-011,Compare Tool,(None),Window,Core UI Windows,Low,2,compare tool,screenshot
+EVP-148,Compress All Ore In Current Ship,(None),General,"Inventory, Assets and Holds",Low,2,compress all ore in current ship,screenshot
+EVP-149,Confirm,Enter,General,Text and Window Controls,Low,2,confirm,screenshot
+EVP-012,Contacts,Alt-E,Window,"Social, Character and Corporation",Low,2,open contacts,screenshot
+EVP-013,Contracts,(None),Window,"Social, Character and Corporation",Low,2,open contracts,screenshot
+EVP-014,Control Tower Manager,(None),Window,Core UI Windows,Low,2,control tower manager,screenshot
+EVP-150,Copy,Ctrl-C,General,Text and Window Controls,Low,2,copy,screenshot
+EVP-015,Corporation,(None),Window,"Social, Character and Corporation",Low,2,open corporation,screenshot
+EVP-151,Cut,Ctrl-X,General,Text and Window Controls,Low,2,cut,screenshot
+EVP-016,Daily Login Campaigns,(None),Window,Core UI Windows,Low,2,daily login campaigns,screenshot
+EVP-200,Decelerate,Num -,Navigation,Ship Movement,Low,2,decelerate,screenshot
+EVP-109,Decrease Probe Scan Range,(None),Combat,Scanning and Intel,Low,2,decrease probe scan range,screenshot
+EVP-279,Deselect All Fighters,(None),Fighters,Fighters,Rare,1,deselect all fighters,screenshot
+EVP-110,Directional Scan,V,Combat,Scanning and Intel,Critical,5,d scan,screenshot
+EVP-017,Directional Scanner,Alt-D,Window,Scanning and Intel,High,4,open d scan,screenshot
+EVP-111,Dock/Jump/Activate gate,D,Combat,Emergency and Survival,Critical,5,jump,screenshot
+EVP-275,Drone Settings: Toggle Aggressive/Passive,(None),Drones,Drones,Low,2,drone settings toggle aggressive passive,screenshot
+EVP-276,Drone Settings: Toggle Focus Fire,(None),Drones,Drones,Low,2,drone settings toggle focus fire,screenshot
+EVP-152,Enter Ship Hangar,(None),General,"Inventory, Assets and Holds",Low,2,enter ship hangar,screenshot
+EVP-018,EVE Help,F12,Window,Settings and System,Low,2,eve help,screenshot
+EVP-019,Events,(None),Window,"Social, Character and Corporation",Low,2,open events,screenshot
+EVP-153,Exit Station,(None),General,"Inventory, Assets and Holds",Low,2,exit station,screenshot
+EVP-021,Factional Warfare,(None),Window,"Social, Character and Corporation",Rare,1,factional warfare,screenshot
+EVP-022,Factional Warfare,(None),Window,"Social, Character and Corporation",Rare,1,factional warfare,screenshot
+EVP-020,Factional Warfare Enlistment,(None),Window,"Social, Character and Corporation",Rare,1,factional warfare enlistment,screenshot
+EVP-201,First Person Camera,Alt-3,Navigation,Camera and View,Low,2,first person camera,screenshot
+EVP-024,Fitting,Alt-F,Window,Core UI Windows,High,4,open fitting,screenshot
+EVP-023,Fitting Management,(None),Window,Core UI Windows,Low,2,fitting management,screenshot
+EVP-025,Fleet,(None),Window,"Social, Character and Corporation",Low,2,open fleet,screenshot
+EVP-202,Fleet Regroup,(None),Navigation,Fleet Broadcasts,Low,2,fleet regroup,screenshot
+EVP-026,Force fade from black,Shift-Backspace,Window,Settings and System,Low,2,force fade from black,screenshot
+EVP-154,Forward,MOUSE5,General,Text and Window Controls,Low,2,forward,screenshot
+EVP-155,Hide Mouse Cursor,Alt-F9,General,Settings and System,Low,2,hide mouse cursor,screenshot
+EVP-027,Holds & Bays,(None),Window,"Inventory, Assets and Holds",Low,2,holds and bays,screenshot
+EVP-028,HyperNet Relay,(None),Window,"Market, Industry and Economy",Low,2,hypernet relay,screenshot
+EVP-112,Increase Probe Scan Range,(None),Combat,Scanning and Intel,Low,2,increase probe scan range,screenshot
+EVP-029,Industry,Alt-S,Window,"Market, Industry and Economy",Medium,3,open industry,screenshot
+EVP-030,Insurgencies,(None),Window,Core UI Windows,Low,2,insurgencies,screenshot
+EVP-031,Inventory,Alt-C,Window,"Inventory, Assets and Holds",High,4,open inventory,screenshot
+EVP-032,Jump Navigation,(None),Window,Core UI Windows,Low,2,jump navigation,screenshot
+EVP-113,Keep at Range,E,Combat,Ship Movement,High,4,keep range,screenshot
+EVP-280,Launch All Fighters,(None),Fighters,Fighters,Rare,1,launch all fighters,screenshot
+EVP-277,Launch Drones,Shift-F,Drones,Drones,High,4,launch drones,screenshot
+EVP-281,Launch Selected Fighters,(None),Fighters,Fighters,Rare,1,launch selected fighters,screenshot
+EVP-033,Local Locations,(None),Window,Scanning and Intel,Low,2,local locations,screenshot
+EVP-034,Locations,L,Window,Scanning and Intel,Medium,3,locations,screenshot
+EVP-114,Lock target,Ctrl,Combat,Targeting and Selection,High,4,lock target,screenshot
+EVP-035,Log and Messages,(None),Window,Core UI Windows,Low,2,log and messages,screenshot
+EVP-156,Log off,(None),General,Settings and System,Low,2,log off,screenshot
+EVP-115,Look at,Alt,Combat,Targeting and Selection,Medium,3,look at,screenshot
+EVP-036,Loyalty Point Store,(None),Window,"Market, Industry and Economy",Low,2,loyalty point store,screenshot
+EVP-037,Mail,Alt-1,Window,"Social, Character and Corporation",Medium,3,open mail,screenshot
+EVP-038,Manage autopilot route,(None),Window,Core UI Windows,Low,2,manage autopilot route,screenshot
+EVP-040,Map,F10,Window,Scanning and Intel,High,4,open map,screenshot
+EVP-039,Map Browser,F11,Window,Scanning and Intel,Low,2,map browser,screenshot
+EVP-041,Market Orders,Alt-0,Window,"Market, Industry and Economy",Medium,3,market orders,screenshot
+EVP-042,Minimize Active Window,(None),Window,Settings and System,Low,2,minimize active window,screenshot
+EVP-043,Minimize/Maximize All Windows,(None),Window,Settings and System,Low,2,minimize maximize all windows,screenshot
+EVP-044,Mining Ledger,(None),Window,"Market, Industry and Economy",Low,2,mining ledger,screenshot
+EVP-045,Mining Survey Results,(None),Window,"Market, Industry and Economy",Low,2,mining survey results,screenshot
+EVP-243,Mining Surveyor,(None),Modules,Modules and Weapons,Low,2,mining surveyor,screenshot
+EVP-046,Moon Probe and Analysis,(None),Window,Scanning and Intel,Low,2,moon probe and analysis,screenshot
+EVP-047,Multibuy,(None),Window,"Market, Industry and Economy",Low,2,multibuy,screenshot
+EVP-048,My Mercenary Dens,(None),Window,Core UI Windows,Low,2,my mercenary dens,screenshot
+EVP-049,Neocom Menu,\,Window,Settings and System,Medium,3,neocom menu,screenshot
+EVP-050,New Eden Store,Alt-4,Window,Core UI Windows,Low,2,new eden store,screenshot
+EVP-051,New offer,(None),Window,Core UI Windows,Low,2,new offer,screenshot
+EVP-157,Next stacked window,Ctrl-Shift-Page Down,General,Text and Window Controls,Low,2,next stacked window,screenshot
+EVP-158,Next Tab,Ctrl-Page Down,General,Text and Window Controls,Low,2,next tab,screenshot
+EVP-052,Notepad,(None),Window,Core UI Windows,Low,2,open notepad,screenshot
+EVP-053,Omega Subscription,(None),Window,Core UI Windows,Rare,1,omega subscription,screenshot
+EVP-054,Open Ammo Hold,(None),Window,"Inventory, Assets and Holds",Low,2,open ammo hold,screenshot
+EVP-055,Open Capsuleer Deliveries,(None),Window,Core UI Windows,Low,2,open capsuleer deliveries,screenshot
+EVP-056,Open Config Menu,(None),Window,Settings and System,Low,2,open config menu,screenshot
+EVP-057,Open Corporate Hangar,(None),Window,"Inventory, Assets and Holds",Low,2,open corporate hangar,screenshot
+EVP-058,Open Corporation Deliveries,(None),Window,"Social, Character and Corporation",Low,2,open corporation deliveries,screenshot
+EVP-059,Open Drone Bay Of Active Ship,(None),Window,"Inventory, Assets and Holds",Low,2,open drone bay of active ship,screenshot
+EVP-060,Open Fighter Bay Of Active Ship,(None),Window,"Inventory, Assets and Holds",Low,2,open fighter bay of active ship,screenshot
+EVP-061,Open Fleet Hangar,(None),Window,"Inventory, Assets and Holds",Low,2,open fleet hangar,screenshot
+EVP-062,Open FPS Monitor,Ctrl-F,Window,Settings and System,Low,2,open fps monitor,screenshot
+EVP-063,Open Frigate Escape Bay,(None),Window,"Inventory, Assets and Holds",Low,2,open frigate escape bay,screenshot
+EVP-064,Open Fuel Bay Of Active Ship,(None),Window,"Inventory, Assets and Holds",Low,2,open fuel bay of active ship,screenshot
+EVP-065,Open General Mining Hold Of Active Ship,(None),Window,"Inventory, Assets and Holds",Low,2,open general mining hold of active ship,screenshot
+EVP-066,Open Infrastructure Hold,(None),Window,"Inventory, Assets and Holds",Low,2,open infrastructure hold,screenshot
+EVP-067,Open Item Hangar,Alt-G,Window,"Inventory, Assets and Holds",Medium,3,open item hangar,screenshot
+EVP-116,Open Location Menu,(None),Combat,Combat Modes,Medium,3,open location menu,screenshot
+EVP-068,Open Mineral Hold Of Active Ship,Num 9,Window,"Inventory, Assets and Holds",Medium,3,open mineral hold of active ship,screenshot
+EVP-159,Open Monitor,Ctrl-Alt-Shift-M,General,Settings and System,Low,2,open monitor,screenshot
+EVP-069,Open New Message,(None),Window,Core UI Windows,Low,2,open new message,screenshot
+EVP-070,Open Planetary Commodities Hold Of Active Ship,(None),Window,"Inventory, Assets and Holds",Low,2,open planetary commodities hold of active ship,screenshot
+EVP-160,Open Selected Cargo Container,(None),General,"Inventory, Assets and Holds",Low,2,open selected cargo container,screenshot
+EVP-071,Open Ship Hangar,Alt-N,Window,"Inventory, Assets and Holds",Medium,3,open ship hangar,screenshot
+EVP-072,Open Ship Maintenance Bay,(None),Window,"Inventory, Assets and Holds",Low,2,open ship maintenance bay,screenshot
+EVP-073,Opportunities,Alt-J,Window,Core UI Windows,Medium,3,open opportunities,screenshot
+EVP-117,Orbit,W,Combat,Ship Movement,High,4,orbit,screenshot
+EVP-203,Orbit Camera,Alt-2,Navigation,Camera and View,Low,2,orbit camera,screenshot
+EVP-074,Overview Settings,(None),Window,Scanning and Intel,Low,2,overview settings,screenshot
+EVP-161,Paste,Ctrl-V,General,Text and Window Controls,Low,2,paste,screenshot
+EVP-075,Personal Assets,Alt-T,Window,"Inventory, Assets and Holds",Medium,3,personal assets,screenshot
+EVP-291,Pick Portrait 1,F1,Character Creation,Character Creation,Rare,1,pick portrait 1,screenshot
+EVP-292,Pick Portrait 2,F2,Character Creation,Character Creation,Rare,1,pick portrait 2,screenshot
+EVP-293,Pick Portrait 3,F3,Character Creation,Character Creation,Rare,1,pick portrait 3,screenshot
+EVP-294,Pick Portrait 4,F4,Character Creation,Character Creation,Rare,1,pick portrait 4,screenshot
+EVP-204,Pitch Down,Down,Navigation,Camera and View,Low,2,pitch down,screenshot
+EVP-205,Pitch Up,Up,Navigation,Camera and View,Low,2,pitch up,screenshot
+EVP-076,Planetary Industry,(None),Window,"Market, Industry and Economy",Low,2,planetary industry,screenshot
+EVP-077,PLEX Vault,(None),Window,"Market, Industry and Economy",Low,2,plex vault,screenshot
+EVP-078,Pointer Window,(None),Window,Settings and System,Low,2,pointer window,screenshot
+EVP-162,Previous stacked window,Ctrl-Shift-Page Up,General,Text and Window Controls,Low,2,previous stacked window,screenshot
+EVP-163,Previous Tab,Ctrl-Page Up,General,Text and Window Controls,Low,2,previous tab,screenshot
+EVP-164,Print screen,Sys Req,General,Settings and System,Low,2,print screen,screenshot
+EVP-079,Probe Scanner,Alt-P,Window,Scanning and Intel,High,4,open probes,screenshot
+EVP-080,Project Discovery,(None),Window,Core UI Windows,Rare,1,project discovery,screenshot
+EVP-165,Quit Game,Alt-Shift-Q,General,Settings and System,Low,2,quit game,screenshot
+EVP-166,Radial Menu,(None),General,Text and Window Controls,Low,2,radial menu,screenshot
+EVP-282,Recall All Fighters,(None),Fighters,Fighters,Rare,1,recall all fighters,screenshot
+EVP-283,Recall Selected Fighters,(None),Fighters,Fighters,Rare,1,recall selected fighters,screenshot
+EVP-278,Reconnect To Lost Drones,(None),Drones,Drones,Low,2,reconnect to lost drones,screenshot
+EVP-081,Redeem Items,Alt-Y,Window,Core UI Windows,Low,2,redeem items,screenshot
+EVP-118,Refresh Probe Scan,B,Combat,Scanning and Intel,Medium,3,refresh probe scan,screenshot
+EVP-082,Regional Market,Alt-R,Window,"Market, Industry and Economy",High,4,open market,screenshot
+EVP-244,Reload Ammo,Ctrl-R,Modules,Modules and Weapons,High,4,reload,screenshot
+EVP-083,Repairshop,(None),Window,Core UI Windows,Low,2,repairshop,screenshot
+EVP-084,Reprocessing Plant,(None),Window,"Market, Industry and Economy",Low,2,reprocessing plant,screenshot
+EVP-167,Reset Monitor,Ctrl-Alt-Enter,General,Settings and System,Low,2,reset monitor,screenshot
+EVP-206,Save Location...,Ctrl-B,Navigation,Navigation Tools,Medium,3,save location,screenshot
+EVP-085,Security Office,(None),Window,Core UI Windows,Low,2,security office,screenshot
+EVP-119,Select,Shift,Combat,Targeting and Selection,Medium,3,select,screenshot
+EVP-168,Select All,Ctrl-A,General,Text and Window Controls,Low,2,select all,screenshot
+EVP-284,Select All Fighters,(None),Fighters,Fighters,Rare,1,select all fighters,screenshot
+EVP-207,Select next target,Alt-Right,Navigation,Targeting and Selection,High,4,select next target,screenshot
+EVP-208,Select previous target,Alt-Left,Navigation,Targeting and Selection,High,4,select previous target,screenshot
+EVP-209,Sensor Overlay,Ctrl-O,Navigation,Targeting and Selection,Medium,3,sensor overlay,screenshot
+EVP-086,Set Chat Channel Focus,Space,Window,"Social, Character and Corporation",Medium,3,set chat channel focus,screenshot
+EVP-210,Set Full Speed,Alt-Ctrl-Space,Navigation,Ship Movement,High,4,full speed,screenshot
+EVP-087,Set Overview Focus,Alt-Space,Window,Scanning and Intel,Medium,3,set overview focus,screenshot
+EVP-169,Set Search Bar Focus,Shift-S,General,Text and Window Controls,Low,2,set search bar focus,screenshot
+EVP-170,Settings,(None),General,Settings and System,Low,2,settings,screenshot
+EVP-088,Ship Config,(None),Window,"Inventory, Assets and Holds",Low,2,ship config,screenshot
+EVP-089,Ship Insurance,(None),Window,"Inventory, Assets and Holds",Low,2,ship insurance,screenshot
+EVP-090,Ship SKINR,(None),Window,Core UI Windows,Rare,1,ship skinr,screenshot
+EVP-091,Ship Tree,(None),Window,"Inventory, Assets and Holds",Low,2,ship tree,screenshot
+EVP-120,Show info,T,Combat,Targeting and Selection,Medium,3,show info,screenshot
+EVP-092,Show User Interface Pointer Overlay,(None),Window,Settings and System,Low,2,show user interface pointer overlay,screenshot
+EVP-093,Skills,Alt-X,Window,"Social, Character and Corporation",High,4,open skills,screenshot
+EVP-094,Solar System Map,F9,Window,Scanning and Intel,Medium,3,open system map,screenshot
+EVP-211,Stop Ship,Ctrl-Space,Navigation,Emergency and Survival,Critical,5,stop ship,screenshot
+EVP-095,Structure Browser,(None),Window,Core UI Windows,Low,2,structure browser,screenshot
+EVP-096,Structure SKINR,(None),Window,Core UI Windows,Rare,1,structure skinr,screenshot
+EVP-171,Tab to next edit field,Tab,General,Text and Window Controls,Low,2,tab to next edit field,screenshot
+EVP-172,Tab to previous edit field,Shift-Tab,General,Text and Window Controls,Low,2,tab to previous edit field,screenshot
+EVP-212,Tactical Camera,Alt-1,Navigation,Camera and View,Low,2,tactical camera,screenshot
+EVP-213,Tactical Overlay,Ctrl-D,Navigation,Targeting and Selection,High,4,tactical overlay,screenshot
+EVP-121,Tag item as: 1,1,Combat,Targeting and Selection,Medium,3,tag item as 1,screenshot
+EVP-122,Tag item as: 2,2,Combat,Targeting and Selection,Medium,3,tag item as 2,screenshot
+EVP-123,Tag item as: 3,3,Combat,Targeting and Selection,Medium,3,tag item as 3,screenshot
+EVP-124,Tag item as: A,4,Combat,Targeting and Selection,Medium,3,tag item as a,screenshot
+EVP-125,Tag item as: B,5,Combat,Targeting and Selection,Medium,3,tag item as b,screenshot
+EVP-126,Tag item as: C,6,Combat,Targeting and Selection,Medium,3,tag item as c,screenshot
+EVP-127,Tag item as: X,(None),Combat,Targeting and Selection,Medium,3,tag item as x,screenshot
+EVP-128,Tag item as: Y,(None),Combat,Targeting and Selection,Medium,3,tag item as y,screenshot
+EVP-129,Tag item as: Z,(None),Combat,Targeting and Selection,Medium,3,tag item as z,screenshot
+EVP-130,Tag item from sequence: 1 through 9,(None),Combat,Targeting and Selection,Medium,3,tag item from sequence 1 through 9,screenshot
+EVP-131,"Tag item from sequence: 1, 2 or 3",7,Combat,Targeting and Selection,Medium,3,"tag item from sequence 1, 2 or 3",screenshot
+EVP-132,Tag item from sequence: A through I,(None),Combat,Targeting and Selection,Medium,3,tag item from sequence a through i,screenshot
+EVP-133,"Tag item from sequence: A, B or C",8,Combat,Targeting and Selection,Medium,3,"tag item from sequence a, b or c",screenshot
+EVP-134,"Tag item from sequence: X, Y or Z",9,Combat,Targeting and Selection,Medium,3,"tag item from sequence x, y or z",screenshot
+EVP-098,The Agency,(None),Window,Core UI Windows,Medium,3,the agency,screenshot
+EVP-099,The Agency,Alt-M,Window,Core UI Windows,Medium,3,the agency,screenshot
+EVP-097,The Agency - Encounter Surveillance System,(None),Window,Core UI Windows,Low,2,the agency - encounter surveillance system,screenshot
+EVP-100,The Proving Grounds,(None),Window,Core UI Windows,Rare,1,the proving grounds,screenshot
+EVP-173,Toggle 3D view,Ctrl-Shift-F9,General,Settings and System,Low,2,toggle 3d view,screenshot
+EVP-174,Toggle Audio,Ctrl-Alt-Shift-F12,General,Settings and System,Low,2,toggle audio,screenshot
+EVP-135,Toggle Auto Tracking,Shift-C,Combat,Targeting and Selection,Low,2,toggle auto tracking,screenshot
+EVP-101,Toggle collapse all windows,(None),Window,Settings and System,Low,2,toggle collapse all windows,screenshot
+EVP-175,Toggle effects,Ctrl-Alt-Shift-E,General,Settings and System,Low,2,toggle effects,screenshot
+EVP-136,Toggle lock target,(None),Combat,Targeting and Selection,Low,2,toggle lock target,screenshot
+EVP-245,Toggle Overload on High Power Rack,Ctrl-3,Modules,Modules and Overheat,Medium,3,toggle overload on high power rack,inferred from standard rack pattern; not visible in screenshots
+EVP-246,Toggle Overload on High Power Slot 1,Shift-F1,Modules,Modules and Overheat,Medium,3,toggle overload on high power slot 1,screenshot
+EVP-247,Toggle Overload on High Power Slot 2,Shift-F2,Modules,Modules and Overheat,Medium,3,toggle overload on high power slot 2,screenshot
+EVP-248,Toggle Overload on High Power Slot 3,Shift-F3,Modules,Modules and Overheat,Medium,3,toggle overload on high power slot 3,screenshot
+EVP-249,Toggle Overload on High Power Slot 4,Shift-F4,Modules,Modules and Overheat,Medium,3,toggle overload on high power slot 4,screenshot
+EVP-250,Toggle Overload on High Power Slot 5,Shift-F5,Modules,Modules and Overheat,Medium,3,toggle overload on high power slot 5,screenshot
+EVP-251,Toggle Overload on High Power Slot 6,Shift-F6,Modules,Modules and Overheat,Medium,3,toggle overload on high power slot 6,screenshot
+EVP-252,Toggle Overload on High Power Slot 7,Shift-F7,Modules,Modules and Overheat,Medium,3,toggle overload on high power slot 7,screenshot
+EVP-253,Toggle Overload on High Power Slot 8,Shift-F8,Modules,Modules and Overheat,Medium,3,toggle overload on high power slot 8,screenshot
+EVP-254,Toggle Overload on Low Power Rack,Ctrl-1,Modules,Modules and Overheat,Medium,3,toggle overload on low power rack,screenshot
+EVP-255,Toggle Overload on Low Power Slot 1,Ctrl-Shift-F1,Modules,Modules and Overheat,Medium,3,toggle overload on low power slot 1,screenshot
+EVP-256,Toggle Overload on Low Power Slot 2,Ctrl-Shift-F2,Modules,Modules and Overheat,Medium,3,toggle overload on low power slot 2,screenshot
+EVP-257,Toggle Overload on Low Power Slot 3,Ctrl-Shift-F3,Modules,Modules and Overheat,Medium,3,toggle overload on low power slot 3,screenshot
+EVP-258,Toggle Overload on Low Power Slot 4,Ctrl-Shift-F4,Modules,Modules and Overheat,Medium,3,toggle overload on low power slot 4,screenshot
+EVP-259,Toggle Overload on Low Power Slot 5,Ctrl-Shift-F5,Modules,Modules and Overheat,Medium,3,toggle overload on low power slot 5,screenshot
+EVP-260,Toggle Overload on Low Power Slot 6,Ctrl-Shift-F6,Modules,Modules and Overheat,Medium,3,toggle overload on low power slot 6,screenshot
+EVP-261,Toggle Overload on Low Power Slot 7,Ctrl-Shift-F7,Modules,Modules and Overheat,Medium,3,toggle overload on low power slot 7,screenshot
+EVP-262,Toggle Overload on Low Power Slot 8,Ctrl-Shift-F8,Modules,Modules and Overheat,Medium,3,toggle overload on low power slot 8,screenshot
+EVP-263,Toggle Overload on Medium Power Rack,Ctrl-2,Modules,Modules and Overheat,Medium,3,toggle overload on medium power rack,screenshot
+EVP-264,Toggle Overload on Medium Power Slot 1,Alt-Shift-F1,Modules,Modules and Overheat,Medium,3,toggle overload on medium power slot 1,screenshot
+EVP-265,Toggle Overload on Medium Power Slot 2,Alt-Shift-F2,Modules,Modules and Overheat,Medium,3,toggle overload on medium power slot 2,screenshot
+EVP-266,Toggle Overload on Medium Power Slot 3,Alt-Shift-F3,Modules,Modules and Overheat,Medium,3,toggle overload on medium power slot 3,screenshot
+EVP-267,Toggle Overload on Medium Power Slot 4,Alt-Shift-F4,Modules,Modules and Overheat,Medium,3,toggle overload on medium power slot 4,screenshot
+EVP-268,Toggle Overload on Medium Power Slot 5,Alt-Shift-F5,Modules,Modules and Overheat,Medium,3,toggle overload on medium power slot 5,screenshot
+EVP-269,Toggle Overload on Medium Power Slot 6,Alt-Shift-F6,Modules,Modules and Overheat,Medium,3,toggle overload on medium power slot 6,screenshot
+EVP-270,Toggle Overload on Medium Power Slot 7,Alt-Shift-F7,Modules,Modules and Overheat,Medium,3,toggle overload on medium power slot 7,screenshot
+EVP-271,Toggle Overload on Medium Power Slot 8,Alt-Shift-F8,Modules,Modules and Overheat,Medium,3,toggle overload on medium power slot 8,screenshot
+EVP-285,Toggle Selection of Tube 1,(None),Fighters,Fighters,Rare,1,toggle selection of tube 1,screenshot
+EVP-286,Toggle Selection of Tube 2,(None),Fighters,Fighters,Rare,1,toggle selection of tube 2,screenshot
+EVP-287,Toggle Selection of Tube 3,(None),Fighters,Fighters,Rare,1,toggle selection of tube 3,screenshot
+EVP-288,Toggle Selection of Tube 4,(None),Fighters,Fighters,Rare,1,toggle selection of tube 4,screenshot
+EVP-289,Toggle Selection of Tube 5,(None),Fighters,Fighters,Rare,1,toggle selection of tube 5,screenshot
+EVP-290,Toggle Ship Selection,(None),Fighters,Fighters,Rare,1,toggle ship selection,screenshot
+EVP-214,Toggle show all brackets,Alt-Z,Navigation,Targeting and Selection,Low,2,toggle show all brackets,screenshot
+EVP-215,Toggle show no brackets,Alt-Shift-Z,Navigation,Targeting and Selection,Low,2,toggle show no brackets,screenshot
+EVP-216,Toggle Special Bracket Display,Alt-Shift-X,Navigation,Targeting and Selection,Low,2,toggle special bracket display,screenshot
+EVP-176,Toggle turret effects,Ctrl-Alt-Shift-T,General,Settings and System,Low,2,toggle turret effects,screenshot
+EVP-177,Toggle User Interface Visibility,Ctrl-F9,General,Settings and System,Low,2,toggle user interface visibility,screenshot
+EVP-178,Toggle Windowed,Alt-Enter,General,Settings and System,Low,2,toggle windowed,screenshot
+EVP-137,Track,C,Combat,Targeting and Selection,Medium,3,track,screenshot
+EVP-217,Turn Left,Left,Navigation,Ship Movement,Low,2,turn left,screenshot
+EVP-218,Turn Right,Right,Navigation,Ship Movement,Low,2,turn right,screenshot
+EVP-138,Unlock all targets,(None),Combat,Targeting and Selection,Medium,3,unlock all targets,screenshot
+EVP-139,Unlock target,Ctrl-Shift,Combat,Targeting and Selection,High,4,unlock target,screenshot
+EVP-140,Untag item,(None),Combat,Targeting and Selection,Low,2,untag item,screenshot
+EVP-179,View Outside Structure,(None),General,Text and Window Controls,Low,2,view outside structure,screenshot
+EVP-102,Wallet,Alt-W,Window,"Market, Industry and Economy",High,4,open wallet,screenshot
+EVP-141,Warp to,S,Combat,Emergency and Survival,Critical,5,warp,screenshot
+EVP-103,Watch List,(None),Window,Core UI Windows,Low,2,watch list,screenshot
+EVP-180,Zoom In,Ctrl-Shift-A,General,Text and Window Controls,Low,2,zoom in,screenshot
+EVP-181,Zoom Out,Ctrl-Shift-Z,General,Text and Window Controls,Low,2,zoom out,screenshot
