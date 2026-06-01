@@ -6,6 +6,7 @@ import shutil
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import messagebox, simpledialog, ttk
 import sounddevice as sd
 import winsound
@@ -86,8 +87,8 @@ class EveVoicePilotApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("EVE Voice Pilot")
-        self.geometry("860x620")
-        self.minsize(760, 520)
+        self._set_initial_window_size()
+        self._setup_fonts()
 
         self.settings = load_settings()
         self.profile_path = Path(self.settings.get("profile_path", str(USER_PROFILE)))
@@ -121,6 +122,46 @@ class EveVoicePilotApp(tk.Tk):
             return CommandProfile.load(path)
         except Exception:
             return CommandProfile.load(DEFAULT_PROFILE)
+
+    def _set_initial_window_size(self) -> None:
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        width = max(900, min(1180, screen_width - 80))
+        height = max(620, min(760, screen_height - 100))
+        x = max(0, min(40, screen_width - width))
+        y = max(0, min(40, screen_height - height))
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(min(980, width), min(620, height))
+
+    def _setup_fonts(self) -> None:
+        families = set(tkfont.families(self))
+        ui_family = next(
+            (family for family in ("Bahnschrift SemiCondensed", "Bahnschrift", "Cascadia Mono", "Consolas") if family in families),
+            "Segoe UI",
+        )
+        mono_family = next((family for family in ("Cascadia Mono", "Consolas") if family in families), ui_family)
+
+        self.ui_font = (ui_family, 10)
+        self.ui_font_bold = (ui_family, 10, "bold")
+        self.status_font = (ui_family, 19, "bold")
+        self.log_font = (mono_family, 10)
+
+        for font_name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+            try:
+                tkfont.nametofont(font_name).configure(family=ui_family, size=10)
+            except tk.TclError:
+                pass
+
+        style = ttk.Style(self)
+        style.configure(".", font=self.ui_font)
+        style.configure("TButton", font=self.ui_font)
+        style.configure("TCheckbutton", font=self.ui_font)
+        style.configure("TEntry", font=self.ui_font)
+        style.configure("TCombobox", font=self.ui_font)
+        style.configure("TLabel", font=self.ui_font)
+        style.configure("TLabelframe.Label", font=self.ui_font_bold)
+        style.configure("Treeview", font=self.ui_font, rowheight=27)
+        style.configure("Treeview.Heading", font=self.ui_font_bold)
 
     def _input_device_labels(self) -> list[str]:
         return [device.label for device in self.input_devices]
@@ -157,54 +198,76 @@ class EveVoicePilotApp(tk.Tk):
 
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(top, text="Status").grid(row=0, column=0, sticky="w")
-        ttk.Label(top, textvariable=self.status_var, font=("Segoe UI", 16, "bold")).grid(row=0, column=1, sticky="w", padx=10)
+        ttk.Label(top, textvariable=self.status_var, font=self.status_font).grid(row=0, column=1, sticky="w", padx=14)
 
         self.start_button = ttk.Button(top, text="Arm Listening", command=self.arm_listening)
         self.stop_button = ttk.Button(top, text="Pause", command=self.stop, state="disabled")
         self.start_button.grid(row=0, column=2, padx=4)
         self.stop_button.grid(row=0, column=3, padx=4)
 
-        main = ttk.PanedWindow(self, orient="horizontal")
+        main = ttk.PanedWindow(self, orient="vertical")
         main.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
 
-        left = ttk.Frame(main, padding=8)
-        right = ttk.Frame(main, padding=8)
-        main.add(left, weight=3)
-        main.add(right, weight=2)
+        upper = ttk.PanedWindow(main, orient="horizontal")
+        command_frame = ttk.LabelFrame(main, text="Commands", padding=8)
+        main.add(upper, weight=2)
+        main.add(command_frame, weight=3)
 
-        left.rowconfigure(1, weight=1)
-        left.columnconfigure(0, weight=1)
+        left = ttk.LabelFrame(upper, text="Readout", padding=10)
+        right = ttk.Frame(upper, padding=8)
+        upper.add(left, weight=4)
+        upper.add(right, weight=5)
+
+        left.rowconfigure(0, weight=0)
+        left.rowconfigure(1, weight=0)
+        left.columnconfigure(0, weight=0)
+        left.columnconfigure(1, weight=1)
 
         self.last_heard_var = tk.StringVar(value="Nothing yet")
         self.last_action_var = tk.StringVar(value="No action yet")
         ttk.Label(left, text="Last heard").grid(row=0, column=0, sticky="w")
-        ttk.Label(left, textvariable=self.last_heard_var, wraplength=480).grid(row=0, column=1, sticky="ew", padx=8)
+        ttk.Label(left, textvariable=self.last_heard_var, wraplength=640).grid(row=0, column=1, sticky="ew", padx=8)
         ttk.Label(left, text="Last action").grid(row=1, column=0, sticky="nw", pady=(8, 0))
-        ttk.Label(left, textvariable=self.last_action_var, wraplength=480).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
+        ttk.Label(left, textvariable=self.last_action_var, wraplength=640).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
 
-        command_frame = ttk.LabelFrame(left, text="Commands", padding=8)
-        command_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
         command_frame.rowconfigure(0, weight=1)
         command_frame.columnconfigure(0, weight=1)
 
-        self.command_tree = ttk.Treeview(command_frame, columns=("phrases", "key", "hold"), show="tree headings", height=12)
+        command_table = ttk.Frame(command_frame)
+        command_table.grid(row=0, column=0, sticky="nsew")
+        command_table.rowconfigure(0, weight=1)
+        command_table.columnconfigure(0, weight=1)
+
+        self.command_tree = ttk.Treeview(
+            command_table,
+            columns=("phrases", "key", "hold"),
+            show="tree headings",
+            height=18,
+        )
+        command_y_scroll = ttk.Scrollbar(command_table, orient="vertical", command=self.command_tree.yview)
+        command_x_scroll = ttk.Scrollbar(command_table, orient="horizontal", command=self.command_tree.xview)
+        self.command_tree.configure(yscrollcommand=command_y_scroll.set, xscrollcommand=command_x_scroll.set)
+
         self.command_tree.heading("#0", text="Name")
         self.command_tree.heading("phrases", text="Spoken phrases")
         self.command_tree.heading("key", text="Keybind")
         self.command_tree.heading("hold", text="Hold")
-        self.command_tree.column("#0", width=150, stretch=True)
-        self.command_tree.column("phrases", width=280, stretch=True)
-        self.command_tree.column("key", width=120, stretch=False)
-        self.command_tree.column("hold", width=70, stretch=False)
+        self.command_tree.column("#0", width=230, minwidth=170, stretch=True)
+        self.command_tree.column("phrases", width=460, minwidth=320, stretch=True)
+        self.command_tree.column("key", width=150, minwidth=115, stretch=False)
+        self.command_tree.column("hold", width=82, minwidth=70, stretch=False)
         self.command_tree.grid(row=0, column=0, sticky="nsew")
+        command_y_scroll.grid(row=0, column=1, sticky="ns")
+        command_x_scroll.grid(row=1, column=0, sticky="ew")
 
         command_buttons = ttk.Frame(command_frame)
         command_buttons.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(command_buttons, text="Add", command=self.add_command).pack(side="left")
-        ttk.Button(command_buttons, text="Edit", command=self.edit_command).pack(side="left", padx=5)
-        ttk.Button(command_buttons, text="Delete", command=self.delete_command).pack(side="left")
-        ttk.Button(command_buttons, text="Save Commands", command=self.save_profile).pack(side="right")
-        ttk.Button(command_buttons, text="Test Selected", command=self.test_selected).pack(side="right", padx=5)
+        command_buttons.columnconfigure(3, weight=1)
+        ttk.Button(command_buttons, text="Add", command=self.add_command).grid(row=0, column=0, sticky="w")
+        ttk.Button(command_buttons, text="Edit", command=self.edit_command).grid(row=0, column=1, sticky="w", padx=(6, 0))
+        ttk.Button(command_buttons, text="Delete", command=self.delete_command).grid(row=0, column=2, sticky="w", padx=(6, 0))
+        ttk.Button(command_buttons, text="Test Selected", command=self.test_selected).grid(row=0, column=4, sticky="e", padx=(0, 6))
+        ttk.Button(command_buttons, text="Save Commands", command=self.save_profile).grid(row=0, column=5, sticky="e")
 
         settings = ttk.LabelFrame(right, text="Settings", padding=10)
         settings.grid(row=0, column=0, sticky="new")
@@ -253,7 +316,7 @@ class EveVoicePilotApp(tk.Tk):
         log_frame.rowconfigure(0, weight=1)
         log_frame.columnconfigure(0, weight=1)
 
-        self.log_text = tk.Text(log_frame, height=12, wrap="word", state="disabled")
+        self.log_text = tk.Text(log_frame, height=6, wrap="word", state="disabled", font=self.log_font)
         self.log_text.grid(row=0, column=0, sticky="nsew")
 
     def _register_hotkey(self) -> None:
