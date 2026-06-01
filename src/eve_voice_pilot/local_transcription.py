@@ -114,12 +114,10 @@ class LocalVoskTranscriber:
                 if rms >= SPEECH_RMS_THRESHOLD:
                     last_speech_at = now
                 elif last_speech_at and now - last_speech_at >= AUTO_STOP_SILENCE_SECONDS:
-                    self.log("Silence detected. Processing command.")
                     break
                 elif not last_speech_at and now - started_at >= INITIAL_SILENCE_SECONDS:
                     return ""
                 elif speech_started and now - started_at >= MAX_RECORD_SECONDS:
-                    self.log("Recording limit reached. Processing command.")
                     break
                 self._log_status(status_messages)
                 time.sleep(0.01)

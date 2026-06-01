@@ -669,7 +669,6 @@ class EveVoicePilotApp(tk.Tk):
         match = find_exact_phrase_match(transcript, self.profile.commands)
         if not match:
             self.last_action_var.set("No exact command matched.")
-            self.log(f"Heard: {transcript!r}; no exact command matched.")
             self.record_command_result("invalid", transcript)
             return
 
