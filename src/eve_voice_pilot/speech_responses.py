@@ -91,6 +91,8 @@ def command_snapshot(command: VoiceCommand) -> VoiceCommand:
         phrases=list(command.phrases),
         key=command.key,
         hold_seconds=command.hold_seconds,
+        press_count=command.press_count,
+        repeat_gap_seconds=command.repeat_gap_seconds,
         response_suffix=command.response_suffix,
         response_text=command.response_text,
     )

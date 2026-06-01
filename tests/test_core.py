@@ -29,11 +29,17 @@ def test_voice_command_round_trips_response_fields():
         "name": "Map",
         "phrases": ["open map"],
         "key": "F10",
+        "press_count": 2,
+        "repeat_gap_seconds": 0.1,
         "response_suffix": "Aura",
         "response_text": "Map open.",
     })
+    assert command.press_count == 2
+    assert command.repeat_gap_seconds == 0.1
+    assert command.action_summary == "F10 x2, hold 0.10s, gap 0.10s"
     assert command.response_suffix == "Aura"
     assert command.response_text == "Map open."
+    assert command.to_dict()["press_count"] == 2
     assert command.to_dict()["response_suffix"] == "Aura"
 
 
@@ -197,6 +203,14 @@ def test_voice_standard_includes_added_catalog_shortcuts():
     assert shortcuts["Contracts"] == "CTRL+ALT+C"
     assert shortcuts["Open Drone Bay Of Active Ship"] == "ALT+SHIFT+D"
     assert shortcuts["Open Fighter Bay Of Active Ship"] == "ALT+SHIFT+F"
+
+
+def test_voice_standard_orbit_uses_double_press():
+    profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
+    orbit = next(command for command in profile.commands if command.name == "Orbit")
+    assert orbit.key == "W"
+    assert orbit.press_count == 2
+    assert orbit.repeat_gap_seconds == 0.1
 
 
 def test_local_grammar_uses_normalized_unique_phrases():

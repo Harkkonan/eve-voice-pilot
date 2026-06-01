@@ -84,7 +84,9 @@
         "orbit target"
       ],
       "key": "W",
-      "hold_seconds": 0.1
+      "hold_seconds": 0.1,
+      "press_count": 2,
+      "repeat_gap_seconds": 0.1
     },
     {
       "name": "Set Full Speed",

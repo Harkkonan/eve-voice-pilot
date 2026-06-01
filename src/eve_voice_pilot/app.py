@@ -10,7 +10,14 @@ import tkinter.font as tkfont
 from tkinter import messagebox, simpledialog, ttk
 import sounddevice as sd
 
-from .commands import DEFAULT_HOLD_SECONDS, CommandProfile, VoiceCommand, find_exact_phrase_match
+from .commands import (
+    DEFAULT_HOLD_SECONDS,
+    DEFAULT_PRESS_COUNT,
+    DEFAULT_REPEAT_GAP_SECONDS,
+    CommandProfile,
+    VoiceCommand,
+    find_exact_phrase_match,
+)
 from .config import load_settings, save_settings
 from .hotkey import GlobalHotkey
 from .input_sender import active_window_title, parse_key_chord, send_key_chord
@@ -57,14 +64,20 @@ class CommandDialog(simpledialog.Dialog):
         ttk.Label(master, text="Spoken phrases").grid(row=1, column=0, sticky="w", padx=6, pady=5)
         ttk.Label(master, text="Keybind").grid(row=2, column=0, sticky="w", padx=6, pady=5)
         ttk.Label(master, text="Hold seconds").grid(row=3, column=0, sticky="w", padx=6, pady=5)
-        ttk.Label(master, text="Speak response").grid(row=4, column=0, sticky="w", padx=6, pady=5)
-        ttk.Label(master, text="Response suffix").grid(row=5, column=0, sticky="w", padx=6, pady=5)
-        ttk.Label(master, text="Response text").grid(row=6, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Press count").grid(row=4, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Delay between presses").grid(row=5, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Speak response").grid(row=6, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Response suffix").grid(row=7, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Response text").grid(row=8, column=0, sticky="w", padx=6, pady=5)
 
         self.name_var = tk.StringVar(value=self.command.name if self.command else "")
         self.phrases_var = tk.StringVar(value=", ".join(self.command.phrases) if self.command else "")
         self.key_var = tk.StringVar(value=self.command.key if self.command else "")
         self.hold_var = tk.StringVar(value=f"{self.command.hold_seconds:.2f}" if self.command else f"{DEFAULT_HOLD_SECONDS:.2f}")
+        self.press_count_var = tk.StringVar(value=str(self.command.press_count) if self.command else str(DEFAULT_PRESS_COUNT))
+        self.repeat_gap_var = tk.StringVar(
+            value=f"{self.command.repeat_gap_seconds:.2f}" if self.command else f"{DEFAULT_REPEAT_GAP_SECONDS:.2f}"
+        )
         self.speak_response_var = tk.BooleanVar(value=bool(self.command and self.command.response_suffix.strip()))
         self.response_suffix_var = tk.StringVar(value=self.command.response_suffix if self.command else DEFAULT_RESPONSE_SUFFIX)
         self.response_text_var = tk.StringVar(value=self.command.response_text if self.command else "")
@@ -73,9 +86,11 @@ class CommandDialog(simpledialog.Dialog):
         ttk.Entry(master, textvariable=self.phrases_var, width=42).grid(row=1, column=1, sticky="ew", padx=6, pady=5)
         ttk.Entry(master, textvariable=self.key_var, width=20).grid(row=2, column=1, sticky="w", padx=6, pady=5)
         ttk.Entry(master, textvariable=self.hold_var, width=10).grid(row=3, column=1, sticky="w", padx=6, pady=5)
-        ttk.Checkbutton(master, variable=self.speak_response_var).grid(row=4, column=1, sticky="w", padx=6, pady=5)
-        ttk.Entry(master, textvariable=self.response_suffix_var, width=20).grid(row=5, column=1, sticky="w", padx=6, pady=5)
-        ttk.Entry(master, textvariable=self.response_text_var, width=42).grid(row=6, column=1, sticky="ew", padx=6, pady=5)
+        ttk.Entry(master, textvariable=self.press_count_var, width=10).grid(row=4, column=1, sticky="w", padx=6, pady=5)
+        ttk.Entry(master, textvariable=self.repeat_gap_var, width=10).grid(row=5, column=1, sticky="w", padx=6, pady=5)
+        ttk.Checkbutton(master, variable=self.speak_response_var).grid(row=6, column=1, sticky="w", padx=6, pady=5)
+        ttk.Entry(master, textvariable=self.response_suffix_var, width=20).grid(row=7, column=1, sticky="w", padx=6, pady=5)
+        ttk.Entry(master, textvariable=self.response_text_var, width=42).grid(row=8, column=1, sticky="ew", padx=6, pady=5)
         name_entry.grid(row=0, column=1, sticky="ew", padx=6, pady=5)
         return name_entry
 
@@ -102,6 +117,22 @@ class CommandDialog(simpledialog.Dialog):
         if not 0.01 <= hold_seconds <= 2.0:
             messagebox.showerror("Hold problem", "Hold seconds should be between 0.01 and 2.0.", parent=self)
             return False
+        try:
+            press_count = int(self.press_count_var.get())
+        except ValueError:
+            messagebox.showerror("Press count problem", "Press count should be a whole number, like 1 or 2.", parent=self)
+            return False
+        if not 1 <= press_count <= 10:
+            messagebox.showerror("Press count problem", "Press count should be between 1 and 10.", parent=self)
+            return False
+        try:
+            repeat_gap_seconds = float(self.repeat_gap_var.get())
+        except ValueError:
+            messagebox.showerror("Delay problem", "Delay between presses should be a number, like 0.10.", parent=self)
+            return False
+        if not 0.0 <= repeat_gap_seconds <= 2.0:
+            messagebox.showerror("Delay problem", "Delay between presses should be between 0.00 and 2.0.", parent=self)
+            return False
         response_suffix = self.response_suffix_var.get().strip()
         response_text = self.response_text_var.get().strip()
         if self.speak_response_var.get() and not response_suffix:
@@ -114,6 +145,8 @@ class CommandDialog(simpledialog.Dialog):
             phrases=phrases,
             key=key,
             hold_seconds=hold_seconds,
+            press_count=press_count,
+            repeat_gap_seconds=repeat_gap_seconds,
             response_suffix=response_suffix,
             response_text=response_text,
         )
@@ -134,7 +167,7 @@ class EveVoicePilotApp(tk.Tk):
         self.transcriber: RealtimeTranscriber | LocalVoskTranscriber | None = None
         self.transcriber_api_key = ""
         self.transcriber_engine = ""
-        self.transcriber_command_signature: tuple[tuple[str, tuple[str, ...], str], ...] = ()
+        self.transcriber_command_signature: tuple[tuple[str, tuple[str, ...], str, float, int, float], ...] = ()
         self.transcriber_input_device_index: int | None = None
         self.transcriber_lock = threading.RLock()
         self.listening_thread: threading.Thread | None = None
@@ -297,7 +330,7 @@ class EveVoicePilotApp(tk.Tk):
 
         self.command_tree = ttk.Treeview(
             command_table,
-            columns=("phrases", "key", "hold", "response"),
+            columns=("phrases", "key", "presses", "hold", "response"),
             show="tree headings",
             height=18,
         )
@@ -309,6 +342,7 @@ class EveVoicePilotApp(tk.Tk):
             "#0": "Name",
             "phrases": "Spoken phrases",
             "key": "Keybind",
+            "presses": "Presses",
             "hold": "Hold",
             "response": "Response",
         }
@@ -317,6 +351,7 @@ class EveVoicePilotApp(tk.Tk):
         self.command_tree.column("#0", width=230, minwidth=170, stretch=True)
         self.command_tree.column("phrases", width=460, minwidth=320, stretch=True)
         self.command_tree.column("key", width=150, minwidth=115, stretch=False)
+        self.command_tree.column("presses", width=98, minwidth=82, stretch=False)
         self.command_tree.column("hold", width=82, minwidth=70, stretch=False)
         self.command_tree.column("response", width=110, minwidth=90, stretch=False)
         self.command_tree.grid(row=0, column=0, sticky="nsew")
@@ -440,9 +475,20 @@ class EveVoicePilotApp(tk.Tk):
                 "end",
                 iid=str(index),
                 text=command.name,
-                values=(", ".join(command.phrases), command.key, f"{command.hold_seconds:.2f}s", command.response_suffix),
+                values=(
+                    ", ".join(command.phrases),
+                    command.key,
+                    self._presses_label(command),
+                    f"{command.hold_seconds:.2f}s",
+                    command.response_suffix,
+                ),
             )
         self._apply_command_sort()
+
+    def _presses_label(self, command: VoiceCommand) -> str:
+        if command.press_count <= 1:
+            return "1"
+        return f"{command.press_count} / {command.repeat_gap_seconds:.2f}s"
 
     def _sort_commands_by(self, column: str) -> None:
         if self.command_sort_column == column:
@@ -472,13 +518,18 @@ class EveVoicePilotApp(tk.Tk):
             return str(self.command_tree.item(item_id, "text")).casefold()
 
         values = self.command_tree.item(item_id, "values")
+        if column == "presses":
+            try:
+                return float(str(values[2]).split("/", maxsplit=1)[0].strip())
+            except (IndexError, ValueError):
+                return 0.0
         if column == "hold":
             try:
-                return float(str(values[2]).rstrip("s"))
+                return float(str(values[3]).rstrip("s"))
             except (IndexError, ValueError):
                 return 0.0
         try:
-            value = values[{"phrases": 0, "key": 1, "response": 3}[column]]
+            value = values[{"phrases": 0, "key": 1, "response": 4}[column]]
         except (IndexError, KeyError):
             return ""
         return str(value).casefold()
@@ -760,8 +811,11 @@ class EveVoicePilotApp(tk.Tk):
                 self.transcriber_input_device_index = input_device_index
             return self.transcriber
 
-    def _command_signature(self, commands: list[VoiceCommand]) -> tuple[tuple[str, tuple[str, ...], str], ...]:
-        return tuple((command.name, tuple(command.phrases), command.key) for command in commands)
+    def _command_signature(self, commands: list[VoiceCommand]) -> tuple[tuple[str, tuple[str, ...], str, float, int, float], ...]:
+        return tuple(
+            (command.name, tuple(command.phrases), command.key, command.hold_seconds, command.press_count, command.repeat_gap_seconds)
+            for command in commands
+        )
 
     def _close_transcriber(self) -> None:
         with self.transcriber_lock:
@@ -814,13 +868,13 @@ class EveVoicePilotApp(tk.Tk):
             self.last_action_var.set("No exact command matched.")
             return
 
-        action = f"{match.command.name} -> {match.command.key}"
+        action = f"{match.command.name} -> {match.command.action_summary}"
         self.last_action_var.set(action)
         self.log(f"Matched exact phrase {match.phrase!r}: {action}")
         result = self._send_or_practice(match.command)
         status = self._command_result_status(result)
         if status == "valid - sent":
-            self.record_command_result(status, transcript, f"{match.command.name} ({match.command.key})")
+            self.record_command_result(status, transcript, f"{match.command.name} ({match.command.action_summary})")
             self.speech_responses.play(match.command)
 
     def _send_or_practice(self, command: VoiceCommand) -> str:
@@ -842,7 +896,7 @@ class EveVoicePilotApp(tk.Tk):
     ) -> str:
         key = command.key
         if practice_mode:
-            return f"Practice mode: would send {key} for {command.hold_seconds:.2f}s."
+            return f"Practice mode: would send {command.action_summary}."
 
         if require_target:
             title = active_window_title()
@@ -851,8 +905,11 @@ class EveVoicePilotApp(tk.Tk):
                 return f"Did not send {key}; active window is {title!r}."
 
         try:
-            send_key_chord(key, press_seconds=command.hold_seconds)
-            return f"Sent {key} for {command.hold_seconds:.2f}s."
+            for press_index in range(command.press_count):
+                send_key_chord(key, press_seconds=command.hold_seconds)
+                if press_index < command.press_count - 1:
+                    time.sleep(command.repeat_gap_seconds)
+            return f"Sent {command.action_summary}."
         except Exception as exc:
             return f"Could not send {key}: {exc}"
 
@@ -925,12 +982,12 @@ class EveVoicePilotApp(tk.Tk):
         result = str(payload.get("result", ""))
         self.last_heard_var.set(transcript or "(Fast command)")
         if match:
-            action = f"{match.command.name} -> {match.command.key}"
+            action = f"{match.command.name} -> {match.command.action_summary}"
             self.last_action_var.set(action)
             self.log(f"Fast matched {match.phrase!r}: {action}")
             status = self._command_result_status(result)
             if status == "valid - sent":
-                self.record_command_result(status, transcript, f"{match.command.name} ({match.command.key})")
+                self.record_command_result(status, transcript, f"{match.command.name} ({match.command.action_summary})")
                 self.speech_responses.play(match.command)
         if result:
             self.log(result)

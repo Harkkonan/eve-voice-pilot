@@ -220,6 +220,8 @@ STANDARD_ROWS = [
         "standard_shortcut": "W",
         "voice_phrases": "orbit|orbit target",
         "action": "Keep default.",
+        "press_count": 2,
+        "repeat_gap_seconds": 0.10,
     },
     {
         "priority": "High",
@@ -575,6 +577,9 @@ def profile_commands() -> list[dict]:
             "key": row["standard_shortcut"],
             "hold_seconds": HOLD_SECONDS,
         }
+        if int(row.get("press_count", 1)) > 1:
+            command["press_count"] = int(row["press_count"])
+            command["repeat_gap_seconds"] = float(row.get("repeat_gap_seconds", 0.10))
         if row.get("response_suffix"):
             command["response_suffix"] = row["response_suffix"]
         if row.get("response_text"):
@@ -591,6 +596,8 @@ def write_csv(path: Path) -> None:
         "eve_command",
         "standard_shortcut",
         "voice_phrases",
+        "press_count",
+        "repeat_gap_seconds",
         "response_suffix",
         "response_text",
         "action",
@@ -649,17 +656,20 @@ def write_docs(path: Path) -> None:
         lines.extend([
             f"## {group}",
             "",
-            "| Priority | EVE category | EVE command | Standard shortcut | Voice phrases | Voice response | Action |",
-            "|---|---|---|---|---|---|---|",
+            "| Priority | EVE category | EVE command | Standard shortcut | Voice phrases | Presses | Voice response | Action |",
+            "|---|---|---|---|---|---|---|---|",
         ])
         for row in group_rows:
             voice_phrases = row["voice_phrases"].replace("|", ", ")
+            presses = ""
+            if int(row.get("press_count", 1)) > 1:
+                presses = f"{int(row['press_count'])}x, {float(row.get('repeat_gap_seconds', 0.10)):.2f}s gap"
             response = ""
             if row.get("response_suffix"):
                 response = f"{row['response_suffix']}: {row.get('response_text', '')}".strip()
             lines.append(
                 f"| {row['priority']} | {row['eve_category']} | {row['eve_command']} | "
-                f"`{row['standard_shortcut']}` | {voice_phrases} | {response} | {row['action']} |"
+                f"`{row['standard_shortcut']}` | {voice_phrases} | {presses} | {response} | {row['action']} |"
             )
         lines.append(
             ""

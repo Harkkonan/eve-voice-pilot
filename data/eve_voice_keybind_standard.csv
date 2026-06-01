@@ -1,180 +1,180 @@
-priority,group,eve_category,eve_command,standard_shortcut,voice_phrases,response_suffix,response_text,action
-App,App Control,EVE Voice Pilot,Arm/Pause Listening,PAUSE,,,,"Set this in EVE Voice Pilot, not in EVE."
-Critical,Emergency and Survival,Drones,All Drones: Return to Drone Bay,SHIFT+R,recall drones|return drones|drones home,Aura,Drones returning.,Keep default.
-Critical,Emergency and Survival,Combat,Dock/Jump/Activate gate,D,jump|dock|activate gate|jump gate,Aura,Gate command sent.,Keep default.
-Critical,Emergency and Survival,Navigation,Stop Ship,CTRL+SPACE,stop ship|full stop|stop the ship,Aura,Full stop.,Keep default.
-Critical,Emergency and Survival,Combat,Warp to,S,warp|warp to|warp now,Aura,Warp command sent.,Keep default.
-High,Ship Movement,Combat,Align to,A,align|align to,,,Keep default.
-High,Ship Movement,Combat,Approach,Q,approach|approach target,,,Keep default.
-High,Ship Movement,Combat,Keep at Range,E,keep range|keep at range,,,Keep default.
-High,Ship Movement,Combat,Orbit,W,orbit|orbit target,,,Keep default.
-High,Ship Movement,Navigation,Set Full Speed,CTRL+ALT+SPACE,full speed|go full speed,,,Keep default.
-Medium,Ship Movement,Navigation,Autopilot,CTRL+S,autopilot|toggle autopilot|auto pilot,Aura,I have the helm.,Verify this shortcut in EVE.
-Low,Ship Movement,Navigation,Accelerate,NUMPLUS,accelerate,,,Verify this shortcut in EVE.
-Low,Ship Movement,Navigation,Decelerate,NUMMINUS,decelerate,,,Verify this shortcut in EVE.
-Low,Ship Movement,Navigation,Turn Left,LEFT,turn left,,,Verify this shortcut in EVE.
-Low,Ship Movement,Navigation,Turn Right,RIGHT,turn right,,,Verify this shortcut in EVE.
-High,Drones,Drones,All Drones: Engage,F,drones engage|engage drones,Aura,Drones engaging.,Keep default.
-High,Drones,Drones,All Drones: Return and Orbit,SHIFT+ALT+R,drones orbit|return and orbit,,,Keep default.
-High,Drones,Drones,Launch Drones,SHIFT+F,launch drones|send drones,,,Keep default.
-High,Scanning and Intel,Combat,Directional Scan,V,d scan|directional scan,Aura,Directional scan pulsed.,Keep default.
-High,Scanning and Intel,Window,Directional Scanner,ALT+D,open d scan|open directional scanner,,,Keep default.
-High,Scanning and Intel,Window,Map,F10,open map|map,Aura,Map open.,Keep default.
-High,Scanning and Intel,Window,Probe Scanner,ALT+P,open probes|open probe scanner,,,Keep default.
-High,Scanning and Intel,Combat,Refresh Probe Scan,B,refresh probes|probe scan,,,Keep default.
-Medium,Scanning and Intel,Window,Locations,L,locations,,,Verify this shortcut in EVE.
-Medium,Scanning and Intel,Window,Set Overview Focus,ALT+SPACE,set overview focus,,,Verify this shortcut in EVE.
-Medium,Scanning and Intel,Window,Solar System Map,F9,open system map|system map,,,"Keep default. EVE Voice Pilot uses PAUSE, so F9 is free for EVE."
-Low,Scanning and Intel,Window,Map Browser,F11,map browser,,,Verify this shortcut in EVE.
-High,Targeting,Combat,Lock target,CTRL,lock target|lock,,,Keep default.
-High,Targeting,Navigation,Select next target,ALT+RIGHT,next target|select next target,,,Keep default.
-High,Targeting,Navigation,Select previous target,ALT+LEFT,previous target|select previous target,,,Keep default.
-High,Targeting,Combat,Unlock target,CTRL+SHIFT,unlock target|unlock,,,Keep default.
-Medium,Targeting,Combat,Show info,T,show info|target info,,,Keep default.
-Medium,Targeting,Navigation,Tactical Overlay,CTRL+D,tactical overlay|toggle tactical overlay,,,Keep default.
-Medium,Targeting,Combat,Track,C,track|track target,,,Keep default.
-High,Modules,Modules,Activate High Power Slot 1,F1,module 1|module one|high 1|high one|fire 1|fire one,,,Keep default.
-High,Modules,Modules,Activate High Power Slot 2,F2,module 2|module two|high 2|high two|fire 2|fire two,,,Keep default.
-High,Modules,Modules,Activate High Power Slot 3,F3,module 3|module three|high 3|high three|fire 3|fire three,,,Keep default.
-High,Modules,Modules,Activate High Power Slot 4,F4,module 4|module four|high 4|high four|fire 4|fire four,,,Keep default.
-High,Modules,Modules,Activate High Power Slot 5,F5,module 5|module five|high 5|high five|fire 5|fire five,,,Keep default.
-High,Modules,Modules,Activate High Power Slot 6,F6,module 6|module six|high 6|high six|fire 6|fire six,,,Keep default.
-High,Modules,Modules,Activate High Power Slot 7,F7,module 7|module seven|high 7|high seven|fire 7|fire seven,,,Keep default.
-High,Modules,Modules,Activate High Power Slot 8,F8,module 8|module eight|high 8|high eight|fire 8|fire eight,,,Keep default.
-High,Modules,Modules,Activate Low Power Slot 1,CTRL+F1,low 1|low one,,,Keep default.
-High,Modules,Modules,Activate Low Power Slot 2,CTRL+F2,low 2|low two,,,Keep default.
-High,Modules,Modules,Activate Low Power Slot 3,CTRL+F3,low 3|low three,,,Keep default.
-High,Modules,Modules,Activate Low Power Slot 4,CTRL+F4,low 4|low four,,,Keep default.
-High,Modules,Modules,Activate Low Power Slot 5,CTRL+F5,low 5|low five,,,Keep default.
-High,Modules,Modules,Activate Low Power Slot 6,CTRL+F6,low 6|low six,,,Keep default.
-High,Modules,Modules,Activate Low Power Slot 7,CTRL+F7,low 7|low seven,,,Keep default.
-High,Modules,Modules,Activate Low Power Slot 8,CTRL+F8,low 8|low eight,,,Keep default.
-High,Modules,Modules,Activate Medium Power Slot 1,ALT+1,mid 1|mid one|medium 1|medium one,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
-High,Modules,Modules,Activate Medium Power Slot 2,ALT+2,mid 2|mid two|medium 2|medium two,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
-High,Modules,Modules,Activate Medium Power Slot 3,ALT+3,mid 3|mid three|medium 3|medium three,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
-High,Modules,Modules,Activate Medium Power Slot 4,ALT+4,mid 4|mid four|medium 4|medium four,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
-High,Modules,Modules,Activate Medium Power Slot 5,ALT+5,mid 5|mid five|medium 5|medium five,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
-High,Modules,Modules,Activate Medium Power Slot 6,ALT+6,mid 6|mid six|medium 6|medium six,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
-High,Modules,Modules,Activate Medium Power Slot 7,ALT+7,mid 7|mid seven|medium 7|medium seven,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
-High,Modules,Modules,Activate Medium Power Slot 8,ALT+8,mid 8|mid eight|medium 8|medium eight,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
-High,Modules,Modules,Reload Ammo,CTRL+R,reload|reload ammo,,,Keep default.
-High,Windows,Window,Fitting,ALT+F,open fitting|fitting,,,Keep default.
-High,Windows,Window,Inventory,ALT+C,open inventory|inventory,,,Keep default.
-High,Windows,Window,Regional Market,ALT+R,open market|market,,,Keep default.
-Medium,Windows,Window,Skills,ALT+X,open skills|skills,,,Keep default.
-Medium,Windows,Window,Wallet,ALT+W,open wallet|wallet,,,Keep default.
-Low,Windows,Window,Contracts,CTRL+ALT+C,open contracts|contracts,,,Add this shortcut in EVE.
-Low,Windows,Window,Open Drone Bay Of Active Ship,ALT+SHIFT+D,open drone bay|drone bay,,,Add this shortcut in EVE.
-Low,Windows,Window,Open Fighter Bay Of Active Ship,ALT+SHIFT+F,open fighter bay|fighter bay,,,Add this shortcut in EVE.
-High,Fleet,Navigation,Broadcast: Need Armor,CTRL+ALT+2,need armor|broadcast need armor,,,Add this shortcut in EVE.
-High,Fleet,Navigation,Broadcast: Need Capacitor,CTRL+ALT+3,need cap|need capacitor|broadcast need capacitor,,,Add this shortcut in EVE.
-High,Fleet,Navigation,Broadcast: Need Shield,CTRL+ALT+1,need shield|broadcast need shield,,,Add this shortcut in EVE.
-High,Fleet,Navigation,Broadcast: Spotted an Enemy,Z,enemy spotted|broadcast enemy,,,Keep default.
-High,Fleet,Navigation,Broadcast: Target (Selected),X,broadcast target|fleet target,,,Keep default.
-Medium,Fleet,Navigation,Broadcast: Need Backup,CTRL+ALT+4,need backup|broadcast need backup,,,Add this shortcut in EVE.
-Medium,Combat Modes,Combat,Activate Defense Mode,SHIFT+1,activate defense mode,,,Verify this shortcut in EVE.
-Medium,Combat Modes,Combat,Activate Propulsion Mode,SHIFT+3,activate propulsion mode,,,Verify this shortcut in EVE.
-Medium,Combat Modes,Combat,Activate Sharpshooter Mode,SHIFT+2,activate sharpshooter mode,,,Verify this shortcut in EVE.
-Medium,"Social, Character and Corporation",Window,Character Sheet,ALT+A,character sheet,,,Verify this shortcut in EVE.
-Medium,Settings and System,Window,Close Active Window,CTRL+W,close active window,,,Verify this shortcut in EVE.
-Medium,Settings and System,Window,Close All Windows,CTRL+ALT+W,close all windows,,,Verify this shortcut in EVE.
-Medium,"Market, Industry and Economy",Window,Industry,ALT+S,open industry,,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,Look at,ALT,look at,,,Verify this shortcut in EVE.
-Medium,"Social, Character and Corporation",Window,Mail,ALT+1,open mail,,,Verify this shortcut in EVE.
-Medium,"Market, Industry and Economy",Window,Market Orders,ALT+0,market orders,,,Verify this shortcut in EVE.
-Medium,Settings and System,Window,Neocom Menu,BACKSLASH,neocom menu,,,Verify this shortcut in EVE.
-Medium,"Inventory, Assets and Holds",Window,Open Item Hangar,ALT+G,open item hangar,,,Verify this shortcut in EVE.
-Medium,"Inventory, Assets and Holds",Window,Open Mineral Hold Of Active Ship,NUM9,open mineral hold of active ship,,,Verify this shortcut in EVE.
-Medium,"Inventory, Assets and Holds",Window,Open Ship Hangar,ALT+N,open ship hangar,,,Verify this shortcut in EVE.
-Medium,Core UI Windows,Window,Opportunities,ALT+J,open opportunities,,,Verify this shortcut in EVE.
-Medium,"Inventory, Assets and Holds",Window,Personal Assets,ALT+T,personal assets,,,Verify this shortcut in EVE.
-Medium,Navigation Tools,Navigation,Save Location...,CTRL+B,save location,,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,Select,SHIFT,select,,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Navigation,Sensor Overlay,CTRL+O,sensor overlay,,,Verify this shortcut in EVE.
-Medium,"Social, Character and Corporation",Window,Set Chat Channel Focus,SPACE,set chat channel focus,,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,Tag item as: 1,1,tag item as 1,,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,Tag item as: 2,2,tag item as 2,,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,Tag item as: 3,3,tag item as 3,,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,Tag item as: A,4,tag item as a,,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,Tag item as: B,5,tag item as b,,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,Tag item as: C,6,tag item as c,,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,"Tag item from sequence: 1, 2 or 3",7,"tag item from sequence 1, 2 or 3",,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,"Tag item from sequence: A, B or C",8,"tag item from sequence a, b or c",,,Verify this shortcut in EVE.
-Medium,Targeting and Selection,Combat,"Tag item from sequence: X, Y or Z",9,"tag item from sequence x, y or z",,,Verify this shortcut in EVE.
-Medium,Core UI Windows,Window,The Agency,ALT+M,the agency,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on High Power Rack,CTRL+3,toggle overload on high power rack,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 1,SHIFT+F1,toggle overload on high power slot 1,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 2,SHIFT+F2,toggle overload on high power slot 2,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 3,SHIFT+F3,toggle overload on high power slot 3,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 4,SHIFT+F4,toggle overload on high power slot 4,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 5,SHIFT+F5,toggle overload on high power slot 5,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 6,SHIFT+F6,toggle overload on high power slot 6,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 7,SHIFT+F7,toggle overload on high power slot 7,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 8,SHIFT+F8,toggle overload on high power slot 8,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Rack,CTRL+1,toggle overload on low power rack,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 1,CTRL+SHIFT+F1,toggle overload on low power slot 1,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 2,CTRL+SHIFT+F2,toggle overload on low power slot 2,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 3,CTRL+SHIFT+F3,toggle overload on low power slot 3,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 4,CTRL+SHIFT+F4,toggle overload on low power slot 4,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 5,CTRL+SHIFT+F5,toggle overload on low power slot 5,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 6,CTRL+SHIFT+F6,toggle overload on low power slot 6,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 7,CTRL+SHIFT+F7,toggle overload on low power slot 7,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 8,CTRL+SHIFT+F8,toggle overload on low power slot 8,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Rack,CTRL+2,toggle overload on medium power rack,,,Verify this shortcut in EVE.
-Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 1,ALT+SHIFT+1,toggle overload on medium power slot 1,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
-Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 2,ALT+SHIFT+2,toggle overload on medium power slot 2,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
-Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 3,ALT+SHIFT+3,toggle overload on medium power slot 3,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
-Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 4,ALT+SHIFT+4,toggle overload on medium power slot 4,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
-Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 5,ALT+SHIFT+5,toggle overload on medium power slot 5,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
-Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 6,ALT+SHIFT+6,toggle overload on medium power slot 6,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
-Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 7,ALT+SHIFT+7,toggle overload on medium power slot 7,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
-Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 8,ALT+SHIFT+8,toggle overload on medium power slot 8,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
-Low,Text and Window Controls,General,Back,MOUSE4,back,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Browse Window Menu,CTRL+TAB,browse window menu,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Browse Window Menu Upwards,CTRL+SHIFT+TAB,browse window menu upwards,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Close modal windows and open config menu,ESC,close modal windows and open config menu,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Confirm,ENTER,confirm,,,Verify this shortcut in EVE.
-Low,"Social, Character and Corporation",Window,Contacts,ALT+E,open contacts,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Copy,CTRL+C,copy,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Cut,CTRL+X,cut,,,Verify this shortcut in EVE.
-Low,Settings and System,Window,EVE Help,F12,eve help,,,Verify this shortcut in EVE.
-Low,Camera and View,Navigation,First Person Camera,ALT+3,first person camera,,,Verify this shortcut in EVE.
-Low,Settings and System,Window,Force fade from black,SHIFT+BACKSPACE,force fade from black,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Forward,MOUSE5,forward,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Hide Mouse Cursor,ALT+F9,hide mouse cursor,,,Verify this shortcut in EVE.
-Low,Core UI Windows,Window,New Eden Store,ALT+4,new eden store,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Next Tab,CTRL+PAGE DOWN,next tab,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Next stacked window,CTRL+SHIFT+PAGE DOWN,next stacked window,,,Verify this shortcut in EVE.
-Low,Settings and System,Window,Open FPS Monitor,CTRL+F,open fps monitor,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Open Monitor,CTRL+ALT+SHIFT+M,open monitor,,,Verify this shortcut in EVE.
-Low,Camera and View,Navigation,Orbit Camera,ALT+2,orbit camera,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Paste,CTRL+V,paste,,,Verify this shortcut in EVE.
-Low,Camera and View,Navigation,Pitch Down,DOWN,pitch down,,,Verify this shortcut in EVE.
-Low,Camera and View,Navigation,Pitch Up,UP,pitch up,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Previous Tab,CTRL+PAGE UP,previous tab,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Previous stacked window,CTRL+SHIFT+PAGE UP,previous stacked window,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Print screen,PRINTSCREEN,print screen,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Quit Game,ALT+SHIFT+Q,quit game,,,Verify this shortcut in EVE.
-Low,Core UI Windows,Window,Redeem Items,ALT+Y,redeem items,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Reset Monitor,CTRL+ALT+ENTER,reset monitor,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Select All,CTRL+A,select all,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Set Search Bar Focus,SHIFT+S,set search bar focus,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Tab to next edit field,TAB,tab to next edit field,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Tab to previous edit field,SHIFT+TAB,tab to previous edit field,,,Verify this shortcut in EVE.
-Low,Camera and View,Navigation,Tactical Camera,ALT+1,tactical camera,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Toggle 3D view,CTRL+SHIFT+F9,toggle 3d view,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Toggle Audio,CTRL+ALT+SHIFT+F12,toggle audio,,,Verify this shortcut in EVE.
-Low,Targeting and Selection,Combat,Toggle Auto Tracking,SHIFT+C,toggle auto tracking,,,Verify this shortcut in EVE.
-Low,Targeting and Selection,Navigation,Toggle Special Bracket Display,ALT+SHIFT+X,toggle special bracket display,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Toggle User Interface Visibility,CTRL+F9,toggle user interface visibility,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Toggle Windowed,ALT+ENTER,toggle windowed,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Toggle effects,CTRL+ALT+SHIFT+E,toggle effects,,,Verify this shortcut in EVE.
-Low,Targeting and Selection,Navigation,Toggle show all brackets,ALT+Z,toggle show all brackets,,,Verify this shortcut in EVE.
-Low,Targeting and Selection,Navigation,Toggle show no brackets,ALT+SHIFT+Z,toggle show no brackets,,,Verify this shortcut in EVE.
-Low,Settings and System,General,Toggle turret effects,CTRL+ALT+SHIFT+T,toggle turret effects,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Zoom In,CTRL+SHIFT+A,zoom in,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Zoom Out,CTRL+SHIFT+Z,zoom out,,,Verify this shortcut in EVE.
-Rare,Character Creation,Character Creation,Pick Portrait 1,F1,pick portrait 1,,,Verify this shortcut in EVE.
-Rare,Character Creation,Character Creation,Pick Portrait 2,F2,pick portrait 2,,,Verify this shortcut in EVE.
-Rare,Character Creation,Character Creation,Pick Portrait 3,F3,pick portrait 3,,,Verify this shortcut in EVE.
-Rare,Character Creation,Character Creation,Pick Portrait 4,F4,pick portrait 4,,,Verify this shortcut in EVE.
+priority,group,eve_category,eve_command,standard_shortcut,voice_phrases,press_count,repeat_gap_seconds,response_suffix,response_text,action
+App,App Control,EVE Voice Pilot,Arm/Pause Listening,PAUSE,,,,,,"Set this in EVE Voice Pilot, not in EVE."
+Critical,Emergency and Survival,Drones,All Drones: Return to Drone Bay,SHIFT+R,recall drones|return drones|drones home,,,Aura,Drones returning.,Keep default.
+Critical,Emergency and Survival,Combat,Dock/Jump/Activate gate,D,jump|dock|activate gate|jump gate,,,Aura,Gate command sent.,Keep default.
+Critical,Emergency and Survival,Navigation,Stop Ship,CTRL+SPACE,stop ship|full stop|stop the ship,,,Aura,Full stop.,Keep default.
+Critical,Emergency and Survival,Combat,Warp to,S,warp|warp to|warp now,,,Aura,Warp command sent.,Keep default.
+High,Ship Movement,Combat,Align to,A,align|align to,,,,,Keep default.
+High,Ship Movement,Combat,Approach,Q,approach|approach target,,,,,Keep default.
+High,Ship Movement,Combat,Keep at Range,E,keep range|keep at range,,,,,Keep default.
+High,Ship Movement,Combat,Orbit,W,orbit|orbit target,2,0.1,,,Keep default.
+High,Ship Movement,Navigation,Set Full Speed,CTRL+ALT+SPACE,full speed|go full speed,,,,,Keep default.
+Medium,Ship Movement,Navigation,Autopilot,CTRL+S,autopilot|toggle autopilot|auto pilot,,,Aura,I have the helm.,Verify this shortcut in EVE.
+Low,Ship Movement,Navigation,Accelerate,NUMPLUS,accelerate,,,,,Verify this shortcut in EVE.
+Low,Ship Movement,Navigation,Decelerate,NUMMINUS,decelerate,,,,,Verify this shortcut in EVE.
+Low,Ship Movement,Navigation,Turn Left,LEFT,turn left,,,,,Verify this shortcut in EVE.
+Low,Ship Movement,Navigation,Turn Right,RIGHT,turn right,,,,,Verify this shortcut in EVE.
+High,Drones,Drones,All Drones: Engage,F,drones engage|engage drones,,,Aura,Drones engaging.,Keep default.
+High,Drones,Drones,All Drones: Return and Orbit,SHIFT+ALT+R,drones orbit|return and orbit,,,,,Keep default.
+High,Drones,Drones,Launch Drones,SHIFT+F,launch drones|send drones,,,,,Keep default.
+High,Scanning and Intel,Combat,Directional Scan,V,d scan|directional scan,,,Aura,Directional scan pulsed.,Keep default.
+High,Scanning and Intel,Window,Directional Scanner,ALT+D,open d scan|open directional scanner,,,,,Keep default.
+High,Scanning and Intel,Window,Map,F10,open map|map,,,Aura,Map open.,Keep default.
+High,Scanning and Intel,Window,Probe Scanner,ALT+P,open probes|open probe scanner,,,,,Keep default.
+High,Scanning and Intel,Combat,Refresh Probe Scan,B,refresh probes|probe scan,,,,,Keep default.
+Medium,Scanning and Intel,Window,Locations,L,locations,,,,,Verify this shortcut in EVE.
+Medium,Scanning and Intel,Window,Set Overview Focus,ALT+SPACE,set overview focus,,,,,Verify this shortcut in EVE.
+Medium,Scanning and Intel,Window,Solar System Map,F9,open system map|system map,,,,,"Keep default. EVE Voice Pilot uses PAUSE, so F9 is free for EVE."
+Low,Scanning and Intel,Window,Map Browser,F11,map browser,,,,,Verify this shortcut in EVE.
+High,Targeting,Combat,Lock target,CTRL,lock target|lock,,,,,Keep default.
+High,Targeting,Navigation,Select next target,ALT+RIGHT,next target|select next target,,,,,Keep default.
+High,Targeting,Navigation,Select previous target,ALT+LEFT,previous target|select previous target,,,,,Keep default.
+High,Targeting,Combat,Unlock target,CTRL+SHIFT,unlock target|unlock,,,,,Keep default.
+Medium,Targeting,Combat,Show info,T,show info|target info,,,,,Keep default.
+Medium,Targeting,Navigation,Tactical Overlay,CTRL+D,tactical overlay|toggle tactical overlay,,,,,Keep default.
+Medium,Targeting,Combat,Track,C,track|track target,,,,,Keep default.
+High,Modules,Modules,Activate High Power Slot 1,F1,module 1|module one|high 1|high one|fire 1|fire one,,,,,Keep default.
+High,Modules,Modules,Activate High Power Slot 2,F2,module 2|module two|high 2|high two|fire 2|fire two,,,,,Keep default.
+High,Modules,Modules,Activate High Power Slot 3,F3,module 3|module three|high 3|high three|fire 3|fire three,,,,,Keep default.
+High,Modules,Modules,Activate High Power Slot 4,F4,module 4|module four|high 4|high four|fire 4|fire four,,,,,Keep default.
+High,Modules,Modules,Activate High Power Slot 5,F5,module 5|module five|high 5|high five|fire 5|fire five,,,,,Keep default.
+High,Modules,Modules,Activate High Power Slot 6,F6,module 6|module six|high 6|high six|fire 6|fire six,,,,,Keep default.
+High,Modules,Modules,Activate High Power Slot 7,F7,module 7|module seven|high 7|high seven|fire 7|fire seven,,,,,Keep default.
+High,Modules,Modules,Activate High Power Slot 8,F8,module 8|module eight|high 8|high eight|fire 8|fire eight,,,,,Keep default.
+High,Modules,Modules,Activate Low Power Slot 1,CTRL+F1,low 1|low one,,,,,Keep default.
+High,Modules,Modules,Activate Low Power Slot 2,CTRL+F2,low 2|low two,,,,,Keep default.
+High,Modules,Modules,Activate Low Power Slot 3,CTRL+F3,low 3|low three,,,,,Keep default.
+High,Modules,Modules,Activate Low Power Slot 4,CTRL+F4,low 4|low four,,,,,Keep default.
+High,Modules,Modules,Activate Low Power Slot 5,CTRL+F5,low 5|low five,,,,,Keep default.
+High,Modules,Modules,Activate Low Power Slot 6,CTRL+F6,low 6|low six,,,,,Keep default.
+High,Modules,Modules,Activate Low Power Slot 7,CTRL+F7,low 7|low seven,,,,,Keep default.
+High,Modules,Modules,Activate Low Power Slot 8,CTRL+F8,low 8|low eight,,,,,Keep default.
+High,Modules,Modules,Activate Medium Power Slot 1,ALT+1,mid 1|mid one|medium 1|medium one,,,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
+High,Modules,Modules,Activate Medium Power Slot 2,ALT+2,mid 2|mid two|medium 2|medium two,,,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
+High,Modules,Modules,Activate Medium Power Slot 3,ALT+3,mid 3|mid three|medium 3|medium three,,,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
+High,Modules,Modules,Activate Medium Power Slot 4,ALT+4,mid 4|mid four|medium 4|medium four,,,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
+High,Modules,Modules,Activate Medium Power Slot 5,ALT+5,mid 5|mid five|medium 5|medium five,,,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
+High,Modules,Modules,Activate Medium Power Slot 6,ALT+6,mid 6|mid six|medium 6|medium six,,,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
+High,Modules,Modules,Activate Medium Power Slot 7,ALT+7,mid 7|mid seven|medium 7|medium seven,,,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
+High,Modules,Modules,Activate Medium Power Slot 8,ALT+8,mid 8|mid eight|medium 8|medium eight,,,,,Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.
+High,Modules,Modules,Reload Ammo,CTRL+R,reload|reload ammo,,,,,Keep default.
+High,Windows,Window,Fitting,ALT+F,open fitting|fitting,,,,,Keep default.
+High,Windows,Window,Inventory,ALT+C,open inventory|inventory,,,,,Keep default.
+High,Windows,Window,Regional Market,ALT+R,open market|market,,,,,Keep default.
+Medium,Windows,Window,Skills,ALT+X,open skills|skills,,,,,Keep default.
+Medium,Windows,Window,Wallet,ALT+W,open wallet|wallet,,,,,Keep default.
+Low,Windows,Window,Contracts,CTRL+ALT+C,open contracts|contracts,,,,,Add this shortcut in EVE.
+Low,Windows,Window,Open Drone Bay Of Active Ship,ALT+SHIFT+D,open drone bay|drone bay,,,,,Add this shortcut in EVE.
+Low,Windows,Window,Open Fighter Bay Of Active Ship,ALT+SHIFT+F,open fighter bay|fighter bay,,,,,Add this shortcut in EVE.
+High,Fleet,Navigation,Broadcast: Need Armor,CTRL+ALT+2,need armor|broadcast need armor,,,,,Add this shortcut in EVE.
+High,Fleet,Navigation,Broadcast: Need Capacitor,CTRL+ALT+3,need cap|need capacitor|broadcast need capacitor,,,,,Add this shortcut in EVE.
+High,Fleet,Navigation,Broadcast: Need Shield,CTRL+ALT+1,need shield|broadcast need shield,,,,,Add this shortcut in EVE.
+High,Fleet,Navigation,Broadcast: Spotted an Enemy,Z,enemy spotted|broadcast enemy,,,,,Keep default.
+High,Fleet,Navigation,Broadcast: Target (Selected),X,broadcast target|fleet target,,,,,Keep default.
+Medium,Fleet,Navigation,Broadcast: Need Backup,CTRL+ALT+4,need backup|broadcast need backup,,,,,Add this shortcut in EVE.
+Medium,Combat Modes,Combat,Activate Defense Mode,SHIFT+1,activate defense mode,,,,,Verify this shortcut in EVE.
+Medium,Combat Modes,Combat,Activate Propulsion Mode,SHIFT+3,activate propulsion mode,,,,,Verify this shortcut in EVE.
+Medium,Combat Modes,Combat,Activate Sharpshooter Mode,SHIFT+2,activate sharpshooter mode,,,,,Verify this shortcut in EVE.
+Medium,"Social, Character and Corporation",Window,Character Sheet,ALT+A,character sheet,,,,,Verify this shortcut in EVE.
+Medium,Settings and System,Window,Close Active Window,CTRL+W,close active window,,,,,Verify this shortcut in EVE.
+Medium,Settings and System,Window,Close All Windows,CTRL+ALT+W,close all windows,,,,,Verify this shortcut in EVE.
+Medium,"Market, Industry and Economy",Window,Industry,ALT+S,open industry,,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,Look at,ALT,look at,,,,,Verify this shortcut in EVE.
+Medium,"Social, Character and Corporation",Window,Mail,ALT+1,open mail,,,,,Verify this shortcut in EVE.
+Medium,"Market, Industry and Economy",Window,Market Orders,ALT+0,market orders,,,,,Verify this shortcut in EVE.
+Medium,Settings and System,Window,Neocom Menu,BACKSLASH,neocom menu,,,,,Verify this shortcut in EVE.
+Medium,"Inventory, Assets and Holds",Window,Open Item Hangar,ALT+G,open item hangar,,,,,Verify this shortcut in EVE.
+Medium,"Inventory, Assets and Holds",Window,Open Mineral Hold Of Active Ship,NUM9,open mineral hold of active ship,,,,,Verify this shortcut in EVE.
+Medium,"Inventory, Assets and Holds",Window,Open Ship Hangar,ALT+N,open ship hangar,,,,,Verify this shortcut in EVE.
+Medium,Core UI Windows,Window,Opportunities,ALT+J,open opportunities,,,,,Verify this shortcut in EVE.
+Medium,"Inventory, Assets and Holds",Window,Personal Assets,ALT+T,personal assets,,,,,Verify this shortcut in EVE.
+Medium,Navigation Tools,Navigation,Save Location...,CTRL+B,save location,,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,Select,SHIFT,select,,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Navigation,Sensor Overlay,CTRL+O,sensor overlay,,,,,Verify this shortcut in EVE.
+Medium,"Social, Character and Corporation",Window,Set Chat Channel Focus,SPACE,set chat channel focus,,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,Tag item as: 1,1,tag item as 1,,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,Tag item as: 2,2,tag item as 2,,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,Tag item as: 3,3,tag item as 3,,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,Tag item as: A,4,tag item as a,,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,Tag item as: B,5,tag item as b,,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,Tag item as: C,6,tag item as c,,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,"Tag item from sequence: 1, 2 or 3",7,"tag item from sequence 1, 2 or 3",,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,"Tag item from sequence: A, B or C",8,"tag item from sequence a, b or c",,,,,Verify this shortcut in EVE.
+Medium,Targeting and Selection,Combat,"Tag item from sequence: X, Y or Z",9,"tag item from sequence x, y or z",,,,,Verify this shortcut in EVE.
+Medium,Core UI Windows,Window,The Agency,ALT+M,the agency,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on High Power Rack,CTRL+3,toggle overload on high power rack,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 1,SHIFT+F1,toggle overload on high power slot 1,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 2,SHIFT+F2,toggle overload on high power slot 2,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 3,SHIFT+F3,toggle overload on high power slot 3,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 4,SHIFT+F4,toggle overload on high power slot 4,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 5,SHIFT+F5,toggle overload on high power slot 5,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 6,SHIFT+F6,toggle overload on high power slot 6,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 7,SHIFT+F7,toggle overload on high power slot 7,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on High Power Slot 8,SHIFT+F8,toggle overload on high power slot 8,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Rack,CTRL+1,toggle overload on low power rack,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 1,CTRL+SHIFT+F1,toggle overload on low power slot 1,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 2,CTRL+SHIFT+F2,toggle overload on low power slot 2,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 3,CTRL+SHIFT+F3,toggle overload on low power slot 3,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 4,CTRL+SHIFT+F4,toggle overload on low power slot 4,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 5,CTRL+SHIFT+F5,toggle overload on low power slot 5,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 6,CTRL+SHIFT+F6,toggle overload on low power slot 6,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 7,CTRL+SHIFT+F7,toggle overload on low power slot 7,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Low Power Slot 8,CTRL+SHIFT+F8,toggle overload on low power slot 8,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Rack,CTRL+2,toggle overload on medium power rack,,,,,Verify this shortcut in EVE.
+Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 1,ALT+SHIFT+1,toggle overload on medium power slot 1,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
+Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 2,ALT+SHIFT+2,toggle overload on medium power slot 2,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
+Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 3,ALT+SHIFT+3,toggle overload on medium power slot 3,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
+Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 4,ALT+SHIFT+4,toggle overload on medium power slot 4,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
+Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 5,ALT+SHIFT+5,toggle overload on medium power slot 5,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
+Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 6,ALT+SHIFT+6,toggle overload on medium power slot 6,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
+Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 7,ALT+SHIFT+7,toggle overload on medium power slot 7,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
+Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 8,ALT+SHIFT+8,toggle overload on medium power slot 8,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
+Low,Text and Window Controls,General,Back,MOUSE4,back,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Browse Window Menu,CTRL+TAB,browse window menu,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Browse Window Menu Upwards,CTRL+SHIFT+TAB,browse window menu upwards,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Close modal windows and open config menu,ESC,close modal windows and open config menu,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Confirm,ENTER,confirm,,,,,Verify this shortcut in EVE.
+Low,"Social, Character and Corporation",Window,Contacts,ALT+E,open contacts,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Copy,CTRL+C,copy,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Cut,CTRL+X,cut,,,,,Verify this shortcut in EVE.
+Low,Settings and System,Window,EVE Help,F12,eve help,,,,,Verify this shortcut in EVE.
+Low,Camera and View,Navigation,First Person Camera,ALT+3,first person camera,,,,,Verify this shortcut in EVE.
+Low,Settings and System,Window,Force fade from black,SHIFT+BACKSPACE,force fade from black,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Forward,MOUSE5,forward,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Hide Mouse Cursor,ALT+F9,hide mouse cursor,,,,,Verify this shortcut in EVE.
+Low,Core UI Windows,Window,New Eden Store,ALT+4,new eden store,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Next Tab,CTRL+PAGE DOWN,next tab,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Next stacked window,CTRL+SHIFT+PAGE DOWN,next stacked window,,,,,Verify this shortcut in EVE.
+Low,Settings and System,Window,Open FPS Monitor,CTRL+F,open fps monitor,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Open Monitor,CTRL+ALT+SHIFT+M,open monitor,,,,,Verify this shortcut in EVE.
+Low,Camera and View,Navigation,Orbit Camera,ALT+2,orbit camera,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Paste,CTRL+V,paste,,,,,Verify this shortcut in EVE.
+Low,Camera and View,Navigation,Pitch Down,DOWN,pitch down,,,,,Verify this shortcut in EVE.
+Low,Camera and View,Navigation,Pitch Up,UP,pitch up,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Previous Tab,CTRL+PAGE UP,previous tab,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Previous stacked window,CTRL+SHIFT+PAGE UP,previous stacked window,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Print screen,PRINTSCREEN,print screen,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Quit Game,ALT+SHIFT+Q,quit game,,,,,Verify this shortcut in EVE.
+Low,Core UI Windows,Window,Redeem Items,ALT+Y,redeem items,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Reset Monitor,CTRL+ALT+ENTER,reset monitor,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Select All,CTRL+A,select all,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Set Search Bar Focus,SHIFT+S,set search bar focus,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Tab to next edit field,TAB,tab to next edit field,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Tab to previous edit field,SHIFT+TAB,tab to previous edit field,,,,,Verify this shortcut in EVE.
+Low,Camera and View,Navigation,Tactical Camera,ALT+1,tactical camera,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Toggle 3D view,CTRL+SHIFT+F9,toggle 3d view,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Toggle Audio,CTRL+ALT+SHIFT+F12,toggle audio,,,,,Verify this shortcut in EVE.
+Low,Targeting and Selection,Combat,Toggle Auto Tracking,SHIFT+C,toggle auto tracking,,,,,Verify this shortcut in EVE.
+Low,Targeting and Selection,Navigation,Toggle Special Bracket Display,ALT+SHIFT+X,toggle special bracket display,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Toggle User Interface Visibility,CTRL+F9,toggle user interface visibility,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Toggle Windowed,ALT+ENTER,toggle windowed,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Toggle effects,CTRL+ALT+SHIFT+E,toggle effects,,,,,Verify this shortcut in EVE.
+Low,Targeting and Selection,Navigation,Toggle show all brackets,ALT+Z,toggle show all brackets,,,,,Verify this shortcut in EVE.
+Low,Targeting and Selection,Navigation,Toggle show no brackets,ALT+SHIFT+Z,toggle show no brackets,,,,,Verify this shortcut in EVE.
+Low,Settings and System,General,Toggle turret effects,CTRL+ALT+SHIFT+T,toggle turret effects,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Zoom In,CTRL+SHIFT+A,zoom in,,,,,Verify this shortcut in EVE.
+Low,Text and Window Controls,General,Zoom Out,CTRL+SHIFT+Z,zoom out,,,,,Verify this shortcut in EVE.
+Rare,Character Creation,Character Creation,Pick Portrait 1,F1,pick portrait 1,,,,,Verify this shortcut in EVE.
+Rare,Character Creation,Character Creation,Pick Portrait 2,F2,pick portrait 2,,,,,Verify this shortcut in EVE.
+Rare,Character Creation,Character Creation,Pick Portrait 3,F3,pick portrait 3,,,,,Verify this shortcut in EVE.
+Rare,Character Creation,Character Creation,Pick Portrait 4,F4,pick portrait 4,,,,,Verify this shortcut in EVE.

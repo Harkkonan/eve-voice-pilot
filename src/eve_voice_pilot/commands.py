@@ -10,6 +10,8 @@ from pathlib import Path
 NORMALIZE_RE = re.compile(r"[^a-z0-9 ]+")
 SPACE_RE = re.compile(r"\s+")
 DEFAULT_HOLD_SECONDS = 0.10
+DEFAULT_PRESS_COUNT = 1
+DEFAULT_REPEAT_GAP_SECONDS = 0.10
 
 
 def normalize_phrase(value: str) -> str:
@@ -26,6 +28,8 @@ class VoiceCommand:
     hold_seconds: float = DEFAULT_HOLD_SECONDS
     response_suffix: str = ""
     response_text: str = ""
+    press_count: int = DEFAULT_PRESS_COUNT
+    repeat_gap_seconds: float = DEFAULT_REPEAT_GAP_SECONDS
 
     @classmethod
     def from_dict(cls, data: dict) -> "VoiceCommand":
@@ -34,14 +38,32 @@ class VoiceCommand:
         except (TypeError, ValueError):
             hold_seconds = DEFAULT_HOLD_SECONDS
         hold_seconds = min(max(hold_seconds, 0.01), 2.0)
+        try:
+            press_count = int(data.get("press_count", DEFAULT_PRESS_COUNT))
+        except (TypeError, ValueError):
+            press_count = DEFAULT_PRESS_COUNT
+        press_count = min(max(press_count, 1), 10)
+        try:
+            repeat_gap_seconds = float(data.get("repeat_gap_seconds", DEFAULT_REPEAT_GAP_SECONDS))
+        except (TypeError, ValueError):
+            repeat_gap_seconds = DEFAULT_REPEAT_GAP_SECONDS
+        repeat_gap_seconds = min(max(repeat_gap_seconds, 0.0), 2.0)
         return cls(
             name=str(data.get("name", "")).strip(),
             phrases=[str(item).strip() for item in data.get("phrases", []) if str(item).strip()],
             key=str(data.get("key", "")).strip().upper(),
             hold_seconds=hold_seconds,
+            press_count=press_count,
+            repeat_gap_seconds=repeat_gap_seconds,
             response_suffix=str(data.get("response_suffix", "")).strip(),
             response_text=str(data.get("response_text", "")).strip(),
         )
+
+    @property
+    def action_summary(self) -> str:
+        if self.press_count <= 1:
+            return f"{self.key} for {self.hold_seconds:.2f}s"
+        return f"{self.key} x{self.press_count}, hold {self.hold_seconds:.2f}s, gap {self.repeat_gap_seconds:.2f}s"
 
     def to_dict(self) -> dict:
         data = {
@@ -50,6 +72,9 @@ class VoiceCommand:
             "key": self.key,
             "hold_seconds": round(self.hold_seconds, 3),
         }
+        if self.press_count > 1:
+            data["press_count"] = self.press_count
+            data["repeat_gap_seconds"] = round(self.repeat_gap_seconds, 3)
         if self.response_suffix.strip():
             data["response_suffix"] = self.response_suffix.strip()
         if self.response_text.strip():
