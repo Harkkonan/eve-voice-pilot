@@ -55,6 +55,9 @@ High,Windows,Window,Inventory,ALT+C,open inventory|inventory,,,Keep default.
 High,Windows,Window,Regional Market,ALT+R,open market|market,,,Keep default.
 Medium,Windows,Window,Skills,ALT+X,open skills|skills,,,Keep default.
 Medium,Windows,Window,Wallet,ALT+W,open wallet|wallet,,,Keep default.
+Low,Windows,Window,Contracts,CTRL+ALT+C,open contracts|contracts,,,Add this shortcut in EVE.
+Low,Windows,Window,Open Drone Bay Of Active Ship,ALT+SHIFT+D,open drone bay|drone bay,,,Add this shortcut in EVE.
+Low,Windows,Window,Open Fighter Bay Of Active Ship,ALT+SHIFT+F,open fighter bay|fighter bay,,,Add this shortcut in EVE.
 High,Fleet,Navigation,Broadcast: Need Armor,CTRL+ALT+2,need armor|broadcast need armor,,,Add this shortcut in EVE.
 High,Fleet,Navigation,Broadcast: Need Capacitor,CTRL+ALT+3,need cap|need capacitor|broadcast need capacitor,,,Add this shortcut in EVE.
 High,Fleet,Navigation,Broadcast: Need Shield,CTRL+ALT+1,need shield|broadcast need shield,,,Add this shortcut in EVE.

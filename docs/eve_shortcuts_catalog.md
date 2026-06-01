@@ -199,8 +199,8 @@ One row is marked inferred: `Toggle Overload on High Power Rack`. It appears to 
 | Low | Holds & Bays | `(None)` | Window | holds and bays |
 | Low | Open Ammo Hold | `(None)` | Window | open ammo hold |
 | Low | Open Corporate Hangar | `(None)` | Window | open corporate hangar |
-| Low | Open Drone Bay Of Active Ship | `(None)` | Window | open drone bay of active ship |
-| Low | Open Fighter Bay Of Active Ship | `(None)` | Window | open fighter bay of active ship |
+| Low | Open Drone Bay Of Active Ship | `Alt-Shift-D` | Window | open drone bay of active ship |
+| Low | Open Fighter Bay Of Active Ship | `Alt-Shift-F` | Window | open fighter bay of active ship |
 | Low | Open Fleet Hangar | `(None)` | Window | open fleet hangar |
 | Low | Open Frigate Escape Bay | `(None)` | Window | open frigate escape bay |
 | Low | Open Fuel Bay Of Active Ship | `(None)` | Window | open fuel bay of active ship |
@@ -242,7 +242,7 @@ One row is marked inferred: `Toggle Overload on High Power Rack`. It appears to 
 | Low | Character Customization | `(None)` | Window | character customization |
 | Low | Chat Channels | `(None)` | Window | chat channels |
 | Low | Contacts | `Alt-E` | Window | open contacts |
-| Low | Contracts | `(None)` | Window | open contracts |
+| Low | Contracts | `Ctrl-Alt-c` | Window | open contracts |
 | Low | Corporation | `(None)` | Window | open corporation |
 | Low | Events | `(None)` | Window | open events |
 | Low | Fleet | `(None)` | Window | open fleet |

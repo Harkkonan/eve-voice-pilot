@@ -69,7 +69,7 @@ EVP-011,Compare Tool,(None),Window,Core UI Windows,Low,2,compare tool,screenshot
 EVP-148,Compress All Ore In Current Ship,(None),General,"Inventory, Assets and Holds",Low,2,compress all ore in current ship,screenshot
 EVP-149,Confirm,Enter,General,Text and Window Controls,Low,2,confirm,screenshot
 EVP-012,Contacts,Alt-E,Window,"Social, Character and Corporation",Low,2,open contacts,screenshot
-EVP-013,Contracts,(None),Window,"Social, Character and Corporation",Low,2,open contracts,screenshot
+EVP-013,Contracts,Ctrl-Alt-c,Window,"Social, Character and Corporation",Low,2,open contracts,screenshot
 EVP-014,Control Tower Manager,(None),Window,Core UI Windows,Low,2,control tower manager,screenshot
 EVP-150,Copy,Ctrl-C,General,Text and Window Controls,Low,2,copy,screenshot
 EVP-015,Corporation,(None),Window,"Social, Character and Corporation",Low,2,open corporation,screenshot
@@ -141,8 +141,8 @@ EVP-055,Open Capsuleer Deliveries,(None),Window,Core UI Windows,Low,2,open capsu
 EVP-056,Open Config Menu,(None),Window,Settings and System,Low,2,open config menu,screenshot
 EVP-057,Open Corporate Hangar,(None),Window,"Inventory, Assets and Holds",Low,2,open corporate hangar,screenshot
 EVP-058,Open Corporation Deliveries,(None),Window,"Social, Character and Corporation",Low,2,open corporation deliveries,screenshot
-EVP-059,Open Drone Bay Of Active Ship,(None),Window,"Inventory, Assets and Holds",Low,2,open drone bay of active ship,screenshot
-EVP-060,Open Fighter Bay Of Active Ship,(None),Window,"Inventory, Assets and Holds",Low,2,open fighter bay of active ship,screenshot
+EVP-059,Open Drone Bay Of Active Ship,Alt-Shift-D,Window,"Inventory, Assets and Holds",Low,2,open drone bay of active ship,screenshot
+EVP-060,Open Fighter Bay Of Active Ship,Alt-Shift-F,Window,"Inventory, Assets and Holds",Low,2,open fighter bay of active ship,screenshot
 EVP-061,Open Fleet Hangar,(None),Window,"Inventory, Assets and Holds",Low,2,open fleet hangar,screenshot
 EVP-062,Open FPS Monitor,Ctrl-F,Window,Settings and System,Low,2,open fps monitor,screenshot
 EVP-063,Open Frigate Escape Bay,(None),Window,"Inventory, Assets and Holds",Low,2,open frigate escape bay,screenshot

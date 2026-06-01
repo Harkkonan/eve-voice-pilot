@@ -106,6 +106,9 @@ Enter or verify the rows below in EVE Settings > Shortcuts. Rows marked `Add thi
 | High | Window | Regional Market | `ALT+R` | open market, market |  | Keep default. |
 | Medium | Window | Skills | `ALT+X` | open skills, skills |  | Keep default. |
 | Medium | Window | Wallet | `ALT+W` | open wallet, wallet |  | Keep default. |
+| Low | Window | Contracts | `CTRL+ALT+C` | open contracts, contracts |  | Add this shortcut in EVE. |
+| Low | Window | Open Drone Bay Of Active Ship | `ALT+SHIFT+D` | open drone bay, drone bay |  | Add this shortcut in EVE. |
+| Low | Window | Open Fighter Bay Of Active Ship | `ALT+SHIFT+F` | open fighter bay, fighter bay |  | Add this shortcut in EVE. |
 
 ## Fleet
 

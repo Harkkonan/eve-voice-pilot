@@ -130,7 +130,7 @@ def test_block_size_for_rate_has_reasonable_minimum():
 
 def test_voice_standard_profile_keys_parse():
     profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
-    assert len(profile.commands) == 61
+    assert len(profile.commands) == 64
     for command in profile.commands:
         parse_key_chord(command.key)
 
@@ -145,6 +145,14 @@ def test_voice_standard_includes_initial_aura_responses():
     recall = next(command for command in profile.commands if command.name == "All Drones: Return to Drone Bay")
     assert response_enabled(recall)
     assert response_text_for_command(recall) == "Drones returning."
+
+
+def test_voice_standard_includes_added_catalog_shortcuts():
+    profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
+    shortcuts = {command.name: command.key for command in profile.commands}
+    assert shortcuts["Contracts"] == "CTRL+ALT+C"
+    assert shortcuts["Open Drone Bay Of Active Ship"] == "ALT+SHIFT+D"
+    assert shortcuts["Open Fighter Bay Of Active Ship"] == "ALT+SHIFT+F"
 
 
 def test_local_grammar_uses_normalized_unique_phrases():
