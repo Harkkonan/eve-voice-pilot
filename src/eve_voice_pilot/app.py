@@ -236,7 +236,7 @@ class EveVoicePilotApp(tk.Tk):
         ttk.Label(left, text="Last action").grid(row=1, column=0, sticky="nw", pady=(8, 0))
         ttk.Label(left, textvariable=self.last_action_var, wraplength=640).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
 
-        command_results = ttk.LabelFrame(left, text="Command Results", padding=8)
+        command_results = ttk.LabelFrame(left, text="Sent Commands", padding=8)
         command_results.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
         command_results.rowconfigure(0, weight=1)
         command_results.columnconfigure(0, weight=1)
@@ -664,23 +664,19 @@ class EveVoicePilotApp(tk.Tk):
         self.last_heard_var.set(transcript or "(No speech recognized)")
         if not transcript.strip():
             self.last_action_var.set("No action.")
-            self.record_command_result("invalid", "no speech recognized")
             return
         match = find_exact_phrase_match(transcript, self.profile.commands)
         if not match:
             self.last_action_var.set("No exact command matched.")
-            self.record_command_result("invalid", transcript)
             return
 
         action = f"{match.command.name} -> {match.command.key}"
         self.last_action_var.set(action)
         self.log(f"Matched exact phrase {match.phrase!r}: {action}")
         result = self._send_or_practice(match.command)
-        self.record_command_result(
-            self._command_result_status(result),
-            transcript,
-            f"{match.command.name} ({match.command.key})",
-        )
+        status = self._command_result_status(result)
+        if status == "valid - sent":
+            self.record_command_result(status, transcript, f"{match.command.name} ({match.command.key})")
 
     def _send_or_practice(self, command: VoiceCommand) -> str:
         result = self._send_or_practice_worker(
@@ -784,11 +780,9 @@ class EveVoicePilotApp(tk.Tk):
             action = f"{match.command.name} -> {match.command.key}"
             self.last_action_var.set(action)
             self.log(f"Fast matched {match.phrase!r}: {action}")
-            self.record_command_result(
-                self._command_result_status(result),
-                transcript,
-                f"{match.command.name} ({match.command.key})",
-            )
+            status = self._command_result_status(result)
+            if status == "valid - sent":
+                self.record_command_result(status, transcript, f"{match.command.name} ({match.command.key})")
         if result:
             self.log(result)
 
