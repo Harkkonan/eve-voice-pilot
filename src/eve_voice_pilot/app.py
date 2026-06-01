@@ -9,7 +9,6 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox, simpledialog, ttk
 import sounddevice as sd
-import winsound
 
 from .commands import DEFAULT_HOLD_SECONDS, CommandProfile, VoiceCommand, find_exact_phrase_match
 from .config import load_settings, save_settings
@@ -543,7 +542,6 @@ class EveVoicePilotApp(tk.Tk):
         if self.listening_thread and self.listening_thread.is_alive():
             self.stop_listening.set()
             self.status_var.set("Pausing")
-            winsound.MessageBeep(winsound.MB_ICONASTERISK)
             return
         self.status_var.set("Paused")
         self.start_button.configure(state="normal")
@@ -661,7 +659,6 @@ class EveVoicePilotApp(tk.Tk):
 
     def _listening_ready(self) -> None:
         self.events.put(("status", "Listening"))
-        winsound.MessageBeep(winsound.MB_OK)
 
     def _handle_transcript(self, transcript: str) -> None:
         self.last_heard_var.set(transcript or "(No speech recognized)")
