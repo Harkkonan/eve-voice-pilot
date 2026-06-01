@@ -46,6 +46,8 @@ If the test says the level is low, try a different listed microphone or raise th
 
 Use `Pause` when you are done. While armed, the app uses the microphone and may use API credits even when no command is spoken.
 
+The recommended arm/pause hotkey is `PAUSE`, so EVE can keep `F9` for Solar System Map.
+
 ## Commands
 
 The command list is editable inside the app. Each command has:
@@ -56,6 +58,12 @@ The command list is editable inside the app. Each command has:
 - Hold seconds: how long to hold the keybind before release. `0.10` is a good starting point.
 
 Your editable command profile is saved at `profiles/my_eve_commands.json`.
+
+## Keybind Standard
+
+The recommended EVE keybind list is in `docs/eve_voice_keybind_standard.md`. A sortable CSV is in `data/eve_voice_keybind_standard.csv`.
+
+The matching app profile is `profiles/eve_voice_standard.json`. It remaps medium slots to `Alt+1` through `Alt+8` instead of the EVE default `Alt+F1` through `Alt+F8`, because `Alt+F4` is a risky Windows close-window shortcut.
 
 ## Notes
 

@@ -28,7 +28,7 @@ from .transcription import (
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROFILE = ROOT / "profiles" / "eve_sample.json"
 USER_PROFILE = ROOT / "profiles" / "my_eve_commands.json"
-DEFAULT_HOTKEY = "F9"
+DEFAULT_HOTKEY = "PAUSE"
 
 
 class CommandDialog(simpledialog.Dialog):
@@ -213,7 +213,7 @@ class EveVoicePilotApp(tk.Tk):
         self.api_key_var = tk.StringVar(value=self.settings.get("api_key", ""))
         self.remember_key_var = tk.BooleanVar(value=bool(self.settings.get("api_key_protected")))
         saved_hotkey = str(self.settings.get("hotkey", DEFAULT_HOTKEY)).strip().upper() or DEFAULT_HOTKEY
-        if saved_hotkey == "F12":
+        if saved_hotkey in {"F9", "F12"}:
             saved_hotkey = DEFAULT_HOTKEY
         self.hotkey_var = tk.StringVar(value=saved_hotkey)
         self.mic_var = tk.StringVar(value=self._preferred_input_device_label())

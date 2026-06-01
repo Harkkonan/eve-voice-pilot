@@ -5,7 +5,7 @@ import ctypes
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from eve_voice_pilot.commands import VoiceCommand, find_command_match, find_exact_phrase_match, normalize_phrase
+from eve_voice_pilot.commands import CommandProfile, VoiceCommand, find_command_match, find_exact_phrase_match, normalize_phrase
 from eve_voice_pilot.input_sender import INPUT, INPUT_UNION, KEYBDINPUT, parse_key_chord
 from eve_voice_pilot.transcription import audio_rms, block_size_for_rate, resample_pcm_to_24k
 
@@ -82,6 +82,11 @@ def test_parse_key_chord_allows_multi_key_command():
     assert [key.name for key in parsed.keys] == ["F1", "F2"]
 
 
+def test_parse_key_chord_allows_pause_hotkey():
+    parsed = parse_key_chord("PAUSE", require_trigger_key=True)
+    assert parsed.key_name == "PAUSE"
+
+
 def test_audio_rms_detects_louder_audio():
     quiet = (0).to_bytes(2, "little", signed=True) * 20
     loud = (1000).to_bytes(2, "little", signed=True) * 20
@@ -101,6 +106,18 @@ def test_resample_pcm_to_24k_keeps_24k_audio_length():
 
 def test_block_size_for_rate_has_reasonable_minimum():
     assert block_size_for_rate(8000) == 160
+
+
+def test_voice_standard_profile_keys_parse():
+    profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
+    assert len(profile.commands) == 61
+    for command in profile.commands:
+        parse_key_chord(command.key)
+
+
+def test_voice_standard_avoids_alt_f4_medium_slot():
+    profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
+    assert all(command.key != "ALT+F4" for command in profile.commands)
 
 
 def test_windows_input_union_has_full_size():
