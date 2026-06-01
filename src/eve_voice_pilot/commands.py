@@ -24,6 +24,8 @@ class VoiceCommand:
     phrases: list[str]
     key: str
     hold_seconds: float = DEFAULT_HOLD_SECONDS
+    response_suffix: str = ""
+    response_text: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> "VoiceCommand":
@@ -37,15 +39,22 @@ class VoiceCommand:
             phrases=[str(item).strip() for item in data.get("phrases", []) if str(item).strip()],
             key=str(data.get("key", "")).strip().upper(),
             hold_seconds=hold_seconds,
+            response_suffix=str(data.get("response_suffix", "")).strip(),
+            response_text=str(data.get("response_text", "")).strip(),
         )
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "name": self.name,
             "phrases": self.phrases,
             "key": self.key,
             "hold_seconds": round(self.hold_seconds, 3),
         }
+        if self.response_suffix.strip():
+            data["response_suffix"] = self.response_suffix.strip()
+        if self.response_text.strip():
+            data["response_text"] = self.response_text.strip()
+        return data
 
 
 @dataclass

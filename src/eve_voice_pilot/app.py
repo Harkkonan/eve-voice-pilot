@@ -15,6 +15,7 @@ from .config import load_settings, save_settings
 from .hotkey import GlobalHotkey
 from .input_sender import active_window_title, parse_key_chord, send_key_chord
 from .local_transcription import LocalVoskTranscriber
+from .speech_responses import DEFAULT_RESPONSE_SUFFIX, SpeechResponseManager
 from .transcription import (
     RealtimeTranscriber,
     audio_rms,
@@ -42,20 +43,30 @@ class CommandDialog(simpledialog.Dialog):
         super().__init__(parent, title)
 
     def body(self, master):
+        master.columnconfigure(1, weight=1)
         ttk.Label(master, text="Name").grid(row=0, column=0, sticky="w", padx=6, pady=5)
         ttk.Label(master, text="Spoken phrases").grid(row=1, column=0, sticky="w", padx=6, pady=5)
         ttk.Label(master, text="Keybind").grid(row=2, column=0, sticky="w", padx=6, pady=5)
         ttk.Label(master, text="Hold seconds").grid(row=3, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Speak response").grid(row=4, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Response suffix").grid(row=5, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Response text").grid(row=6, column=0, sticky="w", padx=6, pady=5)
 
         self.name_var = tk.StringVar(value=self.command.name if self.command else "")
         self.phrases_var = tk.StringVar(value=", ".join(self.command.phrases) if self.command else "")
         self.key_var = tk.StringVar(value=self.command.key if self.command else "")
         self.hold_var = tk.StringVar(value=f"{self.command.hold_seconds:.2f}" if self.command else f"{DEFAULT_HOLD_SECONDS:.2f}")
+        self.speak_response_var = tk.BooleanVar(value=bool(self.command and self.command.response_suffix.strip()))
+        self.response_suffix_var = tk.StringVar(value=self.command.response_suffix if self.command else DEFAULT_RESPONSE_SUFFIX)
+        self.response_text_var = tk.StringVar(value=self.command.response_text if self.command else "")
 
         name_entry = ttk.Entry(master, textvariable=self.name_var, width=42)
         ttk.Entry(master, textvariable=self.phrases_var, width=42).grid(row=1, column=1, sticky="ew", padx=6, pady=5)
         ttk.Entry(master, textvariable=self.key_var, width=20).grid(row=2, column=1, sticky="w", padx=6, pady=5)
         ttk.Entry(master, textvariable=self.hold_var, width=10).grid(row=3, column=1, sticky="w", padx=6, pady=5)
+        ttk.Checkbutton(master, variable=self.speak_response_var).grid(row=4, column=1, sticky="w", padx=6, pady=5)
+        ttk.Entry(master, textvariable=self.response_suffix_var, width=20).grid(row=5, column=1, sticky="w", padx=6, pady=5)
+        ttk.Entry(master, textvariable=self.response_text_var, width=42).grid(row=6, column=1, sticky="ew", padx=6, pady=5)
         name_entry.grid(row=0, column=1, sticky="ew", padx=6, pady=5)
         return name_entry
 
@@ -82,7 +93,21 @@ class CommandDialog(simpledialog.Dialog):
         if not 0.01 <= hold_seconds <= 2.0:
             messagebox.showerror("Hold problem", "Hold seconds should be between 0.01 and 2.0.", parent=self)
             return False
-        self.result_command = VoiceCommand(name=name, phrases=phrases, key=key, hold_seconds=hold_seconds)
+        response_suffix = self.response_suffix_var.get().strip()
+        response_text = self.response_text_var.get().strip()
+        if self.speak_response_var.get() and not response_suffix:
+            response_suffix = DEFAULT_RESPONSE_SUFFIX
+        if not self.speak_response_var.get():
+            response_suffix = ""
+            response_text = ""
+        self.result_command = VoiceCommand(
+            name=name,
+            phrases=phrases,
+            key=key,
+            hold_seconds=hold_seconds,
+            response_suffix=response_suffix,
+            response_text=response_text,
+        )
         return True
 
 
@@ -107,6 +132,7 @@ class EveVoicePilotApp(tk.Tk):
         self.mic_test_thread: threading.Thread | None = None
         self.stop_listening = threading.Event()
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.speech_responses = SpeechResponseManager(self.log_threadsafe)
         self.input_devices = list_input_devices()
         self.armed = False
         self.command_sort_column: str | None = None
@@ -115,6 +141,7 @@ class EveVoicePilotApp(tk.Tk):
 
         self._build_ui()
         self._refresh_commands()
+        self.speech_responses.prepare_commands_async(self.profile.commands)
         self._register_hotkey()
         self.after(500, self._warm_connection_if_possible)
         self.after(50, self._poll_events)
@@ -260,7 +287,7 @@ class EveVoicePilotApp(tk.Tk):
 
         self.command_tree = ttk.Treeview(
             command_table,
-            columns=("phrases", "key", "hold"),
+            columns=("phrases", "key", "hold", "response"),
             show="tree headings",
             height=18,
         )
@@ -273,6 +300,7 @@ class EveVoicePilotApp(tk.Tk):
             "phrases": "Spoken phrases",
             "key": "Keybind",
             "hold": "Hold",
+            "response": "Response",
         }
         for column, label in self.command_heading_labels.items():
             self.command_tree.heading(column, text=label, command=lambda selected=column: self._sort_commands_by(selected))
@@ -280,6 +308,7 @@ class EveVoicePilotApp(tk.Tk):
         self.command_tree.column("phrases", width=460, minwidth=320, stretch=True)
         self.command_tree.column("key", width=150, minwidth=115, stretch=False)
         self.command_tree.column("hold", width=82, minwidth=70, stretch=False)
+        self.command_tree.column("response", width=110, minwidth=90, stretch=False)
         self.command_tree.grid(row=0, column=0, sticky="nsew")
         command_y_scroll.grid(row=0, column=1, sticky="ns")
         command_x_scroll.grid(row=1, column=0, sticky="ew")
@@ -373,7 +402,7 @@ class EveVoicePilotApp(tk.Tk):
                 "end",
                 iid=str(index),
                 text=command.name,
-                values=(", ".join(command.phrases), command.key, f"{command.hold_seconds:.2f}s"),
+                values=(", ".join(command.phrases), command.key, f"{command.hold_seconds:.2f}s", command.response_suffix),
             )
         self._apply_command_sort()
 
@@ -411,7 +440,7 @@ class EveVoicePilotApp(tk.Tk):
             except (IndexError, ValueError):
                 return 0.0
         try:
-            value = values[{"phrases": 0, "key": 1}[column]]
+            value = values[{"phrases": 0, "key": 1, "response": 3}[column]]
         except (IndexError, KeyError):
             return ""
         return str(value).casefold()
@@ -434,6 +463,7 @@ class EveVoicePilotApp(tk.Tk):
         if dialog.result_command:
             self.profile.commands.append(dialog.result_command)
             self._refresh_commands()
+            self.speech_responses.prepare_command_async(dialog.result_command)
 
     def edit_command(self) -> None:
         index = self._selected_index()
@@ -444,6 +474,7 @@ class EveVoicePilotApp(tk.Tk):
         if dialog.result_command:
             self.profile.commands[index] = dialog.result_command
             self._refresh_commands()
+            self.speech_responses.prepare_command_async(dialog.result_command)
 
     def delete_command(self) -> None:
         index = self._selected_index()
@@ -458,6 +489,7 @@ class EveVoicePilotApp(tk.Tk):
     def save_profile(self) -> None:
         self.profile.save(self.profile_path)
         self._close_transcriber()
+        self.speech_responses.prepare_commands_async(self.profile.commands)
         self.log(f"Saved commands to {self.profile_path}")
         self._warm_connection_if_possible()
 
@@ -731,6 +763,7 @@ class EveVoicePilotApp(tk.Tk):
         status = self._command_result_status(result)
         if status == "valid - sent":
             self.record_command_result(status, transcript, f"{match.command.name} ({match.command.key})")
+            self.speech_responses.play(match.command)
 
     def _send_or_practice(self, command: VoiceCommand) -> str:
         result = self._send_or_practice_worker(
@@ -770,7 +803,10 @@ class EveVoicePilotApp(tk.Tk):
         if index is None:
             messagebox.showinfo("Pick a command", "Select a command first.", parent=self)
             return
-        self._send_or_practice(self.profile.commands[index])
+        command = self.profile.commands[index]
+        result = self._send_or_practice(command)
+        if self._command_result_status(result) == "valid - sent":
+            self.speech_responses.play(command)
 
     def _poll_events(self) -> None:
         while True:
@@ -837,6 +873,7 @@ class EveVoicePilotApp(tk.Tk):
             status = self._command_result_status(result)
             if status == "valid - sent":
                 self.record_command_result(status, transcript, f"{match.command.name} ({match.command.key})")
+                self.speech_responses.play(match.command)
         if result:
             self.log(result)
 
@@ -876,6 +913,7 @@ class EveVoicePilotApp(tk.Tk):
         if self.hotkey:
             self.hotkey.stop()
         self.stop_listening.set()
+        self.speech_responses.stop()
         self._close_transcriber()
         self.destroy()
 

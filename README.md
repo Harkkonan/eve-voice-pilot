@@ -59,10 +59,15 @@ The command list is editable inside the app. Each command has:
 - Spoken phrases: one or more phrases separated by commas.
 - Key: one key chord, such as `F1`, `V`, or `CTRL+SPACE`.
 - Hold seconds: how long to hold the keybind before release. `0.10` is a good starting point.
+- Speak response: optional. When enabled, the app plays a short cached Windows voice response after a successful key send.
+- Response suffix: a short style tag such as `Aura`. Commands without a suffix do not speak.
+- Response text: optional. If left blank, the app generates a short confirmation from the command name.
 
 Click a command list column header to sort the visible list. Sorting is only for viewing; it does not change the saved command order.
 
 Your editable command profile is saved at `profiles/my_eve_commands.json`.
+
+Voice responses are generated locally by Windows and cached in `cache\speech\`. They do not use OpenAI credits and they do not play for silence, invalid phrases, practice mode, or blocked sends.
 
 ## Keybind Standard
 

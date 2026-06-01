@@ -8,11 +8,25 @@ sys.path.insert(0, str(ROOT / "src"))
 from eve_voice_pilot.commands import CommandProfile, VoiceCommand, find_command_match, find_exact_phrase_match, normalize_phrase
 from eve_voice_pilot.input_sender import INPUT, INPUT_UNION, KEYBDINPUT, parse_key_chord
 from eve_voice_pilot.local_transcription import command_phrases_for_grammar
+from eve_voice_pilot.speech_responses import response_enabled, response_text_for_command
 from eve_voice_pilot.transcription import audio_rms, block_size_for_rate, resample_pcm, resample_pcm_to_24k
 
 
 def test_normalize_phrase_removes_punctuation():
     assert normalize_phrase("D-Scan!") == "d scan"
+
+
+def test_voice_command_round_trips_response_fields():
+    command = VoiceCommand.from_dict({
+        "name": "Map",
+        "phrases": ["open map"],
+        "key": "F10",
+        "response_suffix": "Aura",
+        "response_text": "Map open.",
+    })
+    assert command.response_suffix == "Aura"
+    assert command.response_text == "Map open."
+    assert command.to_dict()["response_suffix"] == "Aura"
 
 
 def test_find_command_match_exact_phrase():
@@ -124,6 +138,13 @@ def test_voice_standard_profile_keys_parse():
 def test_voice_standard_avoids_alt_f4_medium_slot():
     profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
     assert all(command.key != "ALT+F4" for command in profile.commands)
+
+
+def test_voice_standard_includes_initial_aura_responses():
+    profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
+    recall = next(command for command in profile.commands if command.name == "All Drones: Return to Drone Bay")
+    assert response_enabled(recall)
+    assert response_text_for_command(recall) == "Drones returning."
 
 
 def test_local_grammar_uses_normalized_unique_phrases():

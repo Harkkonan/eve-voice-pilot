@@ -9,7 +9,9 @@
         "drones home"
       ],
       "key": "SHIFT+R",
-      "hold_seconds": 0.1
+      "hold_seconds": 0.1,
+      "response_suffix": "Aura",
+      "response_text": "Drones returning."
     },
     {
       "name": "Dock/Jump/Activate gate",
@@ -20,7 +22,9 @@
         "jump gate"
       ],
       "key": "D",
-      "hold_seconds": 0.1
+      "hold_seconds": 0.1,
+      "response_suffix": "Aura",
+      "response_text": "Gate command sent."
     },
     {
       "name": "Stop Ship",
@@ -30,7 +34,9 @@
         "stop the ship"
       ],
       "key": "CTRL+SPACE",
-      "hold_seconds": 0.1
+      "hold_seconds": 0.1,
+      "response_suffix": "Aura",
+      "response_text": "Full stop."
     },
     {
       "name": "Warp to",
@@ -40,7 +46,9 @@
         "warp now"
       ],
       "key": "S",
-      "hold_seconds": 0.1
+      "hold_seconds": 0.1,
+      "response_suffix": "Aura",
+      "response_text": "Warp command sent."
     },
     {
       "name": "Align to",
@@ -94,7 +102,9 @@
         "engage drones"
       ],
       "key": "F",
-      "hold_seconds": 0.1
+      "hold_seconds": 0.1,
+      "response_suffix": "Aura",
+      "response_text": "Drones engaging."
     },
     {
       "name": "All Drones: Return and Orbit",
@@ -121,7 +131,9 @@
         "directional scan"
       ],
       "key": "V",
-      "hold_seconds": 0.1
+      "hold_seconds": 0.1,
+      "response_suffix": "Aura",
+      "response_text": "Directional scan pulsed."
     },
     {
       "name": "Directional Scanner",
@@ -139,7 +151,9 @@
         "map"
       ],
       "key": "F10",
-      "hold_seconds": 0.1
+      "hold_seconds": 0.1,
+      "response_suffix": "Aura",
+      "response_text": "Map open."
     },
     {
       "name": "Probe Scanner",

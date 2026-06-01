@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HOLD_SECONDS = 0.10
+AURA_SUFFIX = "Aura"
 NUMBER_WORDS = {
     1: "one",
     2: "two",
@@ -28,6 +29,13 @@ GROUP_ORDER = [
     "Windows",
     "Fleet",
 ]
+
+
+def aura_response(text: str) -> dict:
+    return {
+        "response_suffix": AURA_SUFFIX,
+        "response_text": text,
+    }
 
 
 def numbered_phrases(*prefixes: str, index: int) -> str:
@@ -58,6 +66,7 @@ STANDARD_ROWS = [
         "standard_shortcut": "SHIFT+R",
         "voice_phrases": "recall drones|return drones|drones home",
         "action": "Keep default.",
+        **aura_response("Drones returning."),
     },
     {
         "priority": "Critical",
@@ -67,6 +76,7 @@ STANDARD_ROWS = [
         "standard_shortcut": "CTRL+SPACE",
         "voice_phrases": "stop ship|full stop|stop the ship",
         "action": "Keep default.",
+        **aura_response("Full stop."),
     },
     {
         "priority": "Critical",
@@ -76,6 +86,7 @@ STANDARD_ROWS = [
         "standard_shortcut": "S",
         "voice_phrases": "warp|warp to|warp now",
         "action": "Keep default.",
+        **aura_response("Warp command sent."),
     },
     {
         "priority": "Critical",
@@ -85,6 +96,7 @@ STANDARD_ROWS = [
         "standard_shortcut": "D",
         "voice_phrases": "jump|dock|activate gate|jump gate",
         "action": "Keep default.",
+        **aura_response("Gate command sent."),
     },
     {
         "priority": "High",
@@ -139,6 +151,7 @@ STANDARD_ROWS = [
         "standard_shortcut": "F",
         "voice_phrases": "drones engage|engage drones",
         "action": "Keep default.",
+        **aura_response("Drones engaging."),
     },
     {
         "priority": "High",
@@ -166,6 +179,7 @@ STANDARD_ROWS = [
         "standard_shortcut": "V",
         "voice_phrases": "d scan|directional scan",
         "action": "Keep default.",
+        **aura_response("Directional scan pulsed."),
     },
     {
         "priority": "High",
@@ -202,6 +216,7 @@ STANDARD_ROWS = [
         "standard_shortcut": "F10",
         "voice_phrases": "open map|map",
         "action": "Keep default.",
+        **aura_response("Map open."),
     },
     {
         "priority": "Medium",
@@ -431,12 +446,17 @@ def profile_commands() -> list[dict]:
         phrases = [phrase.strip() for phrase in row["voice_phrases"].split("|") if phrase.strip()]
         if not phrases:
             continue
-        commands.append({
+        command = {
             "name": profile_name(row["eve_command"]),
             "phrases": phrases,
             "key": row["standard_shortcut"],
             "hold_seconds": HOLD_SECONDS,
-        })
+        }
+        if row.get("response_suffix"):
+            command["response_suffix"] = row["response_suffix"]
+        if row.get("response_text"):
+            command["response_text"] = row["response_text"]
+        commands.append(command)
     return commands
 
 
@@ -448,13 +468,15 @@ def write_csv(path: Path) -> None:
         "eve_command",
         "standard_shortcut",
         "voice_phrases",
+        "response_suffix",
+        "response_text",
         "action",
     ]
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in ordered_rows():
-            writer.writerow({field: row[field] for field in fieldnames})
+            writer.writerow({field: row.get(field, "") for field in fieldnames})
 
 
 def ordered_rows() -> list[dict]:
@@ -502,14 +524,17 @@ def write_docs(path: Path) -> None:
         lines.extend([
             f"## {group}",
             "",
-            "| Priority | EVE category | EVE command | Standard shortcut | Voice phrases | Action |",
-            "|---|---|---|---|---|---|",
+            "| Priority | EVE category | EVE command | Standard shortcut | Voice phrases | Voice response | Action |",
+            "|---|---|---|---|---|---|---|",
         ])
         for row in rows:
             voice_phrases = row["voice_phrases"].replace("|", ", ")
+            response = ""
+            if row.get("response_suffix"):
+                response = f"{row['response_suffix']}: {row.get('response_text', '')}".strip()
             lines.append(
                 f"| {row['priority']} | {row['eve_category']} | {row['eve_command']} | "
-                f"`{row['standard_shortcut']}` | {voice_phrases} | {row['action']} |"
+                f"`{row['standard_shortcut']}` | {voice_phrases} | {response} | {row['action']} |"
             )
         lines.append(
             ""
