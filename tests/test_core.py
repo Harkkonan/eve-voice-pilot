@@ -7,7 +7,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from eve_voice_pilot.commands import CommandProfile, VoiceCommand, find_command_match, find_exact_phrase_match, normalize_phrase
 from eve_voice_pilot.input_sender import INPUT, INPUT_UNION, KEYBDINPUT, parse_key_chord
-from eve_voice_pilot.transcription import audio_rms, block_size_for_rate, resample_pcm_to_24k
+from eve_voice_pilot.local_transcription import command_phrases_for_grammar
+from eve_voice_pilot.transcription import audio_rms, block_size_for_rate, resample_pcm, resample_pcm_to_24k
 
 
 def test_normalize_phrase_removes_punctuation():
@@ -104,6 +105,11 @@ def test_resample_pcm_to_24k_keeps_24k_audio_length():
     assert len(resample_pcm_to_24k(raw, 24000)) == len(raw)
 
 
+def test_resample_pcm_can_target_16k_audio():
+    raw = (1000).to_bytes(2, "little", signed=True) * 48
+    assert len(resample_pcm(raw, 48000, 16000)) == 32
+
+
 def test_block_size_for_rate_has_reasonable_minimum():
     assert block_size_for_rate(8000) == 160
 
@@ -118,6 +124,14 @@ def test_voice_standard_profile_keys_parse():
 def test_voice_standard_avoids_alt_f4_medium_slot():
     profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
     assert all(command.key != "ALT+F4" for command in profile.commands)
+
+
+def test_local_grammar_uses_normalized_unique_phrases():
+    commands = [
+        VoiceCommand("Map", ["Open Map!", "open map"], "F10"),
+        VoiceCommand("Recall", ["recall drones"], "SHIFT+R"),
+    ]
+    assert command_phrases_for_grammar(commands) == ["open map", "recall drones"]
 
 
 def test_windows_input_union_has_full_size():

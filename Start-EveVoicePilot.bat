@@ -4,11 +4,20 @@ cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
     echo Setting up EVE Voice Pilot. This may take a minute the first time.
-    py -3 -m venv .venv
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\scripts\setup.ps1"
     if errorlevel 1 goto failed
-    ".venv\Scripts\python.exe" -m pip install --upgrade pip
+)
+
+if not exist "models\vosk-model-small-en-us-0.15\conf\model.conf" (
+    echo Installing local speech model. This may take a minute.
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\scripts\setup.ps1"
     if errorlevel 1 goto failed
-    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
+)
+
+".venv\Scripts\python.exe" -c "import sounddevice, vosk, websocket" >nul 2>nul
+if errorlevel 1 (
+    echo Updating EVE Voice Pilot packages.
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\scripts\setup.ps1"
     if errorlevel 1 goto failed
 )
 

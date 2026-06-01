@@ -7,6 +7,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HOLD_SECONDS = 0.10
+NUMBER_WORDS = {
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+}
 GROUP_ORDER = [
     "App Control",
     "Emergency and Survival",
@@ -18,6 +28,15 @@ GROUP_ORDER = [
     "Windows",
     "Fleet",
 ]
+
+
+def numbered_phrases(*prefixes: str, index: int) -> str:
+    number = NUMBER_WORDS[index]
+    phrases = []
+    for prefix in prefixes:
+        phrases.append(f"{prefix} {index}")
+        phrases.append(f"{prefix} {number}")
+    return "|".join(phrases)
 
 
 STANDARD_ROWS = [
@@ -375,7 +394,7 @@ def add_module_rows() -> None:
             "eve_category": "Modules",
             "eve_command": f"Activate High Power Slot {index}",
             "standard_shortcut": f"F{index}",
-            "voice_phrases": f"module {index}|high {index}|fire {index}",
+            "voice_phrases": numbered_phrases("module", "high", "fire", index=index),
             "action": "Keep default.",
         })
     for index in range(1, 9):
@@ -385,7 +404,7 @@ def add_module_rows() -> None:
             "eve_category": "Modules",
             "eve_command": f"Activate Medium Power Slot {index}",
             "standard_shortcut": f"ALT+{index}",
-            "voice_phrases": f"mid {index}|medium {index}",
+            "voice_phrases": numbered_phrases("mid", "medium", index=index),
             "action": "Change in EVE. This avoids the default Alt-F4 style medium-slot pattern.",
         })
     for index in range(1, 9):
@@ -395,7 +414,7 @@ def add_module_rows() -> None:
             "eve_category": "Modules",
             "eve_command": f"Activate Low Power Slot {index}",
             "standard_shortcut": f"CTRL+F{index}",
-            "voice_phrases": f"low {index}",
+            "voice_phrases": numbered_phrases("low", index=index),
             "action": "Keep default.",
         })
 

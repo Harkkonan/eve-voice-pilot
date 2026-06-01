@@ -109,24 +109,26 @@ def _sample_rate_from_device(device: dict) -> int:
     return sample_rate if sample_rate > 0 else FALLBACK_CAPTURE_RATE
 
 
-def resample_pcm_to_24k(raw: bytes, source_rate: int) -> bytes:
+def resample_pcm(raw: bytes, source_rate: int, target_rate: int) -> bytes:
     if source_rate <= 0:
         source_rate = FALLBACK_CAPTURE_RATE
+    if target_rate <= 0:
+        target_rate = API_RATE
     samples = array("h")
     samples.frombytes(raw)
     if sys.byteorder != "little":
         samples.byteswap()
     if not samples:
         return b""
-    if source_rate == API_RATE:
+    if source_rate == target_rate:
         if sys.byteorder != "little":
             samples.byteswap()
         return samples.tobytes()
 
-    output_len = max(1, int(len(samples) * API_RATE / source_rate))
+    output_len = max(1, int(len(samples) * target_rate / source_rate))
     output = array("h")
     for output_index in range(output_len):
-        source_pos = output_index * source_rate / API_RATE
+        source_pos = output_index * source_rate / target_rate
         left_index = int(source_pos)
         right_index = min(left_index + 1, len(samples) - 1)
         fraction = source_pos - left_index
@@ -135,6 +137,10 @@ def resample_pcm_to_24k(raw: bytes, source_rate: int) -> bytes:
     if sys.byteorder != "little":
         output.byteswap()
     return output.tobytes()
+
+
+def resample_pcm_to_24k(raw: bytes, source_rate: int) -> bytes:
+    return resample_pcm(raw, source_rate, API_RATE)
 
 
 def audio_rms(raw: bytes) -> float:

@@ -16,13 +16,16 @@ The first version is intentionally cautious:
 
 Double-click `Start-EveVoicePilot.bat`.
 
-The first run creates a local `.venv` folder and installs the two Python packages used for microphone capture and the OpenAI realtime connection.
+The first run creates a local `.venv` folder, installs the Python packages, and downloads the small local speech model into `models\`.
 
-## OpenAI API Key
+## Speech Engine
 
-This app needs an OpenAI API key. A ChatGPT subscription does not automatically pay for API usage.
+The `Speech engine` setting has two choices:
 
-Paste your API key into the app. If you check `Remember on this PC`, the app saves it in your Windows user profile using Windows data protection.
+- `Local (offline)`: uses the downloaded Vosk model. This is the default, does not use OpenAI credits, and should feel quick once the model is loaded.
+- `OpenAI realtime`: uses OpenAI transcription. Use this if you want to compare recognition quality or use it as a fallback.
+
+For `OpenAI realtime`, paste your API key into the app. A ChatGPT subscription does not automatically pay for API usage. If you check `Remember on this PC`, the app saves it in your Windows user profile using Windows data protection.
 
 ## Microphone Check
 
@@ -33,18 +36,18 @@ If the test says the level is low, try a different listed microphone or raise th
 ## How To Test Safely
 
 1. Leave `Practice mode` turned on.
-2. Press `F9` or click `Arm Listening`.
+2. Press `PAUSE` or click `Arm Listening`.
 3. Speak commands. After each command, the app automatically listens again.
-4. Press `F9` again or click `Pause` when you want it to stop listening.
+4. Press `PAUSE` again or click `Pause` when you want it to stop listening.
 5. Check `Last heard`, `Last action`, and the log.
 6. When the command matching looks right, turn off `Practice mode`.
 7. Put EVE in the foreground before using real key sending.
 
 ## Armed Listening
 
-`Arm Listening` means the app is actively waiting for voice commands. It keeps the OpenAI connection warm and restarts listening after each command, which is faster than clicking Start every time.
+`Arm Listening` means the app is actively waiting for voice commands. It keeps the selected speech engine ready and restarts listening after each command, which is faster than clicking Start every time.
 
-Use `Pause` when you are done. While armed, the app uses the microphone and may use API credits even when no command is spoken.
+Use `Pause` when you are done. While armed, the app uses the microphone. It uses API credits only when `OpenAI realtime` is selected.
 
 The recommended arm/pause hotkey is `PAUSE`, so EVE can keep `F9` for Solar System Map.
 

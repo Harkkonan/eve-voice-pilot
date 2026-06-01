@@ -235,8 +235,11 @@
       "name": "Activate High Power Slot 1",
       "phrases": [
         "module 1",
+        "module one",
         "high 1",
-        "fire 1"
+        "high one",
+        "fire 1",
+        "fire one"
       ],
       "key": "F1",
       "hold_seconds": 0.1
@@ -245,8 +248,11 @@
       "name": "Activate High Power Slot 2",
       "phrases": [
         "module 2",
+        "module two",
         "high 2",
-        "fire 2"
+        "high two",
+        "fire 2",
+        "fire two"
       ],
       "key": "F2",
       "hold_seconds": 0.1
@@ -255,8 +261,11 @@
       "name": "Activate High Power Slot 3",
       "phrases": [
         "module 3",
+        "module three",
         "high 3",
-        "fire 3"
+        "high three",
+        "fire 3",
+        "fire three"
       ],
       "key": "F3",
       "hold_seconds": 0.1
@@ -265,8 +274,11 @@
       "name": "Activate High Power Slot 4",
       "phrases": [
         "module 4",
+        "module four",
         "high 4",
-        "fire 4"
+        "high four",
+        "fire 4",
+        "fire four"
       ],
       "key": "F4",
       "hold_seconds": 0.1
@@ -275,8 +287,11 @@
       "name": "Activate High Power Slot 5",
       "phrases": [
         "module 5",
+        "module five",
         "high 5",
-        "fire 5"
+        "high five",
+        "fire 5",
+        "fire five"
       ],
       "key": "F5",
       "hold_seconds": 0.1
@@ -285,8 +300,11 @@
       "name": "Activate High Power Slot 6",
       "phrases": [
         "module 6",
+        "module six",
         "high 6",
-        "fire 6"
+        "high six",
+        "fire 6",
+        "fire six"
       ],
       "key": "F6",
       "hold_seconds": 0.1
@@ -295,8 +313,11 @@
       "name": "Activate High Power Slot 7",
       "phrases": [
         "module 7",
+        "module seven",
         "high 7",
-        "fire 7"
+        "high seven",
+        "fire 7",
+        "fire seven"
       ],
       "key": "F7",
       "hold_seconds": 0.1
@@ -305,8 +326,11 @@
       "name": "Activate High Power Slot 8",
       "phrases": [
         "module 8",
+        "module eight",
         "high 8",
-        "fire 8"
+        "high eight",
+        "fire 8",
+        "fire eight"
       ],
       "key": "F8",
       "hold_seconds": 0.1
@@ -314,7 +338,8 @@
     {
       "name": "Activate Low Power Slot 1",
       "phrases": [
-        "low 1"
+        "low 1",
+        "low one"
       ],
       "key": "CTRL+F1",
       "hold_seconds": 0.1
@@ -322,7 +347,8 @@
     {
       "name": "Activate Low Power Slot 2",
       "phrases": [
-        "low 2"
+        "low 2",
+        "low two"
       ],
       "key": "CTRL+F2",
       "hold_seconds": 0.1
@@ -330,7 +356,8 @@
     {
       "name": "Activate Low Power Slot 3",
       "phrases": [
-        "low 3"
+        "low 3",
+        "low three"
       ],
       "key": "CTRL+F3",
       "hold_seconds": 0.1
@@ -338,7 +365,8 @@
     {
       "name": "Activate Low Power Slot 4",
       "phrases": [
-        "low 4"
+        "low 4",
+        "low four"
       ],
       "key": "CTRL+F4",
       "hold_seconds": 0.1
@@ -346,7 +374,8 @@
     {
       "name": "Activate Low Power Slot 5",
       "phrases": [
-        "low 5"
+        "low 5",
+        "low five"
       ],
       "key": "CTRL+F5",
       "hold_seconds": 0.1
@@ -354,7 +383,8 @@
     {
       "name": "Activate Low Power Slot 6",
       "phrases": [
-        "low 6"
+        "low 6",
+        "low six"
       ],
       "key": "CTRL+F6",
       "hold_seconds": 0.1
@@ -362,7 +392,8 @@
     {
       "name": "Activate Low Power Slot 7",
       "phrases": [
-        "low 7"
+        "low 7",
+        "low seven"
       ],
       "key": "CTRL+F7",
       "hold_seconds": 0.1
@@ -370,7 +401,8 @@
     {
       "name": "Activate Low Power Slot 8",
       "phrases": [
-        "low 8"
+        "low 8",
+        "low eight"
       ],
       "key": "CTRL+F8",
       "hold_seconds": 0.1
@@ -379,7 +411,9 @@
       "name": "Activate Medium Power Slot 1",
       "phrases": [
         "mid 1",
-        "medium 1"
+        "mid one",
+        "medium 1",
+        "medium one"
       ],
       "key": "ALT+1",
       "hold_seconds": 0.1
@@ -388,7 +422,9 @@
       "name": "Activate Medium Power Slot 2",
       "phrases": [
         "mid 2",
-        "medium 2"
+        "mid two",
+        "medium 2",
+        "medium two"
       ],
       "key": "ALT+2",
       "hold_seconds": 0.1
@@ -397,7 +433,9 @@
       "name": "Activate Medium Power Slot 3",
       "phrases": [
         "mid 3",
-        "medium 3"
+        "mid three",
+        "medium 3",
+        "medium three"
       ],
       "key": "ALT+3",
       "hold_seconds": 0.1
@@ -406,7 +444,9 @@
       "name": "Activate Medium Power Slot 4",
       "phrases": [
         "mid 4",
-        "medium 4"
+        "mid four",
+        "medium 4",
+        "medium four"
       ],
       "key": "ALT+4",
       "hold_seconds": 0.1
@@ -415,7 +455,9 @@
       "name": "Activate Medium Power Slot 5",
       "phrases": [
         "mid 5",
-        "medium 5"
+        "mid five",
+        "medium 5",
+        "medium five"
       ],
       "key": "ALT+5",
       "hold_seconds": 0.1
@@ -424,7 +466,9 @@
       "name": "Activate Medium Power Slot 6",
       "phrases": [
         "mid 6",
-        "medium 6"
+        "mid six",
+        "medium 6",
+        "medium six"
       ],
       "key": "ALT+6",
       "hold_seconds": 0.1
@@ -433,7 +477,9 @@
       "name": "Activate Medium Power Slot 7",
       "phrases": [
         "mid 7",
-        "medium 7"
+        "mid seven",
+        "medium 7",
+        "medium seven"
       ],
       "key": "ALT+7",
       "hold_seconds": 0.1
@@ -442,7 +488,9 @@
       "name": "Activate Medium Power Slot 8",
       "phrases": [
         "mid 8",
-        "medium 8"
+        "mid eight",
+        "medium 8",
+        "medium eight"
       ],
       "key": "ALT+8",
       "hold_seconds": 0.1
