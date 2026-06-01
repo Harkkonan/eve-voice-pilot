@@ -15,7 +15,16 @@ from .config import load_settings, save_settings
 from .hotkey import GlobalHotkey
 from .input_sender import active_window_title, parse_key_chord, send_key_chord
 from .local_transcription import LocalVoskTranscriber
-from .speech_responses import DEFAULT_RESPONSE_SUFFIX, SpeechResponseManager
+from .speech_responses import (
+    DEFAULT_OPENAI_TTS_MODEL,
+    DEFAULT_OPENAI_TTS_VOICE,
+    DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+    DEFAULT_RESPONSE_ENGINE,
+    DEFAULT_RESPONSE_SUFFIX,
+    OPENAI_TTS_VOICES,
+    RESPONSE_ENGINES,
+    SpeechResponseManager,
+)
 from .transcription import (
     RealtimeTranscriber,
     audio_rms,
@@ -141,6 +150,7 @@ class EveVoicePilotApp(tk.Tk):
 
         self._build_ui()
         self._refresh_commands()
+        self._configure_speech_responses()
         self.speech_responses.prepare_commands_async(self.profile.commands)
         self._register_hotkey()
         self.after(500, self._warm_connection_if_possible)
@@ -342,6 +352,15 @@ class EveVoicePilotApp(tk.Tk):
         self.practice_mode_var = tk.BooleanVar(value=self.settings.get("practice_mode", True))
         self.require_target_var = tk.BooleanVar(value=self.settings.get("require_target", True))
         self.target_title_var = tk.StringVar(value=self.settings.get("target_title", "EVE"))
+        saved_response_engine = str(self.settings.get("response_engine", DEFAULT_RESPONSE_ENGINE)).strip()
+        if saved_response_engine not in RESPONSE_ENGINES:
+            saved_response_engine = DEFAULT_RESPONSE_ENGINE
+        self.response_engine_var = tk.StringVar(value=saved_response_engine)
+        self.response_voice_var = tk.StringVar(value=str(self.settings.get("response_voice", DEFAULT_OPENAI_TTS_VOICE)).strip() or DEFAULT_OPENAI_TTS_VOICE)
+        self.response_style_var = tk.StringVar(
+            value=str(self.settings.get("response_style", DEFAULT_POWER_BALLAD_INSTRUCTIONS)).strip()
+            or DEFAULT_POWER_BALLAD_INSTRUCTIONS
+        )
 
         ttk.Label(settings, text="Speech engine").grid(row=0, column=0, sticky="w", pady=5)
         ttk.Combobox(settings, textvariable=self.engine_var, values=SPEECH_ENGINES, state="readonly").grid(
@@ -372,7 +391,26 @@ class EveVoicePilotApp(tk.Tk):
         ttk.Checkbutton(settings, text="Practice mode", variable=self.practice_mode_var).grid(row=8, column=0, columnspan=2, sticky="w", pady=4)
         ttk.Checkbutton(settings, text="Only when this window title is active", variable=self.require_target_var).grid(row=9, column=0, columnspan=2, sticky="w", pady=4)
         ttk.Entry(settings, textvariable=self.target_title_var).grid(row=10, column=0, columnspan=2, sticky="ew", pady=4)
-        ttk.Button(settings, text="Save Settings", command=self.save_settings).grid(row=11, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
+        ttk.Label(settings, text="Voice responses").grid(row=11, column=0, sticky="w", pady=5)
+        ttk.Combobox(settings, textvariable=self.response_engine_var, values=RESPONSE_ENGINES, state="readonly").grid(
+            row=11,
+            column=1,
+            sticky="ew",
+            pady=5,
+        )
+        ttk.Label(settings, text="OpenAI voice").grid(row=12, column=0, sticky="w", pady=5)
+        ttk.Combobox(settings, textvariable=self.response_voice_var, values=OPENAI_TTS_VOICES).grid(row=12, column=1, sticky="ew", pady=5)
+        ttk.Label(settings, text="Voice style").grid(row=13, column=0, sticky="w", pady=5)
+        ttk.Entry(settings, textvariable=self.response_style_var).grid(row=13, column=1, sticky="ew", pady=5)
+        ttk.Button(settings, text="Regenerate Voice Clips", command=self.regenerate_voice_clips).grid(
+            row=14,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(6, 0),
+        )
+        ttk.Button(settings, text="Save Settings", command=self.save_settings).grid(row=15, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
         log_frame = ttk.LabelFrame(right, text="System Log", padding=8)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
@@ -489,6 +527,7 @@ class EveVoicePilotApp(tk.Tk):
     def save_profile(self) -> None:
         self.profile.save(self.profile_path)
         self._close_transcriber()
+        self._configure_speech_responses()
         self.speech_responses.prepare_commands_async(self.profile.commands)
         self.log(f"Saved commands to {self.profile_path}")
         self._warm_connection_if_possible()
@@ -572,6 +611,9 @@ class EveVoicePilotApp(tk.Tk):
             "practice_mode": self.practice_mode_var.get(),
             "require_target": self.require_target_var.get(),
             "target_title": self.target_title_var.get().strip() or "EVE",
+            "response_engine": self.response_engine_var.get(),
+            "response_voice": self.response_voice_var.get().strip() or DEFAULT_OPENAI_TTS_VOICE,
+            "response_style": self.response_style_var.get().strip() or DEFAULT_POWER_BALLAD_INSTRUCTIONS,
             "profile_path": str(self.profile_path),
         }
         try:
@@ -586,9 +628,25 @@ class EveVoicePilotApp(tk.Tk):
         selected_device = self._selected_input_device_index()
         if self.transcriber and self.transcriber_input_device_index != selected_device:
             self._close_transcriber()
+        self._configure_speech_responses()
+        self.speech_responses.prepare_commands_async(self.profile.commands)
         self._register_hotkey()
         self.log("Saved settings.")
         self._warm_connection_if_possible()
+
+    def _configure_speech_responses(self) -> None:
+        self.speech_responses.configure(
+            engine=self.response_engine_var.get(),
+            api_key=self.api_key_var.get().strip(),
+            model=DEFAULT_OPENAI_TTS_MODEL,
+            voice=self.response_voice_var.get().strip() or DEFAULT_OPENAI_TTS_VOICE,
+            instructions=self.response_style_var.get().strip() or DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+        )
+
+    def regenerate_voice_clips(self) -> None:
+        self._configure_speech_responses()
+        self.speech_responses.prepare_commands_async(self.profile.commands, force=True)
+        self.log("Regenerating voice response clips.")
 
     def arm_listening(self) -> None:
         if self.armed:

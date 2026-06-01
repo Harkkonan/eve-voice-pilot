@@ -8,7 +8,15 @@ sys.path.insert(0, str(ROOT / "src"))
 from eve_voice_pilot.commands import CommandProfile, VoiceCommand, find_command_match, find_exact_phrase_match, normalize_phrase
 from eve_voice_pilot.input_sender import INPUT, INPUT_UNION, KEYBDINPUT, parse_key_chord
 from eve_voice_pilot.local_transcription import command_phrases_for_grammar
-from eve_voice_pilot.speech_responses import response_enabled, response_text_for_command
+from eve_voice_pilot.speech_responses import (
+    DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+    DEFAULT_RESPONSE_ENGINE,
+    RESPONSE_ENGINE_OPENAI,
+    RESPONSE_ENGINE_WINDOWS,
+    response_cache_path,
+    response_enabled,
+    response_text_for_command,
+)
 from eve_voice_pilot.transcription import audio_rms, block_size_for_rate, resample_pcm, resample_pcm_to_24k
 
 
@@ -145,6 +153,19 @@ def test_voice_standard_includes_initial_aura_responses():
     recall = next(command for command in profile.commands if command.name == "All Drones: Return to Drone Bay")
     assert response_enabled(recall)
     assert response_text_for_command(recall) == "Drones returning."
+
+
+def test_response_cache_separates_openai_and_windows_clips():
+    command = VoiceCommand("Map", ["open map"], "F10", response_suffix="Aura", response_text="Map open.")
+    windows_path = response_cache_path(command, engine=RESPONSE_ENGINE_WINDOWS)
+    openai_path = response_cache_path(
+        command,
+        engine=RESPONSE_ENGINE_OPENAI,
+        voice="ballad",
+        instructions=DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+    )
+    assert DEFAULT_RESPONSE_ENGINE == RESPONSE_ENGINE_OPENAI
+    assert windows_path != openai_path
 
 
 def test_voice_standard_includes_added_catalog_shortcuts():
