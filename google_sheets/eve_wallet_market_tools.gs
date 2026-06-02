@@ -24,6 +24,7 @@ const EVE_HEADERS = Object.freeze({
   TRADE_OPPORTUNITIES: [
     'Observation Date',
     'Item',
+    'Quantity',
     'Buy Hub',
     'Sell/Refine Hub',
     'Buy Price / Unit',
@@ -180,7 +181,7 @@ function onOpen() {
     .addToUi();
 
   ui.createMenu('EVE Trade')
-    .addItem('Add Observation Date Column', 'addTradeObservationDateColumn')
+    .addItem('Add Observation Date / Quantity Columns', 'addTradeObservationDateColumn')
     .addItem('Timestamp Blank Observation Dates', 'timestampTradeOpportunityRows')
     .addToUi();
 }
@@ -225,8 +226,8 @@ function timestampTradeOpportunityRows() {
   const ss = SpreadsheetApp.getActive();
   const sheet = ensureSheet_(ss, EVE_SHEET.TRADE_OPPORTUNITIES);
   const result = ensureTradeObservationDateColumn_(sheet);
-  const count = fillBlankTradeObservationDates_(sheet, result.headerRow, result.observationCol);
-  SpreadsheetApp.getUi().alert(`Stamped ${count} trade opportunity row(s) with today's date.`);
+  const count = fillBlankTradeObservationDates_(sheet, result.headerRow, result.observationCol, result.quantityCol);
+  SpreadsheetApp.getUi().alert(`Stamped ${count} trade opportunity row(s) with today's date. Rows without Quantity were skipped.`);
 }
 
 function loadMarketPickerDraftTable() {
@@ -956,47 +957,64 @@ function ensureTradeObservationDateColumn_(sheet) {
     sheet.clear();
     sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length).setValues([EVE_HEADERS.TRADE_OPPORTUNITIES]);
     styleHeader_(sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length));
-    formatTradeObservationSheet_(sheet, 1, 1);
+    formatTradeObservationSheet_(sheet, 1, 1, 3);
     return {
       headerRow: 1,
       observationCol: 1,
-      message: 'Trade Opportunities was empty, so I created the default table with Observation Date.',
+      quantityCol: 3,
+      message: 'Trade Opportunities was empty, so I created the default table with Observation Date and Quantity.',
     };
   }
 
-  const headerInfo = findTradeOpportunityHeader_(sheet);
+  let headerInfo = findTradeOpportunityHeader_(sheet);
   if (!headerInfo) {
     sheet.insertRowsBefore(1, 1);
     sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length).setValues([EVE_HEADERS.TRADE_OPPORTUNITIES]);
     styleHeader_(sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length));
-    formatTradeObservationSheet_(sheet, 1, 1);
+    formatTradeObservationSheet_(sheet, 1, 1, 3);
     return {
       headerRow: 1,
       observationCol: 1,
+      quantityCol: 3,
       message: 'I could not find the old header row, so I added a default Trade Opportunities header at the top.',
     };
   }
 
-  const existingObservationCol = headerInfo.headers.indexOf('observation_date') + 1;
-  if (existingObservationCol > 0) {
-    formatTradeObservationSheet_(sheet, headerInfo.row, existingObservationCol);
-    return {
-      headerRow: headerInfo.row,
-      observationCol: existingObservationCol,
-      message: 'Observation Date already exists. I formatted it and left the sheet structure alone.',
-    };
+  let changed = false;
+  let observationCol = headerInfo.headers.indexOf('observation_date') + 1;
+  if (!observationCol) {
+    const insertCol = headerInfo.firstHeaderCol;
+    sheet.insertColumnBefore(insertCol);
+    sheet.getRange(headerInfo.row, insertCol).setValue('Observation Date');
+    styleHeader_(sheet.getRange(headerInfo.row, insertCol, 1, 1));
+    changed = true;
+    headerInfo = findTradeOpportunityHeader_(sheet);
+    observationCol = headerInfo.headers.indexOf('observation_date') + 1;
   }
 
-  const insertCol = headerInfo.firstHeaderCol;
-  sheet.insertColumnBefore(insertCol);
-  sheet.getRange(headerInfo.row, insertCol).setValue('Observation Date');
-  styleHeader_(sheet.getRange(headerInfo.row, insertCol, 1, 1));
-  formatTradeObservationSheet_(sheet, headerInfo.row, insertCol);
-  const stamped = fillBlankTradeObservationDates_(sheet, headerInfo.row, insertCol);
+  let quantityCol = findTradeQuantityColumn_(headerInfo.headers);
+  if (!quantityCol) {
+    const itemCol = headerInfo.headers.indexOf('item') + 1;
+    const insertAfterCol = itemCol || observationCol;
+    sheet.insertColumnAfter(insertAfterCol);
+    quantityCol = insertAfterCol + 1;
+    sheet.getRange(headerInfo.row, quantityCol).setValue('Quantity');
+    styleHeader_(sheet.getRange(headerInfo.row, quantityCol, 1, 1));
+    changed = true;
+    headerInfo = findTradeOpportunityHeader_(sheet);
+    observationCol = headerInfo.headers.indexOf('observation_date') + 1;
+    quantityCol = findTradeQuantityColumn_(headerInfo.headers);
+  }
+
+  formatTradeObservationSheet_(sheet, headerInfo.row, observationCol, quantityCol);
+  const stamped = fillBlankTradeObservationDates_(sheet, headerInfo.row, observationCol, quantityCol);
   return {
     headerRow: headerInfo.row,
-    observationCol: insertCol,
-    message: `Added Observation Date and stamped ${stamped} existing row(s) with today's date.`,
+    observationCol,
+    quantityCol,
+    message: changed
+      ? `Added missing trade tracking column(s) and stamped ${stamped} row(s) with quantity. Rows without Quantity were skipped.`
+      : `Observation Date and Quantity already exist. Stamped ${stamped} row(s) with quantity; rows without Quantity were skipped.`,
   };
 }
 
@@ -1024,13 +1042,20 @@ function findTradeOpportunityHeader_(sheet) {
   return null;
 }
 
-function fillBlankTradeObservationDates_(sheet, headerRow, observationCol) {
+function findTradeQuantityColumn_(headers) {
+  const accepted = ['quantity', 'qty', 'amount'];
+  const index = headers.findIndex(header => accepted.includes(header));
+  return index >= 0 ? index + 1 : 0;
+}
+
+function fillBlankTradeObservationDates_(sheet, headerRow, observationCol, quantityCol) {
   const lastRow = sheet.getLastRow();
-  if (lastRow <= headerRow) return 0;
+  if (lastRow <= headerRow || !quantityCol) return 0;
 
   const rowCount = lastRow - headerRow;
   const dateRange = sheet.getRange(headerRow + 1, observationCol, rowCount, 1);
   const dates = dateRange.getValues();
+  const quantities = sheet.getRange(headerRow + 1, quantityCol, rowCount, 1).getValues();
   const tableWidth = Math.max(sheet.getLastColumn(), 1);
   const rows = sheet.getRange(headerRow + 1, 1, rowCount, tableWidth).getValues();
   const today = new Date();
@@ -1038,7 +1063,8 @@ function fillBlankTradeObservationDates_(sheet, headerRow, observationCol) {
 
   rows.forEach((row, index) => {
     const hasContent = row.some(cell => cell !== '' && cell !== null);
-    if (hasContent && !dates[index][0]) {
+    const hasQuantity = hasTradeQuantity_(quantities[index][0]);
+    if (hasContent && hasQuantity && !dates[index][0]) {
       dates[index][0] = today;
       stamped += 1;
     }
@@ -1048,12 +1074,23 @@ function fillBlankTradeObservationDates_(sheet, headerRow, observationCol) {
   return stamped;
 }
 
-function formatTradeObservationSheet_(sheet, headerRow, observationCol) {
+function hasTradeQuantity_(value) {
+  if (value === '' || value === null) return false;
+  const text = String(value).trim();
+  if (!text) return false;
+  const numeric = Number(text.replace(/,/g, ''));
+  return isNaN(numeric) ? true : numeric > 0;
+}
+
+function formatTradeObservationSheet_(sheet, headerRow, observationCol, quantityCol) {
   const lastRow = Math.max(sheet.getLastRow(), headerRow + 1);
   const lastCol = Math.max(sheet.getLastColumn(), EVE_HEADERS.TRADE_OPPORTUNITIES.length);
   sheet.setFrozenRows(headerRow);
   sheet.getRange(headerRow, 1, 1, lastCol).setFontWeight('bold').setWrap(true);
   sheet.getRange(headerRow, observationCol, lastRow - headerRow + 1, 1).setNumberFormat('yyyy-mm-dd');
+  if (quantityCol) {
+    sheet.getRange(headerRow + 1, quantityCol, Math.max(lastRow - headerRow, 1), 1).setNumberFormat('#,##0.00');
+  }
   applyFilter_(sheet, headerRow, 1, Math.max(lastRow - headerRow + 1, 2), lastCol);
   sheet.autoResizeColumns(1, Math.min(lastCol, 16));
 }
