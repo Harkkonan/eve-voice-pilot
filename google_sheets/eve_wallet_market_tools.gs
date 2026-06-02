@@ -118,7 +118,11 @@ const EVE_HEADERS = Object.freeze({
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('EVE Market')
+    .addItem('Set Up Market Tool', 'setupMarketTool')
     .addItem('Load Market Tool Table', 'loadMarketToolTable')
+    .addSeparator()
+    .addItem('Enable Auto Refresh on Edit', 'installMarketAutoRefresh')
+    .addItem('Disable Auto Refresh on Edit', 'removeMarketAutoRefresh')
     .addToUi();
 
   ui.createMenu('EVE Wallet')
@@ -137,6 +141,53 @@ function setupMissionTracker() {
   const sheet = ensureSheet_(ss, EVE_SHEET.MISSION_TRACKER);
   setupMissionTrackerSheet_(sheet);
   SpreadsheetApp.getUi().alert('Mission Tracker is ready. Enter each mission as one row starting on row 11.');
+}
+
+function setupMarketTool() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ensureSheet_(ss, EVE_SHEET.MARKET_TOOL);
+  setupMarketToolSheet_(sheet);
+  SpreadsheetApp.getUi().alert('Market Tool is ready. Change B2/B3/B4, then run EVE Market > Load Market Tool Table.');
+}
+
+function installMarketAutoRefresh() {
+  const ss = SpreadsheetApp.getActive();
+  removeMarketAutoRefresh_();
+  ScriptApp.newTrigger('marketToolEditRefresh')
+    .forSpreadsheet(ss)
+    .onEdit()
+    .create();
+  setupMarketToolSheet_(ensureSheet_(ss, EVE_SHEET.MARKET_TOOL));
+  SpreadsheetApp.getUi().alert('Market auto-refresh is enabled. Editing B2, B3, or B4 will reload the Market Tool table.');
+}
+
+function removeMarketAutoRefresh() {
+  const removed = removeMarketAutoRefresh_();
+  SpreadsheetApp.getUi().alert(
+    removed
+      ? 'Market auto-refresh was disabled.'
+      : 'No Market Tool auto-refresh trigger was found.'
+  );
+}
+
+function marketToolEditRefresh(e) {
+  if (!e || !e.range) return;
+  const range = e.range;
+  const sheet = range.getSheet();
+  if (sheet.getName() !== EVE_SHEET.MARKET_TOOL) return;
+
+  const touchesInputRows = range.getRow() <= 4 && range.getLastRow() >= 2;
+  const touchesInputColumn = range.getColumn() <= 2 && range.getLastColumn() >= 2;
+  if (!touchesInputRows || !touchesInputColumn) return;
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) return;
+  try {
+    setMarketStatus_(sheet, 'Inputs changed. Loading market orders...');
+    loadMarketToolTable(false);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function setupWalletSheets() {
@@ -374,27 +425,108 @@ function rebuildModuleSpendSummary() {
   spend.getRange('H:H').setNumberFormat('yyyy-mm-dd hh:mm');
 }
 
-function loadMarketToolTable() {
+function loadMarketToolTable(showAlert) {
+  showAlert = showAlert !== false;
   const ss = SpreadsheetApp.getActive();
   const sheet = ensureSheet_(ss, EVE_SHEET.MARKET_TOOL);
-  const itemName = String(sheet.getRange('B2').getValue() || '').trim();
-  const regionName = String(sheet.getRange('B3').getValue() || '').trim();
-  const orderType = String(sheet.getRange('B4').getValue() || 'sell').trim().toLowerCase();
+  setupMarketToolSheet_(sheet);
 
-  if (!itemName || !regionName) {
-    SpreadsheetApp.getUi().alert('Enter an item name in B2 and a region name in B3 first.');
-    return;
+  try {
+    const itemName = String(sheet.getRange('B2').getValue() || '').trim();
+    const regionName = String(sheet.getRange('B3').getValue() || '').trim();
+    const rawOrderType = String(sheet.getRange('B4').getValue() || 'sell').trim().toLowerCase();
+    const orderType = ['buy', 'sell', 'all'].includes(rawOrderType) ? rawOrderType : 'sell';
+    sheet.getRange('B4').setValue(orderType);
+
+    if (!itemName || !regionName) {
+      const message = 'Enter an item name in B2 and a region name in B3 first.';
+      setMarketStatus_(sheet, message);
+      if (showAlert) SpreadsheetApp.getUi().alert(message);
+      return;
+    }
+
+    setMarketStatus_(sheet, `Loading ${orderType} orders for ${itemName} in ${regionName}...`);
+    SpreadsheetApp.flush();
+
+    const typeId = resolveSearchId_(itemName, 'inventory_type');
+    const regionId = resolveSearchId_(regionName, 'region');
+    sheet.getRange('B5').setValue(typeId);
+    sheet.getRange('B6').setValue(regionId);
+
+    const orders = fetchAllMarketOrders_(regionId, typeId, orderType);
+    const systemNames = resolveEsiNames_(orders.map(order => order.system_id));
+    const locationNames = resolveEsiNames_(orders.map(order => order.location_id));
+    const headers = getMarketOrderHeaders_();
+    const values = orders.map(order => [
+      order.duration,
+      order.is_buy_order,
+      parseEveDate_(order.issued),
+      order.location_id,
+      order.min_volume,
+      order.order_id,
+      order.price,
+      order.range,
+      order.system_id,
+      order.type_id,
+      order.volume_remain,
+      order.volume_total,
+      '',
+      systemNames.get(String(order.system_id)) || order.system_id,
+      locationNames.get(String(order.location_id)) || order.location_id,
+    ]);
+
+    sheet.getRange('A13:O').clearContent().clearFormat();
+    sheet.getRange(13, 1, 1, headers.length).setValues([headers]);
+    if (values.length) {
+      sheet.getRange(14, 1, values.length, headers.length).setValues(values);
+    }
+    styleHeader_(sheet.getRange(13, 1, 1, headers.length));
+    applyFilter_(sheet, 13, 1, Math.max(values.length + 1, 2), headers.length);
+    sheet.autoResizeColumns(1, headers.length);
+    sheet.getRange('C:C').setNumberFormat('yyyy-mm-dd hh:mm');
+    sheet.getRange('G:G').setNumberFormat('#,##0.00');
+    setMarketStatus_(sheet, `Loaded ${values.length} ${orderType} order(s) for ${itemName} in ${regionName} at ${formatNow_()}.`);
+  } catch (error) {
+    const message = `Error: ${error.message || error}`;
+    setMarketStatus_(sheet, message);
+    if (showAlert) SpreadsheetApp.getUi().alert(message);
   }
+}
 
-  const typeId = resolveSearchId_(itemName, 'inventory_type');
-  const regionId = resolveSearchId_(regionName, 'region');
-  sheet.getRange('B5').setValue(typeId);
-  sheet.getRange('B6').setValue(regionId);
+function setupMarketToolSheet_(sheet) {
+  const headers = getMarketOrderHeaders_();
 
-  const orders = fetchAllMarketOrders_(regionId, typeId, orderType);
-  const systemNames = resolveEsiNames_(orders.map(order => order.system_id));
-  const locationNames = resolveEsiNames_(orders.map(order => order.location_id));
-  const headers = [
+  sheet.getRange('A1').setValue('Market Tool');
+  sheet.getRange('A2').setValue('Item Name');
+  sheet.getRange('A3').setValue('Region');
+  sheet.getRange('A4').setValue('Order Type');
+  sheet.getRange('A5').setValue('Resolved Type ID');
+  sheet.getRange('A6').setValue('Resolved Region ID');
+  sheet.getRange('A7').setValue('Status');
+
+  if (sheet.getRange('B2').isBlank()) sheet.getRange('B2').setValue('Tritanium');
+  if (sheet.getRange('B3').isBlank()) sheet.getRange('B3').setValue('Devoid');
+  if (sheet.getRange('B4').isBlank()) sheet.getRange('B4').setValue('sell');
+  setDropdown_(sheet.getRange('B4'), ['sell', 'buy', 'all']);
+  setMarketStatus_(sheet, 'Ready. Change B2/B3/B4, then run EVE Market > Load Market Tool Table.');
+
+  sheet.getRange('A1:B7')
+    .setFontWeight('bold')
+    .setWrap(true);
+  sheet.getRange('A1:B1').setBackground('#dbeafe');
+  sheet.getRange('A7:B7').setBackground('#fef3c7');
+  sheet.setFrozenRows(13);
+
+  if (sheet.getRange('A13').isBlank()) {
+    sheet.getRange(13, 1, 1, headers.length).setValues([headers]);
+    styleHeader_(sheet.getRange(13, 1, 1, headers.length));
+    applyFilter_(sheet, 13, 1, 2, headers.length);
+  }
+  sheet.autoResizeColumns(1, headers.length);
+}
+
+function getMarketOrderHeaders_() {
+  return [
     'duration',
     'is_buy_order',
     'issued',
@@ -411,34 +543,28 @@ function loadMarketToolTable() {
     'system_name',
     'location_name',
   ];
-  const values = orders.map(order => [
-    order.duration,
-    order.is_buy_order,
-    parseEveDate_(order.issued),
-    order.location_id,
-    order.min_volume,
-    order.order_id,
-    order.price,
-    order.range,
-    order.system_id,
-    order.type_id,
-    order.volume_remain,
-    order.volume_total,
-    '',
-    systemNames.get(String(order.system_id)) || order.system_id,
-    locationNames.get(String(order.location_id)) || order.location_id,
-  ]);
+}
 
-  sheet.getRange('A13:O').clearContent().clearFormat();
-  sheet.getRange(13, 1, 1, headers.length).setValues([headers]);
-  if (values.length) {
-    sheet.getRange(14, 1, values.length, headers.length).setValues(values);
-  }
-  styleHeader_(sheet.getRange(13, 1, 1, headers.length));
-  applyFilter_(sheet, 13, 1, Math.max(values.length + 1, 2), headers.length);
-  sheet.autoResizeColumns(1, headers.length);
-  sheet.getRange('C:C').setNumberFormat('yyyy-mm-dd hh:mm');
-  sheet.getRange('G:G').setNumberFormat('#,##0.00');
+function setMarketStatus_(sheet, message) {
+  sheet.getRange('B7')
+    .clearContent()
+    .setValue(message)
+    .setWrap(true);
+}
+
+function removeMarketAutoRefresh_() {
+  let removed = 0;
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'marketToolEditRefresh') {
+      ScriptApp.deleteTrigger(trigger);
+      removed += 1;
+    }
+  });
+  return removed > 0;
+}
+
+function formatNow_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
 }
 
 function setupWalletImportSheet_(sheet) {
