@@ -121,6 +121,9 @@ function onOpen() {
     .addItem('Set Up Market Tool', 'setupMarketTool')
     .addItem('Load Market Tool Table', 'loadMarketToolTable')
     .addSeparator()
+    .addItem('Collapse Raw Market Columns', 'collapseMarketRawColumns')
+    .addItem('Show Raw Market Columns', 'showMarketRawColumns')
+    .addSeparator()
     .addItem('Enable Auto Refresh on Edit', 'installMarketAutoRefresh')
     .addItem('Disable Auto Refresh on Edit', 'removeMarketAutoRefresh')
     .addToUi();
@@ -168,6 +171,16 @@ function removeMarketAutoRefresh() {
       ? 'Market auto-refresh was disabled.'
       : 'No Market Tool auto-refresh trigger was found.'
   );
+}
+
+function collapseMarketRawColumns() {
+  const sheet = ensureSheet_(SpreadsheetApp.getActive(), EVE_SHEET.MARKET_TOOL);
+  collapseMarketRawColumns_(sheet);
+}
+
+function showMarketRawColumns() {
+  const sheet = ensureSheet_(SpreadsheetApp.getActive(), EVE_SHEET.MARKET_TOOL);
+  showMarketRawColumns_(sheet);
 }
 
 function marketToolEditRefresh(e) {
@@ -456,8 +469,15 @@ function loadMarketToolTable(showAlert) {
     const orders = fetchAllMarketOrders_(regionId, typeId, orderType);
     const systemNames = resolveEsiNames_(orders.map(order => order.system_id));
     const locationNames = resolveEsiNames_(orders.map(order => order.location_id));
-    const headers = getMarketOrderHeaders_();
-    const values = orders.map(order => [
+    const visibleHeaders = getMarketVisibleHeaders_();
+    const rawHeaders = getMarketOrderHeaders_();
+    const visibleValues = orders.map(order => [
+      systemNames.get(String(order.system_id)) || order.system_id,
+      locationNames.get(String(order.location_id)) || order.location_id,
+      order.price,
+      order.volume_remain,
+    ]);
+    const rawValues = orders.map(order => [
       order.duration,
       order.is_buy_order,
       parseEveDate_(order.issued),
@@ -475,17 +495,24 @@ function loadMarketToolTable(showAlert) {
       locationNames.get(String(order.location_id)) || order.location_id,
     ]);
 
-    sheet.getRange('A13:O').clearContent().clearFormat();
-    sheet.getRange(13, 1, 1, headers.length).setValues([headers]);
-    if (values.length) {
-      sheet.getRange(14, 1, values.length, headers.length).setValues(values);
+    sheet.getRange('A13:U').clearContent().clearFormat();
+    sheet.getRange(13, 3, 1, visibleHeaders.length).setValues([visibleHeaders]);
+    sheet.getRange(13, 7, 1, rawHeaders.length).setValues([rawHeaders]);
+    if (visibleValues.length) {
+      sheet.getRange(14, 3, visibleValues.length, visibleHeaders.length).setValues(visibleValues);
+      sheet.getRange(14, 7, rawValues.length, rawHeaders.length).setValues(rawValues);
     }
-    styleHeader_(sheet.getRange(13, 1, 1, headers.length));
-    applyFilter_(sheet, 13, 1, Math.max(values.length + 1, 2), headers.length);
-    sheet.autoResizeColumns(1, headers.length);
-    sheet.getRange('C:C').setNumberFormat('yyyy-mm-dd hh:mm');
-    sheet.getRange('G:G').setNumberFormat('#,##0.00');
-    setMarketStatus_(sheet, `Loaded ${values.length} ${orderType} order(s) for ${itemName} in ${regionName} at ${formatNow_()}.`);
+    styleHeader_(sheet.getRange(13, 3, 1, visibleHeaders.length));
+    styleHeader_(sheet.getRange(13, 7, 1, rawHeaders.length));
+    applyFilter_(sheet, 13, 3, Math.max(visibleValues.length + 1, 2), visibleHeaders.length + rawHeaders.length);
+    sheet.autoResizeColumns(1, 6);
+    sheet.autoResizeColumns(7, rawHeaders.length);
+    sheet.getRange('E:E').setNumberFormat('#,##0.00');
+    sheet.getRange('F:F').setNumberFormat('#,##0');
+    sheet.getRange('I:I').setNumberFormat('yyyy-mm-dd hh:mm');
+    sheet.getRange('M:M').setNumberFormat('#,##0.00');
+    collapseMarketRawColumns_(sheet);
+    setMarketStatus_(sheet, `Loaded ${visibleValues.length} ${orderType} order(s) for ${itemName} in ${regionName} at ${formatNow_()}.`);
   } catch (error) {
     const message = `Error: ${error.message || error}`;
     setMarketStatus_(sheet, message);
@@ -494,7 +521,8 @@ function loadMarketToolTable(showAlert) {
 }
 
 function setupMarketToolSheet_(sheet) {
-  const headers = getMarketOrderHeaders_();
+  const visibleHeaders = getMarketVisibleHeaders_();
+  const rawHeaders = getMarketOrderHeaders_();
 
   sheet.getRange('A1').setValue('Market Tool');
   sheet.getRange('A2').setValue('Item Name');
@@ -517,12 +545,28 @@ function setupMarketToolSheet_(sheet) {
   sheet.getRange('A7:B7').setBackground('#fef3c7');
   sheet.setFrozenRows(13);
 
-  if (sheet.getRange('A13').isBlank()) {
-    sheet.getRange(13, 1, 1, headers.length).setValues([headers]);
-    styleHeader_(sheet.getRange(13, 1, 1, headers.length));
-    applyFilter_(sheet, 13, 1, 2, headers.length);
+  if (sheet.getRange('A13').getValue() === 'duration') {
+    sheet.getRange('A13:U').clearContent().clearFormat();
   }
-  sheet.autoResizeColumns(1, headers.length);
+  if (sheet.getRange('C13').isBlank()) {
+    sheet.getRange(13, 3, 1, visibleHeaders.length).setValues([visibleHeaders]);
+    sheet.getRange(13, 7, 1, rawHeaders.length).setValues([rawHeaders]);
+    styleHeader_(sheet.getRange(13, 3, 1, visibleHeaders.length));
+    styleHeader_(sheet.getRange(13, 7, 1, rawHeaders.length));
+    applyFilter_(sheet, 13, 3, 2, visibleHeaders.length + rawHeaders.length);
+  }
+  sheet.autoResizeColumns(1, 6);
+  sheet.autoResizeColumns(7, rawHeaders.length);
+  collapseMarketRawColumns_(sheet);
+}
+
+function getMarketVisibleHeaders_() {
+  return [
+    'system_name',
+    'location_name',
+    'price',
+    'quantity',
+  ];
 }
 
 function getMarketOrderHeaders_() {
@@ -543,6 +587,15 @@ function getMarketOrderHeaders_() {
     'system_name',
     'location_name',
   ];
+}
+
+function collapseMarketRawColumns_(sheet) {
+  sheet.showColumns(1, 6);
+  sheet.hideColumns(7, getMarketOrderHeaders_().length);
+}
+
+function showMarketRawColumns_(sheet) {
+  sheet.showColumns(1, 6 + getMarketOrderHeaders_().length);
 }
 
 function setMarketStatus_(sheet, message) {
