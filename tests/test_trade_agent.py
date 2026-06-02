@@ -26,6 +26,10 @@ class FakeMetadataClient:
     def get_type_metadata(self, type_id):
         if type_id == 1:
             return ItemMetadata(type_id, "Tungsten Charge L", 85, "Hybrid Charge", 8, "Charge")
+        if type_id == 4:
+            return ItemMetadata(type_id, "Fullerides", 429, "Composite", 4, "Material")
+        if type_id == 5:
+            return ItemMetadata(type_id, "Tritanium", 18, "Mineral", 4, "Material")
         return ItemMetadata(type_id, "Fake Ship", 25, "Frigate", 6, "Ship")
 
 
@@ -122,6 +126,42 @@ class FakeMixedTradeClient(FakeTradeClient):
         )
 
 
+class FakeMaterialPreferenceTradeClient(FakeTradeClient):
+    def run_trade_tool(self, origin, destination, *, run_type="sell-buy", volume=10000):
+        route = (RouteSystem(origin.name, 0.9), RouteSystem(destination.name, 0.8))
+        return TradePlan(
+            origin=origin,
+            destination=destination,
+            route=route,
+            opportunities=(
+                TradeOpportunity(
+                    type_id=4,
+                    type_name="Fullerides",
+                    packaged_volume=0.15,
+                    isk_per_jump=900,
+                    isk_per_m3=6000,
+                    max_quantity=100,
+                    max_total_volume=15,
+                    price_diff=9,
+                    from_order=TradeOrder(100, 60003760, "Jita IV", 100, 100),
+                    to_order=TradeOrder(109, 60008494, "Amarr Hub", 100, 100),
+                ),
+                TradeOpportunity(
+                    type_id=5,
+                    type_name="Tritanium",
+                    packaged_volume=0.01,
+                    isk_per_jump=1000,
+                    isk_per_m3=100000,
+                    max_quantity=100,
+                    max_total_volume=1,
+                    price_diff=10,
+                    from_order=TradeOrder(100, 60003760, "Jita IV", 100, 100),
+                    to_order=TradeOrder(110, 60008494, "Amarr Hub", 100, 100),
+                ),
+            ),
+        )
+
+
 def test_plan_distribution_run_ranks_positive_opportunities():
     plan = plan_distribution_run(
         FakeTradeClient(),
@@ -159,6 +199,32 @@ def test_plan_distribution_run_filters_industrial_domain():
         metadata_client=FakeMetadataClient(),
     )
     assert [item.opportunity.type_name for item in plan.ranked] == ["Tungsten Charge L"]
+
+
+def test_plan_distribution_run_can_prefer_materials_over_minerals():
+    unweighted = plan_distribution_run(
+        FakeMaterialPreferenceTradeClient(),
+        from_system="Jita",
+        to_system="Amarr",
+        volume=10000,
+        top=2,
+        item_domain="industrial",
+        metadata_client=FakeMetadataClient(),
+        sort_by="profit",
+    )
+    weighted = plan_distribution_run(
+        FakeMaterialPreferenceTradeClient(),
+        from_system="Jita",
+        to_system="Amarr",
+        volume=10000,
+        top=2,
+        item_domain="industrial",
+        metadata_client=FakeMetadataClient(),
+        sort_by="profit",
+        prefer="materials",
+    )
+    assert [item.opportunity.type_name for item in unweighted.ranked] == ["Tritanium", "Fullerides"]
+    assert [item.opportunity.type_name for item in weighted.ranked] == ["Fullerides", "Tritanium"]
 
 
 def test_plan_distribution_run_filters_distance_targets():
@@ -215,3 +281,18 @@ def test_format_plan_compact_keeps_trade_numbers():
     assert "spend 100.00k ISK" in output
     assert "profit 10.00k ISK" in output
     assert "ROI 10.0%" in output
+
+
+def test_format_plan_compact_labels_multi_target_destinations():
+    plan = plan_distribution_run(
+        FakeTradeClient(),
+        from_system="Jita",
+        max_jumps=2,
+        volume=10000,
+        top=2,
+        target_names=["Amarr", "Perimeter"],
+    )
+    output = format_plan(plan, volume=10000, sort_by="isk-per-jump", output_format="compact")
+    assert "Jita target scan:" in output
+    assert "to Amarr:" in output
+    assert "to Perimeter:" in output

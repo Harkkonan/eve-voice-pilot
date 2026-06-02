@@ -50,6 +50,21 @@ INDUSTRIAL_GENERAL_ITEM_NAMES = {
     "hardware",
     "hydrogen batteries",
 }
+MATERIAL_GROUP_IDS = INDUSTRIAL_GROUP_IDS | {
+    423,  # Ice Product
+    429,  # Composite
+    754,  # Salvaged Materials
+    974,  # Hybrid Polymers
+}
+MATERIAL_CATEGORY_IDS = {
+    43,  # Planetary Commodities
+}
+MINERAL_GROUP_IDS = {
+    18,  # Mineral
+}
+MINERAL_CATEGORY_IDS = {
+    25,  # Asteroid
+}
 
 
 class TradeAgentError(RuntimeError):
@@ -391,6 +406,7 @@ def plan_distribution_run(
     min_profit: float = 0.0,
     budget: float | None = None,
     item_domain: str = "all",
+    prefer: str = "none",
     metadata_client: EveTypeMetadataClient | None = None,
     target_names: Iterable[str] | None = None,
 ) -> DistributionRunPlan:
@@ -463,7 +479,7 @@ def plan_distribution_run(
                 )
             )
 
-    ranked.sort(key=lambda item: _sort_key(item, sort_by), reverse=True)
+    ranked.sort(key=lambda item: _sort_key(item, sort_by, prefer), reverse=True)
     return DistributionRunPlan(
         origin=origin,
         checked_destinations=tuple(checked),
@@ -491,10 +507,18 @@ def format_plan(
     sort_by: str,
     budget: float | None = None,
     item_domain: str = "all",
+    prefer: str = "none",
     output_format: str = "full",
 ) -> str:
     if output_format == "compact":
-        return _format_compact_plan(plan, volume=volume, sort_by=sort_by, budget=budget, item_domain=item_domain)
+        return _format_compact_plan(
+            plan,
+            volume=volume,
+            sort_by=sort_by,
+            budget=budget,
+            item_domain=item_domain,
+            prefer=prefer,
+        )
 
     lines: list[str] = []
     lines.append("EVE Workbench sell-buy distribution plan")
@@ -504,6 +528,8 @@ def format_plan(
         lines.append(f"Budget limit: {_format_isk(budget)}")
     if item_domain != "all":
         lines.append(f"Item filter: {item_domain}")
+    if prefer != "none":
+        lines.append(f"Preference: {prefer}")
     lines.append(f"Sorted by: {sort_by}")
     lines.append("")
 
@@ -523,6 +549,10 @@ def format_plan(
             security = "unknown" if ranked.min_security is None else f"{ranked.min_security:.1f}"
             roi = ranked.return_on_investment * 100
             lines.append(f"{index}. {item.type_name}")
+            if ranked.metadata:
+                lines.append(
+                    f"   Type: {_item_role(item, ranked.metadata)} / {ranked.metadata.group_name}."
+                )
             lines.append(
                 f"   Buy {ranked.quantity} near {item.from_order.location_name} "
                 f"at {_format_isk(item.from_order.price)} each; spend {_format_isk(ranked.buy_total)}."
@@ -590,6 +620,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use 'industrial' for minerals, materials, ores, PI goods, and ammunition/charges.",
     )
     parser.add_argument(
+        "--prefer",
+        choices=("none", "materials"),
+        default="none",
+        help="Boost material-style goods above mineral/ore fillers when ranking.",
+    )
+    parser.add_argument(
         "--format",
         choices=("full", "compact"),
         default="full",
@@ -628,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
                 highsec_only=args.highsec_only,
                 min_profit=args.min_profit,
                 item_domain=args.item_domain,
+                prefer=args.prefer,
                 output_format=args.format,
                 metadata_client=metadata_client,
             )
@@ -639,7 +676,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.from_system is None:
         args.from_system = input("Where are you now? ").strip()
-    if args.to_system is None and args.max_jumps is None:
+    if args.to_system is None and args.max_jumps is None and args.targets is None:
         destination = input("Where do you want to go? Leave blank to use max jumps: ").strip()
         if destination:
             args.to_system = destination
@@ -668,6 +705,7 @@ def main(argv: list[str] | None = None) -> int:
             min_profit=args.min_profit,
             budget=args.budget,
             item_domain=args.item_domain,
+            prefer=args.prefer,
             metadata_client=metadata_client,
             target_names=target_names,
         )
@@ -682,6 +720,7 @@ def main(argv: list[str] | None = None) -> int:
             sort_by=args.sort_by,
             budget=args.budget,
             item_domain=args.item_domain,
+            prefer=args.prefer,
             output_format=args.format,
         )
     )
@@ -700,6 +739,7 @@ def _format_route_plan(
     highsec_only: bool,
     min_profit: float,
     item_domain: str,
+    prefer: str,
     output_format: str,
     metadata_client: EveTypeMetadataClient | None,
 ) -> str:
@@ -715,6 +755,8 @@ def _format_route_plan(
         lines.append(f"Budget limit per leg: {_format_isk(budget)}")
     if item_domain != "all":
         lines.append(f"Item filter: {item_domain}")
+    if prefer != "none":
+        lines.append(f"Preference: {prefer}")
     lines.append(f"Sorted by: {sort_by}")
     lines.append("")
 
@@ -731,6 +773,7 @@ def _format_route_plan(
             min_profit=min_profit,
             budget=budget,
             item_domain=item_domain,
+            prefer=prefer,
             metadata_client=metadata_client,
         )
         if output_format == "compact":
@@ -743,6 +786,7 @@ def _format_route_plan(
                     sort_by=sort_by,
                     budget=budget,
                     item_domain=item_domain,
+                    prefer=prefer,
                     output_format=output_format,
                 )
             )
@@ -759,6 +803,7 @@ def _format_compact_plan(
     sort_by: str,
     budget: float | None,
     item_domain: str,
+    prefer: str,
 ) -> str:
     lines: list[str] = []
     lines.append("EVE Workbench sell-buy distribution plan")
@@ -768,6 +813,8 @@ def _format_compact_plan(
         lines.append(f"Budget limit: {_format_isk(budget)}")
     if item_domain != "all":
         lines.append(f"Item filter: {item_domain}")
+    if prefer != "none":
+        lines.append(f"Preference: {prefer}")
     lines.append(f"Sorted by: {sort_by}")
     lines.append("")
     lines.append(_format_compact_leg(plan))
@@ -783,9 +830,16 @@ def _format_compact_plan(
 
 def _format_compact_leg(plan: DistributionRunPlan) -> str:
     if plan.checked_destinations:
-        route = plan.checked_destinations[0]
-        security = "unknown" if route.min_security is None else f"{route.min_security:.1f}"
-        header = f"{plan.origin.name} -> {route.destination.name}: {route.jumps} jumps, min security {security}"
+        if len(plan.checked_destinations) == 1:
+            route = plan.checked_destinations[0]
+            security = "unknown" if route.min_security is None else f"{route.min_security:.1f}"
+            header = f"{plan.origin.name} -> {route.destination.name}: {route.jumps} jumps, min security {security}"
+        else:
+            labels = []
+            for route in plan.checked_destinations:
+                security = "unknown" if route.min_security is None else f"{route.min_security:.1f}"
+                labels.append(f"{route.destination.name} {route.jumps}j/{security}")
+            header = f"{plan.origin.name} target scan: {', '.join(labels)}"
     else:
         header = f"{plan.origin.name}: no route checked"
 
@@ -798,9 +852,12 @@ def _format_compact_leg(plan: DistributionRunPlan) -> str:
 
     for index, ranked in enumerate(plan.ranked, start=1):
         item = ranked.opportunity
-        group = f", {ranked.metadata.group_name}" if ranked.metadata else ""
+        group = ""
+        if ranked.metadata:
+            group = f", {_item_role(item, ranked.metadata)}, {ranked.metadata.group_name}"
+        destination = "" if len(plan.checked_destinations) == 1 else f" to {ranked.destination.name}"
         lines.append(
-            f"{index}. {item.type_name}{group}: buy {ranked.quantity} at {_format_isk(item.from_order.price)} ea, "
+            f"{index}. {item.type_name}{group}{destination}: buy {ranked.quantity} at {_format_isk(item.from_order.price)} ea, "
             f"spend {_format_isk(ranked.buy_total)}, profit {_format_isk(ranked.total_profit)}, "
             f"ROI {ranked.return_on_investment * 100:.1f}%, cargo {_format_number(ranked.total_volume)} m3, "
             f"dest order {item.to_order.volume_remain or 0}"
@@ -908,6 +965,34 @@ def _matches_item_domain(opportunity: TradeOpportunity, metadata: ItemMetadata, 
     return False
 
 
+def _item_role(opportunity: TradeOpportunity, metadata: ItemMetadata) -> str:
+    if metadata.group_id in MINERAL_GROUP_IDS or metadata.category_id in MINERAL_CATEGORY_IDS:
+        return "mineral/ore"
+    if metadata.category_id == 8:
+        return "charge"
+    if metadata.category_id in MATERIAL_CATEGORY_IDS:
+        return "material"
+    if metadata.group_id in MATERIAL_GROUP_IDS:
+        return "material"
+    if metadata.group_id == 280 and opportunity.type_name.casefold() in INDUSTRIAL_GENERAL_ITEM_NAMES:
+        return "material"
+    return "industrial"
+
+
+def _preference_multiplier(item: RankedOpportunity, prefer: str) -> float:
+    if prefer == "none" or item.metadata is None:
+        return 1.0
+    if prefer != "materials":
+        raise TradeAgentError(f"Unknown preference {prefer!r}.")
+
+    role = _item_role(item.opportunity, item.metadata)
+    if role == "material":
+        return 1.25
+    if role == "charge":
+        return 1.05
+    return 1.0
+
+
 def _metadata_to_dict(metadata: ItemMetadata) -> dict[str, Any]:
     return {
         "type_id": metadata.type_id,
@@ -939,12 +1024,14 @@ def _optional_int(value: Any) -> int | None:
         return None
 
 
-def _sort_key(item: RankedOpportunity, sort_by: str) -> float:
+def _sort_key(item: RankedOpportunity, sort_by: str, prefer: str) -> float:
     if sort_by == "profit":
-        return item.total_profit
-    if sort_by == "isk-per-m3":
-        return item.profit_per_m3
-    return item.profit_per_jump
+        base_score = item.total_profit
+    elif sort_by == "isk-per-m3":
+        base_score = item.profit_per_m3
+    else:
+        base_score = item.profit_per_jump
+    return base_score * _preference_multiplier(item, prefer)
 
 
 def _format_isk(value: float) -> str:
