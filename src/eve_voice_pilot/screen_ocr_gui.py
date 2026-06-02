@@ -22,6 +22,7 @@ from .screen_ocr_watcher import (
     OcrWatcherError,
     ScreenRegion,
     StableValueTracker,
+    capture_region,
     maybe_send_hotkey,
     normalize_ocr_value,
     parse_region,
@@ -46,6 +47,8 @@ BUTTON_GUIDE: tuple[tuple[str, str], ...] = (
     ("Start Live Watch", "Watches for stable changes and sends the hotkey when the value changes."),
     ("Stop", "Stops the current watch loop after the current OCR read finishes."),
     ("Test Hotkey", "Checks the active-window guard, then sends or dry-runs the current hotkey."),
+    ("Show Region", "Draws a temporary overlay exactly where the OCR watcher will look."),
+    ("Preview Region", "Captures the current region and opens a zoomed preview of what OCR sees."),
     ("Set Top Left", "After 3 seconds, uses the mouse position as the region's top-left corner."),
     ("Set Bottom Right", "After 3 seconds, uses the mouse position to resize the region."),
     ("Save Settings", f"Saves this panel to {USER_SETTINGS_PATH.name}."),
@@ -84,6 +87,20 @@ class POINT(ctypes.Structure):
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.GetCursorPos.argtypes = (ctypes.POINTER(POINT),)
 user32.GetCursorPos.restype = wintypes.BOOL
+user32.SetWindowPos.argtypes = (
+    wintypes.HWND,
+    wintypes.HWND,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.UINT,
+)
+user32.SetWindowPos.restype = wintypes.BOOL
+
+HWND_TOPMOST = wintypes.HWND(-1)
+SWP_NOACTIVATE = 0x0010
+SWP_SHOWWINDOW = 0x0040
 
 
 def default_settings_dict() -> dict[str, Any]:
@@ -109,6 +126,10 @@ def default_settings_dict() -> dict[str, Any]:
 
 def button_guide_lines() -> list[str]:
     return [f"{name}: {description}" for name, description in BUTTON_GUIDE]
+
+
+def region_summary(region: ScreenRegion) -> str:
+    return f"{region.left},{region.top},{region.width},{region.height}"
 
 
 def current_mouse_position() -> tuple[int, int]:
@@ -210,16 +231,18 @@ class OcrWatcherGui:
 
         button_frame = ttk.LabelFrame(self.root, text="Testing and Watch Buttons")
         button_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=6)
-        for column in range(7):
+        for column in range(9):
             button_frame.columnconfigure(column, weight=1)
 
         self._button(button_frame, 0, 0, "Validate Settings", self._validate_settings)
-        self._button(button_frame, 0, 1, "Read Once", self._read_once)
-        self._button(button_frame, 0, 2, "Start Dry Run", lambda: self._start_watch(force_dry_run=True))
-        self._button(button_frame, 0, 3, "Start Live Watch", lambda: self._start_watch(force_dry_run=False))
-        self._button(button_frame, 0, 4, "Stop", self._stop_worker)
-        self._button(button_frame, 0, 5, "Test Hotkey", self._test_hotkey)
-        self._button(button_frame, 0, 6, "Clear Log", self._clear_log)
+        self._button(button_frame, 0, 1, "Show Region", self._show_region_overlay)
+        self._button(button_frame, 0, 2, "Preview Region", self._preview_region)
+        self._button(button_frame, 0, 3, "Read Once", self._read_once)
+        self._button(button_frame, 0, 4, "Start Dry Run", lambda: self._start_watch(force_dry_run=True))
+        self._button(button_frame, 0, 5, "Start Live Watch", lambda: self._start_watch(force_dry_run=False))
+        self._button(button_frame, 0, 6, "Stop", self._stop_worker)
+        self._button(button_frame, 0, 7, "Test Hotkey", self._test_hotkey)
+        self._button(button_frame, 0, 8, "Clear Log", self._clear_log)
 
         preset_frame = ttk.LabelFrame(self.root, text="Settings Presets")
         preset_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=6)
@@ -299,6 +322,122 @@ class OcrWatcherGui:
         if path:
             self.tesseract_cmd_var.set(path)
             self._log(f"Tesseract path set: {path}")
+
+    def _show_region_overlay(self) -> None:
+        try:
+            region = parse_region(self.region_var.get())
+        except Exception as exc:
+            self._log(f"Region problem: {exc}")
+            self._set_status("Region needs attention")
+            return
+
+        overlay = tk.Toplevel(self.root)
+        overlay.title("OCR Region")
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+
+        transparent_color = "#010203"
+        transparent_supported = True
+        try:
+            overlay.configure(bg=transparent_color)
+            overlay.wm_attributes("-transparentcolor", transparent_color)
+        except tk.TclError:
+            transparent_supported = False
+            overlay.configure(bg="#facc15")
+            overlay.attributes("-alpha", 0.35)
+
+        canvas = tk.Canvas(
+            overlay,
+            width=region.width,
+            height=region.height,
+            bg=transparent_color if transparent_supported else "#facc15",
+            bd=0,
+            highlightthickness=0,
+        )
+        canvas.pack(fill="both", expand=True)
+        outline = "#ff2d55"
+        accent = "#facc15"
+        canvas.create_rectangle(2, 2, region.width - 3, region.height - 3, outline=outline, width=4)
+        canvas.create_line(0, 0, min(28, region.width), min(28, region.height), fill=accent, width=3)
+        canvas.create_line(region.width, 0, max(region.width - 28, 0), min(28, region.height), fill=accent, width=3)
+        canvas.create_line(0, region.height, min(28, region.width), max(region.height - 28, 0), fill=accent, width=3)
+        canvas.create_line(
+            region.width,
+            region.height,
+            max(region.width - 28, 0),
+            max(region.height - 28, 0),
+            fill=accent,
+            width=3,
+        )
+        if region.width >= 140 and region.height >= 28:
+            canvas.create_text(
+                region.width // 2,
+                region.height // 2,
+                text="OCR Region",
+                fill=accent,
+                font=("Segoe UI", 11, "bold"),
+            )
+
+        self._position_top_level(overlay, region)
+        overlay.after(5000, overlay.destroy)
+        self._log(f"Showing OCR region for 5 seconds: {region_summary(region)}.")
+        self._set_status("Showing region")
+
+    def _preview_region(self) -> None:
+        try:
+            region = parse_region(self.region_var.get())
+        except Exception as exc:
+            self._log(f"Region problem: {exc}")
+            self._set_status("Region needs attention")
+            return
+
+        try:
+            from PIL import Image, ImageTk
+        except ImportError as exc:
+            self._log(f"Preview needs Pillow: {exc}")
+            self._set_status("Preview failed")
+            return
+
+        try:
+            image = capture_region(region)
+        except (OcrWatcherError, OSError) as exc:
+            self._log(f"Preview capture error: {exc}")
+            self._set_status("Preview failed")
+            return
+
+        preview = tk.Toplevel(self.root)
+        preview.title(f"OCR Region Preview - {region_summary(region)}")
+        preview.columnconfigure(0, weight=1)
+        preview.rowconfigure(1, weight=1)
+
+        display = image.copy()
+        scale = max(1, min(4, int(720 / max(display.width, 1)), int(360 / max(display.height, 1))))
+        if scale > 1:
+            display = display.resize((display.width * scale, display.height * scale), Image.Resampling.NEAREST)
+
+        photo = ImageTk.PhotoImage(display)
+        ttk.Label(preview, text=f"Raw screen crop: {region_summary(region)}").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 4))
+        image_label = ttk.Label(preview, image=photo)
+        image_label.image_ref = photo
+        image_label.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
+        ttk.Button(preview, text="Close", command=preview.destroy).grid(row=2, column=0, sticky="e", padx=10, pady=(4, 10))
+        self._log(f"Preview opened for region: {region_summary(region)}.")
+        self._set_status("Preview opened")
+
+    def _position_top_level(self, window: tk.Toplevel, region: ScreenRegion) -> None:
+        window.update_idletasks()
+        hwnd = wintypes.HWND(window.winfo_id())
+        ok = user32.SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            region.left,
+            region.top,
+            region.width,
+            region.height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        if not ok:
+            window.geometry(f"{region.width}x{region.height}+{region.left}+{region.top}")
 
     def _validate_settings(self) -> None:
         try:

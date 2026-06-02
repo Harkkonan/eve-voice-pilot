@@ -89,7 +89,7 @@ For easier setup, double-click `Start-EveOcrWatcherGui.bat` or run:
 .\scripts\run_ocr_watcher_gui.ps1
 ```
 
-The GUI has settings fields, preset buttons, test buttons, and an output log. Start with `Read Once` to see what OCR returns, then use `Start Dry Run` to confirm changes are detected before using `Start Live Watch`. The `Set Top Left` and `Set Bottom Right` buttons capture your mouse position after 3 seconds to help tune the screen region.
+The GUI has settings fields, preset buttons, test buttons, and an output log. Use `Show Region` to draw a temporary overlay on the screen area being watched, and `Preview Region` to open the actual screen crop. Start with `Read Once` to see what OCR returns, then use `Start Dry Run` to confirm changes are detected before using `Start Live Watch`. The `Set Top Left` and `Set Bottom Right` buttons capture your mouse position after 3 seconds to help tune the screen region.
 
 Dry-run a region first:
 
