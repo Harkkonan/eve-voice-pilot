@@ -103,9 +103,19 @@ Useful options:
 
 - `--from "System"`: where you are now.
 - `--to "System"`: exact destination.
+- `--route "Amarr,Jita,Hek,Rens,Amarr"`: check a full hub loop in one command.
 - `--max-jumps 10`: distance mode, using `data/eve_trade_targets.json`.
 - `--targets "Amarr,Dodixie,Hek"`: one-off destination list for distance mode.
+- `--budget 8000000`: cap suggestions to the ISK you can spend.
+- `--item-domain industrial`: only show minerals, materials, ores, PI goods, and ammunition/charges.
 - `--sort-by profit`: rank by total profit instead of ISK per jump.
+- `--format compact`: print a short table with quantity, spend, profit, ROI, cargo, and order depth.
 - `--highsec-only`: skip routes that dip below 0.5 security.
+
+Example hub loop with an 8m ISK budget and 11,000 m3 cargo:
+
+```powershell
+.\scripts\run_trade_agent.ps1 --route "Amarr,Jita,Hek,Rens,Amarr" --volume 11000 --budget 8000000 --item-domain industrial --format compact --top 5 --sort-by profit
+```
 
 Always check the orders in EVE before hauling. The helper reads live EVE Workbench market data, but buy and sell orders can fill or move between the suggestion and your undock.
