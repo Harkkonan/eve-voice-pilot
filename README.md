@@ -83,6 +83,14 @@ The OCR watcher is a command-line helper that reads one screen rectangle and sen
 
 It uses `pytesseract`, which also needs the Tesseract Windows app installed. If Tesseract is not on `PATH`, pass the full `tesseract.exe` path with `--tesseract-cmd`.
 
+For easier setup, double-click `Start-EveOcrWatcherGui.bat` or run:
+
+```powershell
+.\scripts\run_ocr_watcher_gui.ps1
+```
+
+The GUI has settings fields, preset buttons, test buttons, and an output log. Start with `Read Once` to see what OCR returns, then use `Start Dry Run` to confirm changes are detected before using `Start Live Watch`. The `Set Top Left` and `Set Bottom Right` buttons capture your mouse position after 3 seconds to help tune the screen region.
+
 Dry-run a region first:
 
 ```powershell

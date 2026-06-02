@@ -11,3 +11,4 @@ build/
 *.egg-info/
 local_settings.json
 profiles/my_eve_commands.json
+profiles/my_ocr_watcher_settings.json
