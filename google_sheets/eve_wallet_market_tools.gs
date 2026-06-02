@@ -9,6 +9,7 @@
 
 const EVE_SHEET = Object.freeze({
   MARKET_TOOL: 'Market Tool',
+  MARKET_PICKER_DRAFT: 'Market Picker Draft',
   WALLET_IMPORT: 'Wallet Import',
   PURCHASE_LEDGER: 'Purchase Ledger',
   PURCHASE_GROUPS: 'Purchase Groups',
@@ -115,10 +116,34 @@ const EVE_HEADERS = Object.freeze({
   ],
 });
 
+const MARKET_PICKER_ITEMS = Object.freeze([
+  { name: 'Tritanium', typeId: 34, handler: 'pickMarketItem01' },
+  { name: 'Pyerite', typeId: 35, handler: 'pickMarketItem02' },
+  { name: 'Mexallon', typeId: 36, handler: 'pickMarketItem03' },
+  { name: 'Isogen', typeId: 37, handler: 'pickMarketItem04' },
+  { name: 'Nocxium', typeId: 38, handler: 'pickMarketItem05' },
+  { name: 'Zydrine', typeId: 39, handler: 'pickMarketItem06' },
+  { name: 'Megacyte', typeId: 40, handler: 'pickMarketItem07' },
+  { name: 'Morphite', typeId: 11399, handler: 'pickMarketItem08' },
+  { name: 'Veldspar', typeId: 1230, handler: 'pickMarketItem09' },
+  { name: 'Scordite', typeId: 1228, handler: 'pickMarketItem10' },
+  { name: 'Pyroxeres', typeId: 1224, handler: 'pickMarketItem11' },
+  { name: 'Plagioclase', typeId: 18, handler: 'pickMarketItem12' },
+  { name: 'Omber', typeId: 1227, handler: 'pickMarketItem13' },
+  { name: 'Kernite', typeId: 20, handler: 'pickMarketItem14' },
+  { name: 'Jaspet', typeId: 1226, handler: 'pickMarketItem15' },
+  { name: 'Hemorphite', typeId: 1231, handler: 'pickMarketItem16' },
+  { name: 'Hedbergite', typeId: 21, handler: 'pickMarketItem17' },
+  { name: 'Gneiss', typeId: 1229, handler: 'pickMarketItem18' },
+  { name: 'Dark Ochre', typeId: 1232, handler: 'pickMarketItem19' },
+  { name: 'Spodumain', typeId: 19, handler: 'pickMarketItem20' },
+]);
+
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('EVE Market')
     .addItem('Set Up Market Tool', 'setupMarketTool')
+    .addItem('Set Up Market Picker Draft', 'setupMarketPickerDraft')
     .addItem('Load Market Tool Table', 'loadMarketToolTable')
     .addSeparator()
     .addItem('Collapse Raw Market Columns', 'collapseMarketRawColumns')
@@ -153,6 +178,13 @@ function setupMarketTool() {
   SpreadsheetApp.getUi().alert('Market Tool is ready. Change B2/B3/B4, then run EVE Market > Load Market Tool Table.');
 }
 
+function setupMarketPickerDraft() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ensureSheet_(ss, EVE_SHEET.MARKET_PICKER_DRAFT);
+  setupMarketPickerDraftSheet_(sheet);
+  SpreadsheetApp.getUi().alert('Market Picker Draft is ready. Type a region in B3, then click an item icon.');
+}
+
 function installMarketAutoRefresh() {
   const ss = SpreadsheetApp.getActive();
   removeMarketAutoRefresh_();
@@ -174,13 +206,50 @@ function removeMarketAutoRefresh() {
 }
 
 function collapseMarketRawColumns() {
-  const sheet = ensureSheet_(SpreadsheetApp.getActive(), EVE_SHEET.MARKET_TOOL);
+  const sheet = getActiveMarketSheet_();
   collapseMarketRawColumns_(sheet);
 }
 
 function showMarketRawColumns() {
-  const sheet = ensureSheet_(SpreadsheetApp.getActive(), EVE_SHEET.MARKET_TOOL);
+  const sheet = getActiveMarketSheet_();
   showMarketRawColumns_(sheet);
+}
+
+function pickMarketItem01() { pickMarketItemByIndex_(0); }
+function pickMarketItem02() { pickMarketItemByIndex_(1); }
+function pickMarketItem03() { pickMarketItemByIndex_(2); }
+function pickMarketItem04() { pickMarketItemByIndex_(3); }
+function pickMarketItem05() { pickMarketItemByIndex_(4); }
+function pickMarketItem06() { pickMarketItemByIndex_(5); }
+function pickMarketItem07() { pickMarketItemByIndex_(6); }
+function pickMarketItem08() { pickMarketItemByIndex_(7); }
+function pickMarketItem09() { pickMarketItemByIndex_(8); }
+function pickMarketItem10() { pickMarketItemByIndex_(9); }
+function pickMarketItem11() { pickMarketItemByIndex_(10); }
+function pickMarketItem12() { pickMarketItemByIndex_(11); }
+function pickMarketItem13() { pickMarketItemByIndex_(12); }
+function pickMarketItem14() { pickMarketItemByIndex_(13); }
+function pickMarketItem15() { pickMarketItemByIndex_(14); }
+function pickMarketItem16() { pickMarketItemByIndex_(15); }
+function pickMarketItem17() { pickMarketItemByIndex_(16); }
+function pickMarketItem18() { pickMarketItemByIndex_(17); }
+function pickMarketItem19() { pickMarketItemByIndex_(18); }
+function pickMarketItem20() { pickMarketItemByIndex_(19); }
+
+function pickMarketItemByIndex_(index) {
+  const item = MARKET_PICKER_ITEMS[index];
+  if (!item) return;
+
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ensureSheet_(ss, EVE_SHEET.MARKET_PICKER_DRAFT);
+  sheet.getRange('B2').setValue(item.name);
+  if (sheet.getRange('B3').isBlank()) {
+    setMarketStatus_(sheet, 'Type a region in B3 before clicking an item.');
+    SpreadsheetApp.getUi().alert('Type a region in B3 before clicking an item.');
+    return;
+  }
+  if (sheet.getRange('B4').isBlank()) sheet.getRange('B4').setValue('sell');
+  loadMarketToolTableForSheet_(sheet, true);
 }
 
 function marketToolEditRefresh(e) {
@@ -443,8 +512,12 @@ function loadMarketToolTable(showAlert) {
   const ss = SpreadsheetApp.getActive();
   const sheet = ensureSheet_(ss, EVE_SHEET.MARKET_TOOL);
   setupMarketToolSheet_(sheet);
+  loadMarketToolTableForSheet_(sheet, showAlert);
+}
 
+function loadMarketToolTableForSheet_(sheet, showAlert) {
   try {
+    const outputRow = getMarketOutputRow_(sheet);
     const itemName = String(sheet.getRange('B2').getValue() || '').trim();
     const regionName = String(sheet.getRange('B3').getValue() || '').trim();
     const rawOrderType = String(sheet.getRange('B4').getValue() || 'sell').trim().toLowerCase();
@@ -495,16 +568,16 @@ function loadMarketToolTable(showAlert) {
       locationNames.get(String(order.location_id)) || order.location_id,
     ]);
 
-    sheet.getRange('A13:U').clearContent().clearFormat();
-    sheet.getRange(13, 3, 1, visibleHeaders.length).setValues([visibleHeaders]);
-    sheet.getRange(13, 7, 1, rawHeaders.length).setValues([rawHeaders]);
+    sheet.getRange(outputRow, 1, Math.max(sheet.getMaxRows() - outputRow + 1, 1), 21).clearContent().clearFormat();
+    sheet.getRange(outputRow, 3, 1, visibleHeaders.length).setValues([visibleHeaders]);
+    sheet.getRange(outputRow, 7, 1, rawHeaders.length).setValues([rawHeaders]);
     if (visibleValues.length) {
-      sheet.getRange(14, 3, visibleValues.length, visibleHeaders.length).setValues(visibleValues);
-      sheet.getRange(14, 7, rawValues.length, rawHeaders.length).setValues(rawValues);
+      sheet.getRange(outputRow + 1, 3, visibleValues.length, visibleHeaders.length).setValues(visibleValues);
+      sheet.getRange(outputRow + 1, 7, rawValues.length, rawHeaders.length).setValues(rawValues);
     }
-    styleHeader_(sheet.getRange(13, 3, 1, visibleHeaders.length));
-    styleHeader_(sheet.getRange(13, 7, 1, rawHeaders.length));
-    applyFilter_(sheet, 13, 3, Math.max(visibleValues.length + 1, 2), visibleHeaders.length + rawHeaders.length);
+    styleHeader_(sheet.getRange(outputRow, 3, 1, visibleHeaders.length));
+    styleHeader_(sheet.getRange(outputRow, 7, 1, rawHeaders.length));
+    applyFilter_(sheet, outputRow, 3, Math.max(visibleValues.length + 1, 2), visibleHeaders.length + rawHeaders.length);
     sheet.autoResizeColumns(1, 6);
     sheet.autoResizeColumns(7, rawHeaders.length);
     sheet.getRange('E:E').setNumberFormat('#,##0.00');
@@ -523,6 +596,7 @@ function loadMarketToolTable(showAlert) {
 function setupMarketToolSheet_(sheet) {
   const visibleHeaders = getMarketVisibleHeaders_();
   const rawHeaders = getMarketOrderHeaders_();
+  const outputRow = getMarketOutputRow_(sheet);
 
   sheet.getRange('A1').setValue('Market Tool');
   sheet.getRange('A2').setValue('Item Name');
@@ -548,16 +622,120 @@ function setupMarketToolSheet_(sheet) {
   if (sheet.getRange('A13').getValue() === 'duration') {
     sheet.getRange('A13:U').clearContent().clearFormat();
   }
-  if (sheet.getRange('C13').isBlank()) {
-    sheet.getRange(13, 3, 1, visibleHeaders.length).setValues([visibleHeaders]);
-    sheet.getRange(13, 7, 1, rawHeaders.length).setValues([rawHeaders]);
-    styleHeader_(sheet.getRange(13, 3, 1, visibleHeaders.length));
-    styleHeader_(sheet.getRange(13, 7, 1, rawHeaders.length));
-    applyFilter_(sheet, 13, 3, 2, visibleHeaders.length + rawHeaders.length);
+  if (sheet.getRange(outputRow, 3).isBlank()) {
+    sheet.getRange(outputRow, 3, 1, visibleHeaders.length).setValues([visibleHeaders]);
+    sheet.getRange(outputRow, 7, 1, rawHeaders.length).setValues([rawHeaders]);
+    styleHeader_(sheet.getRange(outputRow, 3, 1, visibleHeaders.length));
+    styleHeader_(sheet.getRange(outputRow, 7, 1, rawHeaders.length));
+    applyFilter_(sheet, outputRow, 3, 2, visibleHeaders.length + rawHeaders.length);
   }
   sheet.autoResizeColumns(1, 6);
   sheet.autoResizeColumns(7, rawHeaders.length);
   collapseMarketRawColumns_(sheet);
+}
+
+function setupMarketPickerDraftSheet_(sheet) {
+  const outputRow = getMarketOutputRow_(sheet);
+  const visibleHeaders = getMarketVisibleHeaders_();
+  const rawHeaders = getMarketOrderHeaders_();
+
+  sheet.getImages().forEach(image => image.remove());
+  sheet.getRange(1, 1, sheet.getMaxRows(), Math.min(sheet.getMaxColumns(), 21)).breakApart();
+  sheet.clear();
+  if (sheet.getMaxRows() < 160) sheet.insertRowsAfter(sheet.getMaxRows(), 160 - sheet.getMaxRows());
+  if (sheet.getMaxColumns() < 21) sheet.insertColumnsAfter(sheet.getMaxColumns(), 21 - sheet.getMaxColumns());
+
+  sheet.getRange('A1:E1').mergeAcross().setValue('Market Picker Draft');
+  sheet.getRange('A1').setFontWeight('bold').setFontSize(16).setBackground('#dbeafe');
+  sheet.getRange('A2').setValue('Selected Item');
+  sheet.getRange('A3').setValue('Region');
+  sheet.getRange('A4').setValue('Order Type');
+  sheet.getRange('A5').setValue('Resolved Type ID');
+  sheet.getRange('A6').setValue('Resolved Region ID');
+  sheet.getRange('A7').setValue('Status');
+  sheet.getRange('B2').setValue('Tritanium');
+  sheet.getRange('B3').setValue('Domain');
+  sheet.getRange('B4').setValue('sell');
+  setDropdown_(sheet.getRange('B4'), ['sell', 'buy', 'all']);
+  setMarketStatus_(sheet, 'Type a region in B3, then click an item icon.');
+
+  sheet.getRange('A2:B7').setFontWeight('bold').setWrap(true);
+  sheet.getRange('A7:B7').setBackground('#fef3c7');
+  sheet.getRange('A9:E9').mergeAcross().setValue('Click an item icon');
+  sheet.getRange('A9').setFontWeight('bold').setBackground('#f8fafc');
+
+  drawMarketPickerItems_(sheet);
+
+  sheet.getRange(outputRow - 1, 3, 1, 4)
+    .mergeAcross()
+    .setValue('Market orders')
+    .setFontWeight('bold')
+    .setBackground('#f8fafc');
+  sheet.getRange(outputRow, 3, 1, visibleHeaders.length).setValues([visibleHeaders]);
+  sheet.getRange(outputRow, 7, 1, rawHeaders.length).setValues([rawHeaders]);
+  styleHeader_(sheet.getRange(outputRow, 3, 1, visibleHeaders.length));
+  styleHeader_(sheet.getRange(outputRow, 7, 1, rawHeaders.length));
+  applyFilter_(sheet, outputRow, 3, 2, visibleHeaders.length + rawHeaders.length);
+
+  sheet.setFrozenRows(7);
+  sheet.autoResizeColumns(1, 6);
+  sheet.autoResizeColumns(7, rawHeaders.length);
+  collapseMarketRawColumns_(sheet);
+}
+
+function drawMarketPickerItems_(sheet) {
+  const startRow = 10;
+  const columns = 5;
+  const columnWidth = 120;
+  const imageRowHeight = 66;
+  const labelRowHeight = 32;
+
+  for (let col = 1; col <= columns; col += 1) {
+    sheet.setColumnWidth(col, columnWidth);
+  }
+
+  MARKET_PICKER_ITEMS.forEach((item, index) => {
+    const block = Math.floor(index / columns);
+    const col = (index % columns) + 1;
+    const imageRow = startRow + block * 3;
+    const labelRow = imageRow + 1;
+    const url = `https://images.evetech.net/types/${item.typeId}/icon?size=64`;
+
+    sheet.setRowHeight(imageRow, imageRowHeight);
+    sheet.setRowHeight(labelRow, labelRowHeight);
+    sheet.getRange(labelRow, col)
+      .setValue(item.name)
+      .setHorizontalAlignment('center')
+      .setVerticalAlignment('middle')
+      .setWrap(true)
+      .setFontWeight('bold');
+    sheet.getRange(imageRow, col)
+      .setHorizontalAlignment('center')
+      .setVerticalAlignment('middle')
+      .setBackground('#f8fafc');
+
+    try {
+      const image = sheet.insertImage(url, col, imageRow);
+      image.setWidth(56).setHeight(56).assignScript(item.handler);
+      image.setAltTextTitle(item.name);
+      image.setAltTextDescription(`Load ${item.name} market orders`);
+    } catch (error) {
+      sheet.getRange(imageRow, col)
+        .setFormula(`=IMAGE("${url}")`)
+        .setNote(`Icon could not be made clickable automatically: ${error.message || error}`);
+    }
+  });
+}
+
+function getMarketOutputRow_(sheet) {
+  return sheet.getName() === EVE_SHEET.MARKET_PICKER_DRAFT ? 32 : 13;
+}
+
+function getActiveMarketSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  const active = ss.getActiveSheet();
+  if ([EVE_SHEET.MARKET_TOOL, EVE_SHEET.MARKET_PICKER_DRAFT].includes(active.getName())) return active;
+  return ensureSheet_(ss, EVE_SHEET.MARKET_TOOL);
 }
 
 function getMarketVisibleHeaders_() {
