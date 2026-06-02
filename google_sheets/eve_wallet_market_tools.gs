@@ -844,11 +844,44 @@ function resolveEsiNames_(ids) {
 }
 
 function resolveSearchId_(name, category) {
-  const url = `https://esi.evetech.net/latest/search/?categories=${encodeURIComponent(category)}&datasource=tranquility&language=en&search=${encodeURIComponent(name)}&strict=true`;
-  const json = fetchJson_(url);
-  const ids = json[category] || [];
-  if (!ids.length) throw new Error(`Could not resolve ${category}: ${name}`);
-  return ids[0];
+  const idsResult = resolveUniverseIdByName_(name, category);
+  if (idsResult) return idsResult;
+
+  const strictUrl = `https://esi.evetech.net/latest/search/?categories=${encodeURIComponent(category)}&datasource=tranquility&language=en&search=${encodeURIComponent(name)}&strict=true`;
+  const strictJson = fetchJsonOrNull_(strictUrl);
+  const strictIds = strictJson ? strictJson[category] || [] : [];
+  if (strictIds.length) return strictIds[0];
+
+  const looseUrl = `https://esi.evetech.net/latest/search/?categories=${encodeURIComponent(category)}&datasource=tranquility&language=en&search=${encodeURIComponent(name)}&strict=false`;
+  const looseJson = fetchJsonOrNull_(looseUrl);
+  const looseIds = looseJson ? looseJson[category] || [] : [];
+  if (looseIds.length) return looseIds[0];
+
+  throw new Error(`Could not resolve ${category}: ${name}`);
+}
+
+function resolveUniverseIdByName_(name, category) {
+  const responseKey = {
+    inventory_type: 'inventory_types',
+    region: 'regions',
+    solar_system: 'systems',
+    station: 'stations',
+    structure: 'structures',
+  }[category];
+  if (!responseKey) return null;
+
+  const response = UrlFetchApp.fetch('https://esi.evetech.net/latest/universe/ids/?datasource=tranquility&language=en', {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify([name]),
+    muteHttpExceptions: true,
+  });
+  if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) return null;
+
+  const json = JSON.parse(response.getContentText());
+  const matches = json[responseKey] || [];
+  const exact = matches.find(match => String(match.name).toLowerCase() === String(name).toLowerCase());
+  return exact ? exact.id : matches.length ? matches[0].id : null;
 }
 
 function fetchAllMarketOrders_(regionId, typeId, orderType) {
@@ -872,6 +905,12 @@ function fetchJson_(url) {
   if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
     throw new Error(`ESI request failed (${response.getResponseCode()}): ${url}`);
   }
+  return JSON.parse(response.getContentText());
+}
+
+function fetchJsonOrNull_(url) {
+  const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) return null;
   return JSON.parse(response.getContentText());
 }
 
