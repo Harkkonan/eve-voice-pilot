@@ -49,8 +49,10 @@ BUTTON_GUIDE: tuple[tuple[str, str], ...] = (
     ("Test Hotkey", "Checks the active-window guard, then sends or dry-runs the current hotkey."),
     ("Show Region", "Draws a temporary overlay exactly where the OCR watcher will look."),
     ("Preview Region", "Captures the current region and opens a zoomed preview of what OCR sees."),
+    ("Select Region", "Opens a crosshair overlay so you can drag the watched region with the mouse."),
     ("Set Top Left", "After 3 seconds, uses the mouse position as the region's top-left corner."),
     ("Set Bottom Right", "After 3 seconds, uses the mouse position to resize the region."),
+    ("Mouse Position", "Logs the mouse coordinates after 3 seconds; the live coordinates also update in Settings."),
     ("Save Settings", f"Saves this panel to {USER_SETTINGS_PATH.name}."),
     ("Load Settings", f"Loads {USER_SETTINGS_PATH.name} if it exists."),
 )
@@ -97,10 +99,16 @@ user32.SetWindowPos.argtypes = (
     wintypes.UINT,
 )
 user32.SetWindowPos.restype = wintypes.BOOL
+user32.GetSystemMetrics.argtypes = (ctypes.c_int,)
+user32.GetSystemMetrics.restype = ctypes.c_int
 
 HWND_TOPMOST = wintypes.HWND(-1)
 SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
 
 
 def default_settings_dict() -> dict[str, Any]:
@@ -130,6 +138,23 @@ def button_guide_lines() -> list[str]:
 
 def region_summary(region: ScreenRegion) -> str:
     return f"{region.left},{region.top},{region.width},{region.height}"
+
+
+def region_from_points(start: tuple[int, int], end: tuple[int, int]) -> ScreenRegion:
+    left = min(start[0], end[0])
+    top = min(start[1], end[1])
+    width = max(1, abs(end[0] - start[0]))
+    height = max(1, abs(end[1] - start[1]))
+    return ScreenRegion(left, top, width, height)
+
+
+def virtual_screen_region() -> ScreenRegion:
+    return ScreenRegion(
+        left=user32.GetSystemMetrics(SM_XVIRTUALSCREEN),
+        top=user32.GetSystemMetrics(SM_YVIRTUALSCREEN),
+        width=max(1, user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)),
+        height=max(1, user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)),
+    )
 
 
 def current_mouse_position() -> tuple[int, int]:
@@ -163,14 +188,19 @@ class OcrWatcherGui:
         self.dry_run_var = tk.BooleanVar(value=bool(defaults["dry_run"]))
         self.verbose_var = tk.BooleanVar(value=bool(defaults["verbose"]))
         self.status_var = tk.StringVar(value="Ready")
+        self.mouse_position_var = tk.StringVar(value="Mouse: --,--")
 
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._status_queue: queue.Queue[str] = queue.Queue()
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
+        self._selection_start: tuple[int, int] | None = None
+        self._selection_rect_id: int | None = None
+        self._selection_label_id: int | None = None
 
         self._build_ui()
         self._drain_queues()
+        self._track_mouse_position()
         self._try_auto_load_settings()
         self._log("Ready. Start with Read Once or Start Dry Run.")
 
@@ -228,6 +258,7 @@ class OcrWatcherGui:
         ttk.Checkbutton(checkbox_frame, text="Keep case", variable=self.keep_case_var).grid(row=0, column=1, padx=(0, 16))
         ttk.Checkbutton(checkbox_frame, text="Verbose", variable=self.verbose_var).grid(row=0, column=2, padx=(0, 16))
         ttk.Label(checkbox_frame, textvariable=self.status_var).grid(row=0, column=3, padx=(18, 0), sticky="w")
+        ttk.Label(checkbox_frame, textvariable=self.mouse_position_var).grid(row=0, column=4, padx=(24, 0), sticky="w")
 
         button_frame = ttk.LabelFrame(self.root, text="Testing and Watch Buttons")
         button_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=6)
@@ -235,14 +266,15 @@ class OcrWatcherGui:
             button_frame.columnconfigure(column, weight=1)
 
         self._button(button_frame, 0, 0, "Validate Settings", self._validate_settings)
-        self._button(button_frame, 0, 1, "Show Region", self._show_region_overlay)
-        self._button(button_frame, 0, 2, "Preview Region", self._preview_region)
-        self._button(button_frame, 0, 3, "Read Once", self._read_once)
-        self._button(button_frame, 0, 4, "Start Dry Run", lambda: self._start_watch(force_dry_run=True))
-        self._button(button_frame, 0, 5, "Start Live Watch", lambda: self._start_watch(force_dry_run=False))
-        self._button(button_frame, 0, 6, "Stop", self._stop_worker)
-        self._button(button_frame, 0, 7, "Test Hotkey", self._test_hotkey)
-        self._button(button_frame, 0, 8, "Clear Log", self._clear_log)
+        self._button(button_frame, 0, 1, "Select Region", self._select_region)
+        self._button(button_frame, 0, 2, "Show Region", self._show_region_overlay)
+        self._button(button_frame, 0, 3, "Preview Region", self._preview_region)
+        self._button(button_frame, 0, 4, "Read Once", self._read_once)
+        self._button(button_frame, 0, 5, "Start Dry Run", lambda: self._start_watch(force_dry_run=True))
+        self._button(button_frame, 0, 6, "Start Live Watch", lambda: self._start_watch(force_dry_run=False))
+        self._button(button_frame, 0, 7, "Stop", self._stop_worker)
+        self._button(button_frame, 0, 8, "Test Hotkey", self._test_hotkey)
+        self._button(button_frame, 1, 8, "Clear Log", self._clear_log)
 
         preset_frame = ttk.LabelFrame(self.root, text="Settings Presets")
         preset_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=6)
@@ -355,33 +387,166 @@ class OcrWatcherGui:
             highlightthickness=0,
         )
         canvas.pack(fill="both", expand=True)
+        self._draw_region_overlay(canvas, region.width, region.height)
+
+        self._refresh_region_overlay(overlay, canvas)
+        overlay.after(5000, overlay.destroy)
+        self._log(f"Showing OCR region for 5 seconds: {region_summary(region)}.")
+        self._set_status("Showing region")
+
+    def _refresh_region_overlay(self, overlay: tk.Toplevel, canvas: tk.Canvas) -> None:
+        try:
+            exists = overlay.winfo_exists()
+        except tk.TclError:
+            return
+        if not exists:
+            return
+        try:
+            region = parse_region(self.region_var.get())
+        except Exception:
+            try:
+                overlay.after(150, lambda: self._refresh_region_overlay(overlay, canvas))
+            except tk.TclError:
+                pass
+            return
+        canvas.configure(width=region.width, height=region.height)
+        self._draw_region_overlay(canvas, region.width, region.height)
+        self._position_top_level(overlay, region)
+        try:
+            overlay.after(150, lambda: self._refresh_region_overlay(overlay, canvas))
+        except tk.TclError:
+            pass
+
+    def _draw_region_overlay(self, canvas: tk.Canvas, width: int, height: int) -> None:
+        canvas.delete("all")
         outline = "#ff2d55"
         accent = "#facc15"
-        canvas.create_rectangle(2, 2, region.width - 3, region.height - 3, outline=outline, width=4)
-        canvas.create_line(0, 0, min(28, region.width), min(28, region.height), fill=accent, width=3)
-        canvas.create_line(region.width, 0, max(region.width - 28, 0), min(28, region.height), fill=accent, width=3)
-        canvas.create_line(0, region.height, min(28, region.width), max(region.height - 28, 0), fill=accent, width=3)
-        canvas.create_line(
-            region.width,
-            region.height,
-            max(region.width - 28, 0),
-            max(region.height - 28, 0),
-            fill=accent,
-            width=3,
-        )
-        if region.width >= 140 and region.height >= 28:
+        canvas.create_rectangle(2, 2, width - 3, height - 3, outline=outline, width=4)
+        canvas.create_line(0, 0, min(28, width), min(28, height), fill=accent, width=3)
+        canvas.create_line(width, 0, max(width - 28, 0), min(28, height), fill=accent, width=3)
+        canvas.create_line(0, height, min(28, width), max(height - 28, 0), fill=accent, width=3)
+        canvas.create_line(width, height, max(width - 28, 0), max(height - 28, 0), fill=accent, width=3)
+        if width >= 140 and height >= 28:
             canvas.create_text(
-                region.width // 2,
-                region.height // 2,
+                width // 2,
+                height // 2,
                 text="OCR Region",
                 fill=accent,
                 font=("Segoe UI", 11, "bold"),
             )
 
-        self._position_top_level(overlay, region)
-        overlay.after(5000, overlay.destroy)
-        self._log(f"Showing OCR region for 5 seconds: {region_summary(region)}.")
-        self._set_status("Showing region")
+    def _select_region(self) -> None:
+        bounds = virtual_screen_region()
+        overlay = tk.Toplevel(self.root)
+        overlay.title("Select OCR Region")
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        overlay.attributes("-alpha", 0.28)
+        overlay.configure(bg="#111827", cursor="crosshair")
+
+        canvas = tk.Canvas(
+            overlay,
+            width=bounds.width,
+            height=bounds.height,
+            bg="#111827",
+            bd=0,
+            highlightthickness=0,
+            cursor="crosshair",
+        )
+        canvas.pack(fill="both", expand=True)
+        help_text = "Drag a box around the OCR text. Release to use it. Press Esc to cancel."
+        canvas.create_text(
+            24,
+            24,
+            text=help_text,
+            anchor="nw",
+            fill="#ffffff",
+            font=("Segoe UI", 16, "bold"),
+        )
+        self._selection_start = None
+        self._selection_rect_id = None
+        self._selection_label_id = None
+
+        canvas.bind("<ButtonPress-1>", lambda event: self._begin_region_selection(event, canvas, bounds))
+        canvas.bind("<B1-Motion>", lambda event: self._move_region_selection(event, canvas, bounds))
+        canvas.bind("<ButtonRelease-1>", lambda event: self._finish_region_selection(event, overlay, canvas, bounds))
+        overlay.bind("<Escape>", lambda _event: self._cancel_region_selection(overlay))
+        self._position_top_level(overlay, bounds)
+        overlay.focus_force()
+        overlay.grab_set()
+        self._log("Select Region started. Drag over the text you want OCR to read, or press Esc to cancel.")
+        self._set_status("Selecting region")
+
+    def _begin_region_selection(self, event: tk.Event, canvas: tk.Canvas, bounds: ScreenRegion) -> None:
+        start = (event.x_root, event.y_root)
+        self._selection_start = start
+        x = start[0] - bounds.left
+        y = start[1] - bounds.top
+        if self._selection_rect_id is not None:
+            canvas.delete(self._selection_rect_id)
+        if self._selection_label_id is not None:
+            canvas.delete(self._selection_label_id)
+        self._selection_rect_id = canvas.create_rectangle(x, y, x, y, outline="#facc15", width=3)
+        self._selection_label_id = canvas.create_text(
+            x + 8,
+            y + 8,
+            text="1x1",
+            anchor="nw",
+            fill="#ffffff",
+            font=("Segoe UI", 12, "bold"),
+        )
+
+    def _move_region_selection(self, event: tk.Event, canvas: tk.Canvas, bounds: ScreenRegion) -> None:
+        if self._selection_start is None or self._selection_rect_id is None:
+            return
+        region = region_from_points(self._selection_start, (event.x_root, event.y_root))
+        self._update_selection_canvas(canvas, bounds, region)
+
+    def _finish_region_selection(
+        self,
+        event: tk.Event,
+        overlay: tk.Toplevel,
+        canvas: tk.Canvas,
+        bounds: ScreenRegion,
+    ) -> None:
+        if self._selection_start is None:
+            self._cancel_region_selection(overlay)
+            return
+        region = region_from_points(self._selection_start, (event.x_root, event.y_root))
+        self._update_selection_canvas(canvas, bounds, region)
+        overlay.grab_release()
+        overlay.destroy()
+        self.region_var.set(region_summary(region))
+        self._selection_start = None
+        self._selection_rect_id = None
+        self._selection_label_id = None
+        self._log(f"Selected OCR region: {region_summary(region)}.")
+        self._set_status("Region selected")
+
+    def _cancel_region_selection(self, overlay: tk.Toplevel) -> None:
+        try:
+            overlay.grab_release()
+        except tk.TclError:
+            pass
+        overlay.destroy()
+        self._selection_start = None
+        self._selection_rect_id = None
+        self._selection_label_id = None
+        self._log("Select Region canceled.")
+        self._set_status("Ready")
+
+    def _update_selection_canvas(self, canvas: tk.Canvas, bounds: ScreenRegion, region: ScreenRegion) -> None:
+        if self._selection_rect_id is None:
+            return
+        x1 = region.left - bounds.left
+        y1 = region.top - bounds.top
+        x2 = x1 + region.width
+        y2 = y1 + region.height
+        canvas.coords(self._selection_rect_id, x1, y1, x2, y2)
+        label = f"{region_summary(region)}"
+        if self._selection_label_id is not None:
+            canvas.coords(self._selection_label_id, x1 + 8, y1 + 8)
+            canvas.itemconfigure(self._selection_label_id, text=label)
 
     def _preview_region(self) -> None:
         try:
@@ -733,6 +898,17 @@ class OcrWatcherGui:
             self._log(f"Mouse position: {x},{y}")
         except OSError as exc:
             self._log(f"Mouse position error: {exc}")
+
+    def _track_mouse_position(self) -> None:
+        try:
+            x, y = current_mouse_position()
+            self.mouse_position_var.set(f"Mouse: {x},{y}")
+        except OSError:
+            self.mouse_position_var.set("Mouse: unavailable")
+        try:
+            self.root.after(125, self._track_mouse_position)
+        except tk.TclError:
+            pass
 
     def _region_or_default(self) -> ScreenRegion:
         try:
