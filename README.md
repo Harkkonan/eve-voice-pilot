@@ -80,3 +80,32 @@ The matching app profile is `profiles/eve_voice_standard.json`. It remaps medium
 ## Notes
 
 If EVE is running as administrator and this app is not, Windows may block simulated keypresses. Usually both apps should run normally, without administrator mode.
+
+## Trade Planner Agent
+
+The trade planner is a separate command-line helper that uses EVE Workbench's sell-buy trade tool data to suggest distribution runs. It does not log in, place orders, or touch the game client.
+
+Double-click `Start-EveTradeAgent.bat` for prompt mode.
+
+Run it from PowerShell:
+
+```powershell
+.\scripts\run_trade_agent.ps1 --from "Jita" --to "Amarr" --volume 10000 --top 8
+```
+
+Or let it scan the editable target list and keep only routes within a jump limit:
+
+```powershell
+.\scripts\run_trade_agent.ps1 --from "Jita" --max-jumps 10 --volume 5000
+```
+
+Useful options:
+
+- `--from "System"`: where you are now.
+- `--to "System"`: exact destination.
+- `--max-jumps 10`: distance mode, using `data/eve_trade_targets.json`.
+- `--targets "Amarr,Dodixie,Hek"`: one-off destination list for distance mode.
+- `--sort-by profit`: rank by total profit instead of ISK per jump.
+- `--highsec-only`: skip routes that dip below 0.5 security.
+
+Always check the orders in EVE before hauling. The helper reads live EVE Workbench market data, but buy and sell orders can fill or move between the suggestion and your undock.
