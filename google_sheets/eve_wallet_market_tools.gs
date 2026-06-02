@@ -160,13 +160,13 @@ function setupMarketPickerDraft() {
   const ss = SpreadsheetApp.getActive();
   const sheet = ensureSheet_(ss, EVE_SHEET.MARKET_PICKER_DRAFT);
   setupMarketPickerDraftSheet_(sheet);
-  SpreadsheetApp.getUi().alert('Market Picker Draft is ready. Type an item in B2 and a region in B3, then run EVE Market > Load Market Picker Draft Table.');
+  SpreadsheetApp.getUi().alert('Market Picker Draft is ready. Type an item in A2 and a region in B2, then run EVE Market > Load Market Picker Draft Table.');
 }
 
 function loadMarketPickerDraftTable() {
   const ss = SpreadsheetApp.getActive();
   const sheet = ensureSheet_(ss, EVE_SHEET.MARKET_PICKER_DRAFT);
-  if (sheet.getRange('A1').getValue() !== 'Market Picker Draft') {
+  if (sheet.getRange('A1').getValue() !== 'Item' || sheet.getRange('B1').getValue() !== 'Region') {
     setupMarketPickerDraftSheet_(sheet, true);
   }
   loadMarketToolTableForSheet_(sheet, true);
@@ -207,10 +207,7 @@ function marketToolEditRefresh(e) {
   const range = e.range;
   const sheet = range.getSheet();
   if (![EVE_SHEET.MARKET_TOOL, EVE_SHEET.MARKET_PICKER_DRAFT].includes(sheet.getName())) return;
-
-  const touchesInputRows = range.getRow() <= 4 && range.getLastRow() >= 2;
-  const touchesInputColumn = range.getColumn() <= 2 && range.getLastColumn() >= 2;
-  if (!touchesInputRows || !touchesInputColumn) return;
+  if (!isMarketInputEdit_(sheet, range)) return;
 
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return;
@@ -468,14 +465,21 @@ function loadMarketToolTable(showAlert) {
 function loadMarketToolTableForSheet_(sheet, showAlert) {
   try {
     const outputRow = getMarketOutputRow_(sheet);
-    const itemName = String(sheet.getRange('B2').getValue() || '').trim();
-    const regionName = String(sheet.getRange('B3').getValue() || '').trim();
-    const rawOrderType = String(sheet.getRange('B4').getValue() || 'sell').trim().toLowerCase();
+    const inputs = getMarketInputs_(sheet);
+    const itemName = inputs.itemName;
+    const regionName = inputs.regionName;
+    const rawOrderType = inputs.orderType;
     const orderType = ['buy', 'sell', 'all'].includes(rawOrderType) ? rawOrderType : 'sell';
-    sheet.getRange('B4').setValue(orderType);
+    inputs.orderTypeRange.setValue(
+      sheet.getName() === EVE_SHEET.MARKET_PICKER_DRAFT
+        ? orderType.charAt(0).toUpperCase() + orderType.slice(1)
+        : orderType
+    );
 
     if (!itemName || !regionName) {
-      const message = 'Enter an item name in B2 and a region name in B3 first.';
+      const message = sheet.getName() === EVE_SHEET.MARKET_PICKER_DRAFT
+        ? 'Enter an item name in A2 and a region name in B2 first.'
+        : 'Enter an item name in B2 and a region name in B3 first.';
       setMarketStatus_(sheet, message);
       if (showAlert) SpreadsheetApp.getUi().alert(message);
       return;
@@ -486,14 +490,15 @@ function loadMarketToolTableForSheet_(sheet, showAlert) {
 
     const typeId = resolveSearchId_(itemName, 'inventory_type');
     const regionId = resolveSearchId_(regionName, 'region');
-    sheet.getRange('B5').setValue(typeId);
-    sheet.getRange('B6').setValue(regionId);
+    setResolvedMarketIds_(sheet, typeId, regionId);
 
     const orders = fetchAllMarketOrders_(regionId, typeId, orderType);
     const systemNames = resolveEsiNames_(orders.map(order => order.system_id));
     const locationNames = resolveEsiNames_(orders.map(order => order.location_id));
     const visibleHeaders = getMarketVisibleHeaders_();
     const rawHeaders = getMarketOrderHeaders_();
+    const visibleStartCol = getMarketVisibleStartColumn_(sheet);
+    const rawStartCol = getMarketRawStartColumn_(sheet);
     const visibleValues = orders.map(order => [
       systemNames.get(String(order.system_id)) || order.system_id,
       locationNames.get(String(order.location_id)) || order.location_id,
@@ -518,22 +523,19 @@ function loadMarketToolTableForSheet_(sheet, showAlert) {
       locationNames.get(String(order.location_id)) || order.location_id,
     ]);
 
-    sheet.getRange(outputRow, 1, Math.max(sheet.getMaxRows() - outputRow + 1, 1), 21).clearContent().clearFormat();
-    sheet.getRange(outputRow, 3, 1, visibleHeaders.length).setValues([visibleHeaders]);
-    sheet.getRange(outputRow, 7, 1, rawHeaders.length).setValues([rawHeaders]);
+    sheet.getRange(outputRow, 1, Math.max(sheet.getMaxRows() - outputRow + 1, 1), rawStartCol + rawHeaders.length - 1).clearContent().clearFormat();
+    sheet.getRange(outputRow, visibleStartCol, 1, visibleHeaders.length).setValues([visibleHeaders]);
+    sheet.getRange(outputRow, rawStartCol, 1, rawHeaders.length).setValues([rawHeaders]);
     if (visibleValues.length) {
-      sheet.getRange(outputRow + 1, 3, visibleValues.length, visibleHeaders.length).setValues(visibleValues);
-      sheet.getRange(outputRow + 1, 7, rawValues.length, rawHeaders.length).setValues(rawValues);
+      sheet.getRange(outputRow + 1, visibleStartCol, visibleValues.length, visibleHeaders.length).setValues(visibleValues);
+      sheet.getRange(outputRow + 1, rawStartCol, rawValues.length, rawHeaders.length).setValues(rawValues);
     }
-    styleHeader_(sheet.getRange(outputRow, 3, 1, visibleHeaders.length));
-    styleHeader_(sheet.getRange(outputRow, 7, 1, rawHeaders.length));
-    applyFilter_(sheet, outputRow, 3, Math.max(visibleValues.length + 1, 2), visibleHeaders.length + rawHeaders.length);
-    sheet.autoResizeColumns(1, 6);
-    sheet.autoResizeColumns(7, rawHeaders.length);
-    sheet.getRange('E:E').setNumberFormat('#,##0.00');
-    sheet.getRange('F:F').setNumberFormat('#,##0');
-    sheet.getRange('I:I').setNumberFormat('yyyy-mm-dd hh:mm');
-    sheet.getRange('M:M').setNumberFormat('#,##0.00');
+    styleHeader_(sheet.getRange(outputRow, visibleStartCol, 1, visibleHeaders.length));
+    styleHeader_(sheet.getRange(outputRow, rawStartCol, 1, rawHeaders.length));
+    applyFilter_(sheet, outputRow, visibleStartCol, Math.max(visibleValues.length + 1, 2), rawStartCol + rawHeaders.length - visibleStartCol);
+    sheet.autoResizeColumns(1, rawStartCol - 1);
+    sheet.autoResizeColumns(rawStartCol, rawHeaders.length);
+    formatMarketOutputColumns_(sheet);
     collapseMarketRawColumns_(sheet);
     setMarketStatus_(sheet, `Loaded ${visibleValues.length} ${orderType} order(s) for ${itemName} in ${regionName} at ${formatNow_()}.`);
   } catch (error) {
@@ -547,6 +549,8 @@ function setupMarketToolSheet_(sheet) {
   const visibleHeaders = getMarketVisibleHeaders_();
   const rawHeaders = getMarketOrderHeaders_();
   const outputRow = getMarketOutputRow_(sheet);
+  const visibleStartCol = getMarketVisibleStartColumn_(sheet);
+  const rawStartCol = getMarketRawStartColumn_(sheet);
 
   sheet.getRange('A1').setValue('Market Tool');
   sheet.getRange('A2').setValue('Item Name');
@@ -572,15 +576,15 @@ function setupMarketToolSheet_(sheet) {
   if (sheet.getRange('A13').getValue() === 'duration') {
     sheet.getRange('A13:U').clearContent().clearFormat();
   }
-  if (sheet.getRange(outputRow, 3).isBlank()) {
-    sheet.getRange(outputRow, 3, 1, visibleHeaders.length).setValues([visibleHeaders]);
-    sheet.getRange(outputRow, 7, 1, rawHeaders.length).setValues([rawHeaders]);
-    styleHeader_(sheet.getRange(outputRow, 3, 1, visibleHeaders.length));
-    styleHeader_(sheet.getRange(outputRow, 7, 1, rawHeaders.length));
-    applyFilter_(sheet, outputRow, 3, 2, visibleHeaders.length + rawHeaders.length);
+  if (sheet.getRange(outputRow, visibleStartCol).isBlank()) {
+    sheet.getRange(outputRow, visibleStartCol, 1, visibleHeaders.length).setValues([visibleHeaders]);
+    sheet.getRange(outputRow, rawStartCol, 1, rawHeaders.length).setValues([rawHeaders]);
+    styleHeader_(sheet.getRange(outputRow, visibleStartCol, 1, visibleHeaders.length));
+    styleHeader_(sheet.getRange(outputRow, rawStartCol, 1, rawHeaders.length));
+    applyFilter_(sheet, outputRow, visibleStartCol, 2, rawStartCol + rawHeaders.length - visibleStartCol);
   }
-  sheet.autoResizeColumns(1, 6);
-  sheet.autoResizeColumns(7, rawHeaders.length);
+  sheet.autoResizeColumns(1, rawStartCol - 1);
+  sheet.autoResizeColumns(rawStartCol, rawHeaders.length);
   collapseMarketRawColumns_(sheet);
 }
 
@@ -588,68 +592,44 @@ function setupMarketPickerDraftSheet_(sheet, preserveInputs) {
   const outputRow = getMarketOutputRow_(sheet);
   const visibleHeaders = getMarketVisibleHeaders_();
   const rawHeaders = getMarketOrderHeaders_();
-  const priorItem = sheet.getRange('B2').getValue();
-  const priorRegion = sheet.getRange('B3').getValue();
-  const priorOrderType = sheet.getRange('B4').getValue();
+  const visibleStartCol = getMarketVisibleStartColumn_(sheet);
+  const rawStartCol = getMarketRawStartColumn_(sheet);
+  const priorItem = sheet.getRange('A2').getValue();
+  const priorRegion = sheet.getRange('B2').getValue();
+  const priorOrderType = sheet.getRange('C2').getValue();
 
   sheet.getImages().forEach(image => image.remove());
   sheet.getRange(1, 1, sheet.getMaxRows(), Math.min(sheet.getMaxColumns(), 21)).breakApart();
   sheet.clear();
-  if (sheet.getMaxRows() < 120) sheet.insertRowsAfter(sheet.getMaxRows(), 120 - sheet.getMaxRows());
+  if (sheet.getMaxRows() < 80) sheet.insertRowsAfter(sheet.getMaxRows(), 80 - sheet.getMaxRows());
   if (sheet.getMaxColumns() < 21) sheet.insertColumnsAfter(sheet.getMaxColumns(), 21 - sheet.getMaxColumns());
 
-  sheet.getRange('A1:E1').mergeAcross().setValue('Market Picker Draft');
-  sheet.getRange('A1').setFontWeight('bold').setFontSize(16).setBackground('#dbeafe');
-  sheet.getRange('A2').setValue('Selected Item');
-  sheet.getRange('A3').setValue('Region');
-  sheet.getRange('A4').setValue('Order Type');
-  sheet.getRange('A5').setValue('Resolved Type ID');
-  sheet.getRange('A6').setValue('Resolved Region ID');
-  sheet.getRange('A7').setValue('Status');
-  sheet.getRange('B2').setValue(preserveInputs && priorItem ? priorItem : 'Tritanium');
-  sheet.getRange('B3').setValue(preserveInputs && priorRegion ? priorRegion : 'Domain');
-  sheet.getRange('B4').setValue(preserveInputs && priorOrderType ? priorOrderType : 'sell');
-  setDropdown_(sheet.getRange('B4'), ['sell', 'buy', 'all']);
-  setMarketStatus_(sheet, 'Type an item in B2 and a region in B3, then run EVE Market > Load Market Picker Draft Table.');
+  sheet.getRange('A1:C1').setValues([['Item', 'Region', 'Buy or Sell order']]);
+  sheet.getRange('A2:C2').setValues([[
+    preserveInputs && priorItem ? priorItem : 'Tritanium',
+    preserveInputs && priorRegion ? priorRegion : 'Domain',
+    preserveInputs && priorOrderType ? priorOrderType : 'Sell',
+  ]]);
+  setDropdown_(sheet.getRange('C2'), ['Sell', 'Buy', 'All']);
+  setMarketStatus_(sheet, 'Ready. Change A2/B2/C2, then run EVE Market > Load Market Picker Draft Table.');
 
-  sheet.getRange('A2:B7').setFontWeight('bold').setWrap(true);
-  sheet.getRange('A7:B7').setBackground('#fef3c7');
-  sheet.getRange('A9:E9').mergeAcross().setValue('Layout draft area');
-  sheet.getRange('A9').setFontWeight('bold').setBackground('#f8fafc');
-  sheet.getRange('A10:E22')
-    .setBackground('#f8fafc')
-    .setBorder(true, true, true, true, true, true, '#cbd5e1', SpreadsheetApp.BorderStyle.SOLID);
-  sheet.getRange('A10:E10').mergeAcross().setValue('Reserved for future item buttons/icons');
-  sheet.getRange('A10').setHorizontalAlignment('center').setFontWeight('bold').setFontColor('#475569');
-  for (let col = 1; col <= 5; col += 1) {
-    sheet.setColumnWidth(col, 120);
-  }
-  for (let row = 10; row <= 22; row += 1) {
-    sheet.setRowHeight(row, 28);
-  }
+  sheet.getRange('A1:C1').setFontWeight('bold').setBackground('#dbeafe');
+  sheet.getRange('A2:C2').setBackground('#f8fafc');
+  sheet.getRange('A3:D3').setBackground('#fef3c7').setWrap(true);
+  sheet.getRange(outputRow, visibleStartCol, 1, visibleHeaders.length).setValues([visibleHeaders]);
+  sheet.getRange(outputRow, rawStartCol, 1, rawHeaders.length).setValues([rawHeaders]);
+  styleHeader_(sheet.getRange(outputRow, visibleStartCol, 1, visibleHeaders.length));
+  styleHeader_(sheet.getRange(outputRow, rawStartCol, 1, rawHeaders.length));
+  applyFilter_(sheet, outputRow, visibleStartCol, 2, rawStartCol + rawHeaders.length - visibleStartCol);
 
-  sheet.getRange(outputRow - 1, 3, 1, 4)
-    .mergeAcross()
-    .setValue('Market orders')
-    .setFontWeight('bold')
-    .setBackground('#f8fafc');
-  sheet.getRange(outputRow, 3, 1, visibleHeaders.length).setValues([visibleHeaders]);
-  sheet.getRange(outputRow, 7, 1, rawHeaders.length).setValues([rawHeaders]);
-  styleHeader_(sheet.getRange(outputRow, 3, 1, visibleHeaders.length));
-  styleHeader_(sheet.getRange(outputRow, 7, 1, rawHeaders.length));
-  applyFilter_(sheet, outputRow, 3, 2, visibleHeaders.length + rawHeaders.length);
-
-  sheet.setFrozenRows(7);
-  sheet.autoResizeColumns(1, 6);
-  for (let col = 1; col <= 5; col += 1) {
-    sheet.setColumnWidth(col, 120);
-  }
-  sheet.autoResizeColumns(7, rawHeaders.length);
+  sheet.setFrozenRows(outputRow);
+  sheet.autoResizeColumns(1, rawStartCol - 1);
+  sheet.autoResizeColumns(rawStartCol, rawHeaders.length);
   collapseMarketRawColumns_(sheet);
 }
 
 function getMarketOutputRow_(sheet) {
-  return sheet.getName() === EVE_SHEET.MARKET_PICKER_DRAFT ? 32 : 13;
+  return sheet.getName() === EVE_SHEET.MARKET_PICKER_DRAFT ? 5 : 13;
 }
 
 function getActiveMarketSheet_() {
@@ -659,13 +639,39 @@ function getActiveMarketSheet_() {
   return ensureSheet_(ss, EVE_SHEET.MARKET_TOOL);
 }
 
+function getMarketInputs_(sheet) {
+  if (sheet.getName() === EVE_SHEET.MARKET_PICKER_DRAFT) {
+    return {
+      itemName: String(sheet.getRange('A2').getValue() || '').trim(),
+      regionName: String(sheet.getRange('B2').getValue() || '').trim(),
+      orderType: String(sheet.getRange('C2').getValue() || 'sell').trim().toLowerCase(),
+      orderTypeRange: sheet.getRange('C2'),
+    };
+  }
+  return {
+    itemName: String(sheet.getRange('B2').getValue() || '').trim(),
+    regionName: String(sheet.getRange('B3').getValue() || '').trim(),
+    orderType: String(sheet.getRange('B4').getValue() || 'sell').trim().toLowerCase(),
+    orderTypeRange: sheet.getRange('B4'),
+  };
+}
+
+function setResolvedMarketIds_(sheet, typeId, regionId) {
+  if (sheet.getName() === EVE_SHEET.MARKET_PICKER_DRAFT) return;
+  sheet.getRange('B5').setValue(typeId);
+  sheet.getRange('B6').setValue(regionId);
+}
+
+function getMarketVisibleStartColumn_(sheet) {
+  return sheet.getName() === EVE_SHEET.MARKET_PICKER_DRAFT ? 1 : 3;
+}
+
+function getMarketRawStartColumn_(sheet) {
+  return getMarketVisibleStartColumn_(sheet) + getMarketVisibleHeaders_().length;
+}
+
 function getMarketVisibleHeaders_() {
-  return [
-    'system_name',
-    'location_name',
-    'price',
-    'quantity',
-  ];
+  return ['Output system name', 'Output Location', 'Output price', 'Output quantity'];
 }
 
 function getMarketOrderHeaders_() {
@@ -689,19 +695,51 @@ function getMarketOrderHeaders_() {
 }
 
 function collapseMarketRawColumns_(sheet) {
-  sheet.showColumns(1, 6);
-  sheet.hideColumns(7, getMarketOrderHeaders_().length);
+  const rawStartCol = getMarketRawStartColumn_(sheet);
+  sheet.showColumns(1, rawStartCol - 1);
+  sheet.hideColumns(rawStartCol, getMarketOrderHeaders_().length);
 }
 
 function showMarketRawColumns_(sheet) {
-  sheet.showColumns(1, 6 + getMarketOrderHeaders_().length);
+  const rawStartCol = getMarketRawStartColumn_(sheet);
+  sheet.showColumns(1, rawStartCol + getMarketOrderHeaders_().length - 1);
 }
 
 function setMarketStatus_(sheet, message) {
+  if (sheet.getName() === EVE_SHEET.MARKET_PICKER_DRAFT) {
+    sheet.getRange('A3:D3')
+      .breakApart()
+      .mergeAcross()
+      .clearContent()
+      .setValue(message)
+      .setWrap(true);
+    return;
+  }
   sheet.getRange('B7')
     .clearContent()
     .setValue(message)
     .setWrap(true);
+}
+
+function formatMarketOutputColumns_(sheet) {
+  const visibleStartCol = getMarketVisibleStartColumn_(sheet);
+  const rawStartCol = getMarketRawStartColumn_(sheet);
+  const maxRows = sheet.getMaxRows();
+  sheet.getRange(1, visibleStartCol + 2, maxRows, 1).setNumberFormat('#,##0.00');
+  sheet.getRange(1, visibleStartCol + 3, maxRows, 1).setNumberFormat('#,##0');
+  sheet.getRange(1, rawStartCol + 2, maxRows, 1).setNumberFormat('yyyy-mm-dd hh:mm');
+  sheet.getRange(1, rawStartCol + 6, maxRows, 1).setNumberFormat('#,##0.00');
+}
+
+function isMarketInputEdit_(sheet, range) {
+  if (sheet.getName() === EVE_SHEET.MARKET_PICKER_DRAFT) {
+    const touchesInputRow = range.getRow() <= 2 && range.getLastRow() >= 2;
+    const touchesInputColumns = range.getColumn() <= 3 && range.getLastColumn() >= 1;
+    return touchesInputRow && touchesInputColumns;
+  }
+  const touchesInputRows = range.getRow() <= 4 && range.getLastRow() >= 2;
+  const touchesInputColumn = range.getColumn() <= 2 && range.getLastColumn() >= 2;
+  return touchesInputRows && touchesInputColumn;
 }
 
 function removeMarketAutoRefresh_() {
