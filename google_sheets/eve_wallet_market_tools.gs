@@ -10,6 +10,7 @@
 const EVE_SHEET = Object.freeze({
   MARKET_TOOL: 'Market Tool',
   MARKET_PICKER_DRAFT: 'Market Picker Draft',
+  INVENTORY_LEDGER: 'Inventory Ledger',
   WALLET_IMPORT: 'Wallet Import',
   PURCHASE_LEDGER: 'Purchase Ledger',
   PURCHASE_GROUPS: 'Purchase Groups',
@@ -19,6 +20,20 @@ const EVE_SHEET = Object.freeze({
 });
 
 const EVE_HEADERS = Object.freeze({
+  INVENTORY_LEDGER_SIMPLE: [
+    'Date',
+    'Item',
+    'Quantity',
+    'Buy Price / Unit',
+    'Source',
+    'Current Sell / Unit',
+    'Refine Value / Unit',
+    'Sold Status',
+    'Tax Rate %',
+    'Profit',
+    'Profit Margin',
+    'Notes',
+  ],
   MISSION_TRACKER: [
     'Date',
     'Character',
@@ -140,6 +155,10 @@ function onOpen() {
   ui.createMenu('EVE Missions')
     .addItem('Set Up Mission Tracker', 'setupMissionTracker')
     .addToUi();
+
+  ui.createMenu('EVE Inventory')
+    .addItem('Simplify Inventory Ledger', 'setupSimplifiedInventoryLedger')
+    .addToUi();
 }
 
 function setupMissionTracker() {
@@ -161,6 +180,14 @@ function setupMarketPickerDraft() {
   const sheet = ensureSheet_(ss, EVE_SHEET.MARKET_PICKER_DRAFT);
   setupMarketPickerDraftSheet_(sheet);
   SpreadsheetApp.getUi().alert('Market Picker Draft is ready. Type an item in A2 and a region in B2, then run EVE Market > Load Market Picker Draft Table.');
+}
+
+function setupSimplifiedInventoryLedger() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ensureSheet_(ss, EVE_SHEET.INVENTORY_LEDGER);
+  const preservedRows = readInventoryRowsForSimplify_(sheet);
+  setupSimplifiedInventoryLedgerSheet_(sheet, preservedRows);
+  SpreadsheetApp.getUi().alert('Inventory Ledger is simplified. Existing matching fields were preserved where possible.');
 }
 
 function loadMarketPickerDraftTable() {
@@ -798,6 +825,91 @@ function setupModuleSpendSheet_(sheet) {
   sheet.getRange(3, 1, 1, headers.length).setValues([headers]);
   styleHeader_(sheet.getRange(3, 1, 1, headers.length));
   sheet.setFrozenRows(3);
+}
+
+function setupSimplifiedInventoryLedgerSheet_(sheet, preservedRows) {
+  const headers = EVE_HEADERS.INVENTORY_LEDGER_SIMPLE;
+  const formulaRows = Math.max(200, preservedRows.length + 50);
+
+  sheet.clear();
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  styleHeader_(sheet.getRange(1, 1, 1, headers.length));
+
+  if (preservedRows.length) {
+    sheet.getRange(2, 1, preservedRows.length, headers.length).setValues(preservedRows);
+  }
+
+  setInventoryLedgerFormulas_(sheet, formulaRows);
+  setInventoryLedgerValidation_(sheet, formulaRows);
+  formatSimplifiedInventoryLedger_(sheet, formulaRows);
+}
+
+function readInventoryRowsForSimplify_(sheet) {
+  if (!sheet || sheet.getLastRow() < 2 || sheet.getLastColumn() < 1) return [];
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(normalizeHeader_);
+  if (!headers.some(Boolean)) return [];
+
+  const values = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  return values
+    .filter(row => row.some(cell => cell !== '' && cell !== null))
+    .map(row => [
+      pickInventoryValue_(row, headers, ['date', 'date_bought']),
+      pickInventoryValue_(row, headers, ['item']),
+      pickInventoryValue_(row, headers, ['quantity', 'qty']),
+      pickInventoryValue_(row, headers, ['buy_price_/_unit', 'avg_cost_/_unit', 'avg_cost', 'cost_/_unit']),
+      pickInventoryValue_(row, headers, ['source', 'source_/_buy_hub', 'buy_hub', 'location']),
+      pickInventoryValue_(row, headers, ['current_sell_/_unit', 'current_sell', 'sell_price_/_unit']),
+      pickInventoryValue_(row, headers, ['refine_value_/_unit', 'refine_value']),
+      pickInventoryValue_(row, headers, ['sold_status', 'status', 'best_action']),
+      pickInventoryValue_(row, headers, ['tax_rate_%', 'taxrate_%', 'tax_rate']),
+      '',
+      '',
+      pickInventoryValue_(row, headers, ['notes', 'plan']),
+    ]);
+}
+
+function pickInventoryValue_(row, headers, names) {
+  for (const name of names) {
+    const index = headers.indexOf(name);
+    if (index >= 0 && row[index] !== '' && row[index] !== null) return row[index];
+  }
+  return '';
+}
+
+function setInventoryLedgerFormulas_(sheet, formulaRows) {
+  sheet.getRange(2, 10, formulaRows, 1)
+    .setFormulaR1C1('=IF(OR(RC[-8]="",RC[-7]="",RC[-6]=""),"",IF(RC[-2]="Refined",IF(RC[-3]="","",RC[-7]*RC[-3]*(1-N(RC[-1]))-RC[-7]*RC[-6]),IF(RC[-4]="","",RC[-7]*RC[-4]*(1-N(RC[-1]))-RC[-7]*RC[-6])))');
+  sheet.getRange(2, 11, formulaRows, 1)
+    .setFormulaR1C1('=IFERROR(RC[-1]/(RC[-8]*RC[-7]),"")');
+}
+
+function setInventoryLedgerValidation_(sheet, formulaRows) {
+  setDropdown_(sheet.getRange(2, 8, formulaRows, 1), ['Unsold', 'Listed', 'Sold', 'Refined', 'Cancelled']);
+  sheet.getRange(2, 9, formulaRows, 1).setNumberFormat('0.00%');
+}
+
+function formatSimplifiedInventoryLedger_(sheet, formulaRows) {
+  sheet.setFrozenRows(1);
+  applyFilter_(sheet, 1, 1, Math.max(formulaRows + 1, 2), EVE_HEADERS.INVENTORY_LEDGER_SIMPLE.length);
+  sheet.getRange(2, 1, formulaRows, 1).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(2, 3, formulaRows, 1).setNumberFormat('#,##0.00');
+  sheet.getRange(2, 4, formulaRows, 4).setNumberFormat('#,##0.00');
+  sheet.getRange(2, 9, formulaRows, 1).setNumberFormat('0.00%');
+  sheet.getRange(2, 10, formulaRows, 1).setNumberFormat('#,##0.00');
+  sheet.getRange(2, 11, formulaRows, 1).setNumberFormat('0.00%');
+  sheet.getRange(1, 1, formulaRows + 1, EVE_HEADERS.INVENTORY_LEDGER_SIMPLE.length).setWrap(true);
+  sheet.setColumnWidths(1, 1, 95);
+  sheet.setColumnWidths(2, 1, 180);
+  sheet.setColumnWidths(3, 1, 90);
+  sheet.setColumnWidths(4, 1, 115);
+  sheet.setColumnWidths(5, 1, 120);
+  sheet.setColumnWidths(6, 2, 125);
+  sheet.setColumnWidths(8, 2, 105);
+  sheet.setColumnWidths(10, 2, 115);
+  sheet.setColumnWidths(12, 1, 180);
 }
 
 function setupMissionTrackerSheet_(sheet) {
