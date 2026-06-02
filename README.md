@@ -77,6 +77,32 @@ The recommended EVE keybind list is in `docs/eve_voice_keybind_standard.md`. A s
 
 The matching app profile is `profiles/eve_voice_standard.json`. It remaps medium slots to `Alt+1` through `Alt+8` instead of the EVE default `Alt+F1` through `Alt+F8`, because `Alt+F4` is a risky Windows close-window shortcut.
 
+## OCR Watcher
+
+The OCR watcher is a command-line helper that reads one screen rectangle and sends a key chord when the watched text value changes. It does not send on the first stable read; the first value becomes the baseline.
+
+It uses `pytesseract`, which also needs the Tesseract Windows app installed. If Tesseract is not on `PATH`, pass the full `tesseract.exe` path with `--tesseract-cmd`.
+
+Dry-run a region first:
+
+```powershell
+.\scripts\run_ocr_watcher.ps1 --region "100,200,260,40" --hotkey "CTRL+SHIFT+F9" --pattern "([0-9,]+)" --dry-run
+```
+
+Read once without watching:
+
+```powershell
+.\scripts\run_ocr_watcher.ps1 --region "100,200,260,40" --hotkey "CTRL+SHIFT+F9" --pattern "([0-9,]+)" --once
+```
+
+Send for real after the value changes:
+
+```powershell
+.\scripts\run_ocr_watcher.ps1 --region "100,200,260,40" --hotkey "CTRL+SHIFT+F9" --pattern "([0-9,]+)" --stable-samples 2 --cooldown 1.5
+```
+
+By default, key sending is blocked unless the active window title contains `EVE`. Use `--window-title-contains ""` only if you intentionally want to disable that guard.
+
 ## Notes
 
 If EVE is running as administrator and this app is not, Windows may block simulated keypresses. Usually both apps should run normally, without administrator mode.
