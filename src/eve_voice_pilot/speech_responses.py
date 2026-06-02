@@ -17,7 +17,7 @@ from .commands import VoiceCommand
 
 ROOT = Path(__file__).resolve().parents[2]
 RESPONSE_CACHE_DIR = ROOT / "cache" / "speech"
-DEFAULT_RESPONSE_SUFFIX = "Aura"
+DEFAULT_RESPONSE_SUFFIX = "Merlin"
 RESPONSE_ENGINE_OPENAI = "OpenAI cached"
 RESPONSE_ENGINE_WINDOWS = "Windows local"
 RESPONSE_ENGINES = [RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_WINDOWS]
