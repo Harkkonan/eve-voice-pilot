@@ -11,6 +11,7 @@ const EVE_SHEET = Object.freeze({
   MARKET_TOOL: 'Market Tool',
   MARKET_PICKER_DRAFT: 'Market Picker Draft',
   INVENTORY_LEDGER: 'Inventory Ledger',
+  TRADE_OPPORTUNITIES: 'Trade Opportunities',
   WALLET_IMPORT: 'Wallet Import',
   PURCHASE_LEDGER: 'Purchase Ledger',
   PURCHASE_GROUPS: 'Purchase Groups',
@@ -20,6 +21,24 @@ const EVE_SHEET = Object.freeze({
 });
 
 const EVE_HEADERS = Object.freeze({
+  TRADE_OPPORTUNITIES: [
+    'Observation Date',
+    'Item',
+    'Buy Hub',
+    'Sell/Refine Hub',
+    'Buy Price / Unit',
+    'Expected Sell / Unit',
+    'Expected Refine / Unit',
+    'Best Value / Unit',
+    'Fees %',
+    'Hauling Cost / Unit',
+    'Net Profit / Unit',
+    'Margin %',
+    'ISK/m3',
+    'Estimated Days to Sell',
+    'Decision',
+    'Notes',
+  ],
   INVENTORY_LEDGER_SIMPLE: [
     'Date',
     'Item',
@@ -159,6 +178,11 @@ function onOpen() {
   ui.createMenu('EVE Inventory')
     .addItem('Simplify Inventory Ledger', 'setupSimplifiedInventoryLedger')
     .addToUi();
+
+  ui.createMenu('EVE Trade')
+    .addItem('Add Observation Date Column', 'addTradeObservationDateColumn')
+    .addItem('Timestamp Blank Observation Dates', 'timestampTradeOpportunityRows')
+    .addToUi();
 }
 
 function setupMissionTracker() {
@@ -188,6 +212,21 @@ function setupSimplifiedInventoryLedger() {
   const preservedRows = readInventoryRowsForSimplify_(sheet);
   setupSimplifiedInventoryLedgerSheet_(sheet, preservedRows);
   SpreadsheetApp.getUi().alert('Inventory Ledger is simplified. Existing matching fields were preserved where possible.');
+}
+
+function addTradeObservationDateColumn() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ensureSheet_(ss, EVE_SHEET.TRADE_OPPORTUNITIES);
+  const result = ensureTradeObservationDateColumn_(sheet);
+  SpreadsheetApp.getUi().alert(result.message);
+}
+
+function timestampTradeOpportunityRows() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ensureSheet_(ss, EVE_SHEET.TRADE_OPPORTUNITIES);
+  const result = ensureTradeObservationDateColumn_(sheet);
+  const count = fillBlankTradeObservationDates_(sheet, result.headerRow, result.observationCol);
+  SpreadsheetApp.getUi().alert(`Stamped ${count} trade opportunity row(s) with today's date.`);
 }
 
 function loadMarketPickerDraftTable() {
@@ -910,6 +949,113 @@ function formatSimplifiedInventoryLedger_(sheet, formulaRows) {
   sheet.setColumnWidths(8, 2, 105);
   sheet.setColumnWidths(10, 2, 115);
   sheet.setColumnWidths(12, 1, 180);
+}
+
+function ensureTradeObservationDateColumn_(sheet) {
+  if (sheet.getLastRow() === 0 || sheet.getLastColumn() === 0 || !sheet.getDataRange().getValues().flat().some(Boolean)) {
+    sheet.clear();
+    sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length).setValues([EVE_HEADERS.TRADE_OPPORTUNITIES]);
+    styleHeader_(sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length));
+    formatTradeObservationSheet_(sheet, 1, 1);
+    return {
+      headerRow: 1,
+      observationCol: 1,
+      message: 'Trade Opportunities was empty, so I created the default table with Observation Date.',
+    };
+  }
+
+  const headerInfo = findTradeOpportunityHeader_(sheet);
+  if (!headerInfo) {
+    sheet.insertRowsBefore(1, 1);
+    sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length).setValues([EVE_HEADERS.TRADE_OPPORTUNITIES]);
+    styleHeader_(sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length));
+    formatTradeObservationSheet_(sheet, 1, 1);
+    return {
+      headerRow: 1,
+      observationCol: 1,
+      message: 'I could not find the old header row, so I added a default Trade Opportunities header at the top.',
+    };
+  }
+
+  const existingObservationCol = headerInfo.headers.indexOf('observation_date') + 1;
+  if (existingObservationCol > 0) {
+    formatTradeObservationSheet_(sheet, headerInfo.row, existingObservationCol);
+    return {
+      headerRow: headerInfo.row,
+      observationCol: existingObservationCol,
+      message: 'Observation Date already exists. I formatted it and left the sheet structure alone.',
+    };
+  }
+
+  const insertCol = headerInfo.firstHeaderCol;
+  sheet.insertColumnBefore(insertCol);
+  sheet.getRange(headerInfo.row, insertCol).setValue('Observation Date');
+  styleHeader_(sheet.getRange(headerInfo.row, insertCol, 1, 1));
+  formatTradeObservationSheet_(sheet, headerInfo.row, insertCol);
+  const stamped = fillBlankTradeObservationDates_(sheet, headerInfo.row, insertCol);
+  return {
+    headerRow: headerInfo.row,
+    observationCol: insertCol,
+    message: `Added Observation Date and stamped ${stamped} existing row(s) with today's date.`,
+  };
+}
+
+function findTradeOpportunityHeader_(sheet) {
+  const maxRows = Math.min(Math.max(sheet.getLastRow(), 1), 10);
+  const maxCols = Math.max(sheet.getLastColumn(), 1);
+  const values = sheet.getRange(1, 1, maxRows, maxCols).getValues();
+
+  for (let rowIndex = 0; rowIndex < values.length; rowIndex += 1) {
+    const normalized = values[rowIndex].map(normalizeHeader_);
+    const hasItem = normalized.includes('item');
+    const hasDecision = normalized.includes('decision');
+    const hasBuy = normalized.some(header => ['buy_price', 'buy_price_/_unit', 'buy_hub'].includes(header));
+    const hasMargin = normalized.some(header => ['margin_%', 'margin'].includes(header));
+    const hasValue = normalized.some(header => ['expected_net_value', 'expected_sell_/_unit', 'best_value_/_unit', 'isk/m3', 'isk_m3'].includes(header));
+    if (hasItem && (hasDecision || hasBuy || hasMargin || hasValue)) {
+      const firstHeaderIndex = normalized.findIndex(Boolean);
+      return {
+        row: rowIndex + 1,
+        headers: normalized,
+        firstHeaderCol: firstHeaderIndex >= 0 ? firstHeaderIndex + 1 : 1,
+      };
+    }
+  }
+  return null;
+}
+
+function fillBlankTradeObservationDates_(sheet, headerRow, observationCol) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= headerRow) return 0;
+
+  const rowCount = lastRow - headerRow;
+  const dateRange = sheet.getRange(headerRow + 1, observationCol, rowCount, 1);
+  const dates = dateRange.getValues();
+  const tableWidth = Math.max(sheet.getLastColumn(), 1);
+  const rows = sheet.getRange(headerRow + 1, 1, rowCount, tableWidth).getValues();
+  const today = new Date();
+  let stamped = 0;
+
+  rows.forEach((row, index) => {
+    const hasContent = row.some(cell => cell !== '' && cell !== null);
+    if (hasContent && !dates[index][0]) {
+      dates[index][0] = today;
+      stamped += 1;
+    }
+  });
+
+  if (stamped) dateRange.setValues(dates);
+  return stamped;
+}
+
+function formatTradeObservationSheet_(sheet, headerRow, observationCol) {
+  const lastRow = Math.max(sheet.getLastRow(), headerRow + 1);
+  const lastCol = Math.max(sheet.getLastColumn(), EVE_HEADERS.TRADE_OPPORTUNITIES.length);
+  sheet.setFrozenRows(headerRow);
+  sheet.getRange(headerRow, 1, 1, lastCol).setFontWeight('bold').setWrap(true);
+  sheet.getRange(headerRow, observationCol, lastRow - headerRow + 1, 1).setNumberFormat('yyyy-mm-dd');
+  applyFilter_(sheet, headerRow, 1, Math.max(lastRow - headerRow + 1, 2), lastCol);
+  sheet.autoResizeColumns(1, Math.min(lastCol, 16));
 }
 
 function setupMissionTrackerSheet_(sheet) {
