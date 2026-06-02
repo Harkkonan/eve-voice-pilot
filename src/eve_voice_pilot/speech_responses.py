@@ -209,9 +209,31 @@ def generate_openai_response_audio(
 
     if not audio:
         raise RuntimeError("OpenAI voice generation returned no audio.")
+    audio = normalize_wav_bytes(audio)
     temp_path.write_bytes(audio)
     temp_path.replace(path)
     return path
+
+
+def normalize_wav_bytes(audio: bytes) -> bytes:
+    if len(audio) < 44 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        return audio
+
+    normalized = bytearray(audio)
+    normalized[4:8] = (len(normalized) - 8).to_bytes(4, "little")
+    position = 12
+    while position + 8 <= len(normalized):
+        chunk_id = bytes(normalized[position:position + 4])
+        chunk_size = int.from_bytes(normalized[position + 4:position + 8], "little")
+        chunk_start = position + 8
+        remaining = max(0, len(normalized) - chunk_start)
+        if chunk_size == 0xFFFFFFFF or chunk_start + chunk_size > len(normalized):
+            chunk_size = remaining
+            normalized[position + 4:position + 8] = chunk_size.to_bytes(4, "little")
+        position = chunk_start + chunk_size + (chunk_size % 2)
+        if chunk_id == b"data":
+            break
+    return bytes(normalized)
 
 
 def _format_openai_error(payload: str) -> str:
@@ -275,11 +297,13 @@ class SpeechResponseManager:
             return
         path = self._cache_path(command)
         if not path.exists():
+            self.log(f"Voice response for {command.name} is generating; try the command again in a moment.")
             self.prepare_command_async(command)
             return
         try:
+            normalize_cached_wav(path)
             winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
-        except RuntimeError as exc:
+        except Exception as exc:
             self.log(f"Could not play voice response for {command.name}: {exc}")
 
     def stop(self) -> None:
@@ -353,3 +377,13 @@ class SpeechResponseManager:
             finally:
                 with self.lock:
                     self.pending.discard(path)
+
+
+def normalize_cached_wav(path: Path) -> None:
+    try:
+        original = path.read_bytes()
+    except OSError:
+        return
+    normalized = normalize_wav_bytes(original)
+    if normalized != original:
+        path.write_bytes(normalized)

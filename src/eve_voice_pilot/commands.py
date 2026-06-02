@@ -12,12 +12,39 @@ SPACE_RE = re.compile(r"\s+")
 DEFAULT_HOLD_SECONDS = 0.10
 DEFAULT_PRESS_COUNT = 1
 DEFAULT_REPEAT_GAP_SECONDS = 0.10
+DEFAULT_RESPONSE_CALL_SIGN = "merlin"
 
 
 def normalize_phrase(value: str) -> str:
     value = value.lower().strip()
     value = NORMALIZE_RE.sub(" ", value)
     return SPACE_RE.sub(" ", value).strip()
+
+
+def response_call_signs(value: str) -> list[str]:
+    call_signs: list[str] = []
+    for item in value.split(","):
+        normalized = normalize_phrase(item)
+        if normalized and normalized not in call_signs:
+            call_signs.append(normalized)
+    return call_signs
+
+
+def strip_response_call_sign(transcript: str, call_signs: list[str]) -> tuple[str, bool]:
+    heard = normalize_phrase(transcript)
+    if not heard:
+        return "", False
+
+    for call_sign in call_signs:
+        if heard == call_sign:
+            return "", True
+        prefix = f"{call_sign} "
+        suffix = f" {call_sign}"
+        if heard.startswith(prefix):
+            return heard[len(prefix):].strip(), True
+        if heard.endswith(suffix):
+            return heard[:-len(suffix)].strip(), True
+    return heard, False
 
 
 @dataclass

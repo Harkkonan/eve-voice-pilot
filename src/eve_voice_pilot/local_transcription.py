@@ -33,13 +33,23 @@ LOCAL_RATE = 16000
 DEFAULT_MODEL_PATH = ROOT / "models" / "vosk-model-small-en-us-0.15"
 
 
-def command_phrases_for_grammar(commands: list[VoiceCommand]) -> list[str]:
-    phrases = {
-        normalized
+def command_phrases_for_grammar(commands: list[VoiceCommand], response_call_signs: list[str] | None = None) -> list[str]:
+    command_phrases = [
+        (command, normalized)
         for command in commands
         for phrase in command.phrases
         if (normalized := normalize_phrase(phrase))
-    }
+    ]
+    phrases = {phrase for _, phrase in command_phrases}
+    for call_sign in response_call_signs or []:
+        normalized_call_sign = normalize_phrase(call_sign)
+        if not normalized_call_sign:
+            continue
+        for command, phrase in command_phrases:
+            if not command.response_suffix.strip():
+                continue
+            phrases.add(f"{phrase} {normalized_call_sign}")
+            phrases.add(f"{normalized_call_sign} {phrase}")
     return sorted(phrases)
 
 
@@ -50,11 +60,13 @@ class LocalVoskTranscriber:
         log: Callable[[str], None],
         input_device_index: int | None = None,
         model_path: Path | None = None,
+        response_call_signs: list[str] | None = None,
     ):
         self.commands = commands
         self.log = log
         self.input_device_index = input_device_index
         self.model_path = model_path or DEFAULT_MODEL_PATH
+        self.response_call_signs = response_call_signs or []
         self.model = None
         self.lock = threading.RLock()
 
@@ -175,7 +187,7 @@ class LocalVoskTranscriber:
     def _create_recognizer(self, model):
         from vosk import KaldiRecognizer
 
-        grammar = command_phrases_for_grammar(self.commands)
+        grammar = command_phrases_for_grammar(self.commands, self.response_call_signs)
         if not grammar:
             grammar = ["[unk]"]
         elif "[unk]" not in grammar:

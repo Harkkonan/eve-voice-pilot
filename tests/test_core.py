@@ -5,7 +5,15 @@ import ctypes
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from eve_voice_pilot.commands import CommandProfile, VoiceCommand, find_command_match, find_exact_phrase_match, normalize_phrase
+from eve_voice_pilot.commands import (
+    CommandProfile,
+    VoiceCommand,
+    find_command_match,
+    find_exact_phrase_match,
+    normalize_phrase,
+    response_call_signs,
+    strip_response_call_sign,
+)
 from eve_voice_pilot.input_sender import INPUT, INPUT_UNION, KEYBDINPUT, parse_key_chord
 from eve_voice_pilot.local_transcription import command_phrases_for_grammar
 from eve_voice_pilot.speech_responses import (
@@ -13,6 +21,7 @@ from eve_voice_pilot.speech_responses import (
     DEFAULT_RESPONSE_ENGINE,
     RESPONSE_ENGINE_OPENAI,
     RESPONSE_ENGINE_WINDOWS,
+    normalize_wav_bytes,
     response_cache_path,
     response_enabled,
     response_text_for_command,
@@ -77,6 +86,13 @@ def test_find_exact_phrase_match_allows_single_word_as_whole_command():
     match = find_exact_phrase_match("map", [command])
     assert match is not None
     assert match.phrase == "map"
+
+
+def test_strip_response_call_sign_allows_suffix_or_prefix():
+    call_signs = response_call_signs("Merlin, Aura")
+    assert strip_response_call_sign("warp merlin", call_signs) == ("warp", True)
+    assert strip_response_call_sign("aura open map", call_signs) == ("open map", True)
+    assert strip_response_call_sign("open map", call_signs) == ("open map", False)
 
 
 def test_parse_key_chord_allows_modifier_and_key():
@@ -215,10 +231,27 @@ def test_voice_standard_orbit_uses_double_press():
 
 def test_local_grammar_uses_normalized_unique_phrases():
     commands = [
-        VoiceCommand("Map", ["Open Map!", "open map"], "F10"),
+        VoiceCommand("Map", ["Open Map!", "open map"], "F10", response_suffix="Aura"),
         VoiceCommand("Recall", ["recall drones"], "SHIFT+R"),
     ]
     assert command_phrases_for_grammar(commands) == ["open map", "recall drones"]
+    assert command_phrases_for_grammar(commands, ["Merlin"]) == [
+        "merlin open map",
+        "open map",
+        "open map merlin",
+        "recall drones",
+    ]
+
+
+def test_normalize_wav_bytes_fixes_streaming_sizes():
+    audio = (
+        b"RIFF\xff\xff\xff\xffWAVE"
+        b"fmt " + (16).to_bytes(4, "little") + b"\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00"
+        b"data" + (0xFFFFFFFF).to_bytes(4, "little") + b"\x00\x00\x01\x00"
+    )
+    normalized = normalize_wav_bytes(audio)
+    assert int.from_bytes(normalized[4:8], "little") == len(normalized) - 8
+    assert int.from_bytes(normalized[40:44], "little") == 4
 
 
 def test_windows_input_union_has_full_size():

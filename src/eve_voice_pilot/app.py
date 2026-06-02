@@ -13,10 +13,13 @@ import sounddevice as sd
 from .commands import (
     DEFAULT_HOLD_SECONDS,
     DEFAULT_PRESS_COUNT,
+    DEFAULT_RESPONSE_CALL_SIGN,
     DEFAULT_REPEAT_GAP_SECONDS,
     CommandProfile,
     VoiceCommand,
     find_exact_phrase_match,
+    response_call_signs,
+    strip_response_call_sign,
 )
 from .config import load_settings, save_settings
 from .hotkey import GlobalHotkey
@@ -67,7 +70,7 @@ class CommandDialog(simpledialog.Dialog):
         ttk.Label(master, text="Press count").grid(row=4, column=0, sticky="w", padx=6, pady=5)
         ttk.Label(master, text="Delay between presses").grid(row=5, column=0, sticky="w", padx=6, pady=5)
         ttk.Label(master, text="Speak response").grid(row=6, column=0, sticky="w", padx=6, pady=5)
-        ttk.Label(master, text="Response suffix").grid(row=7, column=0, sticky="w", padx=6, pady=5)
+        ttk.Label(master, text="Response voice label").grid(row=7, column=0, sticky="w", padx=6, pady=5)
         ttk.Label(master, text="Response text").grid(row=8, column=0, sticky="w", padx=6, pady=5)
 
         self.name_var = tk.StringVar(value=self.command.name if self.command else "")
@@ -169,6 +172,7 @@ class EveVoicePilotApp(tk.Tk):
         self.transcriber_engine = ""
         self.transcriber_command_signature: tuple[tuple[str, tuple[str, ...], str, float, int, float], ...] = ()
         self.transcriber_input_device_index: int | None = None
+        self.transcriber_response_call_sign = ""
         self.transcriber_lock = threading.RLock()
         self.listening_thread: threading.Thread | None = None
         self.mic_test_thread: threading.Thread | None = None
@@ -396,6 +400,9 @@ class EveVoicePilotApp(tk.Tk):
             value=str(self.settings.get("response_style", DEFAULT_POWER_BALLAD_INSTRUCTIONS)).strip()
             or DEFAULT_POWER_BALLAD_INSTRUCTIONS
         )
+        self.response_call_sign_var = tk.StringVar(
+            value=str(self.settings.get("response_call_sign", DEFAULT_RESPONSE_CALL_SIGN)).strip() or DEFAULT_RESPONSE_CALL_SIGN
+        )
 
         ttk.Label(settings, text="Speech engine").grid(row=0, column=0, sticky="w", pady=5)
         ttk.Combobox(settings, textvariable=self.engine_var, values=SPEECH_ENGINES, state="readonly").grid(
@@ -434,18 +441,20 @@ class EveVoicePilotApp(tk.Tk):
             sticky="ew",
             pady=5,
         )
-        ttk.Label(settings, text="OpenAI voice").grid(row=12, column=0, sticky="w", pady=5)
-        ttk.Combobox(settings, textvariable=self.response_voice_var, values=OPENAI_TTS_VOICES).grid(row=12, column=1, sticky="ew", pady=5)
-        ttk.Label(settings, text="Voice style").grid(row=13, column=0, sticky="w", pady=5)
-        ttk.Entry(settings, textvariable=self.response_style_var).grid(row=13, column=1, sticky="ew", pady=5)
+        ttk.Label(settings, text="Response call sign").grid(row=12, column=0, sticky="w", pady=5)
+        ttk.Entry(settings, textvariable=self.response_call_sign_var).grid(row=12, column=1, sticky="ew", pady=5)
+        ttk.Label(settings, text="OpenAI voice").grid(row=13, column=0, sticky="w", pady=5)
+        ttk.Combobox(settings, textvariable=self.response_voice_var, values=OPENAI_TTS_VOICES).grid(row=13, column=1, sticky="ew", pady=5)
+        ttk.Label(settings, text="Voice style").grid(row=14, column=0, sticky="w", pady=5)
+        ttk.Entry(settings, textvariable=self.response_style_var).grid(row=14, column=1, sticky="ew", pady=5)
         ttk.Button(settings, text="Regenerate Voice Clips", command=self.regenerate_voice_clips).grid(
-            row=14,
+            row=15,
             column=0,
             columnspan=2,
             sticky="ew",
             pady=(6, 0),
         )
-        ttk.Button(settings, text="Save Settings", command=self.save_settings).grid(row=15, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Button(settings, text="Save Settings", command=self.save_settings).grid(row=16, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
         log_frame = ttk.LabelFrame(right, text="System Log", padding=8)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
@@ -663,6 +672,7 @@ class EveVoicePilotApp(tk.Tk):
             "require_target": self.require_target_var.get(),
             "target_title": self.target_title_var.get().strip() or "EVE",
             "response_engine": self.response_engine_var.get(),
+            "response_call_sign": self.response_call_sign_var.get().strip() or DEFAULT_RESPONSE_CALL_SIGN,
             "response_voice": self.response_voice_var.get().strip() or DEFAULT_OPENAI_TTS_VOICE,
             "response_style": self.response_style_var.get().strip() or DEFAULT_POWER_BALLAD_INSTRUCTIONS,
             "profile_path": str(self.profile_path),
@@ -678,6 +688,8 @@ class EveVoicePilotApp(tk.Tk):
             self._close_transcriber()
         selected_device = self._selected_input_device_index()
         if self.transcriber and self.transcriber_input_device_index != selected_device:
+            self._close_transcriber()
+        if self.transcriber and self.transcriber_response_call_sign != settings["response_call_sign"]:
             self._close_transcriber()
         self._configure_speech_responses()
         self.speech_responses.prepare_commands_async(self.profile.commands)
@@ -724,9 +736,10 @@ class EveVoicePilotApp(tk.Tk):
         require_target = self.require_target_var.get()
         target_title = self.target_title_var.get().strip() or "EVE"
         input_device_index = self._selected_input_device_index()
+        response_call_sign = self.response_call_sign_var.get().strip() or DEFAULT_RESPONSE_CALL_SIGN
         self.listening_thread = threading.Thread(
             target=self._listen_worker,
-            args=(api_key, speech_engine, commands, practice_mode, require_target, target_title, input_device_index),
+            args=(api_key, speech_engine, commands, practice_mode, require_target, target_title, input_device_index, response_call_sign),
             name="listen-worker",
             daemon=True,
         )
@@ -752,37 +765,82 @@ class EveVoicePilotApp(tk.Tk):
         require_target: bool,
         target_title: str,
         input_device_index: int | None,
+        response_call_sign: str,
     ) -> None:
         fast_result: dict | None = None
+        call_signs = response_call_signs(response_call_sign)
 
         def on_partial_match(transcript: str) -> bool:
             nonlocal fast_result
             if fast_result:
-                return True
-            match = find_exact_phrase_match(transcript, commands)
+                match, command_transcript, response_requested = self._match_spoken_command(transcript, commands, call_signs)
+                if (
+                    match
+                    and match.command.name == fast_result["match"].command.name
+                    and response_requested
+                ):
+                    fast_result.update({
+                        "transcript": transcript,
+                        "command_transcript": command_transcript,
+                        "response_requested": True,
+                    })
+                    return True
+                return False
+            match, command_transcript, response_requested = self._match_spoken_command(transcript, commands, call_signs)
             if not match:
                 return False
             result = self._send_or_practice_worker(match.command, practice_mode, require_target, target_title)
             fast_result = {
                 "transcript": transcript,
+                "command_transcript": command_transcript,
                 "match": match,
                 "result": result,
+                "response_requested": response_requested,
             }
-            return True
+            return not self._should_listen_for_response_call_sign(match.command, response_requested, call_signs)
 
         try:
-            transcriber = self._get_transcriber(api_key, speech_engine, commands, input_device_index)
+            transcriber = self._get_transcriber(api_key, speech_engine, commands, input_device_index, response_call_sign)
             transcript = transcriber.record_until_stopped(
                 self.stop_listening,
                 on_ready=self._listening_ready,
                 on_partial_match=on_partial_match,
             )
             if fast_result:
+                self._update_fast_result_response_request(fast_result, transcript, commands, call_signs)
                 self.events.put(("fast_transcript", fast_result))
             else:
                 self.events.put(("transcript", transcript))
         except Exception as exc:
             self.events.put(("error", str(exc)))
+
+    def _should_listen_for_response_call_sign(
+        self,
+        command: VoiceCommand,
+        response_requested: bool,
+        call_signs: list[str],
+    ) -> bool:
+        return bool(call_signs) and not response_requested and bool(command.response_suffix.strip())
+
+    def _update_fast_result_response_request(
+        self,
+        fast_result: dict,
+        transcript: str,
+        commands: list[VoiceCommand],
+        call_signs: list[str],
+    ) -> None:
+        if not transcript.strip():
+            return
+        match, command_transcript, response_requested = self._match_spoken_command(transcript, commands, call_signs)
+        if not match or not response_requested:
+            return
+        previous_match = fast_result.get("match")
+        if previous_match and match.command.name == previous_match.command.name:
+            fast_result.update({
+                "transcript": transcript,
+                "command_transcript": command_transcript,
+                "response_requested": True,
+            })
 
     def _get_transcriber(
         self,
@@ -790,6 +848,7 @@ class EveVoicePilotApp(tk.Tk):
         speech_engine: str,
         commands: list[VoiceCommand],
         input_device_index: int | None,
+        response_call_sign: str,
     ) -> RealtimeTranscriber | LocalVoskTranscriber:
         command_signature = self._command_signature(commands)
         with self.transcriber_lock:
@@ -799,16 +858,23 @@ class EveVoicePilotApp(tk.Tk):
                 or self.transcriber_api_key != api_key
                 or self.transcriber_input_device_index != input_device_index
                 or self.transcriber_command_signature != command_signature
+                or self.transcriber_response_call_sign != response_call_sign
             ):
                 self._close_transcriber()
                 if speech_engine == ENGINE_LOCAL:
-                    self.transcriber = LocalVoskTranscriber(commands, self.log_threadsafe, input_device_index=input_device_index)
+                    self.transcriber = LocalVoskTranscriber(
+                        commands,
+                        self.log_threadsafe,
+                        input_device_index=input_device_index,
+                        response_call_signs=response_call_signs(response_call_sign),
+                    )
                 else:
                     self.transcriber = RealtimeTranscriber(api_key, self.log_threadsafe, input_device_index=input_device_index)
                 self.transcriber_api_key = api_key
                 self.transcriber_engine = speech_engine
                 self.transcriber_command_signature = command_signature
                 self.transcriber_input_device_index = input_device_index
+                self.transcriber_response_call_sign = response_call_sign
             return self.transcriber
 
     def _command_signature(self, commands: list[VoiceCommand]) -> tuple[tuple[str, tuple[str, ...], str, float, int, float], ...]:
@@ -826,6 +892,7 @@ class EveVoicePilotApp(tk.Tk):
             self.transcriber_engine = ""
             self.transcriber_command_signature = ()
             self.transcriber_input_device_index = None
+            self.transcriber_response_call_sign = ""
 
     def _warm_connection_if_possible(self) -> None:
         api_key = self.api_key_var.get().strip()
@@ -836,9 +903,10 @@ class EveVoicePilotApp(tk.Tk):
             return
         commands = list(self.profile.commands)
         input_device_index = self._selected_input_device_index()
+        response_call_sign = self.response_call_sign_var.get().strip() or DEFAULT_RESPONSE_CALL_SIGN
         threading.Thread(
             target=self._warm_connection_worker,
-            args=(api_key, speech_engine, commands, input_device_index),
+            args=(api_key, speech_engine, commands, input_device_index, response_call_sign),
             name="warm-speech-worker",
             daemon=True,
         ).start()
@@ -849,21 +917,34 @@ class EveVoicePilotApp(tk.Tk):
         speech_engine: str,
         commands: list[VoiceCommand],
         input_device_index: int | None,
+        response_call_sign: str,
     ) -> None:
         try:
-            self._get_transcriber(api_key, speech_engine, commands, input_device_index).warm_up()
+            self._get_transcriber(api_key, speech_engine, commands, input_device_index, response_call_sign).warm_up()
         except Exception as exc:
             self.events.put(("log", f"Could not warm {speech_engine} connection: {exc}"))
 
     def _listening_ready(self) -> None:
         self.events.put(("status", "Listening"))
 
+    def _match_spoken_command(
+        self,
+        transcript: str,
+        commands: list[VoiceCommand],
+        call_signs: list[str] | None = None,
+    ):
+        cleaned_transcript, response_requested = strip_response_call_sign(
+            transcript,
+            call_signs if call_signs is not None else response_call_signs(self.response_call_sign_var.get()),
+        )
+        return find_exact_phrase_match(cleaned_transcript, commands), cleaned_transcript, response_requested
+
     def _handle_transcript(self, transcript: str) -> None:
         self.last_heard_var.set(transcript or "(No speech recognized)")
         if not transcript.strip():
             self.last_action_var.set("No action.")
             return
-        match = find_exact_phrase_match(transcript, self.profile.commands)
+        match, _, response_requested = self._match_spoken_command(transcript, self.profile.commands)
         if not match:
             self.last_action_var.set("No exact command matched.")
             return
@@ -875,6 +956,7 @@ class EveVoicePilotApp(tk.Tk):
         status = self._command_result_status(result)
         if status == "valid - sent":
             self.record_command_result(status, transcript, f"{match.command.name} ({match.command.action_summary})")
+        if self._should_play_response(match.command, response_requested, result):
             self.speech_responses.play(match.command)
 
     def _send_or_practice(self, command: VoiceCommand) -> str:
@@ -920,7 +1002,7 @@ class EveVoicePilotApp(tk.Tk):
             return
         command = self.profile.commands[index]
         result = self._send_or_practice(command)
-        if self._command_result_status(result) == "valid - sent":
+        if self._command_result_status(result) == "valid - sent" or result.startswith("Practice mode:"):
             self.speech_responses.play(command)
 
     def _poll_events(self) -> None:
@@ -978,6 +1060,7 @@ class EveVoicePilotApp(tk.Tk):
         if not isinstance(payload, dict):
             return
         transcript = str(payload.get("transcript", "")).strip()
+        response_requested = bool(payload.get("response_requested"))
         match = payload.get("match")
         result = str(payload.get("result", ""))
         self.last_heard_var.set(transcript or "(Fast command)")
@@ -988,9 +1071,15 @@ class EveVoicePilotApp(tk.Tk):
             status = self._command_result_status(result)
             if status == "valid - sent":
                 self.record_command_result(status, transcript, f"{match.command.name} ({match.command.action_summary})")
+            if self._should_play_response(match.command, response_requested, result):
                 self.speech_responses.play(match.command)
         if result:
             self.log(result)
+
+    def _should_play_response(self, command: VoiceCommand, response_requested: bool, result: str) -> bool:
+        if not response_requested:
+            return False
+        return bool(command.response_suffix.strip()) and (result.startswith("Sent ") or result.startswith("Practice mode:"))
 
     def _command_result_status(self, result: str) -> str:
         if result.startswith("Sent "):
