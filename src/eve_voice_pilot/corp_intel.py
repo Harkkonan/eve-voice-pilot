@@ -2821,6 +2821,49 @@ DASHBOARD_HTML = r"""<!doctype html>
       color: var(--muted);
       font-size: 12px;
     }
+    .signal-list, .trust-list {
+      display: grid;
+    }
+    .signal-item, .trust-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .signal-item:last-child, .trust-item:last-child {
+      border-bottom: 0;
+    }
+    .signal-label, .trust-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .signal-value, .trust-value {
+      margin-top: 3px;
+      font-size: 17px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .signal-detail, .trust-detail {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .panel-heading {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+    .panel-heading span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+    }
     .watchlist-counts {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2859,7 +2902,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     }
     .system {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
       padding: 11px 14px;
       border-bottom: 1px solid var(--line);
@@ -2871,6 +2914,17 @@ DASHBOARD_HTML = r"""<!doctype html>
       border-bottom: 0;
     }
     .system-name {
+      font-weight: 700;
+    }
+    .system-topline {
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+    .system-count {
+      color: var(--muted);
+      font-size: 12px;
       font-weight: 700;
     }
     .details {
@@ -2894,7 +2948,13 @@ DASHBOARD_HTML = r"""<!doctype html>
     }
     .system .badge {
       justify-self: end;
+      align-self: start;
     }
+    .badge.fresh { background: var(--green); }
+    .badge.aging { background: var(--high); }
+    .badge.stale { background: var(--critical); }
+    .badge.verified { background: var(--green); }
+    .badge.label { background: var(--info); }
     .critical { background: var(--critical); }
     .high { background: var(--high); }
     .medium { background: var(--medium); }
@@ -2905,20 +2965,62 @@ DASHBOARD_HTML = r"""<!doctype html>
     }
     .event {
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: auto minmax(0, 1fr) auto;
       gap: 12px;
       align-items: start;
       padding: 12px;
+    }
+    .event-badges {
+      display: flex;
+      gap: 6px;
+      align-items: flex-start;
+      flex-wrap: wrap;
     }
     .event-message {
       font-size: 15px;
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
+    .event-meta-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
     .event-meta {
       color: var(--muted);
       font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .event-meta-row + .event-meta, .pill-list {
       margin-top: 5px;
+    }
+    .event-side {
+      display: grid;
+      justify-items: end;
+      gap: 6px;
+      min-width: 120px;
+    }
+    .event-time {
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .pill-list {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f8faf9;
+      color: var(--muted);
+      padding: 3px 7px;
+      font-size: 12px;
+      line-height: 1.2;
       overflow-wrap: anywhere;
     }
     .empty {
@@ -2937,12 +3039,19 @@ DASHBOARD_HTML = r"""<!doctype html>
       .event {
         grid-template-columns: 1fr;
       }
+      .event-side {
+        justify-items: start;
+        min-width: 0;
+      }
     }
     @media (max-width: 520px) {
       .metric-row {
         grid-template-columns: 1fr;
       }
       .filter-grid, .watchlist-counts {
+        grid-template-columns: 1fr;
+      }
+      .signal-item, .trust-item {
         grid-template-columns: 1fr;
       }
       .system {
@@ -2973,6 +3082,33 @@ DASHBOARD_HTML = r"""<!doctype html>
         <div class="metric"><strong id="count-aid">0</strong><span>aid matches</span></div>
         <div class="metric"><strong id="count-hostile">0</strong><span>hostile matches</span></div>
         <div class="metric"><strong id="count-watchlist">0</strong><span>watchlist hits</span></div>
+      </div>
+      <div class="panel">
+        <h2 class="panel-heading">Freshness <span id="freshness-summary">Waiting for snapshot</span></h2>
+        <div class="signal-list">
+          <div class="signal-item">
+            <div>
+              <div class="signal-label">Latest intel</div>
+              <div class="signal-value" id="fresh-latest">No retained intel</div>
+              <div class="signal-detail" id="fresh-latest-detail">Waiting for hostile reports or aid calls.</div>
+            </div>
+            <span class="badge info" id="fresh-badge">idle</span>
+          </div>
+          <div class="signal-item">
+            <div>
+              <div class="signal-label">Snapshot</div>
+              <div class="signal-value" id="fresh-snapshot">Connecting</div>
+              <div class="signal-detail" id="fresh-snapshot-detail">Polling /api/state.</div>
+            </div>
+          </div>
+          <div class="signal-item">
+            <div>
+              <div class="signal-label">Retained window</div>
+              <div class="signal-value" id="fresh-retained">0 events</div>
+              <div class="signal-detail" id="fresh-retained-detail">Recent operational intel only.</div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="panel">
         <h2>Filters</h2>
@@ -3009,8 +3145,35 @@ DASHBOARD_HTML = r"""<!doctype html>
         </div>
       </div>
       <div class="panel">
-        <h2>Hot Systems</h2>
+        <h2 class="panel-heading">Hot Systems <span id="systems-summary">0 systems</span></h2>
         <div class="system-list" id="systems"></div>
+      </div>
+      <div class="panel">
+        <h2 class="panel-heading">Source Trust <span id="trust-summary">Pending</span></h2>
+        <div class="trust-list">
+          <div class="trust-item">
+            <div>
+              <div class="trust-label">Verified ingest</div>
+              <div class="trust-value" id="trust-verified">0 events</div>
+              <div class="trust-detail" id="trust-verified-detail">No verified pilot events in the retained snapshot.</div>
+            </div>
+            <span class="badge label" id="trust-badge">labels</span>
+          </div>
+          <div class="trust-item">
+            <div>
+              <div class="trust-label">Source labels</div>
+              <div class="trust-value" id="trust-labels">0 labels</div>
+              <div class="trust-detail" id="trust-labels-detail">Uploader/source labels are shown without local log paths.</div>
+            </div>
+          </div>
+          <div class="trust-item">
+            <div>
+              <div class="trust-label">Channels</div>
+              <div class="trust-value" id="trust-channels">0 channels</div>
+              <div class="trust-detail" id="trust-channels-detail">No channel-linked events yet.</div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="panel">
         <h2>Watchlist</h2>
@@ -3059,7 +3222,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     </section>
     <section>
       <div class="panel">
-        <h2>Live Intel</h2>
+        <h2 class="panel-heading">Live Intel <span id="events-summary">Waiting for events</span></h2>
         <div class="event-list" id="events"></div>
       </div>
     </section>
@@ -3086,6 +3249,73 @@ DASHBOARD_HTML = r"""<!doctype html>
       return `${Math.floor(minutes / 60)}h ago`;
     }
 
+    function timestampIso(value) {
+      const time = Date.parse(value);
+      if (!Number.isFinite(time)) return "unknown timestamp";
+      return new Date(time).toISOString();
+    }
+
+    function plural(count, singular, pluralLabel) {
+      return `${count} ${count === 1 ? singular : (pluralLabel || `${singular}s`)}`;
+    }
+
+    function listPreview(values, fallback, limit = 4) {
+      const clean = (values || []).map(value => String(value || "").trim()).filter(Boolean);
+      if (!clean.length) return fallback;
+      const visible = clean.slice(0, limit).join(", ");
+      const hidden = clean.length - limit;
+      return hidden > 0 ? `${visible} +${hidden} more` : visible;
+    }
+
+    const severityClasses = new Set(["critical", "high", "medium", "info"]);
+
+    function severityClass(value) {
+      return severityClasses.has(value) ? value : "info";
+    }
+
+    function eventTimestamp(event) {
+      return event.observed_at || event.reported_at || "";
+    }
+
+    function newestEvent(events) {
+      let newest = null;
+      let newestTime = -Infinity;
+      for (const event of events || []) {
+        const time = Date.parse(eventTimestamp(event));
+        if (Number.isFinite(time) && time > newestTime) {
+          newest = event;
+          newestTime = time;
+        }
+      }
+      return newest;
+    }
+
+    function freshnessFor(value) {
+      const time = Date.parse(value);
+      if (!Number.isFinite(time)) return { label: "idle", className: "info" };
+      const minutes = Math.floor(Math.max(0, Date.now() - time) / 60000);
+      if (minutes < 10) return { label: "fresh", className: "fresh" };
+      if (minutes < 60) return { label: "aging", className: "aging" };
+      return { label: "stale", className: "stale" };
+    }
+
+    function isVerifiedEvent(event) {
+      return Boolean(event.verified_character_id || event.verified_corporation_id);
+    }
+
+    function sourceDisplay(event) {
+      if (event.verified_character_name) {
+        return event.verified_corporation_name
+          ? `${event.verified_character_name} / ${event.verified_corporation_name}`
+          : event.verified_character_name;
+      }
+      return event.source || "unknown source";
+    }
+
+    function sourceTrustLabel(event) {
+      return isVerifiedEvent(event) ? "verified" : "label";
+    }
+
     function renderCounts(counts) {
       document.getElementById("count-critical").textContent = counts.critical ?? 0;
       document.getElementById("count-high").textContent = counts.high ?? 0;
@@ -3094,8 +3324,71 @@ DASHBOARD_HTML = r"""<!doctype html>
       document.getElementById("count-watchlist").textContent = counts.watchlist ?? 0;
     }
 
+    function renderFreshness(payload) {
+      const events = payload.events || [];
+      const counts = payload.counts || {};
+      const latest = newestEvent(events);
+      const badge = document.getElementById("fresh-badge");
+      const retained = counts.events ?? events.length;
+      document.getElementById("fresh-retained").textContent = plural(retained, "event");
+      document.getElementById("fresh-retained-detail").textContent =
+        `${counts.critical ?? 0} critical, ${counts.high ?? 0} high, ${counts.watchlist ?? 0} watchlist hits`;
+
+      if (latest) {
+        const timestamp = eventTimestamp(latest);
+        const freshness = freshnessFor(timestamp);
+        document.getElementById("fresh-latest").textContent = ageLabel(timestamp);
+        document.getElementById("fresh-latest-detail").textContent =
+          `${listPreview(latest.systems, "No system")} - ${sourceDisplay(latest)} - ${timestampIso(timestamp)}`;
+        document.getElementById("freshness-summary").textContent = `${freshness.label} - ${ageLabel(timestamp)}`;
+        badge.textContent = freshness.label;
+        badge.className = `badge ${freshness.className}`;
+      } else {
+        document.getElementById("fresh-latest").textContent = "No retained intel";
+        document.getElementById("fresh-latest-detail").textContent = "Waiting for hostile reports or aid calls.";
+        document.getElementById("freshness-summary").textContent = "No retained intel";
+        badge.textContent = "idle";
+        badge.className = "badge info";
+      }
+
+      document.getElementById("fresh-snapshot").textContent = payload.generated_at
+        ? ageLabel(payload.generated_at)
+        : "unknown age";
+      document.getElementById("fresh-snapshot-detail").textContent = payload.generated_at
+        ? `${timestampIso(payload.generated_at)} from /api/state`
+        : "Snapshot timestamp unavailable.";
+    }
+
+    function renderTrust(events) {
+      events = events || [];
+      const verifiedEvents = events.filter(isVerifiedEvent);
+      const sources = new Set(events.map(event => event.source).filter(Boolean));
+      const channels = new Set(events.map(event => event.channel).filter(Boolean));
+      const coverage = events.length ? Math.round((verifiedEvents.length / events.length) * 100) : 0;
+      const badge = document.getElementById("trust-badge");
+
+      document.getElementById("trust-summary").textContent = events.length
+        ? `${coverage}% verified`
+        : "No events";
+      document.getElementById("trust-verified").textContent = plural(verifiedEvents.length, "event");
+      document.getElementById("trust-verified-detail").textContent = events.length
+        ? `${coverage}% of retained events include verified EVE identity fields.`
+        : "No verified pilot events in the retained snapshot.";
+      document.getElementById("trust-labels").textContent = plural(sources.size, "label");
+      document.getElementById("trust-labels-detail").textContent = sources.size
+        ? listPreview([...sources], "No source labels yet.", 3)
+        : "Uploader/source labels are shown without local log paths.";
+      document.getElementById("trust-channels").textContent = plural(channels.size, "channel");
+      document.getElementById("trust-channels-detail").textContent = channels.size
+        ? listPreview([...channels], "No channel-linked events yet.", 3)
+        : "No channel-linked events yet.";
+      badge.textContent = verifiedEvents.length ? "verified" : "labels";
+      badge.className = verifiedEvents.length ? "badge verified" : "badge label";
+    }
+
     function renderSystems(systems) {
       const target = document.getElementById("systems");
+      document.getElementById("systems-summary").textContent = plural(systems.length, "system");
       if (!systems.length) {
         target.innerHTML = `<div class="empty">No system-linked intel yet.</div>`;
         return;
@@ -3103,11 +3396,14 @@ DASHBOARD_HTML = r"""<!doctype html>
       target.innerHTML = systems.slice(0, 20).map(item => `
         <div class="system">
           <div>
-            <div class="system-name">${escapeHtml(item.system)}</div>
-            <div class="details">${escapeHtml((item.keywords || []).join(", "))}</div>
-            <div class="details">${escapeHtml((item.sources || []).join(", "))} - ${ageLabel(item.latest_at)}</div>
+            <div class="system-topline">
+              <span class="system-name">${escapeHtml(item.system)}</span>
+              <span class="system-count">${plural(item.count ?? 0, "event")}</span>
+            </div>
+            <div class="details">Matched: ${escapeHtml(listPreview(item.keywords, "No keywords", 5))}</div>
+            <div class="details">Sources: ${escapeHtml(listPreview(item.sources, "No source labels", 4))} - latest ${ageLabel(item.latest_at)}</div>
           </div>
-          <span class="badge ${escapeHtml(item.severity)}">${escapeHtml(item.severity)}</span>
+          <span class="badge ${severityClass(item.severity)}">${escapeHtml(item.severity || "info")}</span>
         </div>
       `).join("");
     }
@@ -3130,6 +3426,8 @@ DASHBOARD_HTML = r"""<!doctype html>
         event.channel,
         event.source,
         event.speaker,
+        event.verified_character_name,
+        event.verified_corporation_name,
         ...(event.systems || []),
         ...(event.keywords || []),
         ...categories
@@ -3143,23 +3441,42 @@ DASHBOARD_HTML = r"""<!doctype html>
       const filtered = events.filter(event => eventMatchesFilters(event, filters));
       document.getElementById("filter-status").textContent =
         events.length ? `${filtered.length} of ${events.length} shown` : "";
+      document.getElementById("events-summary").textContent = events.length
+        ? `${filtered.length} shown / ${events.length} retained`
+        : "Waiting for events";
       if (!filtered.length) {
         const label = events.length ? "No intel matches current filters." : "Waiting for hostile reports or aid calls.";
         target.innerHTML = `<div class="empty">${label}</div>`;
         return;
       }
       target.innerHTML = filtered.slice(0, 100).map(event => {
-        const systems = (event.systems || []).length ? event.systems.join(", ") : "No system";
-        const keywords = (event.keywords || []).join(", ");
+        const timestamp = eventTimestamp(event);
+        const systems = listPreview(event.systems, "No system", 4);
+        const keywords = listPreview(event.keywords, "No matched keyword", 5);
+        const categories = (event.categories || []).map(category =>
+          `<span class="pill">${escapeHtml(category)}</span>`
+        ).join("") || `<span class="pill">uncategorized</span>`;
+        const trust = sourceTrustLabel(event);
         return `
           <div class="event">
-            <span class="badge ${escapeHtml(event.severity)}">${escapeHtml(event.severity)}</span>
+            <div class="event-badges">
+              <span class="badge ${severityClass(event.severity)}">${escapeHtml(event.severity || "info")}</span>
+              <span class="badge ${trust}">${trust}</span>
+            </div>
             <div>
               <div class="event-message">${escapeHtml(event.message)}</div>
-              <div class="event-meta">${escapeHtml(systems)} - ${escapeHtml(event.channel)} - ${escapeHtml(event.source)} - ${escapeHtml(keywords)}</div>
-              <div class="event-meta">${escapeHtml(event.speaker)} - ${ageLabel(event.observed_at || event.reported_at)}</div>
+              <div class="event-meta-row">
+                <span class="event-meta">${escapeHtml(systems)}</span>
+                <span class="event-meta">${escapeHtml(event.channel || "unknown channel")}</span>
+                <span class="event-meta">${escapeHtml(sourceDisplay(event))}</span>
+              </div>
+              <div class="event-meta">Matched: ${escapeHtml(keywords)}</div>
+              <div class="pill-list">${categories}</div>
             </div>
-            <div class="event-meta">${escapeHtml((event.categories || []).join(", "))}</div>
+            <div class="event-side">
+              <div class="event-time">${ageLabel(timestamp)}</div>
+              <div class="event-meta">${escapeHtml(timestampIso(timestamp))}</div>
+            </div>
           </div>
         `;
       }).join("");
@@ -3382,11 +3699,16 @@ DASHBOARD_HTML = r"""<!doctype html>
         const payload = await response.json();
         state.events = payload.events || [];
         renderCounts(payload.counts || {});
+        renderFreshness(payload);
+        renderTrust(state.events);
         renderSystems(payload.systems || []);
         renderEvents(state.events);
         document.getElementById("status").textContent = `Live - ${ageLabel(payload.generated_at)}`;
       } catch (error) {
         document.getElementById("status").textContent = "Connection lost";
+        document.getElementById("freshness-summary").textContent = "Snapshot unavailable";
+        document.getElementById("fresh-snapshot").textContent = "Connection lost";
+        document.getElementById("fresh-snapshot-detail").textContent = "Could not reach /api/state.";
       }
     }
 
