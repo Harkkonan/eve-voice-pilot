@@ -134,6 +134,40 @@ def test_decode_eve_access_token_validates_character_identity():
     assert payload["sub"] == "CHARACTER:EVE:123456789"
 
 
+def test_decode_eve_access_token_allows_small_iat_clock_skew():
+    token, public_key = make_signed_jwt(
+        {
+            "iss": "https://login.eveonline.com/",
+            "aud": ["client-123", "EVE Online"],
+            "exp": int(time.time()) + 600,
+            "iat": int(time.time()) + 60,
+            "sub": "CHARACTER:EVE:123456789",
+            "name": "Scout Pilot",
+        }
+    )
+    payload = decode_eve_access_token(token, client_id="client-123", jwk_client=FakeJwkClient(public_key))
+    assert payload["name"] == "Scout Pilot"
+
+
+def test_decode_eve_access_token_rejects_large_iat_clock_skew():
+    token, public_key = make_signed_jwt(
+        {
+            "iss": "https://login.eveonline.com/",
+            "aud": ["client-123", "EVE Online"],
+            "exp": int(time.time()) + 600,
+            "iat": int(time.time()) + 300,
+            "sub": "CHARACTER:EVE:123456789",
+            "name": "Scout Pilot",
+        }
+    )
+    try:
+        decode_eve_access_token(token, client_id="client-123", jwk_client=FakeJwkClient(public_key))
+    except Exception as exc:
+        assert "not yet valid" in str(exc)
+    else:
+        raise AssertionError("expected excessive iat clock skew to be rejected")
+
+
 def test_decode_eve_access_token_rejects_wrong_audience():
     token, public_key = make_signed_jwt(
         {

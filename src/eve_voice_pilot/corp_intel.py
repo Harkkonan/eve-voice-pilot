@@ -43,6 +43,7 @@ DEFAULT_EVE_SSO_WELL_KNOWN_URL = "https://login.eveonline.com/.well-known/oauth-
 DEFAULT_WATCHLIST_REFRESH_SECONDS = 60.0
 DEFAULT_EVENT_RETENTION_DAYS = 7
 EXPECTED_EVE_SSO_AUDIENCE = "EVE Online"
+EVE_SSO_CLOCK_SKEW_LEEWAY_SECONDS = 120
 ACCEPTED_EVE_SSO_ISSUERS = {
     "login.eveonline.com",
     "https://login.eveonline.com",
@@ -1462,6 +1463,7 @@ def decode_eve_access_token(
             signing_key.key,
             algorithms=["RS256"],
             audience=EXPECTED_EVE_SSO_AUDIENCE,
+            leeway=EVE_SSO_CLOCK_SKEW_LEEWAY_SECONDS,
             options={
                 "require": ["aud", "exp", "iss", "sub"],
                 "verify_iss": False,
