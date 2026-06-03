@@ -24,12 +24,15 @@ const EVE_SHEET = Object.freeze({
 const EVE_HEADERS = Object.freeze({
   TRADE_OPPORTUNITIES: [
     'Observation Date',
+    'Item Group',
     'Item',
     'Quantity',
-    'Buy Hub',
-    'Sell/Refine Hub',
+    'Buy Region',
+    'Sell Region',
+    'Buy Location',
+    'Sell Location',
     'Buy Price / Unit',
-    'Expected Sell / Unit',
+    'Sell Price / Unit',
     'Expected Refine / Unit',
     'Best Value / Unit',
     'Fees %',
@@ -37,6 +40,8 @@ const EVE_HEADERS = Object.freeze({
     'Net Profit / Unit',
     'Margin %',
     'ISK/m3',
+    'Buy Volume Available',
+    'Sell Volume Available',
     'Estimated Days to Sell',
     'Decision',
     'Notes',
@@ -161,6 +166,14 @@ const MISSION_WALLET_REF_TYPES = Object.freeze([
   'mission_reward',
 ]);
 
+const TRADE_ITEM_GROUPS = Object.freeze([
+  'Minerals',
+  'Materials',
+  'Ammunition & Charges',
+]);
+
+const TRADE_OPPORTUNITY_HEADER_ROW = 12;
+
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('EVE Market')
@@ -193,6 +206,9 @@ function onOpen() {
     .addToUi();
 
   ui.createMenu('EVE Trade')
+    .addItem('Set Up Trade Opportunity Tool', 'setupTradeOpportunityTool')
+    .addItem('Append Live Trade Opportunity', 'appendLiveTradeOpportunity')
+    .addSeparator()
     .addItem('Add Observation Date / Quantity Columns', 'addTradeObservationDateColumn')
     .addItem('Timestamp Blank Observation Dates', 'timestampTradeOpportunityRows')
     .addToUi();
@@ -267,6 +283,37 @@ function setupSimplifiedInventoryLedger() {
   const preservedRows = readInventoryRowsForSimplify_(sheet);
   setupSimplifiedInventoryLedgerSheet_(sheet, preservedRows);
   SpreadsheetApp.getUi().alert('Inventory Ledger is simplified. Existing matching fields were preserved where possible.');
+}
+
+function setupTradeOpportunityTool() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ensureSheet_(ss, EVE_SHEET.TRADE_OPPORTUNITIES);
+  const preserved = setupTradeOpportunityToolSheet_(sheet);
+  SpreadsheetApp.getUi().alert(
+    `Trade Opportunity Tool is ready. Preserved ${preserved} existing row(s). Enter item/regions/quantity, then run EVE Trade > Append Live Trade Opportunity.`
+  );
+}
+
+function appendLiveTradeOpportunity() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ensureSheet_(ss, EVE_SHEET.TRADE_OPPORTUNITIES);
+  setupTradeOpportunityToolSheet_(sheet);
+
+  try {
+    const inputs = getTradeOpportunityInputs_(sheet);
+    validateTradeOpportunityInputs_(inputs);
+    setTradeOpportunityStatus_(sheet, `Loading live market data for ${inputs.itemName}...`);
+    SpreadsheetApp.flush();
+
+    const opportunity = buildTradeOpportunityFromMarket_(inputs);
+    appendTradeOpportunityRow_(sheet, opportunity);
+    setTradeOpportunityStatus_(sheet, `Added live ${inputs.itemName} opportunity at ${formatNow_()}.`);
+    SpreadsheetApp.getUi().alert(`Added live trade opportunity for ${opportunity.itemName}.`);
+  } catch (error) {
+    const message = `Error: ${error.message || error}`;
+    setTradeOpportunityStatus_(sheet, message);
+    SpreadsheetApp.getUi().alert(message);
+  }
 }
 
 function addTradeObservationDateColumn() {
@@ -1006,31 +1053,287 @@ function formatSimplifiedInventoryLedger_(sheet, formulaRows) {
   sheet.setColumnWidths(12, 1, 180);
 }
 
+function setupTradeOpportunityToolSheet_(sheet) {
+  const alreadySetUp = sheet.getRange('A1').getValue() === 'Trade Opportunities Tool';
+  const preservedRows = alreadySetUp ? [] : readTradeOpportunityRowsForSetup_(sheet);
+
+  if (!alreadySetUp) sheet.clear();
+
+  sheet.getRange('A1').setValue('Trade Opportunities Tool');
+  sheet.getRange('A2:A9').setValues([
+    ['Item Group'],
+    ['Item'],
+    ['Quantity'],
+    ['Buy Region'],
+    ['Sell Region'],
+    ['Fees %'],
+    ['Hauling Cost / Unit'],
+    ['Status'],
+  ]);
+  sheet.getRange('C2').setValue('Examples');
+  sheet.getRange('C3').setValue('Minerals: Tritanium, Mexallon, Isogen');
+  sheet.getRange('C4').setValue('Materials: Construction Blocks, Coolant, Robotics');
+  sheet.getRange('C5').setValue('Ammo/Charges: Scourge Light Missile, Antimatter Charge S, Multifrequency S');
+
+  if (sheet.getRange('B2').isBlank()) sheet.getRange('B2').setValue('Minerals');
+  if (sheet.getRange('B3').isBlank()) sheet.getRange('B3').setValue('Tritanium');
+  if (sheet.getRange('B4').isBlank()) sheet.getRange('B4').setValue(100000);
+  if (sheet.getRange('B5').isBlank()) sheet.getRange('B5').setValue('Domain');
+  if (sheet.getRange('B6').isBlank()) sheet.getRange('B6').setValue('Devoid');
+  if (sheet.getRange('B7').isBlank()) sheet.getRange('B7').setValue(0.08);
+  if (sheet.getRange('B8').isBlank()) sheet.getRange('B8').setValue(0);
+
+  setDropdown_(sheet.getRange('B2'), TRADE_ITEM_GROUPS);
+  sheet.getRange('B4').setNumberFormat('#,##0.00');
+  sheet.getRange('B7').setNumberFormat('0.00%');
+  sheet.getRange('B8').setNumberFormat('#,##0.00');
+  setTradeOpportunityStatus_(sheet, 'Ready. Enter item, quantity, buy region, and sell region; then run EVE Trade > Append Live Trade Opportunity.');
+
+  sheet.getRange(TRADE_OPPORTUNITY_HEADER_ROW, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length)
+    .setValues([EVE_HEADERS.TRADE_OPPORTUNITIES]);
+  styleHeader_(sheet.getRange(TRADE_OPPORTUNITY_HEADER_ROW, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length));
+
+  if (preservedRows.length) {
+    sheet.getRange(TRADE_OPPORTUNITY_HEADER_ROW + 1, 1, preservedRows.length, EVE_HEADERS.TRADE_OPPORTUNITIES.length)
+      .setValues(preservedRows);
+  }
+
+  formatTradeOpportunityTool_(sheet);
+  return preservedRows.length;
+}
+
+function getTradeOpportunityInputs_(sheet) {
+  return {
+    itemGroup: String(sheet.getRange('B2').getValue() || '').trim(),
+    itemName: String(sheet.getRange('B3').getValue() || '').trim(),
+    quantity: numberValue_(sheet.getRange('B4').getValue()),
+    buyRegion: String(sheet.getRange('B5').getValue() || '').trim(),
+    sellRegion: String(sheet.getRange('B6').getValue() || '').trim(),
+    feesRate: normalizeRate_(sheet.getRange('B7').getValue()),
+    haulingCostPerUnit: numberValue_(sheet.getRange('B8').getValue()),
+  };
+}
+
+function validateTradeOpportunityInputs_(inputs) {
+  if (!TRADE_ITEM_GROUPS.includes(inputs.itemGroup)) {
+    throw new Error(`Choose one of these item groups: ${TRADE_ITEM_GROUPS.join(', ')}`);
+  }
+  if (!inputs.itemName) throw new Error('Enter an item name in B3.');
+  if (!inputs.quantity || inputs.quantity <= 0) throw new Error('Enter a quantity greater than 0 in B4.');
+  if (!inputs.buyRegion) throw new Error('Enter a buy region in B5.');
+  if (!inputs.sellRegion) throw new Error('Enter a sell region in B6.');
+}
+
+function buildTradeOpportunityFromMarket_(inputs) {
+  const typeId = resolveSearchId_(inputs.itemName, 'inventory_type');
+  const buyRegionId = resolveSearchId_(inputs.buyRegion, 'region');
+  const sellRegionId = resolveSearchId_(inputs.sellRegion, 'region');
+  const typeInfo = fetchJson_(`https://esi.evetech.net/latest/universe/types/${encodeURIComponent(typeId)}/?datasource=tranquility`);
+
+  const sourceOrders = fetchAllMarketOrders_(buyRegionId, typeId, 'sell').filter(order => Number(order.volume_remain || 0) > 0);
+  const destinationOrders = fetchAllMarketOrders_(sellRegionId, typeId, 'buy').filter(order => Number(order.volume_remain || 0) > 0);
+  if (!sourceOrders.length) throw new Error(`No sell orders found for ${inputs.itemName} in ${inputs.buyRegion}.`);
+  if (!destinationOrders.length) throw new Error(`No buy orders found for ${inputs.itemName} in ${inputs.sellRegion}.`);
+
+  const buyOrder = sourceOrders.reduce((best, order) => Number(order.price) < Number(best.price) ? order : best, sourceOrders[0]);
+  const sellOrder = destinationOrders.reduce((best, order) => Number(order.price) > Number(best.price) ? order : best, destinationOrders[0]);
+  const names = resolveEsiNames_([buyOrder.location_id, sellOrder.location_id, buyOrder.system_id, sellOrder.system_id]);
+  const buyPrice = numberValue_(buyOrder.price);
+  const sellPrice = numberValue_(sellOrder.price);
+  const netProfitPerUnit = sellPrice * (1 - inputs.feesRate) - buyPrice - inputs.haulingCostPerUnit;
+  const margin = buyPrice ? netProfitPerUnit / buyPrice : '';
+  const volume = numberValue_(typeInfo.volume);
+  const iskPerM3 = volume ? netProfitPerUnit / volume : '';
+  const buyVolume = numberValue_(buyOrder.volume_remain);
+  const sellVolume = numberValue_(sellOrder.volume_remain);
+  const limitedVolume = Math.min(buyVolume, sellVolume) < inputs.quantity;
+
+  return {
+    observedAt: new Date(),
+    itemGroup: inputs.itemGroup,
+    itemName: typeInfo.name || inputs.itemName,
+    quantity: inputs.quantity,
+    buyRegion: inputs.buyRegion,
+    sellRegion: inputs.sellRegion,
+    buyLocation: names.get(String(buyOrder.location_id)) || names.get(String(buyOrder.system_id)) || buyOrder.location_id,
+    sellLocation: names.get(String(sellOrder.location_id)) || names.get(String(sellOrder.system_id)) || sellOrder.location_id,
+    buyPrice,
+    sellPrice,
+    bestValue: sellPrice,
+    feesRate: inputs.feesRate,
+    haulingCostPerUnit: inputs.haulingCostPerUnit,
+    netProfitPerUnit,
+    margin,
+    iskPerM3,
+    buyVolume,
+    sellVolume,
+    decision: getTradeOpportunityDecision_(netProfitPerUnit, limitedVolume),
+    notes: [
+      'Live ESI market observation',
+      `type_id=${typeId}`,
+      `buy_region_id=${buyRegionId}`,
+      `sell_region_id=${sellRegionId}`,
+      `buy_order_id=${buyOrder.order_id}`,
+      `sell_order_id=${sellOrder.order_id}`,
+      `item_volume=${volume || ''}`,
+      limitedVolume ? `requested_quantity_exceeds_available_volume=${Math.min(buyVolume, sellVolume)}` : '',
+    ].filter(Boolean).join(' | '),
+  };
+}
+
+function appendTradeOpportunityRow_(sheet, opportunity) {
+  const row = findFirstBlankTradeOpportunityRow_(sheet);
+  sheet.getRange(row, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length).setValues([[
+    opportunity.observedAt,
+    opportunity.itemGroup,
+    opportunity.itemName,
+    opportunity.quantity,
+    opportunity.buyRegion,
+    opportunity.sellRegion,
+    opportunity.buyLocation,
+    opportunity.sellLocation,
+    opportunity.buyPrice,
+    opportunity.sellPrice,
+    '',
+    opportunity.bestValue,
+    opportunity.feesRate,
+    opportunity.haulingCostPerUnit,
+    opportunity.netProfitPerUnit,
+    opportunity.margin,
+    opportunity.iskPerM3,
+    opportunity.buyVolume,
+    opportunity.sellVolume,
+    '',
+    opportunity.decision,
+    opportunity.notes,
+  ]]);
+  formatTradeObservationSheet_(sheet, TRADE_OPPORTUNITY_HEADER_ROW, 1, 4);
+}
+
+function findFirstBlankTradeOpportunityRow_(sheet) {
+  const startRow = TRADE_OPPORTUNITY_HEADER_ROW + 1;
+  const rowCount = Math.max(sheet.getMaxRows() - TRADE_OPPORTUNITY_HEADER_ROW, 1);
+  const values = sheet.getRange(startRow, 1, rowCount, EVE_HEADERS.TRADE_OPPORTUNITIES.length).getValues();
+  const index = values.findIndex(row => row.every(cell => cell === '' || cell === null));
+  if (index >= 0) return startRow + index;
+
+  const oldMaxRows = sheet.getMaxRows();
+  sheet.insertRowsAfter(oldMaxRows, 100);
+  return oldMaxRows + 1;
+}
+
+function getTradeOpportunityDecision_(netProfitPerUnit, limitedVolume) {
+  if (netProfitPerUnit <= 0) return 'Skip';
+  if (limitedVolume) return 'Limited Volume';
+  return 'Review';
+}
+
+function setTradeOpportunityStatus_(sheet, message) {
+  sheet.getRange('B9').setValue(message);
+}
+
+function formatTradeOpportunityTool_(sheet) {
+  sheet.getRange('A1:D1').breakApart();
+  sheet.getRange('A1:D1').mergeAcross();
+  sheet.getRange('A1').setFontWeight('bold').setFontSize(15).setBackground('#dbeafe');
+  sheet.getRange('A2:A9').setFontWeight('bold');
+  sheet.getRange('C2:C5').setFontWeight('bold').setWrap(true);
+  sheet.getRange('B9:D9').setBackground('#fef3c7').setWrap(true);
+  sheet.setFrozenRows(TRADE_OPPORTUNITY_HEADER_ROW);
+  formatTradeObservationSheet_(sheet, TRADE_OPPORTUNITY_HEADER_ROW, 1, 4);
+  sheet.setColumnWidths(1, 1, 135);
+  sheet.setColumnWidths(2, 1, 150);
+  sheet.setColumnWidths(3, 1, 185);
+  sheet.setColumnWidths(4, 3, 110);
+  sheet.setColumnWidths(7, 2, 210);
+  sheet.setColumnWidths(9, 9, 120);
+  sheet.setColumnWidths(18, 3, 110);
+  sheet.setColumnWidths(21, 1, 120);
+  sheet.setColumnWidths(22, 1, 360);
+}
+
+function readTradeOpportunityRowsForSetup_(sheet) {
+  const headerInfo = findTradeOpportunityHeader_(sheet);
+  if (!headerInfo || sheet.getLastRow() <= headerInfo.row) return [];
+
+  const width = Math.max(sheet.getLastColumn(), headerInfo.headers.length);
+  return sheet.getRange(headerInfo.row + 1, 1, sheet.getLastRow() - headerInfo.row, width)
+    .getValues()
+    .filter(row => row.some(cell => cell !== '' && cell !== null))
+    .map(row => mapTradeOpportunityRow_(row, headerInfo.headers));
+}
+
+function mapTradeOpportunityRow_(row, headers) {
+  const item = pickTradeValue_(row, headers, ['item']);
+  return [
+    pickTradeValue_(row, headers, ['observation_date', 'date']),
+    pickTradeValue_(row, headers, ['item_group', 'group', 'category']) || inferTradeItemGroup_(item),
+    item,
+    pickTradeValue_(row, headers, ['quantity', 'qty', 'amount']),
+    pickTradeValue_(row, headers, ['buy_region']),
+    pickTradeValue_(row, headers, ['sell_region']),
+    pickTradeValue_(row, headers, ['buy_location', 'buy_hub']),
+    pickTradeValue_(row, headers, ['sell_location', 'sell/refine_hub', 'sell_hub']),
+    pickTradeValue_(row, headers, ['buy_price_/_unit', 'buy_price/unit', 'buy_price']),
+    pickTradeValue_(row, headers, ['sell_price_/_unit', 'expected_sell_/_unit', 'expected_sell/unit', 'expected_sell']),
+    pickTradeValue_(row, headers, ['expected_refine_/_unit', 'refine_value_/_unit', 'expected_refine']),
+    pickTradeValue_(row, headers, ['best_value_/_unit', 'best_value/unit', 'best_value']),
+    pickTradeValue_(row, headers, ['fees_%', 'fees', 'taxrate_%']),
+    pickTradeValue_(row, headers, ['hauling_cost_/_unit', 'hauling_cost/unit', 'hauling_cost']),
+    pickTradeValue_(row, headers, ['net_profit_/_unit', 'net_profit/unit', 'net_profit']),
+    pickTradeValue_(row, headers, ['margin_%', 'margin']),
+    pickTradeValue_(row, headers, ['isk/m3', 'isk_m3']),
+    pickTradeValue_(row, headers, ['buy_volume_available']),
+    pickTradeValue_(row, headers, ['sell_volume_available']),
+    pickTradeValue_(row, headers, ['estimated_days_to_sell', 'days_to_sell']),
+    pickTradeValue_(row, headers, ['decision']),
+    pickTradeValue_(row, headers, ['notes']),
+  ];
+}
+
+function pickTradeValue_(row, headers, names) {
+  for (const name of names) {
+    const index = headers.indexOf(name);
+    if (index >= 0 && row[index] !== '' && row[index] !== null) return row[index];
+  }
+  return '';
+}
+
+function inferTradeItemGroup_(item) {
+  const minerals = ['tritanium', 'pyerite', 'mexallon', 'isogen', 'nocxium', 'zydrine', 'megacyte', 'morphite'];
+  const lower = String(item || '').trim().toLowerCase();
+  return minerals.includes(lower) ? 'Minerals' : '';
+}
+
 function ensureTradeObservationDateColumn_(sheet) {
-  if (sheet.getLastRow() === 0 || sheet.getLastColumn() === 0 || !sheet.getDataRange().getValues().flat().some(Boolean)) {
-    sheet.clear();
-    sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length).setValues([EVE_HEADERS.TRADE_OPPORTUNITIES]);
-    styleHeader_(sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length));
-    formatTradeObservationSheet_(sheet, 1, 1, 3);
+  if (sheet.getRange('A1').getValue() !== 'Trade Opportunities Tool') {
+    const preserved = setupTradeOpportunityToolSheet_(sheet);
     return {
-      headerRow: 1,
+      headerRow: TRADE_OPPORTUNITY_HEADER_ROW,
       observationCol: 1,
-      quantityCol: 3,
-      message: 'Trade Opportunities was empty, so I created the default table with Observation Date and Quantity.',
+      quantityCol: 4,
+      message: `Trade Opportunities is connected to the market pull. Preserved ${preserved} existing row(s).`,
+    };
+  }
+
+  if (sheet.getLastRow() === 0 || sheet.getLastColumn() === 0 || !sheet.getDataRange().getValues().flat().some(Boolean)) {
+    setupTradeOpportunityToolSheet_(sheet);
+    return {
+      headerRow: TRADE_OPPORTUNITY_HEADER_ROW,
+      observationCol: 1,
+      quantityCol: 4,
+      message: 'Trade Opportunities was empty, so I created the live market opportunity tool.',
     };
   }
 
   let headerInfo = findTradeOpportunityHeader_(sheet);
   if (!headerInfo) {
-    sheet.insertRowsBefore(1, 1);
-    sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length).setValues([EVE_HEADERS.TRADE_OPPORTUNITIES]);
-    styleHeader_(sheet.getRange(1, 1, 1, EVE_HEADERS.TRADE_OPPORTUNITIES.length));
-    formatTradeObservationSheet_(sheet, 1, 1, 3);
+    setupTradeOpportunityToolSheet_(sheet);
     return {
-      headerRow: 1,
+      headerRow: TRADE_OPPORTUNITY_HEADER_ROW,
       observationCol: 1,
-      quantityCol: 3,
-      message: 'I could not find the old header row, so I added a default Trade Opportunities header at the top.',
+      quantityCol: 4,
+      message: 'I could not find the old header row, so I rebuilt the live market opportunity tool.',
     };
   }
 
@@ -1073,7 +1376,7 @@ function ensureTradeObservationDateColumn_(sheet) {
 }
 
 function findTradeOpportunityHeader_(sheet) {
-  const maxRows = Math.min(Math.max(sheet.getLastRow(), 1), 10);
+  const maxRows = Math.min(Math.max(sheet.getLastRow(), 1), 20);
   const maxCols = Math.max(sheet.getLastColumn(), 1);
   const values = sheet.getRange(1, 1, maxRows, maxCols).getValues();
 
@@ -1139,14 +1442,31 @@ function hasTradeQuantity_(value) {
 function formatTradeObservationSheet_(sheet, headerRow, observationCol, quantityCol) {
   const lastRow = Math.max(sheet.getLastRow(), headerRow + 1);
   const lastCol = Math.max(sheet.getLastColumn(), EVE_HEADERS.TRADE_OPPORTUNITIES.length);
+  const rowCount = Math.max(lastRow - headerRow, 1);
+  const headers = sheet.getRange(headerRow, 1, 1, lastCol).getValues()[0].map(normalizeHeader_);
   sheet.setFrozenRows(headerRow);
   sheet.getRange(headerRow, 1, 1, lastCol).setFontWeight('bold').setWrap(true);
-  sheet.getRange(headerRow, observationCol, lastRow - headerRow + 1, 1).setNumberFormat('yyyy-mm-dd');
-  if (quantityCol) {
-    sheet.getRange(headerRow + 1, quantityCol, Math.max(lastRow - headerRow, 1), 1).setNumberFormat('#,##0.00');
-  }
+  formatTradeColumn_(sheet, headerRow, rowCount, headers, ['observation_date'], 'yyyy-mm-dd hh:mm');
+  formatTradeColumn_(sheet, headerRow, rowCount, headers, ['quantity', 'buy_volume_available', 'sell_volume_available'], '#,##0.00');
+  formatTradeColumn_(sheet, headerRow, rowCount, headers, [
+    'buy_price_/_unit',
+    'sell_price_/_unit',
+    'expected_refine_/_unit',
+    'best_value_/_unit',
+    'hauling_cost_/_unit',
+    'net_profit_/_unit',
+    'isk/m3',
+  ], '#,##0.00');
+  formatTradeColumn_(sheet, headerRow, rowCount, headers, ['fees_%', 'margin_%'], '0.00%');
   applyFilter_(sheet, headerRow, 1, Math.max(lastRow - headerRow + 1, 2), lastCol);
-  sheet.autoResizeColumns(1, Math.min(lastCol, 16));
+  sheet.autoResizeColumns(1, Math.min(lastCol, EVE_HEADERS.TRADE_OPPORTUNITIES.length));
+}
+
+function formatTradeColumn_(sheet, headerRow, rowCount, headers, names, numberFormat) {
+  names.forEach(name => {
+    const index = headers.indexOf(name);
+    if (index >= 0) sheet.getRange(headerRow + 1, index + 1, rowCount, 1).setNumberFormat(numberFormat);
+  });
 }
 
 function setupMissionTrackerSheet_(sheet) {
@@ -1430,6 +1750,11 @@ function humanizeRefType_(value) {
     .filter(Boolean)
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
+}
+
+function normalizeRate_(value) {
+  const numeric = numberValue_(value);
+  return numeric > 1 ? numeric / 100 : numeric;
 }
 
 function numberValue_(value) {
