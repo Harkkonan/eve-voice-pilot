@@ -315,10 +315,12 @@ def build_knowledge_data(
     rookie_motds = unique_motds(rookie_messages)
     links = collect_links(main_messages)
     rookie_links = collect_links(rookie_messages)
-    link_records = [record.to_dict() for record in sorted(links.values(), key=lambda item: (-item.count, item.label))]
-    rookie_link_records = [
+    all_link_records = [record.to_dict() for record in sorted(links.values(), key=lambda item: (-item.count, item.label))]
+    all_rookie_link_records = [
         record.to_dict() for record in sorted(rookie_links.values(), key=lambda item: (-item.count, item.label))
     ]
+    link_records = [item for item in all_link_records if item["status"] == "public"]
+    rookie_link_records = [item for item in all_rookie_link_records if item["status"] == "public"]
     instructions = build_instruction_library(main_motds, main_messages)
     rookie_help = build_rookie_help_digest(rookie_motds, rookie_messages, rookie_link_records)
     website_articles = starfleet_website_articles()
@@ -348,12 +350,14 @@ def build_knowledge_data(
             "motd_count": sum(len(items) for items in motds.values()),
             "instruction_count": len(instructions),
             "link_count": len(link_records),
-            "public_link_count": sum(1 for item in link_records if item["status"] == "public"),
-            "review_link_count": sum(1 for item in link_records if item["status"] != "public"),
+            "public_link_count": len(link_records),
+            "review_link_count": sum(1 for item in all_link_records if item["status"] != "public"),
             "rookie_help_message_count": len(rookie_messages),
             "rookie_help_link_count": len(rookie_link_records),
-            "rookie_help_review_link_count": sum(1 for item in rookie_link_records if item["status"] != "public"),
-            "total_review_link_count": sum(1 for item in link_records + rookie_link_records if item["status"] != "public"),
+            "rookie_help_review_link_count": sum(1 for item in all_rookie_link_records if item["status"] != "public"),
+            "total_review_link_count": sum(
+                1 for item in all_link_records + all_rookie_link_records if item["status"] != "public"
+            ),
             "website_article_count": len(website_articles),
             "character_log_count": len({message.listener for message in messages if message.listener}),
             "filtered_corp_message_count": len(excluded_corp_messages),
@@ -1478,7 +1482,6 @@ def render_index_html(data: dict[str, Any]) -> str:
         <select id="status-filter">
           <option value="all">All resources</option>
           <option value="public">Public links</option>
-          <option value="redacted">Review/redacted</option>
         </select>
       </label>
     </section>
@@ -1513,7 +1516,7 @@ def render_index_html(data: dict[str, Any]) -> str:
     <section id="resource-database">
       <div class="section-heading">
         <h2>Resource Database</h2>
-        <p>Links discovered in logs. Public-safe entries are clickable; risky or private-looking entries are redacted for review.</p>
+        <p>Approved public links discovered in logs. Held-back links are omitted from this public page and kept only in the local review report.</p>
       </div>
       <div class="resource-table" id="resources"></div>
     </section>
@@ -2144,10 +2147,6 @@ function allPageResources() {
   return [...(data.resources || []), ...(rookie.resources || [])];
 }
 
-function reviewResources() {
-  return allPageResources().filter(item => item.status !== "public");
-}
-
 function renderStats() {
   const stats = data.stats;
   document.getElementById("window-range").textContent =
@@ -2159,7 +2158,7 @@ function renderStats() {
     ["Instructions", stats.instruction_count],
     ["MOTD blocks", stats.motd_count],
     ["Public links", stats.public_link_count],
-    ["Review links", stats.review_link_count],
+    ["Held-back links", stats.total_review_link_count],
     ["Rookie Help", stats.rookie_help_message_count],
     ["Rookie links", stats.rookie_help_link_count],
     ["Website articles", stats.website_article_count],
@@ -2173,15 +2172,14 @@ function renderStats() {
 
 function renderPublishSafety() {
   const stats = data.stats || {};
-  const reviews = reviewResources();
-  const reviewCount = Number(stats.total_review_link_count || reviews.length);
+  const reviewCount = Number(stats.total_review_link_count || 0);
   const publicSafe = data.meta.public_safe !== false;
   document.getElementById("privacy-note").textContent = data.meta.privacy_note || "";
   const checks = [
     ["Public build", publicSafe ? "Enabled" : "Review mode", publicSafe ? "ok" : "review"],
     ["Raw transcripts", "Not published", "ok"],
     ["Local paths", "Hidden", "ok"],
-    ["Review queue", reviewCount ? `${reviewCount} redacted` : "None detected", reviewCount ? "review" : "ok"]
+    ["Held-back links", reviewCount ? `${reviewCount} omitted` : "None detected", reviewCount ? "review" : "ok"]
   ];
   document.getElementById("safety-checks").innerHTML = checks.map(([label, value, status]) => `
     <div class="safety-row">
@@ -2189,14 +2187,9 @@ function renderPublishSafety() {
       <dd><span class="safety-badge ${escapeHtml(status)}">${escapeHtml(value)}</span></dd>
     </div>
   `).join("");
-  const reasonCounts = new Map();
-  reviews.forEach(item => reasonCounts.set(item.reason, (reasonCounts.get(item.reason) || 0) + 1));
-  const reasons = Array.from(reasonCounts.entries()).sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
-  document.getElementById("review-summary").innerHTML = reasons.length
-    ? `<h3>Review queue by reason</h3><div class="review-reasons">${reasons.map(([reason, count]) => `
-        <span class="review-reason">${escapeHtml(reason)}: ${escapeHtml(count)}</span>
-      `).join("")}</div>`
-    : `<h3>Review queue by reason</h3><div class="muted">No redacted links in this build.</div>`;
+  document.getElementById("review-summary").innerHTML = reviewCount
+    ? `<h3>Local review queue</h3><div class="muted">${escapeHtml(reviewCount)} held-back links are omitted from this public build. Full review details stay in the ignored local report.</div>`
+    : `<h3>Local review queue</h3><div class="muted">No held-back links detected.</div>`;
 }
 
 function renderTopics() {

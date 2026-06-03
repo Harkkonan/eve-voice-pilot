@@ -2,24 +2,24 @@
   "meta": {
     "title": "EVE Chatlog Knowledge Base",
     "source_root": "Local EVE logs folder (path not published)",
-    "generated_at": "2026-06-03T22:02:37Z",
+    "generated_at": "2026-06-03T22:23:24Z",
     "window_start": "2026-06-01T01:56:10Z",
-    "window_end": "2026-06-03T22:02:10Z",
+    "window_end": "2026-06-03T22:21:36Z",
     "since_date": "2026-06-01",
     "public_safe": true,
     "privacy_note": "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, private-looking invites, and unreviewed external links are not published in the public-safe build. Instruction text is reproduced from channel MOTDs with risky links redacted. Rookie Help is kept isolated because public-help advice needs separate review before it is repeated as corp knowledge. Public Star Fleet website articles are included as sourced summaries. Non-Star-Fleet Corp chat from other character sessions is counted but filtered out of the main knowledge base."
   },
   "stats": {
     "file_count": 195,
-    "message_count": 9271,
+    "message_count": 9274,
     "channel_count": 15,
     "motd_count": 14,
     "instruction_count": 9,
-    "link_count": 11,
+    "link_count": 3,
     "public_link_count": 3,
     "review_link_count": 8,
     "rookie_help_message_count": 6039,
-    "rookie_help_link_count": 35,
+    "rookie_help_link_count": 31,
     "rookie_help_review_link_count": 4,
     "total_review_link_count": 12,
     "website_article_count": 9,
@@ -33,11 +33,11 @@
     },
     {
       "name": "Local",
-      "message_count": 2081
+      "message_count": 2083
     },
     {
       "name": "Corp",
-      "message_count": 723
+      "message_count": 724
     },
     {
       "name": "Fleet",
@@ -476,10 +476,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 686,
+          "message_count": 687,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T22:01:13Z"
+          "last_seen": "2026-06-03T22:21:36Z"
         },
         {
           "channel": "SFU Library",
@@ -554,10 +554,10 @@
         },
         {
           "channel": "Corp",
-          "message_count": 686,
+          "message_count": 687,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T22:01:13Z"
+          "last_seen": "2026-06-03T22:21:36Z"
         }
       ]
     },
@@ -578,10 +578,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 686,
+          "message_count": 687,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T22:01:13Z"
+          "last_seen": "2026-06-03T22:21:36Z"
         },
         {
           "channel": "Fleet",
@@ -617,10 +617,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 686,
+          "message_count": 687,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T22:01:13Z"
+          "last_seen": "2026-06-03T22:21:36Z"
         }
       ]
     },
@@ -916,30 +916,6 @@
         ]
       },
       {
-        "label": "wiki.eveuniversity.org - The",
-        "url": "",
-        "display_url": "[redacted: truncated Rookie Help MOTD link]",
-        "category": "Review before publishing",
-        "status": "redacted",
-        "reason": "truncated Rookie Help MOTD link",
-        "count": 24,
-        "channels": [
-          "Rookie Help"
-        ]
-      },
-      {
-        "label": "Rejected ISK-sale/ad link",
-        "url": "",
-        "display_url": "[redacted: ISK sale or ad link]",
-        "category": "Rejected / spam seen in chat",
-        "status": "redacted",
-        "reason": "ISK sale or ad link",
-        "count": 19,
-        "channels": [
-          "Rookie Help"
-        ]
-      },
-      {
         "label": "EVE Online - recruit",
         "url": "https://www.eveonline.com/recruit",
         "display_url": "https://www.eveonline.com/recruit",
@@ -947,30 +923,6 @@
         "status": "public",
         "reason": "public resource",
         "count": 6,
-        "channels": [
-          "Rookie Help"
-        ]
-      },
-      {
-        "label": "Redacted review link",
-        "url": "",
-        "display_url": "[redacted: private or unclear link]",
-        "category": "Review before publishing",
-        "status": "redacted",
-        "reason": "private or unclear link",
-        "count": 5,
-        "channels": [
-          "Rookie Help"
-        ]
-      },
-      {
-        "label": "Rejected ISK-sale/ad link",
-        "url": "",
-        "display_url": "[redacted: ISK sale or ad link]",
-        "category": "Rejected / spam seen in chat",
-        "status": "redacted",
-        "reason": "ISK sale or ad link",
-        "count": 5,
         "channels": [
           "Rookie Help"
         ]
@@ -1336,42 +1288,6 @@
   },
   "resources": [
     {
-      "label": "Discord invite",
-      "url": "",
-      "display_url": "[redacted: private or unclear link]",
-      "category": "Review before publishing",
-      "status": "redacted",
-      "reason": "private or unclear link",
-      "count": 25,
-      "channels": [
-        "Corp"
-      ]
-    },
-    {
-      "label": "Discord invite",
-      "url": "",
-      "display_url": "[redacted: private or unclear link]",
-      "category": "Review before publishing",
-      "status": "redacted",
-      "reason": "private or unclear link",
-      "count": 25,
-      "channels": [
-        "Corp"
-      ]
-    },
-    {
-      "label": "Discord invite",
-      "url": "",
-      "display_url": "[redacted: private or unclear link]",
-      "category": "Review before publishing",
-      "status": "redacted",
-      "reason": "private or unclear link",
-      "count": 25,
-      "channels": [
-        "Star Fleet Productions"
-      ]
-    },
-    {
       "label": "YouTube video",
       "url": "https://www.youtube.com/watch?v=9wtX5EhWP6A",
       "display_url": "https://www.youtube.com/watch?v=9wtX5EhWP6A",
@@ -1396,72 +1312,12 @@
       ]
     },
     {
-      "label": "Redacted review link",
-      "url": "",
-      "display_url": "[redacted: private or unclear link]",
-      "category": "Review before publishing",
-      "status": "redacted",
-      "reason": "private or unclear link",
-      "count": 1,
-      "channels": [
-        "Local"
-      ]
-    },
-    {
-      "label": "Redacted review link",
-      "url": "",
-      "display_url": "[redacted: private or unclear link]",
-      "category": "Review before publishing",
-      "status": "redacted",
-      "reason": "private or unclear link",
-      "count": 1,
-      "channels": [
-        "Local"
-      ]
-    },
-    {
-      "label": "Redacted review link",
-      "url": "",
-      "display_url": "[redacted: private or unclear link]",
-      "category": "Review before publishing",
-      "status": "redacted",
-      "reason": "private or unclear link",
-      "count": 1,
-      "channels": [
-        "Local"
-      ]
-    },
-    {
-      "label": "Referral link",
-      "url": "",
-      "display_url": "[redacted: referral link]",
-      "category": "Review before publishing",
-      "status": "redacted",
-      "reason": "referral link",
-      "count": 1,
-      "channels": [
-        "Local"
-      ]
-    },
-    {
       "label": "Star Fleet Productions website",
       "url": "https://starfleetproductions.space",
       "display_url": "https://starfleetproductions.space",
       "category": "Corp / alliance",
       "status": "public",
       "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Corp"
-      ]
-    },
-    {
-      "label": "www.tomshardware.com",
-      "url": "",
-      "display_url": "[redacted: unclassified external link]",
-      "category": "Review before publishing",
-      "status": "redacted",
-      "reason": "unclassified external link",
       "count": 1,
       "channels": [
         "Corp"

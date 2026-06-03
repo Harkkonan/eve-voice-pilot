@@ -144,6 +144,8 @@ def test_rookie_help_is_isolated_from_main_knowledge(tmp_path):
     assert data["resources"] == []
     assert data["rookie_help"]["instructions"][0]["channel"] == "Rookie Help"
     assert any(item["label"] == "wiki.eveuniversity.org - Main Page" for item in data["rookie_help"]["resources"])
+    assert all(item["status"] == "public" for item in data["rookie_help"]["resources"])
+    assert "Discord invite" not in __import__("json").dumps(data["rookie_help"]["resources"])
     assert data["stats"]["review_link_count"] == 0
     assert data["stats"]["rookie_help_review_link_count"] == 1
     assert data["stats"]["total_review_link_count"] == 1
@@ -226,6 +228,10 @@ def test_link_review_report_keeps_full_review_urls_out_of_public_data(tmp_path):
     )
 
     assert "https://discord.gg/example" not in public_payload
+    assert all(item["status"] == "public" for item in data["resources"])
+    assert "Discord invite" not in __import__("json").dumps(data["resources"])
+    assert data["stats"]["review_link_count"] == 1
+    assert data["stats"]["total_review_link_count"] == 1
     assert "https://discord.gg/example" in report
     assert "https://wiki.eveuniversity.org/Main_Page" not in report
     assert "Local-only report" in report
