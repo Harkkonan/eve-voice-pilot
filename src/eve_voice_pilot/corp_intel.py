@@ -1113,7 +1113,7 @@ def eve_timestamp_to_iso(value: str) -> str:
 
 
 def parse_chat_line(line: str, *, channel: str, log_path: str = "") -> ChatMessage | None:
-    match = CHAT_LINE_RE.match(line.rstrip("\r\n"))
+    match = CHAT_LINE_RE.match(line.lstrip("\ufeff").rstrip("\r\n"))
     if not match:
         return None
     return ChatMessage(

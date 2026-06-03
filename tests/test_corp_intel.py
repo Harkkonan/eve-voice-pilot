@@ -80,6 +80,18 @@ def test_parse_chat_line_reads_eve_timestamp_speaker_and_message():
     assert message.log_path == "corp.txt"
 
 
+def test_parse_chat_line_tolerates_repeated_utf16_bom():
+    message = parse_chat_line(
+        "\ufeff[ 2026.06.03 02:10:11 ] Alice Example > hostile in Tama on gate",
+        channel="Corp",
+        log_path="corp.txt",
+    )
+    assert message is not None
+    assert message.timestamp == "2026.06.03 02:10:11"
+    assert message.speaker == "Alice Example"
+    assert message.text == "hostile in Tama on gate"
+
+
 def test_parse_channel_name_from_header_text():
     text = """
 ------------------------------------------------------------
