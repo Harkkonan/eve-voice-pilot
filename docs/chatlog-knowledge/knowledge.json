@@ -2,16 +2,16 @@
   "meta": {
     "title": "EVE Chatlog Knowledge Base",
     "source_root": "Local EVE logs folder (path not published)",
-    "generated_at": "2026-06-03T21:31:34Z",
+    "generated_at": "2026-06-03T21:34:53Z",
     "window_start": "2026-06-01T01:56:10Z",
-    "window_end": "2026-06-03T21:30:31Z",
+    "window_end": "2026-06-03T21:33:55Z",
     "since_date": "2026-06-01",
     "public_safe": true,
     "privacy_note": "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, private-looking invites, and unreviewed external links are not published in the public-safe build. Instruction text is reproduced from channel MOTDs with risky links redacted. Rookie Help is kept isolated because public-help advice needs separate review before it is repeated as corp knowledge. Public Star Fleet website articles are included as sourced summaries. Non-Star-Fleet Corp chat from other character sessions is counted but filtered out of the main knowledge base."
   },
   "stats": {
     "file_count": 195,
-    "message_count": 9260,
+    "message_count": 9263,
     "channel_count": 15,
     "motd_count": 14,
     "instruction_count": 9,
@@ -31,7 +31,7 @@
     },
     {
       "name": "Local",
-      "message_count": 2073
+      "message_count": 2076
     },
     {
       "name": "Corp",

@@ -1343,6 +1343,13 @@ def render_link_review_report(
         f"- Source window: {markdown_escape(since_date)}",
         "- Public site output remains redacted. Use this report to decide whether a domain should be allowlisted, rejected, or kept private.",
         "",
+        "## Review Workflow",
+        "",
+        "1. Work one host at a time; repeated links usually need one domain-level decision.",
+        "2. Keep Discord invites, referral links, spam, RMT-looking links, and private tools redacted.",
+        "3. Only promote durable public documentation, official resources, or intentionally public corp pages.",
+        "4. After a host is approved, add it to the generator allowlist in a separate reviewed code change.",
+        "",
     ]
     for title, rows in sections:
         lines.extend([f"## {title}", ""])
@@ -1351,8 +1358,8 @@ def render_link_review_report(
             continue
         lines.extend(
             [
-                "| Label | URL | Reason | Seen | Channels | Suggested action |",
-                "| --- | --- | --- | ---: | --- | --- |",
+                "| Reviewed | Host | Label | URL | Reason | Seen | Channels | Suggested action |",
+                "| --- | --- | --- | --- | --- | ---: | --- | --- |",
             ]
         )
         for row in rows:
@@ -1361,6 +1368,8 @@ def render_link_review_report(
                 + " | ".join(
                     markdown_escape(value)
                     for value in [
+                        "[ ]",
+                        row["host"],
                         row["label"],
                         row["url"],
                         row["reason"],
@@ -1383,6 +1392,7 @@ def review_link_rows(links: dict[str, LinkRecord]) -> list[dict[str, Any]]:
         rows.append(
             {
                 "label": record.label,
+                "host": urlparse(record.normalized_url).netloc.casefold(),
                 "url": record.normalized_url,
                 "reason": record.reason,
                 "count": record.count,

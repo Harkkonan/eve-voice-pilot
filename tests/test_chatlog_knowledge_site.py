@@ -214,3 +214,5 @@ def test_link_review_report_keeps_full_review_urls_out_of_public_data(tmp_path):
     assert "https://discord.gg/example" in report
     assert "https://wiki.eveuniversity.org/Main_Page" not in report
     assert "Local-only report" in report
+    assert "## Review Workflow" in report
+    assert "| [ ] | discord.gg | Discord invite |" in report
