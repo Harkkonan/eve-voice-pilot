@@ -2,16 +2,16 @@
   "meta": {
     "title": "EVE Chatlog Knowledge Base",
     "source_root": "Local EVE logs folder (path not published)",
-    "generated_at": "2026-06-03T21:07:10Z",
+    "generated_at": "2026-06-03T21:15:57Z",
     "window_start": "2026-06-01T01:56:10Z",
-    "window_end": "2026-06-03T20:40:28Z",
+    "window_end": "2026-06-03T21:15:49Z",
     "since_date": "2026-06-01",
     "public_safe": true,
     "privacy_note": "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, private-looking invites, and unreviewed external links are not published in the public-safe build. Instruction text is reproduced from channel MOTDs with risky links redacted. Rookie Help is kept isolated because public-help advice needs separate review before it is repeated as corp knowledge. Public Star Fleet website articles are included as sourced summaries. Non-Star-Fleet Corp chat from other character sessions is counted but filtered out of the main knowledge base."
   },
   "stats": {
     "file_count": 195,
-    "message_count": 9246,
+    "message_count": 9248,
     "channel_count": 15,
     "motd_count": 14,
     "instruction_count": 9,
@@ -31,11 +31,11 @@
     },
     {
       "name": "Local",
-      "message_count": 2072
+      "message_count": 2073
     },
     {
       "name": "Corp",
-      "message_count": 707
+      "message_count": 708
     },
     {
       "name": "Fleet",
@@ -474,10 +474,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 670,
+          "message_count": 671,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T20:37:53Z"
+          "last_seen": "2026-06-03T21:12:40Z"
         },
         {
           "channel": "SFU Library",
@@ -552,10 +552,10 @@
         },
         {
           "channel": "Corp",
-          "message_count": 670,
+          "message_count": 671,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T20:37:53Z"
+          "last_seen": "2026-06-03T21:12:40Z"
         }
       ]
     },
@@ -576,10 +576,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 670,
+          "message_count": 671,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T20:37:53Z"
+          "last_seen": "2026-06-03T21:12:40Z"
         },
         {
           "channel": "Fleet",
@@ -615,10 +615,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 670,
+          "message_count": 671,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T20:37:53Z"
+          "last_seen": "2026-06-03T21:12:40Z"
         }
       ]
     },

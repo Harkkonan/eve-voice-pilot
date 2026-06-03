@@ -183,4 +183,7 @@ def test_render_index_html_includes_section_jump_navigation():
     assert 'class="quick-nav"' in html
     assert 'href="#public-website"' in html
     assert 'href="#resource-database"' in html
+    assert 'href="#publish-safety"' in html
+    assert 'id="publish-safety"' in html
+    assert 'id="safety-checks"' in html
     assert 'id="source-channels"' in html

@@ -1304,12 +1304,17 @@ def render_index_html(data: dict[str, Any]) -> str:
       <a href="#rookie-help-review">Rookie Help</a>
       <a href="#clarified-knowledge">Clarified Knowledge</a>
       <a href="#resource-database">Resources</a>
+      <a href="#publish-safety">Safety</a>
       <a href="#source-channels">Channels</a>
     </nav>
     <section class="stats" id="stats"></section>
-    <section class="notice">
-      <strong>Publishing guard:</strong>
-      <span id="privacy-note"></span>
+    <section class="safety-panel" id="publish-safety" aria-labelledby="publish-safety-title">
+      <div class="safety-copy">
+        <span class="tag">Publishing guard</span>
+        <h2 id="publish-safety-title">Public-Safe Publishing Status</h2>
+        <p id="privacy-note"></p>
+      </div>
+      <dl class="safety-list" id="safety-checks"></dl>
     </section>
     <section class="toolbar">
       <label>
@@ -1513,7 +1518,7 @@ section {
   gap: 12px;
   margin-bottom: 16px;
 }
-.stat, .notice, .toolbar, .topic, .instruction, .resource-table, .channel-list {
+.stat, .safety-panel, .toolbar, .topic, .instruction, .resource-table, .channel-list {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1532,11 +1537,64 @@ section {
   color: var(--muted);
   font-size: 12px;
 }
-.notice {
-  padding: 13px 15px;
-  color: #384348;
+.safety-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr);
+  gap: 18px;
+  align-items: start;
+  padding: 17px 18px;
   margin-bottom: 16px;
+}
+.safety-copy h2 {
+  margin: 8px 0 8px;
+  font-size: 21px;
+}
+.safety-copy p {
+  margin: 0;
+  color: #384348;
+  line-height: 1.5;
   overflow-wrap: anywhere;
+}
+.safety-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.safety-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.safety-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.safety-row dt {
+  font-weight: 700;
+}
+.safety-row dd {
+  margin: 0;
+}
+.safety-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.safety-badge.ok {
+  color: #1f5c45;
+  background: #dff4e9;
+}
+.safety-badge.review {
+  color: #6f4c10;
+  background: #fff0c9;
 }
 .toolbar {
   display: grid;
@@ -1794,6 +1852,9 @@ input, select {
   .article-grid {
     grid-template-columns: 1fr;
   }
+  .safety-panel {
+    grid-template-columns: 1fr;
+  }
   .instruction-header {
     grid-template-columns: 1fr;
   }
@@ -1860,6 +1921,13 @@ input, select {
   .stat strong {
     font-size: 22px;
   }
+  .safety-panel {
+    padding: 14px;
+  }
+  .safety-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
   .toolbar, .channel-list {
     grid-template-columns: 1fr;
   }
@@ -1893,7 +1961,6 @@ function renderStats() {
   const stats = data.stats;
   document.getElementById("window-range").textContent =
     `${compactDate(data.meta.window_start)} to ${compactDate(data.meta.window_end)}`;
-  document.getElementById("privacy-note").textContent = data.meta.privacy_note;
   const items = [
     ["Files", stats.file_count],
     ["Messages", stats.message_count],
@@ -1910,6 +1977,25 @@ function renderStats() {
   ];
   document.getElementById("stats").innerHTML = items.map(([label, value]) => `
     <div class="stat"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>
+  `).join("");
+}
+
+function renderPublishSafety() {
+  const stats = data.stats || {};
+  const reviewCount = Number(stats.review_link_count || 0);
+  const publicSafe = data.meta.public_safe !== false;
+  document.getElementById("privacy-note").textContent = data.meta.privacy_note || "";
+  const checks = [
+    ["Public build", publicSafe ? "Enabled" : "Review mode", publicSafe ? "ok" : "review"],
+    ["Raw transcripts", "Not published", "ok"],
+    ["Local paths", "Hidden", "ok"],
+    ["Private/referral links", reviewCount ? `${reviewCount} redacted` : "None detected", reviewCount ? "review" : "ok"]
+  ];
+  document.getElementById("safety-checks").innerHTML = checks.map(([label, value, status]) => `
+    <div class="safety-row">
+      <dt>${escapeHtml(label)}</dt>
+      <dd><span class="safety-badge ${escapeHtml(status)}">${escapeHtml(value)}</span></dd>
+    </div>
   `).join("");
 }
 
@@ -2048,6 +2134,7 @@ function renderChannels() {
 
 function renderAll() {
   renderStats();
+  renderPublishSafety();
   renderInstructions();
   renderWebsiteArticles();
   renderRookieHelp();
