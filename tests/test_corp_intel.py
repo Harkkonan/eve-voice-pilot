@@ -504,6 +504,27 @@ def test_intel_parser_detects_watchlisted_hostile_pilot():
     assert "pilot: Bad Pilot" in event.keywords
 
 
+def test_intel_parser_detects_watchlisted_hostile_pilot_speaker():
+    watchlist_store = WatchlistStore(
+        watchlist=IntelWatchlist(hostile_pilots=("Bad Pilot",)),
+    )
+    parser = IntelParser(["Jita", "Tama"], watchlist_store=watchlist_store)
+    chat = ChatMessage(
+        log_path="",
+        channel="Local",
+        timestamp="2026.06.03 02:10:11",
+        speaker="Bad Pilot",
+        text="o/",
+    )
+    event = parser.analyze(chat, source="ScoutClient")
+    assert event is not None
+    assert event.severity == "high"
+    assert event.speaker == "Bad Pilot"
+    assert "hostile" in event.categories
+    assert "watchlist-pilot" in event.categories
+    assert "pilot: Bad Pilot" in event.keywords
+
+
 def test_intel_parser_detects_watchlisted_help_phrase():
     watchlist_store = WatchlistStore(
         watchlist=IntelWatchlist(help_phrases=("armor breaking",)),

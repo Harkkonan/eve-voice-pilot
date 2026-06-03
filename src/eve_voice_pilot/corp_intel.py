@@ -486,12 +486,18 @@ class WatchlistStore:
         payload["counts"] = watchlist.counts()
         return payload
 
-    def match(self, text: str) -> tuple[WatchlistMatch, ...]:
+    def match(self, text: str, *, speaker: str = "") -> tuple[WatchlistMatch, ...]:
         with self._lock:
             compiled = tuple(self._compiled)
         matches: list[WatchlistMatch] = []
         for item in compiled:
-            if item.pattern.search(text):
+            matched_text = item.pattern.search(text)
+            matched_speaker = (
+                bool(speaker)
+                and "watchlist-pilot" in item.categories
+                and item.pattern.search(speaker)
+            )
+            if matched_text or matched_speaker:
                 matches.append(
                     WatchlistMatch(
                         term=item.term,
@@ -886,7 +892,7 @@ class IntelParser:
                 keywords.append(rule.keyword)
                 severity = higher_severity(severity, rule.severity)
 
-        for match in self.watchlist_store.match(message.text):
+        for match in self.watchlist_store.match(message.text, speaker=message.speaker):
             categories.update(match.categories)
             keywords.append(match.keyword)
             severity = higher_severity(severity, match.severity)
