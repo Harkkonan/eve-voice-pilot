@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOGS_ROOT = Path.home() / "OneDrive" / "Documents" / "EVE" / "logs"
 DEFAULT_OUTPUT_DIR = ROOT / "docs" / "chatlog-knowledge"
+DEFAULT_REVIEW_OUTPUT = ROOT / "profiles" / "chatlog_knowledge_link_review.md"
 
 CHAT_LINE_RE = re.compile(
     r"^\[\s*(?P<timestamp>\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}:\d{2})\s*\]\s*"
@@ -116,14 +117,30 @@ def main(argv: list[str] | None = None) -> int:
         print("No chat messages found for the selected window.", file=sys.stderr)
         return 1
 
+    if args.include_review_links:
+        print(
+            "Note: --include-review-links is deprecated; public output stays redacted. "
+            "Full review URLs go to --review-output.",
+            file=sys.stderr,
+        )
+
     site_data = build_knowledge_data(
         messages,
         logs_root=logs_root,
         since_date=args.since_date,
-        public_safe=not args.include_review_links,
+        public_safe=True,
     )
     write_site(args.output_dir.expanduser(), site_data)
     print(f"Wrote chatlog knowledge site to {args.output_dir}")
+    if not args.no_review_output:
+        review_output = args.review_output.expanduser()
+        write_link_review_report(
+            review_output,
+            messages,
+            since_date=args.since_date or "latest log date minus two days",
+            generated_at=site_data["meta"]["generated_at"],
+        )
+        print(f"Wrote local-only link review report to {review_output}")
     print(f"Parsed {site_data['stats']['message_count']} messages from {site_data['stats']['file_count']} files.")
     return 0
 
@@ -142,7 +159,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--include-review-links",
         action="store_true",
-        help="Keep full URLs for review links. Default redacts private, referral, ad, and unclear links.",
+        help="Deprecated. Public output always redacts review links; use --review-output for local review.",
+    )
+    parser.add_argument(
+        "--review-output",
+        type=Path,
+        default=DEFAULT_REVIEW_OUTPUT,
+        help="Ignored local Markdown report with full review URLs for manual approval.",
+    )
+    parser.add_argument(
+        "--no-review-output",
+        action="store_true",
+        help="Skip writing the local-only link review report.",
     )
     return parser
 
@@ -1275,6 +1303,112 @@ def write_site(output_dir: Path, data: dict[str, Any]) -> None:
     (output_dir / "README.md").write_text(render_site_readme(data), encoding="utf-8")
 
 
+def write_link_review_report(
+    output_path: Path,
+    messages: list[ChatMessage],
+    *,
+    since_date: str,
+    generated_at: str,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        render_link_review_report(messages, since_date=since_date, generated_at=generated_at),
+        encoding="utf-8",
+    )
+
+
+def render_link_review_report(
+    messages: list[ChatMessage],
+    *,
+    since_date: str,
+    generated_at: str,
+) -> str:
+    main_messages = [
+        message
+        for message in messages
+        if not is_rookie_help(message.channel) and not is_excluded_corp_context(message)
+    ]
+    rookie_messages = [message for message in messages if is_rookie_help(message.channel)]
+    sections = [
+        ("Main Knowledge Review Links", review_link_rows(collect_links(main_messages))),
+        ("Rookie Help Review Links", review_link_rows(collect_links(rookie_messages))),
+    ]
+
+    lines = [
+        "# Chatlog Knowledge Link Review",
+        "",
+        "Local-only report. Do not commit, publish, or paste this file into public channels.",
+        "",
+        f"- Generated at: {markdown_escape(generated_at)}",
+        f"- Source window: {markdown_escape(since_date)}",
+        "- Public site output remains redacted. Use this report to decide whether a domain should be allowlisted, rejected, or kept private.",
+        "",
+    ]
+    for title, rows in sections:
+        lines.extend([f"## {title}", ""])
+        if not rows:
+            lines.extend(["No review links found.", ""])
+            continue
+        lines.extend(
+            [
+                "| Label | URL | Reason | Seen | Channels | Suggested action |",
+                "| --- | --- | --- | ---: | --- | --- |",
+            ]
+        )
+        for row in rows:
+            lines.append(
+                "| "
+                + " | ".join(
+                    markdown_escape(value)
+                    for value in [
+                        row["label"],
+                        row["url"],
+                        row["reason"],
+                        str(row["count"]),
+                        ", ".join(row["channels"]),
+                        row["suggested_action"],
+                    ]
+                )
+                + " |"
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def review_link_rows(links: dict[str, LinkRecord]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in sorted(links.values(), key=lambda item: (item.reason, -item.count, item.label)):
+        if record.status == "public":
+            continue
+        rows.append(
+            {
+                "label": record.label,
+                "url": record.normalized_url,
+                "reason": record.reason,
+                "count": record.count,
+                "channels": sorted(record.channels),
+                "suggested_action": suggested_review_action(record.reason),
+            }
+        )
+    return rows
+
+
+def suggested_review_action(reason: str) -> str:
+    if reason == "private or unclear link":
+        return "Confirm it is intended for public sharing before allowlisting."
+    if reason == "referral link":
+        return "Keep redacted; do not publish referral links."
+    if reason == "ISK sale or ad link":
+        return "Keep rejected; do not publish spam or RMT-looking links."
+    if reason == "truncated Rookie Help MOTD link":
+        return "Keep redacted until the exact public URL can be recovered."
+    return "Review the domain manually; allowlist only durable public resources."
+
+
+def markdown_escape(value: object) -> str:
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
 def render_index_html(data: dict[str, Any]) -> str:
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     return f"""<!doctype html>
@@ -1389,6 +1523,7 @@ This folder contains a static, public-safe knowledge website generated from rece
 - `knowledge.json` is the structured database for reuse in other tools.
 - Raw chat logs are not included.
 - Public Star Fleet Productions website articles are included as sourced summaries with links.
+- Full URLs for redacted review links are written only to ignored local report `profiles/chatlog_knowledge_link_review.md`.
 - Generated at: {data["meta"]["generated_at"]}
 - Source window: {data["meta"]["window_start"]} to {data["meta"]["window_end"]}
 

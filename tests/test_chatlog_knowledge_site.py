@@ -13,6 +13,7 @@ from build_chatlog_knowledge_site import (
     extract_urls,
     normalize_url,
     parse_chat_file,
+    render_link_review_report,
     render_index_html,
     starfleet_website_articles,
 )
@@ -187,3 +188,29 @@ def test_render_index_html_includes_section_jump_navigation():
     assert 'id="publish-safety"' in html
     assert 'id="safety-checks"' in html
     assert 'id="source-channels"' in html
+
+
+def test_link_review_report_keeps_full_review_urls_out_of_public_data(tmp_path):
+    dt = __import__("datetime")
+    message = ChatMessage(
+        timestamp=dt.datetime(2026, 6, 3, 1, 2, 3, tzinfo=dt.timezone.utc),
+        channel="Corp",
+        speaker="EVE System",
+        message="Channel MOTD: Discord https://discord.gg/example and wiki https://wiki.eveuniversity.org/Main_Page",
+        file_name="Corp_20260603_000000_1.txt",
+        listener="Main Character",
+        channel_context="Star Fleet Productions Academy",
+    )
+
+    data = build_knowledge_data([message], logs_root=tmp_path, since_date="2026-06-03", public_safe=True)
+    public_payload = __import__("json").dumps(data)
+    report = render_link_review_report(
+        [message],
+        since_date="2026-06-03",
+        generated_at="2026-06-03T00:00:00Z",
+    )
+
+    assert "https://discord.gg/example" not in public_payload
+    assert "https://discord.gg/example" in report
+    assert "https://wiki.eveuniversity.org/Main_Page" not in report
+    assert "Local-only report" in report
