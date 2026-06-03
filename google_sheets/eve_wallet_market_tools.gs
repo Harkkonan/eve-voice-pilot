@@ -208,6 +208,7 @@ function onOpen() {
   ui.createMenu('EVE Trade')
     .addItem('Set Up Trade Opportunity Tool', 'setupTradeOpportunityTool')
     .addItem('Append Live Trade Opportunity', 'appendLiveTradeOpportunity')
+    .addItem('Remove Rows Without Quantity', 'removeTradeRowsWithoutQuantity')
     .addSeparator()
     .addItem('Add Observation Date / Quantity Columns', 'addTradeObservationDateColumn')
     .addItem('Timestamp Blank Observation Dates', 'timestampTradeOpportunityRows')
@@ -288,9 +289,9 @@ function setupSimplifiedInventoryLedger() {
 function setupTradeOpportunityTool() {
   const ss = SpreadsheetApp.getActive();
   const sheet = ensureSheet_(ss, EVE_SHEET.TRADE_OPPORTUNITIES);
-  const preserved = setupTradeOpportunityToolSheet_(sheet);
+  const result = setupTradeOpportunityToolSheet_(sheet);
   SpreadsheetApp.getUi().alert(
-    `Trade Opportunity Tool is ready. Preserved ${preserved} existing row(s). Enter item/regions/quantity, then run EVE Trade > Append Live Trade Opportunity.`
+    `Trade Opportunity Tool is ready. Preserved ${result.preserved} row(s) with quantity and removed ${result.removed} row(s) without quantity. Enter item/regions/quantity, then run EVE Trade > Append Live Trade Opportunity.`
   );
 }
 
@@ -314,6 +315,13 @@ function appendLiveTradeOpportunity() {
     setTradeOpportunityStatus_(sheet, message);
     SpreadsheetApp.getUi().alert(message);
   }
+}
+
+function removeTradeRowsWithoutQuantity() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ensureSheet_(ss, EVE_SHEET.TRADE_OPPORTUNITIES);
+  const result = setupTradeOpportunityToolSheet_(sheet);
+  SpreadsheetApp.getUi().alert(`Removed ${result.removed} trade opportunity row(s) without quantity.`);
 }
 
 function addTradeObservationDateColumn() {
@@ -1055,7 +1063,10 @@ function formatSimplifiedInventoryLedger_(sheet, formulaRows) {
 
 function setupTradeOpportunityToolSheet_(sheet) {
   const alreadySetUp = sheet.getRange('A1').getValue() === 'Trade Opportunities Tool';
-  const preservedRows = alreadySetUp ? [] : readTradeOpportunityRowsForSetup_(sheet);
+  const importResult = alreadySetUp
+    ? { rows: [], removed: 0 }
+    : readTradeOpportunityRowsForSetup_(sheet);
+  const preservedRows = importResult.rows;
 
   if (!alreadySetUp) sheet.clear();
 
@@ -1099,7 +1110,12 @@ function setupTradeOpportunityToolSheet_(sheet) {
   }
 
   formatTradeOpportunityTool_(sheet);
-  return preservedRows.length;
+  const removedFromCurrentTable = removeTradeRowsWithoutQuantity_(sheet);
+  formatTradeOpportunityTool_(sheet);
+  return {
+    preserved: preservedRows.length,
+    removed: importResult.removed + removedFromCurrentTable,
+  };
 }
 
 function getTradeOpportunityInputs_(sheet) {
@@ -1254,13 +1270,20 @@ function formatTradeOpportunityTool_(sheet) {
 
 function readTradeOpportunityRowsForSetup_(sheet) {
   const headerInfo = findTradeOpportunityHeader_(sheet);
-  if (!headerInfo || sheet.getLastRow() <= headerInfo.row) return [];
+  if (!headerInfo || sheet.getLastRow() <= headerInfo.row) {
+    return { rows: [], removed: 0 };
+  }
 
   const width = Math.max(sheet.getLastColumn(), headerInfo.headers.length);
-  return sheet.getRange(headerInfo.row + 1, 1, sheet.getLastRow() - headerInfo.row, width)
+  const mappedRows = sheet.getRange(headerInfo.row + 1, 1, sheet.getLastRow() - headerInfo.row, width)
     .getValues()
     .filter(row => row.some(cell => cell !== '' && cell !== null))
     .map(row => mapTradeOpportunityRow_(row, headerInfo.headers));
+  const rows = mappedRows.filter(row => hasTradeQuantity_(row[3]));
+  return {
+    rows,
+    removed: mappedRows.length - rows.length,
+  };
 }
 
 function mapTradeOpportunityRow_(row, headers) {
@@ -1305,14 +1328,37 @@ function inferTradeItemGroup_(item) {
   return minerals.includes(lower) ? 'Minerals' : '';
 }
 
+function removeTradeRowsWithoutQuantity_(sheet) {
+  const headerInfo = findTradeOpportunityHeader_(sheet);
+  if (!headerInfo || sheet.getLastRow() <= headerInfo.row) return 0;
+
+  const quantityCol = findTradeQuantityColumn_(headerInfo.headers);
+  if (!quantityCol) return 0;
+
+  const existingFilter = sheet.getFilter();
+  if (existingFilter) existingFilter.remove();
+
+  const width = Math.max(sheet.getLastColumn(), EVE_HEADERS.TRADE_OPPORTUNITIES.length);
+  let removed = 0;
+  for (let rowNumber = sheet.getLastRow(); rowNumber > headerInfo.row; rowNumber -= 1) {
+    const row = sheet.getRange(rowNumber, 1, 1, width).getValues()[0];
+    const hasContent = row.some(cell => cell !== '' && cell !== null);
+    if (hasContent && !hasTradeQuantity_(row[quantityCol - 1])) {
+      sheet.deleteRow(rowNumber);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 function ensureTradeObservationDateColumn_(sheet) {
   if (sheet.getRange('A1').getValue() !== 'Trade Opportunities Tool') {
-    const preserved = setupTradeOpportunityToolSheet_(sheet);
+    const result = setupTradeOpportunityToolSheet_(sheet);
     return {
       headerRow: TRADE_OPPORTUNITY_HEADER_ROW,
       observationCol: 1,
       quantityCol: 4,
-      message: `Trade Opportunities is connected to the market pull. Preserved ${preserved} existing row(s).`,
+      message: `Trade Opportunities is connected to the market pull. Preserved ${result.preserved} row(s) with quantity and removed ${result.removed} row(s) without quantity.`,
     };
   }
 
@@ -1363,6 +1409,7 @@ function ensureTradeObservationDateColumn_(sheet) {
     quantityCol = findTradeQuantityColumn_(headerInfo.headers);
   }
 
+  const removed = removeTradeRowsWithoutQuantity_(sheet);
   formatTradeObservationSheet_(sheet, headerInfo.row, observationCol, quantityCol);
   const stamped = fillBlankTradeObservationDates_(sheet, headerInfo.row, observationCol, quantityCol);
   return {
@@ -1370,8 +1417,8 @@ function ensureTradeObservationDateColumn_(sheet) {
     observationCol,
     quantityCol,
     message: changed
-      ? `Added missing trade tracking column(s) and stamped ${stamped} row(s) with quantity. Rows without Quantity were skipped.`
-      : `Observation Date and Quantity already exist. Stamped ${stamped} row(s) with quantity; rows without Quantity were skipped.`,
+      ? `Added missing trade tracking column(s), removed ${removed} row(s) without quantity, and stamped ${stamped} row(s) with quantity.`
+      : `Observation Date and Quantity already exist. Removed ${removed} row(s) without quantity and stamped ${stamped} row(s) with quantity.`,
   };
 }
 
