@@ -2872,6 +2872,24 @@ DASHBOARD_HTML = r"""<!doctype html>
       font-size: 12px;
       font-weight: 500;
     }
+    .caution-note {
+      border: 1px solid #e7c985;
+      border-left: 4px solid var(--high);
+      border-radius: 7px;
+      background: #fffaf0;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.4;
+      margin-bottom: 12px;
+      padding: 10px 12px;
+    }
+    .caution-note strong {
+      display: block;
+      color: #8a4b00;
+      font-size: 12px;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
     .watchlist-counts {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3186,6 +3204,10 @@ DASHBOARD_HTML = r"""<!doctype html>
       <div class="panel">
         <h2>Watchlist</h2>
         <div class="panel-body">
+          <div class="caution-note" role="note" aria-label="Watchlist caution">
+            <strong>High sensitivity</strong>
+            Watchlists can capture ordinary member conversation when broad terms are used. Use matches for safety review only, keep terms narrow, and do not use a single hit as grounds to punish or remove someone without human context.
+          </div>
           <div class="watchlist-counts">
             <span><strong id="watch-count-pilots">0</strong> pilots</span>
             <span><strong id="watch-count-corps">0</strong> corps</span>
