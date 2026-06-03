@@ -2,7 +2,7 @@
   "meta": {
     "title": "EVE Chatlog Knowledge Base",
     "source_root": "Local EVE logs folder (path not published)",
-    "generated_at": "2026-06-03T21:34:53Z",
+    "generated_at": "2026-06-03T21:46:58Z",
     "window_start": "2026-06-01T01:56:10Z",
     "window_end": "2026-06-03T21:33:55Z",
     "since_date": "2026-06-01",
@@ -20,6 +20,8 @@
     "review_link_count": 8,
     "rookie_help_message_count": 6039,
     "rookie_help_link_count": 35,
+    "rookie_help_review_link_count": 5,
+    "total_review_link_count": 13,
     "website_article_count": 9,
     "character_log_count": 4,
     "filtered_corp_message_count": 37

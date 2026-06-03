@@ -351,6 +351,8 @@ def build_knowledge_data(
             "review_link_count": sum(1 for item in link_records if item["status"] != "public"),
             "rookie_help_message_count": len(rookie_messages),
             "rookie_help_link_count": len(rookie_link_records),
+            "rookie_help_review_link_count": sum(1 for item in rookie_link_records if item["status"] != "public"),
+            "total_review_link_count": sum(1 for item in link_records + rookie_link_records if item["status"] != "public"),
             "website_article_count": len(website_articles),
             "character_log_count": len({message.listener for message in messages if message.listener}),
             "filtered_corp_message_count": len(excluded_corp_messages),
@@ -1458,7 +1460,10 @@ def render_index_html(data: dict[str, Any]) -> str:
         <h2 id="publish-safety-title">Public-Safe Publishing Status</h2>
         <p id="privacy-note"></p>
       </div>
-      <dl class="safety-list" id="safety-checks"></dl>
+      <div>
+        <dl class="safety-list" id="safety-checks"></dl>
+        <div class="review-summary" id="review-summary"></div>
+      </div>
     </section>
     <section class="toolbar">
       <label>
@@ -1740,6 +1745,33 @@ section {
 .safety-badge.review {
   color: #6f4c10;
   background: #fff0c9;
+}
+.review-summary {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.review-summary h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.review-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.review-reason {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border: 1px solid #efd89d;
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: #67470d;
+  background: #fff9e8;
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
 }
 .toolbar {
   display: grid;
@@ -2102,6 +2134,15 @@ function matchesText(item) {
   return text.includes(state.query);
 }
 
+function allPageResources() {
+  const rookie = data.rookie_help || {};
+  return [...(data.resources || []), ...(rookie.resources || [])];
+}
+
+function reviewResources() {
+  return allPageResources().filter(item => item.status !== "public");
+}
+
 function renderStats() {
   const stats = data.stats;
   document.getElementById("window-range").textContent =
@@ -2127,14 +2168,15 @@ function renderStats() {
 
 function renderPublishSafety() {
   const stats = data.stats || {};
-  const reviewCount = Number(stats.review_link_count || 0);
+  const reviews = reviewResources();
+  const reviewCount = Number(stats.total_review_link_count || reviews.length);
   const publicSafe = data.meta.public_safe !== false;
   document.getElementById("privacy-note").textContent = data.meta.privacy_note || "";
   const checks = [
     ["Public build", publicSafe ? "Enabled" : "Review mode", publicSafe ? "ok" : "review"],
     ["Raw transcripts", "Not published", "ok"],
     ["Local paths", "Hidden", "ok"],
-    ["Private/referral links", reviewCount ? `${reviewCount} redacted` : "None detected", reviewCount ? "review" : "ok"]
+    ["Review queue", reviewCount ? `${reviewCount} redacted` : "None detected", reviewCount ? "review" : "ok"]
   ];
   document.getElementById("safety-checks").innerHTML = checks.map(([label, value, status]) => `
     <div class="safety-row">
@@ -2142,6 +2184,14 @@ function renderPublishSafety() {
       <dd><span class="safety-badge ${escapeHtml(status)}">${escapeHtml(value)}</span></dd>
     </div>
   `).join("");
+  const reasonCounts = new Map();
+  reviews.forEach(item => reasonCounts.set(item.reason, (reasonCounts.get(item.reason) || 0) + 1));
+  const reasons = Array.from(reasonCounts.entries()).sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
+  document.getElementById("review-summary").innerHTML = reasons.length
+    ? `<h3>Review queue by reason</h3><div class="review-reasons">${reasons.map(([reason, count]) => `
+        <span class="review-reason">${escapeHtml(reason)}: ${escapeHtml(count)}</span>
+      `).join("")}</div>`
+    : `<h3>Review queue by reason</h3><div class="muted">No redacted links in this build.</div>`;
 }
 
 function renderTopics() {

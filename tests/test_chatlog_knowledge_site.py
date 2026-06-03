@@ -109,7 +109,10 @@ def test_rookie_help_is_isolated_from_main_knowledge(tmp_path):
         timestamp=dt.datetime(2026, 6, 3, 1, 2, 3, tzinfo=dt.timezone.utc),
         channel="Rookie Help",
         speaker="EVE System",
-        message="Channel MOTD: Welcome to Rookie Help. Useful Links: https://wiki.eveuniversity.org/Main_Page",
+        message=(
+            "Channel MOTD: Welcome to Rookie Help. Useful Links: "
+            "https://wiki.eveuniversity.org/Main_Page https://discord.gg/rookie"
+        ),
         file_name="Rookie Help_20260603_000000_1.txt",
     )
     corp = ChatMessage(
@@ -132,7 +135,10 @@ def test_rookie_help_is_isolated_from_main_knowledge(tmp_path):
     assert all("Rookie Help" not in [source["channel"] for source in topic["sources"]] for topic in data["topics"])
     assert data["resources"] == []
     assert data["rookie_help"]["instructions"][0]["channel"] == "Rookie Help"
-    assert data["rookie_help"]["resources"][0]["label"] == "wiki.eveuniversity.org - Main Page"
+    assert any(item["label"] == "wiki.eveuniversity.org - Main Page" for item in data["rookie_help"]["resources"])
+    assert data["stats"]["review_link_count"] == 0
+    assert data["stats"]["rookie_help_review_link_count"] == 1
+    assert data["stats"]["total_review_link_count"] == 1
 
 
 def test_non_starfleet_corp_chat_is_filtered_from_main_knowledge(tmp_path):
@@ -187,6 +193,7 @@ def test_render_index_html_includes_section_jump_navigation():
     assert 'href="#publish-safety"' in html
     assert 'id="publish-safety"' in html
     assert 'id="safety-checks"' in html
+    assert 'id="review-summary"' in html
     assert 'id="source-channels"' in html
 
 

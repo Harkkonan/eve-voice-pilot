@@ -7,7 +7,7 @@ This folder contains a static, public-safe knowledge website generated from rece
 - Raw chat logs are not included.
 - Public Star Fleet Productions website articles are included as sourced summaries with links.
 - Full URLs for redacted review links are written only to ignored local report `profiles/chatlog_knowledge_link_review.md`.
-- Generated at: 2026-06-03T21:34:53Z
+- Generated at: 2026-06-03T21:46:58Z
 - Source window: 2026-06-01T01:56:10Z to 2026-06-03T21:33:55Z
 
 Regenerate from the repository root:
