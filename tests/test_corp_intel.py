@@ -689,6 +689,64 @@ def test_watchlist_store_persists_sanitized_terms(tmp_path):
     assert snapshot.help_phrases == ("armor breaking",)
 
 
+def test_watchlist_safety_flags_broad_terms():
+    safety = corp_intel.analyze_watchlist_safety(
+        IntelWatchlist(
+            hostile_pilots=("Bad",),
+            help_phrases=("help",),
+            keywords=("red", "gate camp"),
+        )
+    )
+
+    risky_terms = {item["term"]: item for item in safety["risks"]}
+    assert safety["risk_count"] == 3
+    assert safety["high"] == 2
+    assert risky_terms["help"]["level"] == "high"
+    assert risky_terms["red"]["level"] == "high"
+    assert risky_terms["Bad"]["level"] == "medium"
+
+
+def test_watchlist_preview_uses_retained_sanitized_events():
+    store = IntelEventStore(max_events=10)
+    store.add(
+        IntelEvent(
+            event_id="match",
+            source="Scout",
+            channel="Local",
+            speaker="Neutral Pilot",
+            message="red gate camp in Tama",
+            categories=("hostile",),
+            severity="high",
+            systems=("Tama",),
+            observed_at="2026-06-03T06:30:00Z",
+            log_path=r"C:\Users\Pilot\Documents\EVE\logs\Chatlogs\Local.txt",
+        )
+    )
+    store.add(
+        IntelEvent(
+            event_id="clean",
+            source="Scout",
+            channel="Corp",
+            speaker="Friendly",
+            message="mining fleet forming",
+            categories=("info",),
+            severity="info",
+            observed_at="2026-06-03T06:31:00Z",
+            log_path=r"C:\Users\Pilot\Documents\EVE\logs\Chatlogs\Corp.txt",
+        )
+    )
+
+    payload = corp_intel.build_watchlist_preview({"keywords": ["red"]}, store)
+
+    assert payload["source"] == "retained_intel"
+    assert payload["preview"]["events_checked"] == 2
+    assert payload["preview"]["matched_events"] == 1
+    match = payload["preview"]["matches"][0]
+    assert match["event"]["id"] == "match"
+    assert match["matched_terms"][0]["term"] == "red"
+    assert "log_path" not in match["event"]
+
+
 def test_ingest_payload_accepts_single_event_dict():
     store = IntelEventStore(max_events=10)
     added = ingest_payload(

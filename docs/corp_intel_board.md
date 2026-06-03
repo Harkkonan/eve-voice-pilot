@@ -59,6 +59,8 @@ The dashboard has editable watchlists for:
 
 Watchlist matches are applied to new chat lines as they arrive. Hostile pilot and corporation matches are marked `high`. Help callout matches are marked `critical`.
 
+Use the dashboard's False-positive control before saving broad watchlist changes. It flags risky short/common terms such as single-word callouts, then previews the draft watchlist against retained sanitized intel events. The preview is a safety check, not a full chat-log search.
+
 The server stores the live watchlist in:
 
 ```text

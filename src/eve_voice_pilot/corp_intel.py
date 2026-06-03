@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import sqlite3
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -384,6 +384,14 @@ class WatchlistMatch:
 
 
 @dataclass(frozen=True)
+class WatchlistTermRisk:
+    field: str
+    term: str
+    level: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class CompiledWatchTerm:
     term: str
     keyword: str
@@ -507,6 +515,171 @@ class WatchlistStore:
                     )
                 )
         return tuple(matches)
+
+
+WATCHLIST_FIELD_LABELS = {
+    "hostile_pilots": "Hostile pilots",
+    "hostile_corporations": "Hostile corporations",
+    "help_phrases": "Help callouts",
+    "keywords": "Extra keywords",
+}
+
+WATCHLIST_COMMON_WORDS = {
+    "camp",
+    "corp",
+    "enemy",
+    "fleet",
+    "gate",
+    "help",
+    "hostile",
+    "local",
+    "need",
+    "neut",
+    "neutral",
+    "red",
+    "scout",
+    "target",
+    "war",
+    "wt",
+}
+
+
+def iter_watchlist_terms(watchlist: IntelWatchlist) -> Iterator[tuple[str, str]]:
+    for field in WATCHLIST_FIELD_LABELS:
+        for term in getattr(watchlist, field):
+            yield field, term
+
+
+def analyze_watchlist_term(field: str, term: str) -> WatchlistTermRisk | None:
+    clean = SPACE_RE.sub(" ", term).strip()
+    if not clean:
+        return None
+    folded = clean.casefold()
+    words = re.findall(r"[a-z0-9]+", folded)
+    word_count = len(words)
+    label = WATCHLIST_FIELD_LABELS.get(field, field)
+
+    if len(folded) <= 2:
+        return WatchlistTermRisk(
+            field=field,
+            term=clean,
+            level="high",
+            reason=f"{label} term is very short and can match unrelated chat.",
+        )
+    if folded in WATCHLIST_COMMON_WORDS:
+        return WatchlistTermRisk(
+            field=field,
+            term=clean,
+            level="high",
+            reason=f"{label} term is a common EVE/chat word; expect false positives unless paired with context.",
+        )
+    if field == "keywords" and word_count == 1:
+        return WatchlistTermRisk(
+            field=field,
+            term=clean,
+            level="medium",
+            reason="Single-word extra keywords are broad; prefer a short phrase when possible.",
+        )
+    if field == "help_phrases" and word_count < 2:
+        return WatchlistTermRisk(
+            field=field,
+            term=clean,
+            level="medium",
+            reason="Single-word help callouts can catch ordinary conversation.",
+        )
+    if field in {"hostile_pilots", "hostile_corporations"} and word_count == 1:
+        return WatchlistTermRisk(
+            field=field,
+            term=clean,
+            level="medium",
+            reason=f"{label} entry is one word; use the full exact name when you can.",
+        )
+    return None
+
+
+def analyze_watchlist_safety(watchlist: IntelWatchlist) -> dict[str, Any]:
+    risks = [
+        risk
+        for field, term in iter_watchlist_terms(watchlist)
+        if (risk := analyze_watchlist_term(field, term)) is not None
+    ]
+    high = sum(1 for risk in risks if risk.level == "high")
+    medium = sum(1 for risk in risks if risk.level == "medium")
+    return {
+        "risk_count": len(risks),
+        "high": high,
+        "medium": medium,
+        "risks": [
+            {
+                "field": risk.field,
+                "field_label": WATCHLIST_FIELD_LABELS.get(risk.field, risk.field),
+                "term": risk.term,
+                "level": risk.level,
+                "reason": risk.reason,
+            }
+            for risk in risks
+        ],
+    }
+
+
+def preview_watchlist_matches(
+    watchlist: IntelWatchlist,
+    event_payloads: Iterable[dict[str, Any]],
+    *,
+    limit: int = 25,
+) -> dict[str, Any]:
+    preview_store = WatchlistStore(watchlist=watchlist)
+    matches: list[dict[str, Any]] = []
+    events_checked = 0
+    matched_events = 0
+    for payload in event_payloads:
+        if not isinstance(payload, dict):
+            continue
+        event = IntelEvent.from_dict(payload)
+        events_checked += 1
+        event_matches = preview_store.match(event.message, speaker=event.speaker)
+        if not event_matches:
+            continue
+        matched_events += 1
+        if len(matches) >= limit:
+            continue
+        event_payload = event.to_dict()
+        matches.append(
+            {
+                "event": event_payload,
+                "matched_terms": [
+                    {
+                        "term": match.term,
+                        "keyword": match.keyword,
+                        "categories": list(match.categories),
+                        "severity": match.severity,
+                    }
+                    for match in event_matches
+                ],
+            }
+        )
+    return {
+        "events_checked": events_checked,
+        "matched_events": matched_events,
+        "matches": matches,
+        "truncated": matched_events > len(matches),
+        "limit": limit,
+    }
+
+
+def build_watchlist_preview(payload: Any, store: "IntelEventStore") -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise TypeError("Watchlist preview payload must be a JSON object.")
+    watchlist = IntelWatchlist.from_dict(payload)
+    snapshot = store.snapshot()
+    return {
+        "ok": True,
+        "source": "retained_intel",
+        "note": "Preview checks retained sanitized intel events, not full local chat logs.",
+        "counts": watchlist.counts(),
+        "safety": analyze_watchlist_safety(watchlist),
+        "preview": preview_watchlist_matches(watchlist, snapshot.get("events") or []),
+    }
 
 
 class PilotRegistry:
@@ -1957,6 +2130,11 @@ def build_http_server(
                     return
                 self._handle_watchlist_update()
                 return
+            if path == "/api/watchlist/preview":
+                if not self._require_dashboard_access_for_json():
+                    return
+                self._handle_watchlist_preview()
+                return
             if path == "/api/agent-tokens":
                 if not self._require_dashboard_access_for_json():
                     return
@@ -2070,6 +2248,19 @@ def build_http_server(
             response = watchlist.to_dict()
             response["counts"] = watchlist.counts()
             response["can_write"] = True
+            self._send_json(response)
+
+        def _handle_watchlist_preview(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_error(400, f"Invalid JSON: {exc}")
+                return
+            try:
+                response = build_watchlist_preview(payload, store)
+            except (TypeError, ValueError) as exc:
+                self.send_error(400, f"Invalid watchlist preview payload: {exc}")
+                return
             self._send_json(response)
 
         def _handle_auth_login(self) -> None:
@@ -2866,6 +3057,55 @@ DASHBOARD_HTML = r"""<!doctype html>
       margin-top: -2px;
       overflow-wrap: anywhere;
     }
+    .safety-box {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #f8faf9;
+      margin-bottom: 12px;
+      padding: 10px;
+    }
+    .safety-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .safety-header span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .risk-list, .preview-list {
+      display: grid;
+      gap: 7px;
+    }
+    .risk-item, .preview-item {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--info);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      padding: 8px 9px;
+      overflow-wrap: anywhere;
+    }
+    .risk-item.risk-high {
+      border-left-color: var(--high);
+    }
+    .risk-item.risk-medium {
+      border-left-color: var(--medium);
+    }
+    .risk-term, .preview-message {
+      color: var(--ink);
+      font-weight: 700;
+    }
+    .preview-list {
+      margin-top: 10px;
+    }
     .signal-list, .trust-list {
       display: grid;
     }
@@ -3286,6 +3526,18 @@ DASHBOARD_HTML = r"""<!doctype html>
           <label class="field">Extra keywords
             <textarea id="watch-keywords" spellcheck="false"></textarea>
           </label>
+          <div class="safety-box">
+            <div class="safety-header">
+              <span class="risk-term">False-positive control</span>
+              <span id="watch-safety-summary">Review terms</span>
+            </div>
+            <div class="risk-list" id="watch-safety-risks"></div>
+            <div class="button-row">
+              <button class="secondary" id="preview-watchlist" type="button">Preview matches</button>
+              <span class="save-status" id="watch-preview-status"></span>
+            </div>
+            <div class="preview-list" id="watch-preview-results"></div>
+          </div>
           <div class="button-row">
             <button id="save-watchlist" type="button">Save watchlist</button>
             <span class="save-status" id="watchlist-status"></span>
@@ -3322,6 +3574,16 @@ DASHBOARD_HTML = r"""<!doctype html>
     const VIEW_SETTINGS_KEY = "corpIntelViewSettings.v1";
     const DEFAULT_LIVE_WINDOW_MINUTES = 10080;
     const ALLOWED_LIVE_WINDOWS = new Set([15, 60, 360, 1440, 10080]);
+    const WATCHLIST_FIELD_LABELS = {
+      hostile_pilots: "Hostile pilots",
+      hostile_corporations: "Hostile corporations",
+      help_phrases: "Help callouts",
+      keywords: "Extra keywords"
+    };
+    const WATCHLIST_COMMON_WORDS = new Set([
+      "camp", "corp", "enemy", "fleet", "gate", "help", "hostile", "local",
+      "need", "neut", "neutral", "red", "scout", "target", "war", "wt"
+    ]);
 
     const state = {
       events: [],
@@ -3679,6 +3941,145 @@ DASHBOARD_HTML = r"""<!doctype html>
       return (values || []).join("\n");
     }
 
+    function draftWatchlistPayload() {
+      return {
+        hostile_pilots: linesFromTextarea("watch-hostile-pilots"),
+        hostile_corporations: linesFromTextarea("watch-hostile-corporations"),
+        help_phrases: linesFromTextarea("watch-help-phrases"),
+        keywords: linesFromTextarea("watch-keywords")
+      };
+    }
+
+    function termWords(value) {
+      return String(value || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+    }
+
+    function analyzeDraftTerm(field, term) {
+      const clean = String(term || "").replace(/\s+/g, " ").trim();
+      if (!clean) return null;
+      const folded = clean.toLowerCase();
+      const words = termWords(clean);
+      const label = WATCHLIST_FIELD_LABELS[field] || field;
+      if (folded.length <= 2) {
+        return {
+          field,
+          field_label: label,
+          term: clean,
+          level: "high",
+          reason: `${label} term is very short and can match unrelated chat.`
+        };
+      }
+      if (WATCHLIST_COMMON_WORDS.has(folded)) {
+        return {
+          field,
+          field_label: label,
+          term: clean,
+          level: "high",
+          reason: `${label} term is a common EVE/chat word; expect false positives unless paired with context.`
+        };
+      }
+      if (field === "keywords" && words.length === 1) {
+        return {
+          field,
+          field_label: label,
+          term: clean,
+          level: "medium",
+          reason: "Single-word extra keywords are broad; prefer a short phrase when possible."
+        };
+      }
+      if (field === "help_phrases" && words.length < 2) {
+        return {
+          field,
+          field_label: label,
+          term: clean,
+          level: "medium",
+          reason: "Single-word help callouts can catch ordinary conversation."
+        };
+      }
+      if ((field === "hostile_pilots" || field === "hostile_corporations") && words.length === 1) {
+        return {
+          field,
+          field_label: label,
+          term: clean,
+          level: "medium",
+          reason: `${label} entry is one word; use the full exact name when you can.`
+        };
+      }
+      return null;
+    }
+
+    function analyzeDraftWatchlist(payload) {
+      const risks = [];
+      for (const field of Object.keys(WATCHLIST_FIELD_LABELS)) {
+        for (const term of payload[field] || []) {
+          const risk = analyzeDraftTerm(field, term);
+          if (risk) risks.push(risk);
+        }
+      }
+      return {
+        risk_count: risks.length,
+        high: risks.filter(risk => risk.level === "high").length,
+        medium: risks.filter(risk => risk.level === "medium").length,
+        risks
+      };
+    }
+
+    function renderSafetyRisks(safety) {
+      const target = document.getElementById("watch-safety-risks");
+      const risks = safety?.risks || [];
+      const high = safety?.high ?? risks.filter(risk => risk.level === "high").length;
+      const medium = safety?.medium ?? risks.filter(risk => risk.level === "medium").length;
+      document.getElementById("watch-safety-summary").textContent = risks.length
+        ? `${high} high, ${medium} medium`
+        : "No broad terms flagged";
+      if (!risks.length) {
+        target.innerHTML = `<div class="risk-item">No broad terms flagged. Preview retained matches before saving sensitive watchlist changes.</div>`;
+        return;
+      }
+      target.innerHTML = risks.map(risk => `
+        <div class="risk-item risk-${escapeHtml(risk.level || "medium")}">
+          <span class="risk-term">${escapeHtml(risk.term)}</span>
+          <span> - ${escapeHtml(risk.field_label || risk.field || "Watchlist")}: ${escapeHtml(risk.reason || "Review this term before saving.")}</span>
+        </div>
+      `).join("");
+    }
+
+    function renderDraftWatchlistSafety() {
+      renderSafetyRisks(analyzeDraftWatchlist(draftWatchlistPayload()));
+      document.getElementById("watch-preview-results").innerHTML = "";
+      document.getElementById("watch-preview-status").textContent = "Preview not run";
+    }
+
+    function renderPreviewResults(payload) {
+      const target = document.getElementById("watch-preview-results");
+      const preview = payload.preview || {};
+      const matches = preview.matches || [];
+      const note = payload.note || "Preview checks retained intel only.";
+      if (!preview.events_checked) {
+        target.innerHTML = `<div class="preview-item">${escapeHtml(note)} No retained intel is available to preview.</div>`;
+        return;
+      }
+      if (!matches.length) {
+        target.innerHTML = `<div class="preview-item">${escapeHtml(note)} No retained intel matched this draft watchlist.</div>`;
+        return;
+      }
+      target.innerHTML = matches.map(item => {
+        const event = item.event || {};
+        const terms = (item.matched_terms || []).map(match => match.term).filter(Boolean).join(", ");
+        const timestamp = eventTimestamp(event);
+        return `
+          <div class="preview-item">
+            <div class="preview-message">${escapeHtml(event.message || "No message")}</div>
+            <div>Matched draft terms: ${escapeHtml(terms || "unknown")}</div>
+            <div>${escapeHtml(event.channel || "unknown channel")} - ${escapeHtml(event.speaker || sourceDisplay(event))} - ${escapeHtml(timestampIso(timestamp))}</div>
+          </div>
+        `;
+      }).join("");
+      if (preview.truncated) {
+        target.innerHTML += `<div class="preview-item">Preview limited to newest ${preview.limit || matches.length} matches.</div>`;
+      }
+    }
+
     function renderWatchlist(payload) {
       state.watchlist = payload;
       document.getElementById("watch-hostile-pilots").value = textareaText(payload.hostile_pilots);
@@ -3698,6 +4099,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       if (payload.can_write === false) {
         document.getElementById("watchlist-status").textContent = "Sign in or use an admin token to edit";
       }
+      renderDraftWatchlistSafety();
     }
 
     function renderAuth(payload) {
@@ -3853,12 +4255,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       const button = document.getElementById("save-watchlist");
       button.disabled = true;
       document.getElementById("watchlist-status").textContent = "Saving";
-      const payload = {
-        hostile_pilots: linesFromTextarea("watch-hostile-pilots"),
-        hostile_corporations: linesFromTextarea("watch-hostile-corporations"),
-        help_phrases: linesFromTextarea("watch-help-phrases"),
-        keywords: linesFromTextarea("watch-keywords")
-      };
+      const payload = draftWatchlistPayload();
       try {
         const response = await fetch("/api/watchlist", {
           method: "POST",
@@ -3876,6 +4273,35 @@ DASHBOARD_HTML = r"""<!doctype html>
         document.getElementById("watchlist-status").textContent = "Save failed";
       } finally {
         button.disabled = state.watchlist?.can_write === false;
+      }
+    }
+
+    async function previewWatchlist() {
+      const button = document.getElementById("preview-watchlist");
+      button.disabled = true;
+      document.getElementById("watch-preview-status").textContent = "Previewing";
+      try {
+        const response = await fetch("/api/watchlist/preview", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders()
+          },
+          body: JSON.stringify(draftWatchlistPayload())
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        const payload = await response.json();
+        renderSafetyRisks(payload.safety);
+        renderPreviewResults(payload);
+        const checked = payload.preview?.events_checked ?? 0;
+        const matched = payload.preview?.matched_events ?? 0;
+        document.getElementById("watch-preview-status").textContent = `${matched} of ${checked} retained matched`;
+      } catch (error) {
+        document.getElementById("watch-preview-status").textContent = "Preview failed";
+      } finally {
+        button.disabled = false;
       }
     }
 
@@ -3927,6 +4353,10 @@ DASHBOARD_HTML = r"""<!doctype html>
     document.getElementById("save-watchlist").addEventListener("click", saveWatchlist);
     document.getElementById("admin-token").addEventListener("change", loadWatchlist);
     document.getElementById("create-agent-token").addEventListener("click", createAgentToken);
+    document.getElementById("preview-watchlist").addEventListener("click", previewWatchlist);
+    for (const id of ["watch-hostile-pilots", "watch-hostile-corporations", "watch-help-phrases", "watch-keywords"]) {
+      document.getElementById(id).addEventListener("input", renderDraftWatchlistSafety);
+    }
 
     loadAuth();
     loadAgentTokens();
