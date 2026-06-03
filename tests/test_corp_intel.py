@@ -22,13 +22,16 @@ from eve_voice_pilot.corp_intel import (
     VerifiedPilot,
     WatchlistStore,
     build_sso_authorization_url,
+    dashboard_access_status,
     decode_eve_access_token,
     eve_timestamp_to_iso,
+    fetch_remote_watchlist,
     hash_agent_token,
     ingest_payload,
     membership_allowed,
     parse_channel_name_from_text,
     parse_chat_line,
+    request_has_watchlist_read_token,
     verify_sso_character,
 )
 
@@ -134,6 +137,60 @@ def test_membership_allowed_accepts_configured_corporation_or_alliance():
     assert not membership_allowed(config, corporation_id=9999, alliance_id=None)
 
 
+def test_dashboard_access_requires_enabled_sso():
+    access = dashboard_access_status(EveSsoConfig(), None)
+    assert access.ok is False
+    assert access.status == 503
+    assert "SSO is not configured" in access.message
+
+
+def test_dashboard_access_requires_signed_in_pilot():
+    config = EveSsoConfig(
+        client_id="client-123",
+        client_secret="secret",
+        callback_url="http://127.0.0.1:8765/auth/callback",
+    )
+    access = dashboard_access_status(config, None)
+    assert access.ok is False
+    assert access.status == 401
+
+
+def test_dashboard_access_rejects_non_allowlisted_pilot():
+    config = EveSsoConfig(
+        client_id="client-123",
+        client_secret="secret",
+        callback_url="http://127.0.0.1:8765/auth/callback",
+        allowed_corporation_ids=(1001,),
+    )
+    pilot = VerifiedPilot(
+        character_id=123456789,
+        character_name="Neutral Pilot",
+        corporation_id=9999,
+        membership_ok=False,
+    )
+    access = dashboard_access_status(config, pilot)
+    assert access.ok is False
+    assert access.status == 403
+
+
+def test_dashboard_access_allows_verified_member():
+    config = EveSsoConfig(
+        client_id="client-123",
+        client_secret="secret",
+        callback_url="http://127.0.0.1:8765/auth/callback",
+        allowed_corporation_ids=(1001,),
+    )
+    pilot = VerifiedPilot(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        corporation_id=1001,
+        membership_ok=True,
+    )
+    access = dashboard_access_status(config, pilot)
+    assert access.ok is True
+    assert access.status == 200
+
+
 def test_verify_sso_character_builds_verified_pilot_from_public_esi(monkeypatch):
     config = EveSsoConfig(
         client_id="client-123",
@@ -219,6 +276,66 @@ def test_pilot_registry_revokes_agent_token(tmp_path):
     token, record = registry.create_agent_token(pilot.character_id, label="Home PC")
     assert registry.revoke_agent_token(character_id=pilot.character_id, token_id=record.token_id)
     assert registry.resolve_agent_token(token) is None
+
+
+def test_watchlist_read_token_accepts_shared_token_unless_verified_required(tmp_path):
+    registry = PilotRegistry(tmp_path / "pilots.sqlite3")
+    handler = type("Handler", (), {"headers": {"Authorization": "Bearer shared-token"}})()
+
+    assert request_has_watchlist_read_token(
+        handler,
+        ingest_token="shared-token",
+        pilot_registry=registry,
+        require_verified=False,
+    )
+    assert not request_has_watchlist_read_token(
+        handler,
+        ingest_token="shared-token",
+        pilot_registry=registry,
+        require_verified=True,
+    )
+
+
+def test_watchlist_read_token_accepts_verified_agent_token(tmp_path):
+    registry = PilotRegistry(tmp_path / "pilots.sqlite3")
+    pilot = VerifiedPilot(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        membership_ok=True,
+        verified_at="2026-06-03T06:30:00Z",
+        last_login_at="2026-06-03T06:30:00Z",
+    )
+    registry.upsert(pilot)
+    token, _record = registry.create_agent_token(pilot.character_id, label="Home PC")
+    handler = type("Handler", (), {"headers": {"Authorization": f"Bearer {token}"}})()
+
+    assert request_has_watchlist_read_token(
+        handler,
+        ingest_token="shared-token",
+        pilot_registry=registry,
+        require_verified=True,
+    )
+
+
+def test_fetch_remote_watchlist_sends_bearer_token(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_get_json(url: str, *, timeout_seconds: float, headers: dict[str, str] | None = None):
+        captured["url"] = url
+        captured["timeout_seconds"] = timeout_seconds
+        captured["headers"] = headers
+        return {"hostile_pilots": ["Bad Pilot"]}
+
+    monkeypatch.setattr(corp_intel, "get_json", fake_get_json)
+
+    watchlist = fetch_remote_watchlist("http://example.test/", token="cit_token", timeout_seconds=3)
+
+    assert watchlist.hostile_pilots == ("Bad Pilot",)
+    assert captured["url"] == "http://example.test/api/watchlist"
+    assert captured["timeout_seconds"] == 3
+    assert captured["headers"] == {"Authorization": "Bearer cit_token"}
 
 
 def test_system_matcher_finds_canonical_system_names():

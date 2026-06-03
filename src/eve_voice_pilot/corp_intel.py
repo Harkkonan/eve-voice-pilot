@@ -278,6 +278,13 @@ class VerifiedPilot:
 
 
 @dataclass(frozen=True)
+class DashboardAccess:
+    ok: bool
+    status: int
+    message: str
+
+
+@dataclass(frozen=True)
 class AgentTokenRecord:
     token_id: str
     character_id: int
@@ -1499,8 +1506,9 @@ def verify_sso_character(
     )
 
 
-def fetch_remote_watchlist(server_url: str, *, timeout_seconds: float = 10.0) -> IntelWatchlist:
-    payload = get_json(f"{server_url.rstrip('/')}/api/watchlist", timeout_seconds=timeout_seconds)
+def fetch_remote_watchlist(server_url: str, *, token: str = "", timeout_seconds: float = 10.0) -> IntelWatchlist:
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    payload = get_json(f"{server_url.rstrip('/')}/api/watchlist", timeout_seconds=timeout_seconds, headers=headers)
     if not isinstance(payload, dict):
         raise CorpIntelError("Remote watchlist endpoint returned unexpected data.")
     return IntelWatchlist.from_dict(payload)
@@ -1510,11 +1518,12 @@ def refresh_remote_watchlist(
     *,
     server_url: str,
     watchlist_store: WatchlistStore,
+    token: str = "",
     timeout_seconds: float,
     log: Callable[[str], None] = print,
 ) -> None:
     try:
-        watchlist = fetch_remote_watchlist(server_url, timeout_seconds=timeout_seconds)
+        watchlist = fetch_remote_watchlist(server_url, token=token, timeout_seconds=timeout_seconds)
     except CorpIntelError as exc:
         log(f"Watchlist refresh failed: {exc}")
         return
@@ -1533,6 +1542,7 @@ def start_remote_watchlist_refresh_thread(
     *,
     server_url: str,
     watchlist_store: WatchlistStore,
+    token: str = "",
     interval_seconds: float,
     timeout_seconds: float,
 ) -> threading.Thread:
@@ -1544,6 +1554,7 @@ def start_remote_watchlist_refresh_thread(
             refresh_remote_watchlist(
                 server_url=server_url,
                 watchlist_store=watchlist_store,
+                token=token,
                 timeout_seconds=timeout_seconds,
             )
 
@@ -1647,15 +1658,18 @@ def start_local_watcher_thread(
 def run_agent(args: argparse.Namespace) -> int:
     channel_filter = channel_filter_from_args(args)
     watchlist_store = WatchlistStore()
+    upload_token = args.agent_token or args.token
     if not args.disable_remote_watchlist:
         refresh_remote_watchlist(
             server_url=args.server,
             watchlist_store=watchlist_store,
+            token=upload_token,
             timeout_seconds=args.post_timeout,
         )
         start_remote_watchlist_refresh_thread(
             server_url=args.server,
             watchlist_store=watchlist_store,
+            token=upload_token,
             interval_seconds=args.watchlist_refresh,
             timeout_seconds=args.post_timeout,
         )
@@ -1682,7 +1696,7 @@ def run_agent(args: argparse.Namespace) -> int:
             print(format_event_line(event))
             return
         try:
-            post_json(endpoint, event.to_dict(), token=args.agent_token or args.token, timeout_seconds=args.post_timeout)
+            post_json(endpoint, event.to_dict(), token=upload_token, timeout_seconds=args.post_timeout)
             print(format_event_line(event))
         except CorpIntelError as exc:
             print(f"Upload failed: {exc}", file=sys.stderr)
@@ -1750,6 +1764,7 @@ def run_server(args: argparse.Namespace) -> int:
         auth_state_store=auth_state_store,
         session_store=session_store,
         require_verified_ingest=args.require_verified_ingest,
+        require_sso_dashboard=args.require_sso_dashboard,
     )
     url = f"http://{url_host}:{args.port}/"
     print(f"Corp intel board listening at {url}")
@@ -1777,6 +1792,14 @@ def run_server(args: argparse.Namespace) -> int:
             print("No corp/alliance allowlist set; any EVE-authenticated character can sign in.")
     else:
         print("EVE SSO is not configured.")
+    if args.require_sso_dashboard:
+        print("Dashboard/API access requires an EVE SSO verified member session.")
+        if not sso_config.enabled:
+            print("Warning: --require-sso-dashboard is enabled, but EVE SSO is not configured.")
+        elif not sso_config.membership_restricted:
+            print(
+                "Warning: no corp/alliance allowlist is set; any EVE-authenticated character can view the board."
+            )
     if args.host == "0.0.0.0":
         print("LAN mode is enabled. Share your computer's LAN IP and port with opted-in corp members.")
     if args.open_browser:
@@ -1802,6 +1825,7 @@ def build_http_server(
     auth_state_store: AuthStateStore | None = None,
     session_store: SessionStore | None = None,
     require_verified_ingest: bool = False,
+    require_sso_dashboard: bool = False,
 ) -> ThreadingHTTPServer:
     watchlist_store = watchlist_store or WatchlistStore()
     sso_config = sso_config or EveSsoConfig()
@@ -1815,12 +1839,21 @@ def build_http_server(
         def do_GET(self) -> None:
             path = urlparse(self.path).path
             if path in {"/", "/index.html"}:
+                if require_sso_dashboard:
+                    access, pilot = self._dashboard_access()
+                    if not access.ok:
+                        self._send_html(render_dashboard_access_gate(access, sso_config, pilot), status=access.status)
+                        return
                 self._send_html(DASHBOARD_HTML)
                 return
             if path == "/api/state":
+                if not self._require_dashboard_access_for_json():
+                    return
                 self._send_json(store.snapshot())
                 return
             if path == "/api/watchlist":
+                if not self._require_dashboard_access_for_json(allow_watchlist_read_token=True):
+                    return
                 payload = watchlist_store.to_dict()
                 pilot = get_request_pilot(self, session_store, pilot_registry)
                 payload["can_write"] = request_has_admin_access(
@@ -1835,6 +1868,8 @@ def build_http_server(
                 self._send_json(auth_status_payload(self, sso_config, session_store, pilot_registry))
                 return
             if path == "/api/agent-tokens":
+                if not self._require_dashboard_access_for_json():
+                    return
                 self._handle_agent_tokens_list()
                 return
             if path == "/auth/login":
@@ -1857,12 +1892,18 @@ def build_http_server(
                 self._handle_ingest()
                 return
             if path == "/api/watchlist":
+                if not self._require_dashboard_access_for_json():
+                    return
                 self._handle_watchlist_update()
                 return
             if path == "/api/agent-tokens":
+                if not self._require_dashboard_access_for_json():
+                    return
                 self._handle_agent_token_create()
                 return
             if path == "/api/agent-tokens/revoke":
+                if not self._require_dashboard_access_for_json():
+                    return
                 self._handle_agent_token_revoke()
                 return
             if path == "/auth/logout":
@@ -2028,20 +2069,40 @@ def build_http_server(
             body = self.rfile.read(int(self.headers.get("Content-Length") or "0"))
             return json.loads(body.decode("utf-8"))
 
+        def _dashboard_access(self) -> tuple[DashboardAccess, VerifiedPilot | None]:
+            pilot = get_request_pilot(self, session_store, pilot_registry)
+            return dashboard_access_status(sso_config, pilot), pilot
+
+        def _require_dashboard_access_for_json(self, *, allow_watchlist_read_token: bool = False) -> bool:
+            if not require_sso_dashboard:
+                return True
+            access, _pilot = self._dashboard_access()
+            if access.ok:
+                return True
+            if allow_watchlist_read_token and request_has_watchlist_read_token(
+                self,
+                ingest_token=ingest_token,
+                pilot_registry=pilot_registry,
+                require_verified=require_verified_ingest,
+            ):
+                return True
+            self._send_json({"ok": False, "error": access.message}, status=access.status)
+            return False
+
         def log_message(self, format: str, *args: Any) -> None:
             print(f"{self.address_string()} - {format % args}")
 
-        def _send_json(self, payload: dict[str, Any]) -> None:
+        def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
-        def _send_html(self, markup: str) -> None:
+        def _send_html(self, markup: str, *, status: int = 200) -> None:
             body = markup.encode("utf-8")
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -2119,6 +2180,84 @@ def auth_status_payload(
     }
 
 
+def dashboard_access_status(sso_config: EveSsoConfig, pilot: VerifiedPilot | None) -> DashboardAccess:
+    if not sso_config.enabled:
+        return DashboardAccess(
+            ok=False,
+            status=503,
+            message="EVE SSO is not configured for this intel board.",
+        )
+    if pilot is None:
+        return DashboardAccess(
+            ok=False,
+            status=401,
+            message="Sign in with EVE SSO to view this intel board.",
+        )
+    if not pilot.membership_ok:
+        return DashboardAccess(
+            ok=False,
+            status=403,
+            message="This character is not in the configured corp or alliance allowlist.",
+        )
+    return DashboardAccess(ok=True, status=200, message="ok")
+
+
+def render_dashboard_access_gate(
+    access: DashboardAccess,
+    sso_config: EveSsoConfig,
+    pilot: VerifiedPilot | None,
+) -> str:
+    if not sso_config.enabled:
+        detail = (
+            "Start the server with EVE SSO client values before enabling "
+            "--require-sso-dashboard."
+        )
+        action = ""
+    elif pilot is None:
+        detail = "Use your EVE character to prove who is viewing the shared board."
+        action = '<p><a class="button" href="/auth/login">Sign in with EVE SSO</a></p>'
+    else:
+        detail = (
+            f"Signed in as {html.escape(pilot.character_name)} from "
+            f"{html.escape(pilot.corporation_name or str(pilot.corporation_id))}."
+        )
+        action = '<p><a class="button secondary" href="/auth/logout">Sign out</a></p>'
+
+    if sso_config.membership_restricted:
+        rule = "Access is limited to the configured corporation or alliance ids."
+    else:
+        rule = "No corp or alliance allowlist is configured; any EVE-authenticated character can pass SSO."
+
+    title = "Corp Intel Board Access"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    body {{ font-family: "Segoe UI", Arial, sans-serif; margin: 0; color: #1f2528; background: #eef2f1; }}
+    main {{ max-width: 720px; margin: 48px auto; background: #fff; border: 1px solid #d8ddd8; border-radius: 8px; padding: 24px; }}
+    h1 {{ margin-top: 0; font-size: 1.6rem; }}
+    p {{ line-height: 1.5; }}
+    .status {{ color: #8b321f; font-weight: 700; }}
+    .rule {{ color: #566167; }}
+    .button {{ display: inline-block; padding: 10px 14px; border-radius: 6px; background: #224e5f; color: #fff; text-decoration: none; font-weight: 700; }}
+    .secondary {{ background: #5b6367; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{title}</h1>
+    <p class="status">{html.escape(access.message)}</p>
+    <p>{detail}</p>
+    <p class="rule">{rule}</p>
+    {action}
+  </main>
+</body>
+</html>"""
+
+
 def render_auth_result(message: str, *, ok: bool) -> str:
     title = "EVE SSO Login" if ok else "EVE SSO Login Failed"
     return f"""<!doctype html>
@@ -2167,6 +2306,21 @@ def resolve_ingest_pilot(
     if ingest_token:
         return False, None
     return True, None
+
+
+def request_has_watchlist_read_token(
+    handler: BaseHTTPRequestHandler,
+    *,
+    ingest_token: str,
+    pilot_registry: PilotRegistry,
+    require_verified: bool,
+) -> bool:
+    token = request_auth_token(handler)
+    if not token:
+        return False
+    if pilot_registry.resolve_agent_token(token):
+        return True
+    return bool(ingest_token and token == ingest_token and not require_verified)
 
 
 def request_has_admin_access(
@@ -2333,6 +2487,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--trusted-members-can-edit-watchlist",
         action="store_true",
         help="Allow SSO-verified members in the configured corp/alliance allowlist to edit watchlists.",
+    )
+    serve.add_argument(
+        "--require-sso-dashboard",
+        action="store_true",
+        help=(
+            "Require EVE SSO sign-in for dashboard/API views. Use allowed corp/alliance ids "
+            "to make this member-only."
+        ),
     )
     serve.add_argument(
         "--retention-days",

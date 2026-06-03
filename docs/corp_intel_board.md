@@ -125,6 +125,14 @@ profiles/corp_intel_pilots.sqlite3
 
 This first SSO slice uses SSO only to prove character ownership and check current public corporation/alliance identity. It does not store EVE access tokens or refresh tokens.
 
+By default, SSO is available but the dashboard remains visible to anyone who can reach the web host. For a shared corp deployment, require a signed-in SSO member session for the dashboard and JSON APIs:
+
+```powershell
+.\scripts\run_corp_intel_board.ps1 serve --require-sso-dashboard --sso-client-id "client-id" --sso-client-secret "client-secret" --sso-callback-url "http://HOST-LAN-IP:8765/auth/callback" --allowed-corporation-ids "123456789"
+```
+
+Use `--allowed-corporation-ids` or `--allowed-alliance-ids` with `--require-sso-dashboard` for a real member-only board. Without an allowlist, any EVE-authenticated character can pass the SSO check.
+
 By default, SSO-verified members can sign in and see their identity status, but remote watchlist edits still require the admin token. To let verified allowlisted members edit watchlists:
 
 ```powershell
@@ -140,6 +148,8 @@ Use that token on the member PC:
 ```powershell
 .\scripts\run_corp_intel_board.ps1 agent --server "http://HOST-LAN-IP:8765" --agent-token "cit_generated_token" --channels "Corp,Fleet,Alliance,Local,*Intel*"
 ```
+
+The agent uses this same token for uploads and for authenticated shared watchlist refreshes.
 
 Agent upload tokens are stored only as hashes in:
 

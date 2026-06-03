@@ -137,7 +137,9 @@ Recent intel events persist locally in ignored SQLite data at `profiles/corp_int
 
 Optional EVE SSO login verifies dashboard users by character and public ESI corporation/alliance membership. Pilot records persist locally in ignored SQLite data at `profiles/corp_intel_pilots.sqlite3`; access and refresh tokens are not stored.
 
-After SSO login, trusted members can create per-pilot agent upload tokens from the dashboard and run the local agent with `--agent-token`. The server stores only token hashes and stamps matching uploads with the verified EVE character identity.
+For a shared corp-hosted board, add `--require-sso-dashboard` plus `--allowed-corporation-ids` or `--allowed-alliance-ids` so the dashboard and JSON APIs require an allowlisted EVE SSO session.
+
+After SSO login, trusted members can create per-pilot agent upload tokens from the dashboard and run the local agent with `--agent-token`. The server stores only token hashes, uses the token for authenticated watchlist refreshes, and stamps matching uploads with the verified EVE character identity.
 
 ## Notes
 
