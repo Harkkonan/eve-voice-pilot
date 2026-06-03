@@ -1298,6 +1298,14 @@ def render_index_html(data: dict[str, Any]) -> str:
     </div>
   </header>
   <main>
+    <nav class="quick-nav" aria-label="Knowledge sections">
+      <a href="#public-website">Public Website</a>
+      <a href="#instructions-section">Instructions</a>
+      <a href="#rookie-help-review">Rookie Help</a>
+      <a href="#clarified-knowledge">Clarified Knowledge</a>
+      <a href="#resource-database">Resources</a>
+      <a href="#source-channels">Channels</a>
+    </nav>
     <section class="stats" id="stats"></section>
     <section class="notice">
       <strong>Publishing guard:</strong>
@@ -1317,42 +1325,42 @@ def render_index_html(data: dict[str, Any]) -> str:
         </select>
       </label>
     </section>
-    <section>
+    <section id="public-website">
       <div class="section-heading">
         <h2>Public Star Fleet Website</h2>
         <p>Searchable public articles from Star Fleet Productions, kept as sourced website knowledge.</p>
       </div>
       <div class="article-grid" id="website-articles"></div>
     </section>
-    <section>
+    <section id="instructions-section">
       <div class="section-heading">
         <h2>Instruction Library</h2>
         <p>High-fidelity reproductions of detailed channel instructions, reformatted for reading and public-safe sharing.</p>
       </div>
       <div class="instruction-list" id="instructions"></div>
     </section>
-    <section>
+    <section id="rookie-help-review">
       <div class="section-heading">
         <h2>Rookie Help Review</h2>
         <p>Public Rookie Help material is isolated from corp knowledge until someone reviews what is worth repeating.</p>
       </div>
       <div class="rookie-panel" id="rookie-help"></div>
     </section>
-    <section>
+    <section id="clarified-knowledge">
       <div class="section-heading">
         <h2>Clarified Knowledge</h2>
         <p>Fuller classified summaries built from repeated MOTDs and useful recent chat advice.</p>
       </div>
       <div class="topic-grid" id="topics"></div>
     </section>
-    <section>
+    <section id="resource-database">
       <div class="section-heading">
         <h2>Resource Database</h2>
         <p>Links discovered in logs. Public-safe entries are clickable; risky or private-looking entries are redacted for review.</p>
       </div>
       <div class="resource-table" id="resources"></div>
     </section>
-    <section>
+    <section id="source-channels">
       <div class="section-heading">
         <h2>Source Channels</h2>
         <p>Recent channel activity included in the digest. Private chat transcripts are not published.</p>
@@ -1470,6 +1478,34 @@ main {
 }
 section {
   min-width: 0;
+}
+.quick-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  width: 100%;
+  max-width: 100%;
+}
+.quick-nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: #334047;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.quick-nav a:hover,
+.quick-nav a:focus-visible {
+  border-color: #9fb9aa;
+  color: var(--green);
 }
 .stats {
   display: grid;
@@ -1802,7 +1838,29 @@ input, select {
     width: 100%;
     max-width: 100%;
   }
-  .stats, .toolbar, .channel-list {
+  .quick-nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .quick-nav a {
+    width: 100%;
+    padding: 9px 8px;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .stat {
+    padding: 11px 12px;
+  }
+  .stat strong {
+    font-size: 22px;
+  }
+  .toolbar, .channel-list {
     grid-template-columns: 1fr;
   }
 }

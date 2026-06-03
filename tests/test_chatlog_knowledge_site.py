@@ -13,6 +13,7 @@ from build_chatlog_knowledge_site import (
     extract_urls,
     normalize_url,
     parse_chat_file,
+    render_index_html,
     starfleet_website_articles,
 )
 
@@ -174,3 +175,12 @@ def test_public_starfleet_website_articles_are_included():
     assert "Star Fleet Productions Buyback Program Guide" in titles
     assert "Star Fleet Constitution" in titles
     assert all(article["url"].startswith("https://starfleetproductions.space/") for article in articles)
+
+
+def test_render_index_html_includes_section_jump_navigation():
+    html = render_index_html({"meta": {"title": "Test Knowledge"}})
+
+    assert 'class="quick-nav"' in html
+    assert 'href="#public-website"' in html
+    assert 'href="#resource-database"' in html
+    assert 'id="source-channels"' in html
