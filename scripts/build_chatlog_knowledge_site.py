@@ -252,6 +252,7 @@ def build_knowledge_data(
     ]
     instructions = build_instruction_library(main_motds, main_messages)
     rookie_help = build_rookie_help_digest(rookie_motds, rookie_messages, rookie_link_records)
+    website_articles = starfleet_website_articles()
 
     return {
         "meta": {
@@ -266,7 +267,8 @@ def build_knowledge_data(
                 "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, "
                 "private-looking invites, and unreviewed external links are not published in the public-safe build. "
                 "Instruction text is reproduced from channel MOTDs with risky links redacted. Rookie Help is kept "
-                "isolated because public-help advice needs separate review before it is repeated as corp knowledge."
+                "isolated because public-help advice needs separate review before it is repeated as corp knowledge. "
+                "Public Star Fleet website articles are included as sourced summaries."
             ),
         },
         "stats": {
@@ -280,6 +282,7 @@ def build_knowledge_data(
             "review_link_count": sum(1 for item in link_records if item["status"] != "public"),
             "rookie_help_message_count": len(rookie_messages),
             "rookie_help_link_count": len(rookie_link_records),
+            "website_article_count": len(website_articles),
         },
         "channels": [
             {"name": name, "message_count": count}
@@ -288,6 +291,7 @@ def build_knowledge_data(
         ],
         "instructions": instructions,
         "topics": build_topics(main_motds, main_messages),
+        "website_articles": website_articles,
         "rookie_help": rookie_help,
         "resources": link_records,
         "motds": motd_summaries(main_motds),
@@ -315,6 +319,173 @@ def build_rookie_help_digest(
         "resources": resources,
         "sources": source_summary(["Rookie Help"], motds, messages),
     }
+
+
+def starfleet_website_articles() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "star-fleet-goals",
+            "title": "Star Fleet Goals",
+            "date": "2026-05-18",
+            "category": "Strategy",
+            "url": "https://starfleetproductions.space/star-fleet-goals/",
+            "summary": (
+                "Star Fleet's public goal is to grow an experienced null-sec player base, help allies secure "
+                "territory, build toward its own sovereign home, and fund growth through member-supported programs."
+            ),
+            "details": [
+                "Growth is framed as essential for succeeding in null-sec and securing allied territory.",
+                "Station goals include shared allied stations now and future corp infrastructure such as Athanors, Azbels, a Sotiyo, and Fortizars.",
+                "Leadership needs include mining fleets, roaming fleets, training fleets, and player support.",
+                "The long-term goal is a stable null-sec home where members can grow without being punished for normal real-life inactivity.",
+                "Lower taxes, donations, and buyback programs are described as the preferred funding path.",
+            ],
+        },
+        {
+            "id": "eight-stars-of-success",
+            "title": "8 Stars Of Success",
+            "date": "2026-05-18",
+            "category": "Culture",
+            "url": "https://starfleetproductions.space/elementor-7973/",
+            "summary": (
+                "The eight stars describe Star Fleet's culture model: clear goals, growth mindset, discipline, "
+                "emotional control, learning, relationships, resilience, and action."
+            ),
+            "details": [
+                "Clarity of purpose means defining goals and keeping them visible.",
+                "Mindset emphasizes that EVE is a game and members have real lives outside it.",
+                "Discipline and consistency are tied to command structure, departments, ranks, policies, and procedures.",
+                "Emotional intelligence means staying calm and respectful when EVE becomes hectic.",
+                "Continuous learning, networking, resilience, and action are presented as requirements for the corporation's long-term goals.",
+            ],
+        },
+        {
+            "id": "star-fleet-buyback-program",
+            "title": "Star Fleet Productions Buyback Program Guide",
+            "date": "2026-04-10",
+            "category": "Buyback",
+            "url": "https://starfleetproductions.space/star-fleet-productions-buyback-program-guide/",
+            "summary": (
+                "The public buyback guide explains how members can sell eligible items to the corporation at "
+                "90 percent of Jita buy using Goonpraisal and approved drop-off locations."
+            ),
+            "details": [
+                "Buyback uses Goonpraisal only unless another tool is announced.",
+                "The standard contract maximum is 1 billion ISK per contract.",
+                "Restricted items include BPCs, SKINs, rigged ships, items inside containers, and damaged consumables such as lenses or mining crystals.",
+                "Approved drop-offs include Oipo in Lonetrek, Dihra V, South Bunker B- in Dital, Orion's Absolute Refinery, and KBP7-G in Providence.",
+                "Contracts should be private item exchange contracts to Ferengi Commerce Consortium with the appraisal permalink in the description and at least one week expiration.",
+                "Lower-value contracts are often accepted within 24 hours; typical processing is 3 to 7 days.",
+            ],
+        },
+        {
+            "id": "ao-ranks-explained",
+            "title": "AO Ranks Explained",
+            "date": "2026-02-27",
+            "category": "Ranks",
+            "url": "https://starfleetproductions.space/ao-ranks-explained-how-ao-leadership-and-departments-work/",
+            "summary": (
+                "The AO rank article frames Absolute Order ranks as an alliance command structure built around "
+                "authority, departments, accountability, and clear decision flow."
+            ),
+            "details": [
+                "Entry members may have no rank yet; authority begins with Apostle and Officer.",
+                "Supreme Officer, Lieutenant Commissar, and Department Commissar carry broader leadership and departmental responsibility.",
+                "Lieutenant Imperator and Imperator are top command levels for direction, coordination, and major decisions.",
+                "Department mapping ties Miner and Explorer to 4th Department, Science to 5th Department, Recruiter/Communications to 6th Department, and combat roles to 2nd Department.",
+            ],
+        },
+        {
+            "id": "sfp-rank-structure",
+            "title": "Star Fleet Productions Ranks",
+            "date": "2026-02-27",
+            "category": "Ranks",
+            "url": "https://starfleetproductions.space/star-fleet-productions-ranks-sfp-rank-structure-explained/",
+            "summary": (
+                "The SFP rank article presents rank as progression, responsibility, trust, reliability, and "
+                "accountability rather than personal status."
+            ),
+            "details": [
+                "Ensign is the onboarding rank for learning standards, fitting ships, and following fleet comms.",
+                "Lieutenant Junior Grade and Lieutenant represent dependability, basic systems knowledge, and reduced hand-holding.",
+                "Lieutenant Commander and Commander add coordination, training, and function ownership.",
+                "Captain, Commodore, Admiral, and Fleet Admiral are leadership ranks focused on planning, mentoring, decision-making, and representing the corp properly.",
+            ],
+        },
+        {
+            "id": "star-fleet-departments",
+            "title": "Star Fleet Departments",
+            "date": "2026-02-24",
+            "category": "Departments",
+            "url": "https://starfleetproductions.space/star-fleet-departments/",
+            "summary": (
+                "The department guide organizes member activity into lanes with expectations and perks for mining, "
+                "PvP, PvE, industry, exploration, recruiting, and communications."
+            ),
+            "details": [
+                "Miner: join mining fleets and use corp or alliance buybacks when possible; perks include mining SRP and starter mining ships.",
+                "Soldier: help territorial defense or expansion through PvP or faction warfare; perks include PvP SRP and a starter destroyer.",
+                "Security: run PvE such as ratting, missions, Abyssals, and events; perks include PvE SRP and a starter destroyer.",
+                "Science: build for profit and supply corp/alliance/local markets; perks include mining SRP, Dihra-area BPC access, and a starter Venture.",
+                "Explorer: hack sites and provide intel; perks include exploration SRP and a starter exploration frigate.",
+                "Recruiter and Communications roles support mentoring, culture, conflict resolution, allies, and concerns.",
+            ],
+        },
+        {
+            "id": "expectations",
+            "title": "Expectations",
+            "date": "2026-02-24",
+            "category": "Rules",
+            "url": "https://starfleetproductions.space/expectations/",
+            "summary": (
+                "The expectations article describes Star Fleet as a coordinated, standards-based organization where "
+                "members should prepare, communicate, contribute, and follow operational direction."
+            ),
+            "details": [
+                "Real life comes first, but online members are expected to engage meaningfully with corp activity.",
+                "Discord is the primary announcement and coordination hub.",
+                "Fleet comms discipline matters; when an FC gives direction, members should follow it.",
+                "Members should follow doctrine, buyback, logistics, exploration, mining, and resource procedures.",
+                "Growth expectations include skill planning, ship readiness, learning core mechanics, and participating in training when offered.",
+                "Professionalism means avoiding drama, reckless actions in organized activity, and repeated disregard for direction.",
+            ],
+        },
+        {
+            "id": "eve-online-terms-of-service",
+            "title": "EVE Online - Terms of Service",
+            "date": "2026-02-24",
+            "category": "Compliance",
+            "url": "https://starfleetproductions.space/eve-online-terms-of-service/",
+            "summary": (
+                "The public site republishes EVE Online rules of conduct and ToS reminders covering harassment, "
+                "offensive language, impersonation, solicitation, account security, exploits, and compliance."
+            ),
+            "details": [
+                "Members are reminded to follow CCP rules, EULA, ToS, and policies.",
+                "The article highlights harassment, abusive language, hateful conduct, impersonation, solicitation, and illegal exchange restrictions.",
+                "It also references account/password safety, exploits, bug reporting, private communications, personal information, and CCP enforcement authority.",
+            ],
+        },
+        {
+            "id": "star-fleet-constitution",
+            "title": "Star Fleet Constitution",
+            "date": "2024-09-04",
+            "category": "Rules",
+            "url": "https://starfleetproductions.space/a-step-by-step-guide-to-mastering/",
+            "summary": (
+                "The constitution sets Star Fleet's baseline conduct rules: respectful communication, evidence-based "
+                "reporting, compliance with EVE and ally rules, and strict care around blue-on-blue incidents."
+            ),
+            "details": [
+                "Language barriers should be handled carefully; translators and liaisons may help avoid misunderstandings.",
+                "Members should avoid foul language and verify possible translation errors before reacting.",
+                "Rule violations are handled by severity, not a fixed three-warning rule.",
+                "The corp rejects harassment, racism, degrading behavior, fascism, and abuse toward members or allies.",
+                "Violations should be reported with evidence to the CEO or Communications Officer rather than handled personally.",
+                "Awoxing guidance says not to shoot blues, except for reasonable self-defense when attacked and unable to escape; accidental blue fire should be apologized for and reported.",
+            ],
+        },
+    ]
 
 
 def unique_motds(messages: list[ChatMessage]) -> dict[str, dict[str, ChatMessage]]:
@@ -1097,6 +1268,13 @@ def render_index_html(data: dict[str, Any]) -> str:
     </section>
     <section>
       <div class="section-heading">
+        <h2>Public Star Fleet Website</h2>
+        <p>Searchable public articles from Star Fleet Productions, kept as sourced website knowledge.</p>
+      </div>
+      <div class="article-grid" id="website-articles"></div>
+    </section>
+    <section>
+      <div class="section-heading">
         <h2>Instruction Library</h2>
         <p>High-fidelity reproductions of detailed channel instructions, reformatted for reading and public-safe sharing.</p>
       </div>
@@ -1146,6 +1324,7 @@ This folder contains a static, public-safe knowledge website generated from rece
 - Open `index.html` in a browser.
 - `knowledge.json` is the structured database for reuse in other tools.
 - Raw chat logs are not included.
+- Public Star Fleet Productions website articles are included as sourced summaries with links.
 - Generated at: {data["meta"]["generated_at"]}
 - Source window: {data["meta"]["window_start"]} to {data["meta"]["window_end"]}
 
@@ -1236,6 +1415,10 @@ h1 {
 }
 main {
   padding: 20px;
+  width: 100%;
+}
+section {
+  min-width: 0;
 }
 .stats {
   display: grid;
@@ -1306,6 +1489,14 @@ input, select {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+.article-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
 }
 .instruction-list {
   display: grid;
@@ -1381,9 +1572,30 @@ input, select {
 .topic {
   padding: 16px;
 }
+.article {
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 .topic h3 {
   margin: 0;
   font-size: 18px;
+}
+.article h3 {
+  margin: 0;
+  font-size: 18px;
+}
+.article h3 a {
+  color: var(--ink);
+  text-decoration: none;
+}
+.article h3 a:hover {
+  color: var(--blue);
+  text-decoration: underline;
 }
 .tag {
   display: inline-flex;
@@ -1395,16 +1607,22 @@ input, select {
   font-size: 12px;
   font-weight: 700;
 }
-.topic p {
+.topic p,
+.article p {
   margin: 10px 0;
   line-height: 1.48;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
-.topic ul {
+.topic ul,
+.article ul {
   margin: 10px 0 0;
   padding-left: 18px;
 }
-.topic li {
+.topic li,
+.article li {
   margin: 6px 0;
+  overflow-wrap: anywhere;
 }
 .rookie-panel {
   padding: 0;
@@ -1486,6 +1704,9 @@ input, select {
   .topic-grid {
     grid-template-columns: 1fr;
   }
+  .article-grid {
+    grid-template-columns: 1fr;
+  }
   .instruction-header {
     grid-template-columns: 1fr;
   }
@@ -1501,9 +1722,8 @@ input, select {
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    width: 100vw;
-    max-width: 100vw;
-    overflow: hidden;
+    width: 100%;
+    max-width: 100%;
     padding: 24px 18px;
   }
   .site-header * {
@@ -1528,8 +1748,8 @@ input, select {
   }
   main {
     padding: 14px;
-    max-width: 100vw;
-    overflow: hidden;
+    width: 100%;
+    max-width: 100%;
   }
   .stats, .toolbar, .channel-list {
     grid-template-columns: 1fr;
@@ -1574,7 +1794,8 @@ function renderStats() {
     ["Public links", stats.public_link_count],
     ["Review links", stats.review_link_count],
     ["Rookie Help", stats.rookie_help_message_count],
-    ["Rookie links", stats.rookie_help_link_count]
+    ["Rookie links", stats.rookie_help_link_count],
+    ["Website articles", stats.website_article_count]
   ];
   document.getElementById("stats").innerHTML = items.map(([label, value]) => `
     <div class="stat"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>
@@ -1594,6 +1815,19 @@ function renderTopics() {
       ).join(" | "))}</div>
     </article>
   `).join("") || `<div class="topic">No topics match the current search.</div>`;
+}
+
+function renderWebsiteArticles() {
+  const articles = (data.website_articles || []).filter(matchesText);
+  document.getElementById("website-articles").innerHTML = articles.map(article => `
+    <article class="article">
+      <span class="tag">${escapeHtml(article.category)}</span>
+      <h3><a href="${escapeHtml(article.url)}" target="_blank" rel="noreferrer">${escapeHtml(article.title)}</a></h3>
+      <div class="muted">${escapeHtml(article.date)} - Public Star Fleet website</div>
+      <p>${escapeHtml(article.summary)}</p>
+      <ul>${article.details.map(detail => `<li>${escapeHtml(detail)}</li>`).join("")}</ul>
+    </article>
+  `).join("") || `<div class="article">No public website articles match the current search.</div>`;
 }
 
 function renderInstructionCards(items) {
@@ -1704,6 +1938,7 @@ function renderChannels() {
 function renderAll() {
   renderStats();
   renderInstructions();
+  renderWebsiteArticles();
   renderRookieHelp();
   renderTopics();
   renderResources();

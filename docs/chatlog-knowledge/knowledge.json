@@ -2,16 +2,16 @@
   "meta": {
     "title": "EVE Chatlog Knowledge Base",
     "source_root": "C:\\Users\\Brian\\OneDrive\\Documents\\EVE\\logs",
-    "generated_at": "2026-06-03T06:10:06Z",
+    "generated_at": "2026-06-03T06:27:13Z",
     "window_start": "2026-06-01T01:56:10Z",
-    "window_end": "2026-06-03T06:09:59Z",
+    "window_end": "2026-06-03T06:22:59Z",
     "since_date": "2026-06-01",
     "public_safe": true,
-    "privacy_note": "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, private-looking invites, and unreviewed external links are not published in the public-safe build. Instruction text is reproduced from channel MOTDs with risky links redacted. Rookie Help is kept isolated because public-help advice needs separate review before it is repeated as corp knowledge."
+    "privacy_note": "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, private-looking invites, and unreviewed external links are not published in the public-safe build. Instruction text is reproduced from channel MOTDs with risky links redacted. Rookie Help is kept isolated because public-help advice needs separate review before it is repeated as corp knowledge. Public Star Fleet website articles are included as sourced summaries."
   },
   "stats": {
     "file_count": 185,
-    "message_count": 8716,
+    "message_count": 8719,
     "channel_count": 15,
     "motd_count": 13,
     "instruction_count": 9,
@@ -19,7 +19,8 @@
     "public_link_count": 3,
     "review_link_count": 8,
     "rookie_help_message_count": 5617,
-    "rookie_help_link_count": 33
+    "rookie_help_link_count": 33,
+    "website_article_count": 9
   },
   "channels": [
     {
@@ -28,11 +29,11 @@
     },
     {
       "name": "Local",
-      "message_count": 2040
+      "message_count": 2041
     },
     {
       "name": "Corp",
-      "message_count": 644
+      "message_count": 646
     },
     {
       "name": "Fleet",
@@ -471,10 +472,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 644,
+          "message_count": 646,
           "motd_blocks": 1,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T05:42:34Z"
+          "last_seen": "2026-06-03T06:22:59Z"
         },
         {
           "channel": "SFU Library",
@@ -549,10 +550,10 @@
         },
         {
           "channel": "Corp",
-          "message_count": 644,
+          "message_count": 646,
           "motd_blocks": 1,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T05:42:34Z"
+          "last_seen": "2026-06-03T06:22:59Z"
         }
       ]
     },
@@ -573,10 +574,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 644,
+          "message_count": 646,
           "motd_blocks": 1,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T05:42:34Z"
+          "last_seen": "2026-06-03T06:22:59Z"
         },
         {
           "channel": "Fleet",
@@ -612,10 +613,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 644,
+          "message_count": 646,
           "motd_blocks": 1,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T05:42:34Z"
+          "last_seen": "2026-06-03T06:22:59Z"
         }
       ]
     },
@@ -710,6 +711,143 @@
           "first_seen": "2026-06-01T01:56:11Z",
           "last_seen": "2026-06-03T05:36:52Z"
         }
+      ]
+    }
+  ],
+  "website_articles": [
+    {
+      "id": "star-fleet-goals",
+      "title": "Star Fleet Goals",
+      "date": "2026-05-18",
+      "category": "Strategy",
+      "url": "https://starfleetproductions.space/star-fleet-goals/",
+      "summary": "Star Fleet's public goal is to grow an experienced null-sec player base, help allies secure territory, build toward its own sovereign home, and fund growth through member-supported programs.",
+      "details": [
+        "Growth is framed as essential for succeeding in null-sec and securing allied territory.",
+        "Station goals include shared allied stations now and future corp infrastructure such as Athanors, Azbels, a Sotiyo, and Fortizars.",
+        "Leadership needs include mining fleets, roaming fleets, training fleets, and player support.",
+        "The long-term goal is a stable null-sec home where members can grow without being punished for normal real-life inactivity.",
+        "Lower taxes, donations, and buyback programs are described as the preferred funding path."
+      ]
+    },
+    {
+      "id": "eight-stars-of-success",
+      "title": "8 Stars Of Success",
+      "date": "2026-05-18",
+      "category": "Culture",
+      "url": "https://starfleetproductions.space/elementor-7973/",
+      "summary": "The eight stars describe Star Fleet's culture model: clear goals, growth mindset, discipline, emotional control, learning, relationships, resilience, and action.",
+      "details": [
+        "Clarity of purpose means defining goals and keeping them visible.",
+        "Mindset emphasizes that EVE is a game and members have real lives outside it.",
+        "Discipline and consistency are tied to command structure, departments, ranks, policies, and procedures.",
+        "Emotional intelligence means staying calm and respectful when EVE becomes hectic.",
+        "Continuous learning, networking, resilience, and action are presented as requirements for the corporation's long-term goals."
+      ]
+    },
+    {
+      "id": "star-fleet-buyback-program",
+      "title": "Star Fleet Productions Buyback Program Guide",
+      "date": "2026-04-10",
+      "category": "Buyback",
+      "url": "https://starfleetproductions.space/star-fleet-productions-buyback-program-guide/",
+      "summary": "The public buyback guide explains how members can sell eligible items to the corporation at 90 percent of Jita buy using Goonpraisal and approved drop-off locations.",
+      "details": [
+        "Buyback uses Goonpraisal only unless another tool is announced.",
+        "The standard contract maximum is 1 billion ISK per contract.",
+        "Restricted items include BPCs, SKINs, rigged ships, items inside containers, and damaged consumables such as lenses or mining crystals.",
+        "Approved drop-offs include Oipo in Lonetrek, Dihra V, South Bunker B- in Dital, Orion's Absolute Refinery, and KBP7-G in Providence.",
+        "Contracts should be private item exchange contracts to Ferengi Commerce Consortium with the appraisal permalink in the description and at least one week expiration.",
+        "Lower-value contracts are often accepted within 24 hours; typical processing is 3 to 7 days."
+      ]
+    },
+    {
+      "id": "ao-ranks-explained",
+      "title": "AO Ranks Explained",
+      "date": "2026-02-27",
+      "category": "Ranks",
+      "url": "https://starfleetproductions.space/ao-ranks-explained-how-ao-leadership-and-departments-work/",
+      "summary": "The AO rank article frames Absolute Order ranks as an alliance command structure built around authority, departments, accountability, and clear decision flow.",
+      "details": [
+        "Entry members may have no rank yet; authority begins with Apostle and Officer.",
+        "Supreme Officer, Lieutenant Commissar, and Department Commissar carry broader leadership and departmental responsibility.",
+        "Lieutenant Imperator and Imperator are top command levels for direction, coordination, and major decisions.",
+        "Department mapping ties Miner and Explorer to 4th Department, Science to 5th Department, Recruiter/Communications to 6th Department, and combat roles to 2nd Department."
+      ]
+    },
+    {
+      "id": "sfp-rank-structure",
+      "title": "Star Fleet Productions Ranks",
+      "date": "2026-02-27",
+      "category": "Ranks",
+      "url": "https://starfleetproductions.space/star-fleet-productions-ranks-sfp-rank-structure-explained/",
+      "summary": "The SFP rank article presents rank as progression, responsibility, trust, reliability, and accountability rather than personal status.",
+      "details": [
+        "Ensign is the onboarding rank for learning standards, fitting ships, and following fleet comms.",
+        "Lieutenant Junior Grade and Lieutenant represent dependability, basic systems knowledge, and reduced hand-holding.",
+        "Lieutenant Commander and Commander add coordination, training, and function ownership.",
+        "Captain, Commodore, Admiral, and Fleet Admiral are leadership ranks focused on planning, mentoring, decision-making, and representing the corp properly."
+      ]
+    },
+    {
+      "id": "star-fleet-departments",
+      "title": "Star Fleet Departments",
+      "date": "2026-02-24",
+      "category": "Departments",
+      "url": "https://starfleetproductions.space/star-fleet-departments/",
+      "summary": "The department guide organizes member activity into lanes with expectations and perks for mining, PvP, PvE, industry, exploration, recruiting, and communications.",
+      "details": [
+        "Miner: join mining fleets and use corp or alliance buybacks when possible; perks include mining SRP and starter mining ships.",
+        "Soldier: help territorial defense or expansion through PvP or faction warfare; perks include PvP SRP and a starter destroyer.",
+        "Security: run PvE such as ratting, missions, Abyssals, and events; perks include PvE SRP and a starter destroyer.",
+        "Science: build for profit and supply corp/alliance/local markets; perks include mining SRP, Dihra-area BPC access, and a starter Venture.",
+        "Explorer: hack sites and provide intel; perks include exploration SRP and a starter exploration frigate.",
+        "Recruiter and Communications roles support mentoring, culture, conflict resolution, allies, and concerns."
+      ]
+    },
+    {
+      "id": "expectations",
+      "title": "Expectations",
+      "date": "2026-02-24",
+      "category": "Rules",
+      "url": "https://starfleetproductions.space/expectations/",
+      "summary": "The expectations article describes Star Fleet as a coordinated, standards-based organization where members should prepare, communicate, contribute, and follow operational direction.",
+      "details": [
+        "Real life comes first, but online members are expected to engage meaningfully with corp activity.",
+        "Discord is the primary announcement and coordination hub.",
+        "Fleet comms discipline matters; when an FC gives direction, members should follow it.",
+        "Members should follow doctrine, buyback, logistics, exploration, mining, and resource procedures.",
+        "Growth expectations include skill planning, ship readiness, learning core mechanics, and participating in training when offered.",
+        "Professionalism means avoiding drama, reckless actions in organized activity, and repeated disregard for direction."
+      ]
+    },
+    {
+      "id": "eve-online-terms-of-service",
+      "title": "EVE Online - Terms of Service",
+      "date": "2026-02-24",
+      "category": "Compliance",
+      "url": "https://starfleetproductions.space/eve-online-terms-of-service/",
+      "summary": "The public site republishes EVE Online rules of conduct and ToS reminders covering harassment, offensive language, impersonation, solicitation, account security, exploits, and compliance.",
+      "details": [
+        "Members are reminded to follow CCP rules, EULA, ToS, and policies.",
+        "The article highlights harassment, abusive language, hateful conduct, impersonation, solicitation, and illegal exchange restrictions.",
+        "It also references account/password safety, exploits, bug reporting, private communications, personal information, and CCP enforcement authority."
+      ]
+    },
+    {
+      "id": "star-fleet-constitution",
+      "title": "Star Fleet Constitution",
+      "date": "2024-09-04",
+      "category": "Rules",
+      "url": "https://starfleetproductions.space/a-step-by-step-guide-to-mastering/",
+      "summary": "The constitution sets Star Fleet's baseline conduct rules: respectful communication, evidence-based reporting, compliance with EVE and ally rules, and strict care around blue-on-blue incidents.",
+      "details": [
+        "Language barriers should be handled carefully; translators and liaisons may help avoid misunderstandings.",
+        "Members should avoid foul language and verify possible translation errors before reacting.",
+        "Rule violations are handled by severity, not a fixed three-warning rule.",
+        "The corp rejects harassment, racism, degrading behavior, fascism, and abuse toward members or allies.",
+        "Violations should be reported with evidence to the CEO or Communications Officer rather than handled personally.",
+        "Awoxing guidance says not to shoot blues, except for reasonable self-defense when attacked and unable to escape; accidental blue fire should be apologized for and reported."
       ]
     }
   ],

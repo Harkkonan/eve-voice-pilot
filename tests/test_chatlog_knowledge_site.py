@@ -13,6 +13,7 @@ from build_chatlog_knowledge_site import (
     extract_urls,
     normalize_url,
     parse_chat_file,
+    starfleet_website_articles,
 )
 
 
@@ -126,3 +127,12 @@ def test_rookie_help_is_isolated_from_main_knowledge(tmp_path):
     assert data["resources"] == []
     assert data["rookie_help"]["instructions"][0]["channel"] == "Rookie Help"
     assert data["rookie_help"]["resources"][0]["label"] == "wiki.eveuniversity.org - Main Page"
+
+
+def test_public_starfleet_website_articles_are_included():
+    articles = starfleet_website_articles()
+    titles = {article["title"] for article in articles}
+
+    assert "Star Fleet Productions Buyback Program Guide" in titles
+    assert "Star Fleet Constitution" in titles
+    assert all(article["url"].startswith("https://starfleetproductions.space/") for article in articles)
