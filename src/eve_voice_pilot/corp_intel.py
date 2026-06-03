@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fnmatch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
@@ -13,6 +13,7 @@ import re
 import sys
 import threading
 import time
+import sqlite3
 from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -28,7 +29,9 @@ DEFAULT_POLL_SECONDS = 1.0
 DEFAULT_MAX_EVENTS = 500
 DEFAULT_CHANNELS = "Corp,Corporation,Fleet,Alliance,Local,*Intel*"
 DEFAULT_WATCHLIST_PATH = ROOT / "profiles" / "corp_intel_watchlist.json"
+DEFAULT_EVENT_DB_PATH = ROOT / "profiles" / "corp_intel_events.sqlite3"
 DEFAULT_WATCHLIST_REFRESH_SECONDS = 60.0
+DEFAULT_EVENT_RETENTION_DAYS = 7
 MAX_WATCHLIST_ITEMS = 200
 MAX_WATCHLIST_TERM_LENGTH = 96
 CHAT_LINE_RE = re.compile(
@@ -351,6 +354,106 @@ class WatchlistStore:
         return tuple(matches)
 
 
+class EventDatabase:
+    def __init__(self, path: Path):
+        self.path = path.expanduser()
+        self._lock = threading.Lock()
+        self._initialized = False
+
+    def initialize(self) -> None:
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(self.path) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS intel_events (
+                        event_id TEXT PRIMARY KEY,
+                        observed_at TEXT NOT NULL,
+                        reported_at TEXT NOT NULL,
+                        severity TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        channel TEXT NOT NULL,
+                        payload_json TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_intel_events_observed_at ON intel_events(observed_at)"
+                )
+                connection.execute("CREATE INDEX IF NOT EXISTS idx_intel_events_severity ON intel_events(severity)")
+                connection.commit()
+            self._initialized = True
+
+    def load_recent(self, *, max_events: int) -> tuple[IntelEvent, ...]:
+        self.initialize()
+        with self._lock, sqlite3.connect(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json
+                FROM intel_events
+                ORDER BY observed_at DESC, reported_at DESC
+                LIMIT ?
+                """,
+                (max_events,),
+            ).fetchall()
+        events: list[IntelEvent] = []
+        for (payload_json,) in reversed(rows):
+            try:
+                payload = json.loads(str(payload_json))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                events.append(IntelEvent.from_dict(payload))
+        return tuple(events)
+
+    def add(self, event: IntelEvent) -> None:
+        self.initialize()
+        payload = event.to_dict()
+        observed_at = event.observed_at or event.reported_at or now_iso()
+        reported_at = event.reported_at or now_iso()
+        with self._lock, sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO intel_events (
+                    event_id, observed_at, reported_at, severity, source, channel, payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    observed_at,
+                    reported_at,
+                    event.severity,
+                    event.source,
+                    event.channel,
+                    json.dumps(payload, separators=(",", ":")),
+                ),
+            )
+            connection.commit()
+
+    def prune(self, *, retention_days: int, max_events: int) -> None:
+        if retention_days <= 0:
+            return
+        self.initialize()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).replace(microsecond=0)
+        cutoff_iso = cutoff.isoformat().replace("+00:00", "Z")
+        with self._lock, sqlite3.connect(self.path) as connection:
+            connection.execute("DELETE FROM intel_events WHERE observed_at < ?", (cutoff_iso,))
+            connection.execute(
+                """
+                DELETE FROM intel_events
+                WHERE event_id NOT IN (
+                    SELECT event_id
+                    FROM intel_events
+                    ORDER BY observed_at DESC, reported_at DESC
+                    LIMIT ?
+                )
+                """,
+                (max_events,),
+            )
+            connection.commit()
+
+
 class IntelParser:
     def __init__(self, system_names: Iterable[str], *, watchlist_store: WatchlistStore | None = None):
         self.system_matcher = SystemMatcher(system_names)
@@ -398,12 +501,25 @@ class IntelParser:
 
 
 class IntelEventStore:
-    def __init__(self, *, max_events: int = DEFAULT_MAX_EVENTS):
+    def __init__(
+        self,
+        *,
+        max_events: int = DEFAULT_MAX_EVENTS,
+        database: EventDatabase | None = None,
+        retention_days: int = DEFAULT_EVENT_RETENTION_DAYS,
+    ):
         self.max_events = max_events
-        self._events: list[IntelEvent] = []
+        self.database = database
+        self.retention_days = retention_days
+        if self.database:
+            self.database.prune(retention_days=self.retention_days, max_events=self.max_events)
+        self._events: list[IntelEvent] = list(database.load_recent(max_events=max_events)) if database else []
         self._lock = threading.Lock()
 
     def add(self, event: IntelEvent) -> IntelEvent:
+        if self.database:
+            self.database.add(event)
+            self.database.prune(retention_days=self.retention_days, max_events=self.max_events)
         with self._lock:
             self._events.append(event)
             if len(self._events) > self.max_events:
@@ -1012,7 +1128,12 @@ def run_server(args: argparse.Namespace) -> int:
     channel_filter = channel_filter_from_args(args)
     watchlist_store = WatchlistStore(args.watchlist_path)
     system_names = load_system_names(refresh=args.refresh_systems)
-    store = IntelEventStore(max_events=args.max_events)
+    event_database = None if args.no_event_db else EventDatabase(args.event_db_path)
+    store = IntelEventStore(
+        max_events=args.max_events,
+        database=event_database,
+        retention_days=args.retention_days,
+    )
     intel_parser = IntelParser(system_names, watchlist_store=watchlist_store)
 
     if args.watch_local:
@@ -1038,6 +1159,11 @@ def run_server(args: argparse.Namespace) -> int:
     url = f"http://{url_host}:{args.port}/"
     print(f"Corp intel board listening at {url}")
     print(f"Watchlist file: {args.watchlist_path}")
+    if event_database:
+        print(f"Event database: {args.event_db_path}")
+        print(f"Event retention: {args.retention_days} days, newest {args.max_events} events")
+    else:
+        print("Event database is disabled; events will be memory-only.")
     if args.ingest_token:
         print("Remote agent uploads require the shared ingest token.")
     if args.admin_token:
@@ -1245,7 +1371,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_WATCHLIST_PATH,
         help="Local JSON file used to persist dashboard watchlist settings.",
     )
-    serve.add_argument("--max-events", type=int, default=DEFAULT_MAX_EVENTS, help="Maximum events retained in memory.")
+    serve.add_argument(
+        "--event-db-path",
+        type=Path,
+        default=DEFAULT_EVENT_DB_PATH,
+        help="Local SQLite file used to persist recent intel events.",
+    )
+    serve.add_argument(
+        "--no-event-db",
+        action="store_true",
+        help="Disable event persistence and keep intel events in memory only.",
+    )
+    serve.add_argument(
+        "--retention-days",
+        type=int,
+        default=DEFAULT_EVENT_RETENTION_DAYS,
+        help="Days of persisted intel events to keep.",
+    )
+    serve.add_argument("--max-events", type=int, default=DEFAULT_MAX_EVENTS, help="Maximum events retained by the board.")
     serve.add_argument("--open-browser", action="store_true", help="Open the dashboard in your default browser.")
     serve.set_defaults(func=run_server)
 

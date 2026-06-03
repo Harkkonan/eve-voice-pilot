@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from eve_voice_pilot.corp_intel import (
     ChannelFilter,
     ChatMessage,
+    EventDatabase,
     IntelWatchlist,
     IntelEvent,
     IntelEventStore,
@@ -187,6 +188,55 @@ def test_event_store_counts_watchlist_hits():
     snapshot = store.snapshot()
     assert snapshot["counts"]["watchlist"] == 1
     assert snapshot["counts"]["hostile"] == 1
+
+
+def test_event_store_persists_events_to_sqlite(tmp_path):
+    database = EventDatabase(tmp_path / "events.sqlite3")
+    store = IntelEventStore(max_events=10, database=database)
+    store.add(
+        IntelEvent(
+            event_id="evt-1",
+            source="Scout",
+            channel="Local",
+            speaker="Scout",
+            message="Bad Pilot in Tama",
+            categories=("hostile", "watchlist-pilot"),
+            severity="high",
+            systems=("Tama",),
+            keywords=("pilot: Bad Pilot",),
+            observed_at="2026-06-03T02:10:11Z",
+            reported_at="2026-06-03T02:10:12Z",
+            log_path=r"C:\Users\Pilot\Documents\EVE\logs\Chatlogs\Local.txt",
+        )
+    )
+
+    reloaded = IntelEventStore(max_events=10, database=EventDatabase(tmp_path / "events.sqlite3"))
+    snapshot = reloaded.snapshot()
+    assert snapshot["counts"]["events"] == 1
+    assert snapshot["events"][0]["message"] == "Bad Pilot in Tama"
+    assert "log_path" not in snapshot["events"][0]
+
+
+def test_event_store_prunes_old_persisted_events(tmp_path):
+    path = tmp_path / "events.sqlite3"
+    database = EventDatabase(path)
+    old_store = IntelEventStore(max_events=10, database=database, retention_days=30)
+    old_store.add(
+        IntelEvent(
+            event_id="old",
+            source="Scout",
+            channel="Local",
+            speaker="Scout",
+            message="old hostile",
+            categories=("hostile",),
+            severity="high",
+            observed_at="2020-01-01T00:00:00Z",
+            reported_at="2020-01-01T00:00:01Z",
+        )
+    )
+
+    pruned = IntelEventStore(max_events=10, database=EventDatabase(path), retention_days=1)
+    assert pruned.snapshot()["counts"]["events"] == 0
 
 
 def test_intel_event_json_does_not_expose_local_log_path():

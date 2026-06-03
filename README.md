@@ -133,6 +133,8 @@ The agent sends only matching intel events by default, not every chat line. Keep
 
 The dashboard also has editable watchlists for hostile pilots, hostile corporations, help callouts, and extra keywords. The live watchlist is stored in ignored local data at `profiles/corp_intel_watchlist.json`; remote agents refresh it from the shared server every 60 seconds.
 
+Recent intel events persist locally in ignored SQLite data at `profiles/corp_intel_events.sqlite3`, with seven-day retention by default.
+
 ## Notes
 
 If EVE is running as administrator and this app is not, Windows may block simulated keypresses. Usually both apps should run normally, without administrator mode.

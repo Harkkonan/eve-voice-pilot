@@ -65,6 +65,26 @@ profiles/corp_intel_watchlist.json
 
 That file is ignored by Git because it can contain operational corp intel.
 
+The server also keeps recent intel events in a local SQLite database:
+
+```text
+profiles/corp_intel_events.sqlite3
+```
+
+This lets the board recover recent intel after a restart. By default it keeps seven days of events and the newest 500 events. The database stores sanitized event records, not raw chat logs and not the sender's local chat-log file path.
+
+To change retention:
+
+```powershell
+.\scripts\run_corp_intel_board.ps1 serve --retention-days 14 --max-events 1000
+```
+
+To run memory-only during a test:
+
+```powershell
+.\scripts\run_corp_intel_board.ps1 serve --no-event-db
+```
+
 The host browser can edit the watchlist without a token. Remote browsers need an admin token:
 
 ```powershell
@@ -102,5 +122,6 @@ Aid calls are marked `critical`. Hostile reports with systems are marked `high`.
 - Do not use `--all-channels` unless everyone understands what is being shared.
 - The default agent sends only matching intel events, not every chat line.
 - Uploaded events do not include the sender's local chat-log file path.
+- The event database is local operational data; do not publish or commit it.
 - Use `--pilot` labels that your corp members are comfortable showing on the board.
 - EVE SSO/ESI should be added later for identity and corp membership checks. ESI does not provide chat logs; local opt-in agents still need to read each pilot's local chat-log files.
