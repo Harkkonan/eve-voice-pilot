@@ -75,6 +75,8 @@ profiles/corp_intel_events.sqlite3
 
 This lets the board recover recent intel after a restart. By default it keeps seven days of events and the newest 500 events. The database stores sanitized event records, not raw chat logs and not the sender's local chat-log file path.
 
+The dashboard separates retained storage from display. `Retained Intel` is collapsed by default and shows the retained server window. `Live Intel` uses the Display Settings panel so the visible feed can be narrowed live without deleting retained events.
+
 To change retention:
 
 ```powershell

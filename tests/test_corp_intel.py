@@ -625,6 +625,10 @@ def test_event_store_persists_events_to_sqlite(tmp_path):
     reloaded = IntelEventStore(max_events=10, database=EventDatabase(tmp_path / "events.sqlite3"))
     snapshot = reloaded.snapshot()
     assert snapshot["counts"]["events"] == 1
+    assert snapshot["retention"] == {
+        "days": corp_intel.DEFAULT_EVENT_RETENTION_DAYS,
+        "max_events": 10,
+    }
     assert snapshot["events"][0]["message"] == "Bad Pilot in Tama"
     assert "log_path" not in snapshot["events"][0]
 

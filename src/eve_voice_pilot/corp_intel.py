@@ -956,6 +956,10 @@ class IntelEventStore:
             "events": [event.to_dict() for event in newest_first],
             "systems": summarize_systems(events),
             "counts": summarize_counts(events),
+            "retention": {
+                "days": self.retention_days,
+                "max_events": self.max_events,
+            },
         }
 
 
@@ -2756,6 +2760,33 @@ DASHBOARD_HTML = r"""<!doctype html>
     .panel + .panel {
       margin-top: 16px;
     }
+    details.panel {
+      display: block;
+    }
+    .details-heading {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 14px;
+      border-bottom: 0;
+      background: #f8faf9;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: 700;
+      list-style: none;
+    }
+    details[open] .details-heading {
+      border-bottom: 1px solid var(--line);
+    }
+    .details-heading::-webkit-details-marker {
+      display: none;
+    }
+    .details-heading span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+    }
     .field {
       display: grid;
       gap: 6px;
@@ -2828,6 +2859,12 @@ DASHBOARD_HTML = r"""<!doctype html>
     .save-status {
       color: var(--muted);
       font-size: 12px;
+    }
+    .settings-note {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: -2px;
+      overflow-wrap: anywhere;
     }
     .signal-list, .trust-list {
       display: grid;
@@ -2988,6 +3025,11 @@ DASHBOARD_HTML = r"""<!doctype html>
     .event-list {
       display: grid;
       gap: 10px;
+    }
+    .history-list {
+      display: grid;
+      gap: 10px;
+      padding: 14px;
     }
     .event {
       display: grid;
@@ -3171,6 +3213,21 @@ DASHBOARD_HTML = r"""<!doctype html>
         </div>
       </div>
       <div class="panel">
+        <h2 class="panel-heading">Display Settings <span id="view-settings-summary">Live: last 7 days</span></h2>
+        <div class="panel-body">
+          <label class="field">Live Intel window
+            <select id="live-window">
+              <option value="15">Last 15 minutes</option>
+              <option value="60">Last hour</option>
+              <option value="360">Last 6 hours</option>
+              <option value="1440">Last 24 hours</option>
+              <option value="10080">Last 7 days</option>
+            </select>
+          </label>
+          <div class="settings-note" id="retention-note">Server retention pending.</div>
+        </div>
+      </div>
+      <div class="panel">
         <h2 class="panel-heading">Hot Systems <span id="systems-summary">0 systems</span></h2>
         <div class="system-list" id="systems"></div>
       </div>
@@ -3255,11 +3312,21 @@ DASHBOARD_HTML = r"""<!doctype html>
         <h2 class="panel-heading">Live Intel <span id="events-summary">Waiting for events</span></h2>
         <div class="event-list" id="events"></div>
       </div>
+      <details class="panel" id="retained-history">
+        <summary class="details-heading">Retained Intel <span id="retained-history-summary">Collapsed</span></summary>
+        <div class="history-list" id="retained-events"></div>
+      </details>
     </section>
   </main>
   <script>
+    const VIEW_SETTINGS_KEY = "corpIntelViewSettings.v1";
+    const DEFAULT_LIVE_WINDOW_MINUTES = 10080;
+    const ALLOWED_LIVE_WINDOWS = new Set([15, 60, 360, 1440, 10080]);
+
     const state = {
       events: [],
+      lastPayload: null,
+      viewSettings: loadViewSettings(),
       watchlist: null
     };
 
@@ -3289,6 +3356,41 @@ DASHBOARD_HTML = r"""<!doctype html>
       return `${count} ${count === 1 ? singular : (pluralLabel || `${singular}s`)}`;
     }
 
+    function loadViewSettings() {
+      try {
+        const payload = JSON.parse(localStorage.getItem(VIEW_SETTINGS_KEY) || "{}");
+        const liveWindowMinutes = Number(payload.liveWindowMinutes);
+        if (ALLOWED_LIVE_WINDOWS.has(liveWindowMinutes)) {
+          return { liveWindowMinutes };
+        }
+      } catch (error) {
+      }
+      return { liveWindowMinutes: DEFAULT_LIVE_WINDOW_MINUTES };
+    }
+
+    function saveViewSettings() {
+      try {
+        localStorage.setItem(VIEW_SETTINGS_KEY, JSON.stringify(state.viewSettings));
+      } catch (error) {
+      }
+    }
+
+    function currentLiveWindowMinutes() {
+      const value = Number(state.viewSettings.liveWindowMinutes);
+      return ALLOWED_LIVE_WINDOWS.has(value) ? value : DEFAULT_LIVE_WINDOW_MINUTES;
+    }
+
+    function windowLabel(minutes) {
+      switch (Number(minutes)) {
+        case 15: return "last 15 minutes";
+        case 60: return "last hour";
+        case 360: return "last 6 hours";
+        case 1440: return "last 24 hours";
+        case 10080: return "last 7 days";
+        default: return "last 7 days";
+      }
+    }
+
     function listPreview(values, fallback, limit = 4) {
       const clean = (values || []).map(value => String(value || "").trim()).filter(Boolean);
       if (!clean.length) return fallback;
@@ -3305,6 +3407,13 @@ DASHBOARD_HTML = r"""<!doctype html>
 
     function eventTimestamp(event) {
       return event.observed_at || event.reported_at || "";
+    }
+
+    function eventWithinWindow(event, minutes) {
+      const time = Date.parse(eventTimestamp(event));
+      if (!Number.isFinite(time)) return true;
+      const ageMinutes = Math.max(0, (Date.now() - time) / 60000);
+      return ageMinutes <= minutes;
     }
 
     function newestEvent(events) {
@@ -3352,6 +3461,21 @@ DASHBOARD_HTML = r"""<!doctype html>
       document.getElementById("count-aid").textContent = counts.aid ?? 0;
       document.getElementById("count-hostile").textContent = counts.hostile ?? 0;
       document.getElementById("count-watchlist").textContent = counts.watchlist ?? 0;
+    }
+
+    function renderSettings(payload) {
+      const minutes = currentLiveWindowMinutes();
+      const label = windowLabel(minutes);
+      document.getElementById("live-window").value = String(minutes);
+      document.getElementById("view-settings-summary").textContent = `Live: ${label}`;
+
+      const retention = payload.retention || {};
+      const days = Number(retention.days);
+      const maxEvents = Number(retention.max_events);
+      document.getElementById("retention-note").textContent =
+        Number.isFinite(days) && Number.isFinite(maxEvents)
+          ? `Server retention: ${plural(days, "day")}, newest ${plural(maxEvents, "event")}.`
+          : "Server retention pending.";
     }
 
     function renderFreshness(payload) {
@@ -3465,21 +3589,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       return haystack.includes(filters.search);
     }
 
-    function renderEvents(events) {
-      const target = document.getElementById("events");
-      const filters = activeFilters();
-      const filtered = events.filter(event => eventMatchesFilters(event, filters));
-      document.getElementById("filter-status").textContent =
-        events.length ? `${filtered.length} of ${events.length} shown` : "";
-      document.getElementById("events-summary").textContent = events.length
-        ? `${filtered.length} shown / ${events.length} retained`
-        : "Waiting for events";
-      if (!filtered.length) {
-        const label = events.length ? "No intel matches current filters." : "Waiting for hostile reports or aid calls.";
-        target.innerHTML = `<div class="empty">${label}</div>`;
-        return;
-      }
-      target.innerHTML = filtered.slice(0, 100).map(event => {
+    function eventCardHtml(event) {
         const timestamp = eventTimestamp(event);
         const systems = listPreview(event.systems, "No system", 4);
         const keywords = listPreview(event.keywords, "No matched keyword", 5);
@@ -3509,7 +3619,53 @@ DASHBOARD_HTML = r"""<!doctype html>
             </div>
           </div>
         `;
-      }).join("");
+    }
+
+    function renderEventCards(events, limit) {
+      const visible = events.slice(0, limit);
+      const hidden = events.length - visible.length;
+      const cards = visible.map(eventCardHtml).join("");
+      const hiddenNote = hidden > 0
+        ? `<div class="empty">Showing newest ${limit}; ${hidden} more retained.</div>`
+        : "";
+      return cards + hiddenNote;
+    }
+
+    function renderEvents(events) {
+      const target = document.getElementById("events");
+      const filters = activeFilters();
+      const minutes = currentLiveWindowMinutes();
+      const liveEvents = events.filter(event => eventWithinWindow(event, minutes));
+      const filtered = liveEvents.filter(event => eventMatchesFilters(event, filters));
+      const retainedSuffix = events.length ? `, ${events.length} retained` : "";
+      document.getElementById("filter-status").textContent =
+        liveEvents.length ? `${filtered.length} of ${liveEvents.length} live shown${retainedSuffix}` : "";
+      document.getElementById("events-summary").textContent = events.length
+        ? `${filtered.length} shown / ${liveEvents.length} live (${events.length} retained)`
+        : "Waiting for events";
+      if (!filtered.length) {
+        const label = events.length
+          ? `No intel matches ${windowLabel(minutes)}.`
+          : "Waiting for hostile reports or aid calls.";
+        target.innerHTML = `<div class="empty">${label}</div>`;
+        return;
+      }
+      target.innerHTML = renderEventCards(filtered, 100);
+    }
+
+    function renderRetainedHistory(events) {
+      const target = document.getElementById("retained-events");
+      const filters = activeFilters();
+      const filtered = events.filter(event => eventMatchesFilters(event, filters));
+      document.getElementById("retained-history-summary").textContent = events.length
+        ? `${filtered.length} shown / ${events.length} retained`
+        : "No retained intel";
+      if (!filtered.length) {
+        const label = events.length ? "No retained intel matches current filters." : "No retained intel yet.";
+        target.innerHTML = `<div class="empty">${label}</div>`;
+        return;
+      }
+      target.innerHTML = renderEventCards(filtered, 200);
     }
 
     function linesFromTextarea(id) {
@@ -3727,12 +3883,15 @@ DASHBOARD_HTML = r"""<!doctype html>
       try {
         const response = await fetch("/api/state", { cache: "no-store" });
         const payload = await response.json();
+        state.lastPayload = payload;
         state.events = payload.events || [];
         renderCounts(payload.counts || {});
+        renderSettings(payload);
         renderFreshness(payload);
         renderTrust(state.events);
         renderSystems(payload.systems || []);
         renderEvents(state.events);
+        renderRetainedHistory(state.events);
         document.getElementById("status").textContent = `Live - ${ageLabel(payload.generated_at)}`;
       } catch (error) {
         document.getElementById("status").textContent = "Connection lost";
@@ -3742,14 +3901,28 @@ DASHBOARD_HTML = r"""<!doctype html>
       }
     }
 
-    document.getElementById("filter-search").addEventListener("input", () => renderEvents(state.events));
-    document.getElementById("filter-severity").addEventListener("change", () => renderEvents(state.events));
-    document.getElementById("filter-category").addEventListener("change", () => renderEvents(state.events));
+    function rerenderIntelLists() {
+      renderEvents(state.events);
+      renderRetainedHistory(state.events);
+    }
+
+    document.getElementById("filter-search").addEventListener("input", rerenderIntelLists);
+    document.getElementById("filter-severity").addEventListener("change", rerenderIntelLists);
+    document.getElementById("filter-category").addEventListener("change", rerenderIntelLists);
+    document.getElementById("live-window").addEventListener("change", event => {
+      const liveWindowMinutes = Number(event.target.value);
+      state.viewSettings.liveWindowMinutes = ALLOWED_LIVE_WINDOWS.has(liveWindowMinutes)
+        ? liveWindowMinutes
+        : DEFAULT_LIVE_WINDOW_MINUTES;
+      saveViewSettings();
+      renderSettings(state.lastPayload || {});
+      rerenderIntelLists();
+    });
     document.getElementById("clear-filters").addEventListener("click", () => {
       document.getElementById("filter-search").value = "";
       document.getElementById("filter-severity").value = "";
       document.getElementById("filter-category").value = "";
-      renderEvents(state.events);
+      rerenderIntelLists();
     });
     document.getElementById("save-watchlist").addEventListener("click", saveWatchlist);
     document.getElementById("admin-token").addEventListener("change", loadWatchlist);
@@ -3758,6 +3931,8 @@ DASHBOARD_HTML = r"""<!doctype html>
     loadAuth();
     loadAgentTokens();
     loadWatchlist();
+    renderSettings({});
+    renderRetainedHistory([]);
     refresh();
     setInterval(refresh, 1500);
   </script>
