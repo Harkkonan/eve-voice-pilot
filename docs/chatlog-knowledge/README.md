@@ -6,8 +6,8 @@ This folder contains a static, public-safe knowledge website generated from rece
 - `knowledge.json` is the structured database for reuse in other tools.
 - Raw chat logs are not included.
 - Public Star Fleet Productions website articles are included as sourced summaries with links.
-- Generated at: 2026-06-03T06:38:14Z
-- Source window: 2026-06-01T01:56:10Z to 2026-06-03T06:34:43Z
+- Generated at: 2026-06-03T17:11:47Z
+- Source window: 2026-06-01T01:56:10Z to 2026-06-03T17:08:25Z
 
 Regenerate from the repository root:
 

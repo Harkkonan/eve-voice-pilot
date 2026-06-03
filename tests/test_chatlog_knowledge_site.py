@@ -54,15 +54,19 @@ def test_parse_chat_file_reads_utf16_eve_log(tmp_path):
         "\r\n"
         "        ---------------------------------------------------------------\r\n"
         "          Channel Name:    Corp\r\n"
+        "          Listener:        Test Character\r\n"
         "        ---------------------------------------------------------------\r\n"
+        "[ 2026.06.03 01:01:00 ] EVE System > Channel changed to Corp : Star Fleet Productions Academy\r\n"
         "[ 2026.06.03 01:02:03 ] Pilot Name > hostile in Tama\r\n",
         encoding="utf-16",
     )
     messages = parse_chat_file(log_path)
-    assert len(messages) == 1
-    assert messages[0].channel == "Corp"
-    assert messages[0].speaker == "Pilot Name"
-    assert messages[0].message == "hostile in Tama"
+    assert len(messages) == 2
+    assert messages[1].channel == "Corp"
+    assert messages[1].speaker == "Pilot Name"
+    assert messages[1].message == "hostile in Tama"
+    assert messages[1].listener == "Test Character"
+    assert messages[1].channel_context == "Star Fleet Productions Academy"
 
 
 def test_instruction_library_reproduces_mining_rules():
@@ -127,6 +131,40 @@ def test_rookie_help_is_isolated_from_main_knowledge(tmp_path):
     assert data["resources"] == []
     assert data["rookie_help"]["instructions"][0]["channel"] == "Rookie Help"
     assert data["rookie_help"]["resources"][0]["label"] == "wiki.eveuniversity.org - Main Page"
+
+
+def test_non_starfleet_corp_chat_is_filtered_from_main_knowledge(tmp_path):
+    dt = __import__("datetime")
+    imperial = ChatMessage(
+        timestamp=dt.datetime(2026, 6, 3, 1, 2, 3, tzinfo=dt.timezone.utc),
+        channel="Corp",
+        speaker="Spammer",
+        message="HyperNet offer https://example.test/spam",
+        file_name="Corp_20260603_000000_1.txt",
+        listener="Alt Character",
+        channel_context="Imperial Academy",
+    )
+    starfleet = ChatMessage(
+        timestamp=dt.datetime(2026, 6, 3, 1, 3, 3, tzinfo=dt.timezone.utc),
+        channel="Corp",
+        speaker="EVE System",
+        message="Channel MOTD: 1 - Have Fun",
+        file_name="Corp_20260603_000001_1.txt",
+        listener="Main Character",
+        channel_context="Star Fleet Productions Academy",
+    )
+
+    data = build_knowledge_data(
+        [imperial, starfleet],
+        logs_root=tmp_path,
+        since_date="2026-06-03",
+        public_safe=True,
+    )
+
+    assert data["stats"]["character_log_count"] == 2
+    assert data["stats"]["filtered_corp_message_count"] == 1
+    assert data["resources"] == []
+    assert all(source["channel"] != "Imperial Academy" for topic in data["topics"] for source in topic["sources"])
 
 
 def test_public_starfleet_website_articles_are_included():

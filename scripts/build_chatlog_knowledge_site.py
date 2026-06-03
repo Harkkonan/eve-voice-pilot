@@ -23,6 +23,8 @@ CHAT_LINE_RE = re.compile(
     r"(?P<speaker>.*?)\s*>\s*(?P<message>.*)$"
 )
 CHANNEL_NAME_RE = re.compile(r"^\s*Channel\s+Name\s*:\s*(?P<channel>.+?)\s*$", re.IGNORECASE)
+LISTENER_RE = re.compile(r"^\s*Listener\s*:\s*(?P<listener>.+?)\s*$", re.IGNORECASE)
+CHANNEL_CHANGED_RE = re.compile(r"^Channel changed to (?P<channel>[^:]+):\s*(?P<context>.+?)\s*$", re.IGNORECASE)
 LOG_DATE_RE = re.compile(r"_(?P<date>\d{8})_")
 HTML_LINK_RE = re.compile(r"<a\s+href=\"(?P<href>[^\"]+)\"[^>]*>(?P<label>.*?)</a>", re.IGNORECASE)
 URL_ATTR_RE = re.compile(r"url=(?P<url>[^>\]]+)", re.IGNORECASE)
@@ -57,6 +59,11 @@ REDACT_DOMAINS = {
     "www.mmo-games.ru",
 }
 SPAM_DOMAINS = {"www.game-lavka.ru", "www.mmo-games.ru"}
+STAR_FLEET_CORP_CONTEXTS = {
+    "Star Fleet Productions",
+    "Star Fleet Productions Academy",
+    "Star Fleet Section 31",
+}
 
 
 @dataclass(frozen=True)
@@ -66,6 +73,8 @@ class ChatMessage:
     speaker: str
     message: str
     file_name: str
+    listener: str = ""
+    channel_context: str = ""
 
 
 @dataclass
@@ -183,6 +192,8 @@ def log_date_from_name(path: Path) -> datetime | None:
 def parse_chat_file(path: Path) -> list[ChatMessage]:
     text = read_log_text(path)
     channel = channel_name_from_text(text) or fallback_channel_name(path)
+    listener = listener_name_from_text(text) or ""
+    channel_context = ""
     messages: list[ChatMessage] = []
     for line in text.splitlines():
         match = CHAT_LINE_RE.match(line.lstrip("\ufeff"))
@@ -192,13 +203,19 @@ def parse_chat_file(path: Path) -> list[ChatMessage]:
             timestamp = datetime.strptime(match.group("timestamp"), "%Y.%m.%d %H:%M:%S").replace(tzinfo=timezone.utc)
         except ValueError:
             continue
+        message_text = clean_message(match.group("message"))
+        changed_context = channel_context_from_change(message_text, channel)
+        if changed_context:
+            channel_context = changed_context
         messages.append(
             ChatMessage(
                 timestamp=timestamp,
                 channel=channel,
                 speaker=match.group("speaker").strip(),
-                message=clean_message(match.group("message")),
+                message=message_text,
                 file_name=path.name,
+                listener=listener,
+                channel_context=channel_context,
             )
         )
     return messages
@@ -216,6 +233,24 @@ def channel_name_from_text(text: str) -> str | None:
         if match:
             return match.group("channel").strip()
     return None
+
+
+def listener_name_from_text(text: str) -> str | None:
+    for line in text.splitlines()[:80]:
+        match = LISTENER_RE.match(line)
+        if match:
+            return match.group("listener").strip()
+    return None
+
+
+def channel_context_from_change(message: str, current_channel: str) -> str:
+    match = CHANNEL_CHANGED_RE.match(message)
+    if not match:
+        return ""
+    changed_channel = match.group("channel").strip()
+    if changed_channel.casefold() != current_channel.casefold():
+        return ""
+    return match.group("context").strip()
 
 
 def fallback_channel_name(path: Path) -> str:
@@ -240,7 +275,12 @@ def build_knowledge_data(
     files = {message.file_name for message in messages}
     timestamps = [message.timestamp for message in messages]
     motds = unique_motds(messages)
-    main_messages = [message for message in messages if not is_rookie_help(message.channel)]
+    excluded_corp_messages = [message for message in messages if is_excluded_corp_context(message)]
+    main_messages = [
+        message
+        for message in messages
+        if not is_rookie_help(message.channel) and not is_excluded_corp_context(message)
+    ]
     rookie_messages = [message for message in messages if is_rookie_help(message.channel)]
     main_motds = unique_motds(main_messages)
     rookie_motds = unique_motds(rookie_messages)
@@ -268,7 +308,8 @@ def build_knowledge_data(
                 "private-looking invites, and unreviewed external links are not published in the public-safe build. "
                 "Instruction text is reproduced from channel MOTDs with risky links redacted. Rookie Help is kept "
                 "isolated because public-help advice needs separate review before it is repeated as corp knowledge. "
-                "Public Star Fleet website articles are included as sourced summaries."
+                "Public Star Fleet website articles are included as sourced summaries. Non-Star-Fleet Corp chat "
+                "from other character sessions is counted but filtered out of the main knowledge base."
             ),
         },
         "stats": {
@@ -283,6 +324,8 @@ def build_knowledge_data(
             "rookie_help_message_count": len(rookie_messages),
             "rookie_help_link_count": len(rookie_link_records),
             "website_article_count": len(website_articles),
+            "character_log_count": len({message.listener for message in messages if message.listener}),
+            "filtered_corp_message_count": len(excluded_corp_messages),
         },
         "channels": [
             {"name": name, "message_count": count}
@@ -300,6 +343,14 @@ def build_knowledge_data(
 
 def is_rookie_help(channel: str) -> bool:
     return channel.casefold() == "rookie help"
+
+
+def is_excluded_corp_context(message: ChatMessage) -> bool:
+    if message.channel.casefold() != "corp":
+        return False
+    if not message.channel_context:
+        return False
+    return message.channel_context not in STAR_FLEET_CORP_CONTEXTS
 
 
 def build_rookie_help_digest(
@@ -1795,7 +1846,9 @@ function renderStats() {
     ["Review links", stats.review_link_count],
     ["Rookie Help", stats.rookie_help_message_count],
     ["Rookie links", stats.rookie_help_link_count],
-    ["Website articles", stats.website_article_count]
+    ["Website articles", stats.website_article_count],
+    ["Log characters", stats.character_log_count],
+    ["Filtered Corp", stats.filtered_corp_message_count]
   ];
   document.getElementById("stats").innerHTML = items.map(([label, value]) => `
     <div class="stat"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>
