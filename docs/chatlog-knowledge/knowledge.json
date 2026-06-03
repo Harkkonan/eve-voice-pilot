@@ -2,16 +2,16 @@
   "meta": {
     "title": "EVE Chatlog Knowledge Base",
     "source_root": "Local EVE logs folder (path not published)",
-    "generated_at": "2026-06-03T21:46:58Z",
+    "generated_at": "2026-06-03T22:02:37Z",
     "window_start": "2026-06-01T01:56:10Z",
-    "window_end": "2026-06-03T21:33:55Z",
+    "window_end": "2026-06-03T22:02:10Z",
     "since_date": "2026-06-01",
     "public_safe": true,
     "privacy_note": "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, private-looking invites, and unreviewed external links are not published in the public-safe build. Instruction text is reproduced from channel MOTDs with risky links redacted. Rookie Help is kept isolated because public-help advice needs separate review before it is repeated as corp knowledge. Public Star Fleet website articles are included as sourced summaries. Non-Star-Fleet Corp chat from other character sessions is counted but filtered out of the main knowledge base."
   },
   "stats": {
     "file_count": 195,
-    "message_count": 9263,
+    "message_count": 9271,
     "channel_count": 15,
     "motd_count": 14,
     "instruction_count": 9,
@@ -20,8 +20,8 @@
     "review_link_count": 8,
     "rookie_help_message_count": 6039,
     "rookie_help_link_count": 35,
-    "rookie_help_review_link_count": 5,
-    "total_review_link_count": 13,
+    "rookie_help_review_link_count": 4,
+    "total_review_link_count": 12,
     "website_article_count": 9,
     "character_log_count": 4,
     "filtered_corp_message_count": 37
@@ -33,11 +33,11 @@
     },
     {
       "name": "Local",
-      "message_count": 2076
+      "message_count": 2081
     },
     {
       "name": "Corp",
-      "message_count": 720
+      "message_count": 723
     },
     {
       "name": "Fleet",
@@ -476,10 +476,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 683,
+          "message_count": 686,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T21:30:31Z"
+          "last_seen": "2026-06-03T22:01:13Z"
         },
         {
           "channel": "SFU Library",
@@ -554,10 +554,10 @@
         },
         {
           "channel": "Corp",
-          "message_count": 683,
+          "message_count": 686,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T21:30:31Z"
+          "last_seen": "2026-06-03T22:01:13Z"
         }
       ]
     },
@@ -578,10 +578,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 683,
+          "message_count": 686,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T21:30:31Z"
+          "last_seen": "2026-06-03T22:01:13Z"
         },
         {
           "channel": "Fleet",
@@ -617,10 +617,10 @@
       "sources": [
         {
           "channel": "Corp",
-          "message_count": 683,
+          "message_count": 686,
           "motd_blocks": 2,
           "first_seen": "2026-06-01T01:56:11Z",
-          "last_seen": "2026-06-03T21:30:31Z"
+          "last_seen": "2026-06-03T22:01:13Z"
         }
       ]
     },
@@ -1048,6 +1048,18 @@
         ]
       },
       {
+        "label": "EVE Workbench",
+        "url": "https://eveworkbench.com",
+        "display_url": "https://eveworkbench.com",
+        "category": "Tools",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
         "label": "Fuzzwork LP Store",
         "url": "https://www.fuzzwork.co.uk/lpstore",
         "display_url": "https://www.fuzzwork.co.uk/lpstore",
@@ -1090,18 +1102,6 @@
         "category": "Videos",
         "status": "public",
         "reason": "public resource",
-        "count": 1,
-        "channels": [
-          "Rookie Help"
-        ]
-      },
-      {
-        "label": "eveworkbench.com",
-        "url": "",
-        "display_url": "[redacted: unclassified external link]",
-        "category": "Review before publishing",
-        "status": "redacted",
-        "reason": "unclassified external link",
         "count": 1,
         "channels": [
           "Rookie Help"

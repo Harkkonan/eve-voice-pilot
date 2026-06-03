@@ -35,6 +35,7 @@ SPACE_RE = re.compile(r"\s+")
 PRIVATE_CHANNEL_NAMES = {"private chat", "private chat (2)"}
 LINK_ALLOW_DOMAINS = {
     "community.eveonline.com",
+    "eveworkbench.com",
     "eve-gatecheck.space",
     "eve-survival.org",
     "forums.eveonline.com",
@@ -1057,6 +1058,8 @@ def label_for_link(host: str, path: str) -> str:
         return "YouTube video"
     if host == "eve-gatecheck.space":
         return "EVE Gatecheck route safety"
+    if host == "eveworkbench.com":
+        return "EVE Workbench"
     if host == "zkillboard.com":
         return "zKillboard reference"
     if host == "www.fuzzwork.co.uk":
@@ -1087,7 +1090,7 @@ def category_for_domain(host: str, path: str) -> str:
         "eve-survival.org",
     }:
         return "Guides and wiki"
-    if host in {"eve-gatecheck.space", "zkillboard.com", "www.fuzzwork.co.uk"}:
+    if host in {"eve-gatecheck.space", "eveworkbench.com", "zkillboard.com", "www.fuzzwork.co.uk"}:
         return "Tools"
     if host in {"www.youtube.com", "youtu.be"}:
         return "Videos"
@@ -1544,8 +1547,10 @@ This folder contains a static, public-safe knowledge website generated from rece
 
 Regenerate from the repository root:
 
+Set `EVE_LOGS_ROOT` to your local EVE logs folder first.
+
 ```powershell
-.\\.venv\\Scripts\\python.exe .\\scripts\\build_chatlog_knowledge_site.py --logs-root "$env:USERPROFILE\\OneDrive\\Documents\\EVE\\logs" --since-date 2026-06-01
+.\\.venv\\Scripts\\python.exe .\\scripts\\build_chatlog_knowledge_site.py --logs-root "$env:EVE_LOGS_ROOT" --since-date 2026-06-01
 ```
 """
 

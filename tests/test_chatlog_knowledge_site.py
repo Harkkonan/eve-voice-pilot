@@ -50,6 +50,14 @@ def test_classify_link_keeps_public_eve_uni_page():
     assert "Missile mechanics" in label
 
 
+def test_classify_link_keeps_public_eve_workbench_tool():
+    category, status, reason, label = classify_link("https://eveworkbench.com")
+    assert category == "Tools"
+    assert status == "public"
+    assert reason == "public resource"
+    assert label == "EVE Workbench"
+
+
 def test_parse_chat_file_reads_utf16_eve_log(tmp_path):
     log_path = tmp_path / "Corp_20260603_000000_1.txt"
     log_path.write_text(
