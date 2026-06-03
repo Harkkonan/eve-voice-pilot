@@ -6,6 +6,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from build_chatlog_knowledge_site import (
     ChatMessage,
+    build_knowledge_data,
     build_instruction_library,
     classify_link,
     clean_message,
@@ -93,3 +94,35 @@ def test_instruction_library_redacts_private_links():
     )
     assert "https://discord.gg/example" not in instructions[0]["raw_reproduction"]
     assert "[redacted: private or unclear link]" in instructions[0]["raw_reproduction"]
+
+
+def test_rookie_help_is_isolated_from_main_knowledge(tmp_path):
+    dt = __import__("datetime")
+    rookie = ChatMessage(
+        timestamp=dt.datetime(2026, 6, 3, 1, 2, 3, tzinfo=dt.timezone.utc),
+        channel="Rookie Help",
+        speaker="EVE System",
+        message="Channel MOTD: Welcome to Rookie Help. Useful Links: https://wiki.eveuniversity.org/Main_Page",
+        file_name="Rookie Help_20260603_000000_1.txt",
+    )
+    corp = ChatMessage(
+        timestamp=dt.datetime(2026, 6, 3, 1, 3, 3, tzinfo=dt.timezone.utc),
+        channel="SFU Library",
+        speaker="EVE System",
+        message="Channel MOTD: Welcome to Star Fleet Union Library",
+        file_name="SFU Library_20260603_000000_1.txt",
+    )
+
+    data = build_knowledge_data(
+        [rookie, corp],
+        logs_root=tmp_path,
+        since_date="2026-06-03",
+        public_safe=True,
+    )
+
+    assert all(item["channel"] != "Rookie Help" for item in data["instructions"])
+    assert all(item["channel"] != "Rookie Help" for item in data["motds"])
+    assert all("Rookie Help" not in [source["channel"] for source in topic["sources"]] for topic in data["topics"])
+    assert data["resources"] == []
+    assert data["rookie_help"]["instructions"][0]["channel"] == "Rookie Help"
+    assert data["rookie_help"]["resources"][0]["label"] == "wiki.eveuniversity.org - Main Page"

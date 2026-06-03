@@ -2,31 +2,33 @@
   "meta": {
     "title": "EVE Chatlog Knowledge Base",
     "source_root": "C:\\Users\\Brian\\OneDrive\\Documents\\EVE\\logs",
-    "generated_at": "2026-06-03T06:00:04Z",
+    "generated_at": "2026-06-03T06:10:06Z",
     "window_start": "2026-06-01T01:56:10Z",
-    "window_end": "2026-06-03T05:58:41Z",
+    "window_end": "2026-06-03T06:09:59Z",
     "since_date": "2026-06-01",
     "public_safe": true,
-    "privacy_note": "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, private-looking invites, and unreviewed external links are not published in the public-safe build. Instruction text is reproduced from channel MOTDs with risky links redacted."
+    "privacy_note": "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, private-looking invites, and unreviewed external links are not published in the public-safe build. Instruction text is reproduced from channel MOTDs with risky links redacted. Rookie Help is kept isolated because public-help advice needs separate review before it is repeated as corp knowledge."
   },
   "stats": {
     "file_count": 185,
-    "message_count": 8691,
+    "message_count": 8716,
     "channel_count": 15,
     "motd_count": 13,
-    "instruction_count": 10,
-    "link_count": 44,
-    "public_link_count": 32,
-    "review_link_count": 12
+    "instruction_count": 9,
+    "link_count": 11,
+    "public_link_count": 3,
+    "review_link_count": 8,
+    "rookie_help_message_count": 5617,
+    "rookie_help_link_count": 33
   },
   "channels": [
     {
       "name": "Rookie Help",
-      "message_count": 5594
+      "message_count": 5617
     },
     {
       "name": "Local",
-      "message_count": 2038
+      "message_count": 2040
     },
     {
       "name": "Corp",
@@ -353,49 +355,6 @@
       "raw_reproduction": "Welcome to Star Fleet Union LibrarySFU Library ChannelsStarfleet (Ship/Fit/Mod Ordering) SFU Study Hall SFU Study Hall PT.2 SFU Video Library SFU Video Library PT.2 SFU Mining Fleet Rules SFU Recruitment - Recruitment ChannelAlly Chat Channelssouth moon alliance time Absolute Order AO South Null FocusedProvidence_Intel - Alliance members onlySFU Upper CommandSFU Upper Command - SFU Upper Command Staff OnlySFU & Ally Doctrine FitsSFU Doctrine Fits"
     },
     {
-      "id": "rookie-help",
-      "channel": "Rookie Help",
-      "title": "Rookie Help Channel Rules And Starter References",
-      "summary": "Public Rookie Help rules and starter learning references.",
-      "seen_at": "2026-06-01T01:56:10Z",
-      "source": "Channel MOTD",
-      "seen_range": {
-        "first_seen": "2026-06-01T01:56:10Z",
-        "last_seen": "2026-06-03T05:58:41Z",
-        "message_count": 5594
-      },
-      "sections": [
-        {
-          "heading": "Channel Purpose",
-          "items": [
-            "Rookie Help is for EVE-related questions and is English-only."
-          ]
-        },
-        {
-          "heading": "Prohibited In Rookie Help",
-          "items": [
-            "Trading or other financial interactions.",
-            "Begging.",
-            "Recruitment, referral links, freelance project links, soliciting, or advertising.",
-            "Political discussion, in-game or out-of-game.",
-            "Other off-topic discussion.",
-            "Swearing, trolling, spam, typing in caps, text decoration, or other disruptive behavior.",
-            "Unsolicited recruitment or referral mails to channel members."
-          ]
-        },
-        {
-          "heading": "Starter References Named In The MOTD",
-          "items": [
-            "EVE Academy, patch notes, support tickets, game rules, EULA, Terms of Service, exploits, and Discord are named as useful official references.",
-            "Advanced tutorial references include Career Agents and the level 1 Sisters of EVE epic arc from Sister Alitura in Arnon.",
-            "EVE University Wiki and The Alpha's Guide are named as starter learning references.",
-            "Bug reports should be filed with F12, then Report Bug."
-          ]
-        }
-      ],
-      "raw_reproduction": "Welcome to the EVE Rookie Help Channel! For your EVE related questions. Prohibited in this channel: Trading or other financial interactions; begging; recruitment, posting referral links, linking to freelance projects, soliciting, or advertising of any sort; political (ingame or out) or other offtopic discussion. Swearing, trolling, spam, typing in caps, text decoration, or being otherwise disruptive....Unsolicited sending of recruitment or referral mails to members of the channel is not allowed. If you wish to contact people regarding recruitment please use the Recruitment channels. Useful Links: EVE Academy Patch notes / Support Tickets Game Rules, EULA, ToS / ExploitsDiscordAdvanced Tutorials: Card - Career Agents Level 1 Epic Arc: Speak to Sister Alitura at Arnon (also join Sisters of EVE Help channel)EVE Uni Wiki: [redacted: truncated Rookie Help MOTD link] Alphas Guide: www.thealphasguide.comReporting a bug: F12 (click Report Bug) This channel is English only."
-    },
-    {
       "id": "sfu-study-hall",
       "channel": "SFU Study Hall",
       "title": "SFU Study Hall Resource Index",
@@ -506,7 +465,7 @@
         "Recruitment text describes three tracks: high-sec academy, null-sec industry/general activity, and null-sec PvP/defense.",
         "Star Fleet Productions Academy is the high-sec home for new and returning capsuleers; Star Fleet Productions is the null-sec industry/general activity corp; Star Fleet Section 31 is the null-sec PvP/defense corp.",
         "The alliance goal described in recruitment is to keep high-sec and null-sec divisions close enough that they can help each other.",
-        "Recent corp chat also emphasized moving toward corp HQ, Sisters of EVE epic arc questions, mining, exploration, manufacturing, and basic local-defense readiness.",
+        "Recent corp chat also emphasized moving toward corp HQ, mining, exploration, manufacturing, and basic local-defense readiness.",
         "Leadership contacts and liaisons are named in the recruitment MOTD; exact personal outreach should still be checked in-game because roles can change."
       ],
       "sources": [
@@ -539,8 +498,6 @@
       "category": "Rules",
       "summary": "Internal chat expectations are simple: be respectful, move tension or disputes to private chat, and treat serious chat problems as a leadership issue.",
       "details": [
-        "Rookie Help has stricter public-channel rules: no trading, begging, recruitment, referral links, advertising, politics, off-topic disruption, swearing, trolling, spam, caps abuse, or text decoration.",
-        "Recruitment/referral contact should use recruitment channels instead of unsolicited mails.",
         "Star Fleet internal chat asks members to be respectful and move tension into private chat instead of letting public channels escalate.",
         "Star Fleet Productions' MOTD says chat violations can lead to removal from the chat and, depending on severity, possible removal from corp.",
         "The mining fleet rules separately warn pilots not to abuse or goad other pilots in local chat."
@@ -554,11 +511,11 @@
           "last_seen": "2026-06-03T05:36:51Z"
         },
         {
-          "channel": "Rookie Help",
-          "message_count": 5594,
+          "channel": "SFU Mining Fleet Rules",
+          "message_count": 10,
           "motd_blocks": 1,
-          "first_seen": "2026-06-01T01:56:10Z",
-          "last_seen": "2026-06-03T05:58:41Z"
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:36:52Z"
         }
       ]
     },
@@ -659,13 +616,6 @@
           "motd_blocks": 1,
           "first_seen": "2026-06-01T01:56:11Z",
           "last_seen": "2026-06-03T05:42:34Z"
-        },
-        {
-          "channel": "Rookie Help",
-          "message_count": 5594,
-          "motd_blocks": 1,
-          "first_seen": "2026-06-01T01:56:10Z",
-          "last_seen": "2026-06-03T05:58:41Z"
         }
       ]
     },
@@ -673,22 +623,14 @@
       "id": "resource-map",
       "title": "Guide And Tool Map",
       "category": "Resources",
-      "summary": "The recent logs repeatedly point to EVE University, WCKG, EVE Gatecheck, zKillboard, Fuzzwork LP Store, Signal Cartel safety material, EVE Survival, and official EVE pages.",
+      "summary": "The Star Fleet reference channels point to reusable tools and guides for travel, market research, industry, wormholes, hauling, overview setup, and corp resources.",
       "details": [
-        "Guide clusters include exploration, abyssals, incursions, combat sites, planetary industry, standings, timers, missile mechanics, turret mechanics, and Alpha/Omega basics.",
         "Tool clusters include route safety, kill reports, LP store research, market/appraisal references, PI references, wormhole references, hauling services, and overview setup.",
         "The public-safe build redacts Discord invites, referral links, ad-like ISK sale links, private-looking tools, and raw Google Sheets URLs until someone reviews them.",
         "Study Hall also names market/appraisal and industry tools such as Janice, Evetycoon, Evetrade, Cerlestes, Thonky, Eve-webtools PI, hanns.io/pi, and Eve-cost Calculator.",
         "Study Hall PT.2 adds ship fitting tools, Magic 14, mining crystals, PI grid, wormhole directory references, hauling services, fleet terminology, Z-S overview, SFU buyback, blueprint library, and reaction formula library."
       ],
       "sources": [
-        {
-          "channel": "Rookie Help",
-          "message_count": 5594,
-          "motd_blocks": 1,
-          "first_seen": "2026-06-01T01:56:10Z",
-          "last_seen": "2026-06-03T05:58:41Z"
-        },
         {
           "channel": "SFU Study Hall",
           "message_count": 2,
@@ -771,6 +713,461 @@
       ]
     }
   ],
+  "rookie_help": {
+    "summary": "Rookie Help is isolated from Star Fleet knowledge. It is useful for beginner references and public-channel rules, but public-help chat can mix solid advice, rough guesses, context-specific answers, and repeated questions, so it should be reviewed separately before being promoted into corp guidance.",
+    "instructions": [
+      {
+        "id": "rookie-help",
+        "channel": "Rookie Help",
+        "title": "Rookie Help Channel Rules And Starter References",
+        "summary": "Public Rookie Help rules and starter learning references.",
+        "seen_at": "2026-06-01T01:56:10Z",
+        "source": "Channel MOTD",
+        "seen_range": {
+          "first_seen": "2026-06-01T01:56:10Z",
+          "last_seen": "2026-06-03T06:03:50Z",
+          "message_count": 5617
+        },
+        "sections": [
+          {
+            "heading": "Channel Purpose",
+            "items": [
+              "Rookie Help is for EVE-related questions and is English-only."
+            ]
+          },
+          {
+            "heading": "Prohibited In Rookie Help",
+            "items": [
+              "Trading or other financial interactions.",
+              "Begging.",
+              "Recruitment, referral links, freelance project links, soliciting, or advertising.",
+              "Political discussion, in-game or out-of-game.",
+              "Other off-topic discussion.",
+              "Swearing, trolling, spam, typing in caps, text decoration, or other disruptive behavior.",
+              "Unsolicited recruitment or referral mails to channel members."
+            ]
+          },
+          {
+            "heading": "Starter References Named In The MOTD",
+            "items": [
+              "EVE Academy, patch notes, support tickets, game rules, EULA, Terms of Service, exploits, and Discord are named as useful official references.",
+              "Advanced tutorial references include Career Agents and the level 1 Sisters of EVE epic arc from Sister Alitura in Arnon.",
+              "EVE University Wiki and The Alpha's Guide are named as starter learning references.",
+              "Bug reports should be filed with F12, then Report Bug."
+            ]
+          }
+        ],
+        "raw_reproduction": "Welcome to the EVE Rookie Help Channel! For your EVE related questions. Prohibited in this channel: Trading or other financial interactions; begging; recruitment, posting referral links, linking to freelance projects, soliciting, or advertising of any sort; political (ingame or out) or other offtopic discussion. Swearing, trolling, spam, typing in caps, text decoration, or being otherwise disruptive....Unsolicited sending of recruitment or referral mails to members of the channel is not allowed. If you wish to contact people regarding recruitment please use the Recruitment channels. Useful Links: EVE Academy Patch notes / Support Tickets Game Rules, EULA, ToS / ExploitsDiscordAdvanced Tutorials: Card - Career Agents Level 1 Epic Arc: Speak to Sister Alitura at Arnon (also join Sisters of EVE Help channel)EVE Uni Wiki: [redacted: truncated Rookie Help MOTD link] Alphas Guide: www.thealphasguide.comReporting a bug: F12 (click Report Bug) This channel is English only."
+      }
+    ],
+    "resources": [
+      {
+        "label": "The Alpha's Guide",
+        "url": "https://www.thealphasguide.com",
+        "display_url": "https://www.thealphasguide.com",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 23,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - The",
+        "url": "",
+        "display_url": "[redacted: truncated Rookie Help MOTD link]",
+        "category": "Review before publishing",
+        "status": "redacted",
+        "reason": "truncated Rookie Help MOTD link",
+        "count": 23,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "Rejected ISK-sale/ad link",
+        "url": "",
+        "display_url": "[redacted: ISK sale or ad link]",
+        "category": "Rejected / spam seen in chat",
+        "status": "redacted",
+        "reason": "ISK sale or ad link",
+        "count": 19,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "EVE Online - recruit",
+        "url": "https://www.eveonline.com/recruit",
+        "display_url": "https://www.eveonline.com/recruit",
+        "category": "Official EVE",
+        "status": "public",
+        "reason": "public resource",
+        "count": 6,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "Redacted review link",
+        "url": "",
+        "display_url": "[redacted: private or unclear link]",
+        "category": "Review before publishing",
+        "status": "redacted",
+        "reason": "private or unclear link",
+        "count": 5,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "www.wckg.net - exploration",
+        "url": "https://www.wckg.net/PVE/exploration",
+        "display_url": "https://www.wckg.net/PVE/exploration",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 4,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "Rejected ISK-sale/ad link",
+        "url": "",
+        "display_url": "[redacted: ISK sale or ad link]",
+        "category": "Rejected / spam seen in chat",
+        "status": "redacted",
+        "reason": "ISK sale or ad link",
+        "count": 3,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "EVE Gatecheck route safety",
+        "url": "https://eve-gatecheck.space/eve",
+        "display_url": "https://eve-gatecheck.space/eve",
+        "category": "Tools",
+        "status": "public",
+        "reason": "public resource",
+        "count": 2,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "EVE Online - csm",
+        "url": "https://community.eveonline.com/community/csm",
+        "display_url": "https://community.eveonline.com/community/csm",
+        "category": "Official EVE",
+        "status": "public",
+        "reason": "public resource",
+        "count": 2,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "www.wckg.net - Newbie",
+        "url": "https://www.wckg.net/Newbie",
+        "display_url": "https://www.wckg.net/Newbie",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 2,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "EVE Online - cradle of war in focus",
+        "url": "https://www.eveonline.com/news/view/cradle-of-war-in-focus",
+        "display_url": "https://www.eveonline.com/news/view/cradle-of-war-in-focus",
+        "category": "Official EVE",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "EVE Survival mission report",
+        "url": "https://eve-survival.org/wikka.php?wakka=SuntendiRecall1anca&show_comments=1",
+        "display_url": "https://eve-survival.org/wikka.php?wakka=SuntendiRecall1anca&show_comments=1",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "Fuzzwork LP Store",
+        "url": "https://www.fuzzwork.co.uk/lpstore",
+        "display_url": "https://www.fuzzwork.co.uk/lpstore",
+        "category": "Tools",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "Signal Cartel exploration safety guide",
+        "url": "https://wiki.signalcartel.space/Public:Exploration_Site_Safety_Guide",
+        "display_url": "https://wiki.signalcartel.space/Public:Exploration_Site_Safety_Guide",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "YouTube video",
+        "url": "https://www.youtube.com/watch?v=G745Nccmy4w",
+        "display_url": "https://www.youtube.com/watch?v=G745Nccmy4w",
+        "category": "Videos",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "YouTube video",
+        "url": "https://youtu.be/mNdVYYwXzlY",
+        "display_url": "https://youtu.be/mNdVYYwXzlY",
+        "category": "Videos",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "forums.eveonline.com - 60",
+        "url": "https://forums.eveonline.com/c/marketplace/character-bazaar/60",
+        "display_url": "https://forums.eveonline.com/c/marketplace/character-bazaar/60",
+        "category": "Official EVE",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "support.eveonline.com - 213020969 Alpha and Omega Clone",
+        "url": "https://support.eveonline.com/hc/en-us/articles/213020969-Alpha-and-Omega-Clone",
+        "display_url": "https://support.eveonline.com/hc/en-us/articles/213020969-Alpha-and-Omega-Clone",
+        "category": "Official EVE",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - Capsuleer Day XXIII",
+        "url": "https://wiki.eveuniversity.org/Capsuleer_Day_XXIII",
+        "display_url": "https://wiki.eveuniversity.org/Capsuleer_Day_XXIII",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - Character Bazaar",
+        "url": "https://wiki.eveuniversity.org/Character_Bazaar",
+        "display_url": "https://wiki.eveuniversity.org/Character_Bazaar",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - Combat site",
+        "url": "https://wiki.eveuniversity.org/Combat_site",
+        "display_url": "https://wiki.eveuniversity.org/Combat_site",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - Exploration",
+        "url": "https://wiki.eveuniversity.org/Exploration",
+        "display_url": "https://wiki.eveuniversity.org/Exploration",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - Main Page",
+        "url": "https://wiki.eveuniversity.org/Main_Page",
+        "display_url": "https://wiki.eveuniversity.org/Main_Page",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - Missile mechanics",
+        "url": "https://wiki.eveuniversity.org/Missile_mechanics",
+        "display_url": "https://wiki.eveuniversity.org/Missile_mechanics",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - NPC standings",
+        "url": "https://wiki.eveuniversity.org/NPC_standings#Gaining_and_losing_standings",
+        "display_url": "https://wiki.eveuniversity.org/NPC_standings#Gaining_and_losing_standings",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - Planetary Industry",
+        "url": "https://wiki.eveuniversity.org/Planetary_Industry",
+        "display_url": "https://wiki.eveuniversity.org/Planetary_Industry",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - Suntendi Recall",
+        "url": "https://wiki.eveuniversity.org/Suntendi_Recall#Part_5Opponent",
+        "display_url": "https://wiki.eveuniversity.org/Suntendi_Recall#Part_5Opponent",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - Timers",
+        "url": "https://wiki.eveuniversity.org/Timers#Weapon_Timer",
+        "display_url": "https://wiki.eveuniversity.org/Timers#Weapon_Timer",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "wiki.eveuniversity.org - Turret mechanics",
+        "url": "https://wiki.eveuniversity.org/Turret_mechanics",
+        "display_url": "https://wiki.eveuniversity.org/Turret_mechanics",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "www.wckg.net - Vet",
+        "url": "https://www.wckg.net/Vet",
+        "display_url": "https://www.wckg.net/Vet",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "www.wckg.net - abyssals",
+        "url": "https://www.wckg.net/PVE/abyssals",
+        "display_url": "https://www.wckg.net/PVE/abyssals",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "www.wckg.net - incursions",
+        "url": "https://www.wckg.net/PVE/incursions",
+        "display_url": "https://www.wckg.net/PVE/incursions",
+        "category": "Guides and wiki",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      },
+      {
+        "label": "zKillboard reference",
+        "url": "https://zkillboard.com/kill/135404056",
+        "display_url": "https://zkillboard.com/kill/135404056",
+        "category": "Tools",
+        "status": "public",
+        "reason": "public resource",
+        "count": 1,
+        "channels": [
+          "Rookie Help"
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "channel": "Rookie Help",
+        "message_count": 5617,
+        "motd_blocks": 1,
+        "first_seen": "2026-06-01T01:56:10Z",
+        "last_seen": "2026-06-03T06:03:50Z"
+      }
+    ]
+  },
   "resources": [
     {
       "label": "Discord invite",
@@ -809,18 +1206,6 @@
       ]
     },
     {
-      "label": "The Alpha's Guide",
-      "url": "https://www.thealphasguide.com",
-      "display_url": "https://www.thealphasguide.com",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 23,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
       "label": "YouTube video",
       "url": "https://www.youtube.com/watch?v=9wtX5EhWP6A",
       "display_url": "https://www.youtube.com/watch?v=9wtX5EhWP6A",
@@ -842,150 +1227,6 @@
       "count": 23,
       "channels": [
         "Star Fleet Productions"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - The",
-      "url": "",
-      "display_url": "[redacted: truncated Rookie Help MOTD link]",
-      "category": "Review before publishing",
-      "status": "redacted",
-      "reason": "truncated Rookie Help MOTD link",
-      "count": 23,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "Rejected ISK-sale/ad link",
-      "url": "",
-      "display_url": "[redacted: ISK sale or ad link]",
-      "category": "Rejected / spam seen in chat",
-      "status": "redacted",
-      "reason": "ISK sale or ad link",
-      "count": 19,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "EVE Online - recruit",
-      "url": "https://www.eveonline.com/recruit",
-      "display_url": "https://www.eveonline.com/recruit",
-      "category": "Official EVE",
-      "status": "public",
-      "reason": "public resource",
-      "count": 6,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "Redacted review link",
-      "url": "",
-      "display_url": "[redacted: private or unclear link]",
-      "category": "Review before publishing",
-      "status": "redacted",
-      "reason": "private or unclear link",
-      "count": 5,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "www.wckg.net - exploration",
-      "url": "https://www.wckg.net/PVE/exploration",
-      "display_url": "https://www.wckg.net/PVE/exploration",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 4,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "Rejected ISK-sale/ad link",
-      "url": "",
-      "display_url": "[redacted: ISK sale or ad link]",
-      "category": "Rejected / spam seen in chat",
-      "status": "redacted",
-      "reason": "ISK sale or ad link",
-      "count": 3,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "EVE Gatecheck route safety",
-      "url": "https://eve-gatecheck.space/eve",
-      "display_url": "https://eve-gatecheck.space/eve",
-      "category": "Tools",
-      "status": "public",
-      "reason": "public resource",
-      "count": 2,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "EVE Online - csm",
-      "url": "https://community.eveonline.com/community/csm",
-      "display_url": "https://community.eveonline.com/community/csm",
-      "category": "Official EVE",
-      "status": "public",
-      "reason": "public resource",
-      "count": 2,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "www.wckg.net - Newbie",
-      "url": "https://www.wckg.net/Newbie",
-      "display_url": "https://www.wckg.net/Newbie",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 2,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "EVE Online - cradle of war in focus",
-      "url": "https://www.eveonline.com/news/view/cradle-of-war-in-focus",
-      "display_url": "https://www.eveonline.com/news/view/cradle-of-war-in-focus",
-      "category": "Official EVE",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "EVE Survival mission report",
-      "url": "https://eve-survival.org/wikka.php?wakka=SuntendiRecall1anca&show_comments=1",
-      "display_url": "https://eve-survival.org/wikka.php?wakka=SuntendiRecall1anca&show_comments=1",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "Fuzzwork LP Store",
-      "url": "https://www.fuzzwork.co.uk/lpstore",
-      "display_url": "https://www.fuzzwork.co.uk/lpstore",
-      "category": "Tools",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
       ]
     },
     {
@@ -1037,18 +1278,6 @@
       ]
     },
     {
-      "label": "Signal Cartel exploration safety guide",
-      "url": "https://wiki.signalcartel.space/Public:Exploration_Site_Safety_Guide",
-      "display_url": "https://wiki.signalcartel.space/Public:Exploration_Site_Safety_Guide",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
       "label": "Star Fleet Productions website",
       "url": "https://starfleetproductions.space",
       "display_url": "https://starfleetproductions.space",
@@ -1058,186 +1287,6 @@
       "count": 1,
       "channels": [
         "Corp"
-      ]
-    },
-    {
-      "label": "YouTube video",
-      "url": "https://www.youtube.com/watch?v=G745Nccmy4w",
-      "display_url": "https://www.youtube.com/watch?v=G745Nccmy4w",
-      "category": "Videos",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "YouTube video",
-      "url": "https://youtu.be/mNdVYYwXzlY",
-      "display_url": "https://youtu.be/mNdVYYwXzlY",
-      "category": "Videos",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "forums.eveonline.com - 60",
-      "url": "https://forums.eveonline.com/c/marketplace/character-bazaar/60",
-      "display_url": "https://forums.eveonline.com/c/marketplace/character-bazaar/60",
-      "category": "Official EVE",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "support.eveonline.com - 213020969 Alpha and Omega Clone",
-      "url": "https://support.eveonline.com/hc/en-us/articles/213020969-Alpha-and-Omega-Clone",
-      "display_url": "https://support.eveonline.com/hc/en-us/articles/213020969-Alpha-and-Omega-Clone",
-      "category": "Official EVE",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - Capsuleer Day XXIII",
-      "url": "https://wiki.eveuniversity.org/Capsuleer_Day_XXIII",
-      "display_url": "https://wiki.eveuniversity.org/Capsuleer_Day_XXIII",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - Character Bazaar",
-      "url": "https://wiki.eveuniversity.org/Character_Bazaar",
-      "display_url": "https://wiki.eveuniversity.org/Character_Bazaar",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - Combat site",
-      "url": "https://wiki.eveuniversity.org/Combat_site",
-      "display_url": "https://wiki.eveuniversity.org/Combat_site",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - Exploration",
-      "url": "https://wiki.eveuniversity.org/Exploration",
-      "display_url": "https://wiki.eveuniversity.org/Exploration",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - Main Page",
-      "url": "https://wiki.eveuniversity.org/Main_Page",
-      "display_url": "https://wiki.eveuniversity.org/Main_Page",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - Missile mechanics",
-      "url": "https://wiki.eveuniversity.org/Missile_mechanics",
-      "display_url": "https://wiki.eveuniversity.org/Missile_mechanics",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - NPC standings",
-      "url": "https://wiki.eveuniversity.org/NPC_standings#Gaining_and_losing_standings",
-      "display_url": "https://wiki.eveuniversity.org/NPC_standings#Gaining_and_losing_standings",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - Planetary Industry",
-      "url": "https://wiki.eveuniversity.org/Planetary_Industry",
-      "display_url": "https://wiki.eveuniversity.org/Planetary_Industry",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - Suntendi Recall",
-      "url": "https://wiki.eveuniversity.org/Suntendi_Recall#Part_5Opponent",
-      "display_url": "https://wiki.eveuniversity.org/Suntendi_Recall#Part_5Opponent",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - Timers",
-      "url": "https://wiki.eveuniversity.org/Timers#Weapon_Timer",
-      "display_url": "https://wiki.eveuniversity.org/Timers#Weapon_Timer",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "wiki.eveuniversity.org - Turret mechanics",
-      "url": "https://wiki.eveuniversity.org/Turret_mechanics",
-      "display_url": "https://wiki.eveuniversity.org/Turret_mechanics",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
       ]
     },
     {
@@ -1251,54 +1300,6 @@
       "channels": [
         "Corp"
       ]
-    },
-    {
-      "label": "www.wckg.net - Vet",
-      "url": "https://www.wckg.net/Vet",
-      "display_url": "https://www.wckg.net/Vet",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "www.wckg.net - abyssals",
-      "url": "https://www.wckg.net/PVE/abyssals",
-      "display_url": "https://www.wckg.net/PVE/abyssals",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "www.wckg.net - incursions",
-      "url": "https://www.wckg.net/PVE/incursions",
-      "display_url": "https://www.wckg.net/PVE/incursions",
-      "category": "Guides and wiki",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
-    },
-    {
-      "label": "zKillboard reference",
-      "url": "https://zkillboard.com/kill/135404056",
-      "display_url": "https://zkillboard.com/kill/135404056",
-      "category": "Tools",
-      "status": "public",
-      "reason": "public resource",
-      "count": 1,
-      "channels": [
-        "Rookie Help"
-      ]
     }
   ],
   "motds": [
@@ -1306,11 +1307,6 @@
       "channel": "Corp",
       "seen_at": "2026-06-01T01:56:11Z",
       "summary": "1 - Have Fun 2 - Star Fleet Discord: [redacted: private or unclear link] 3 - Have Fun4 - Ally AO Discord: [redacted: private or unclear link] 5 - Make isk6 - Corporation Bulletins 7 - Have fun and make more isk8 - Any questions feel free to reach out on discord or contact Denis Leary or Drak..."
-    },
-    {
-      "channel": "Rookie Help",
-      "seen_at": "2026-06-01T01:56:10Z",
-      "summary": "Public Rookie Help rules and starter learning references."
     },
     {
       "channel": "SFU Doctrine 3.2",

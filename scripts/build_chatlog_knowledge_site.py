@@ -240,9 +240,18 @@ def build_knowledge_data(
     files = {message.file_name for message in messages}
     timestamps = [message.timestamp for message in messages]
     motds = unique_motds(messages)
-    links = collect_links(messages)
+    main_messages = [message for message in messages if not is_rookie_help(message.channel)]
+    rookie_messages = [message for message in messages if is_rookie_help(message.channel)]
+    main_motds = unique_motds(main_messages)
+    rookie_motds = unique_motds(rookie_messages)
+    links = collect_links(main_messages)
+    rookie_links = collect_links(rookie_messages)
     link_records = [record.to_dict() for record in sorted(links.values(), key=lambda item: (-item.count, item.label))]
-    instructions = build_instruction_library(motds, messages)
+    rookie_link_records = [
+        record.to_dict() for record in sorted(rookie_links.values(), key=lambda item: (-item.count, item.label))
+    ]
+    instructions = build_instruction_library(main_motds, main_messages)
+    rookie_help = build_rookie_help_digest(rookie_motds, rookie_messages, rookie_link_records)
 
     return {
         "meta": {
@@ -256,7 +265,8 @@ def build_knowledge_data(
             "privacy_note": (
                 "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, "
                 "private-looking invites, and unreviewed external links are not published in the public-safe build. "
-                "Instruction text is reproduced from channel MOTDs with risky links redacted."
+                "Instruction text is reproduced from channel MOTDs with risky links redacted. Rookie Help is kept "
+                "isolated because public-help advice needs separate review before it is repeated as corp knowledge."
             ),
         },
         "stats": {
@@ -268,6 +278,8 @@ def build_knowledge_data(
             "link_count": len(link_records),
             "public_link_count": sum(1 for item in link_records if item["status"] == "public"),
             "review_link_count": sum(1 for item in link_records if item["status"] != "public"),
+            "rookie_help_message_count": len(rookie_messages),
+            "rookie_help_link_count": len(rookie_link_records),
         },
         "channels": [
             {"name": name, "message_count": count}
@@ -275,9 +287,33 @@ def build_knowledge_data(
             if name.casefold() not in PRIVATE_CHANNEL_NAMES
         ],
         "instructions": instructions,
-        "topics": build_topics(motds, messages),
+        "topics": build_topics(main_motds, main_messages),
+        "rookie_help": rookie_help,
         "resources": link_records,
-        "motds": motd_summaries(motds),
+        "motds": motd_summaries(main_motds),
+    }
+
+
+def is_rookie_help(channel: str) -> bool:
+    return channel.casefold() == "rookie help"
+
+
+def build_rookie_help_digest(
+    motds: dict[str, dict[str, ChatMessage]],
+    messages: list[ChatMessage],
+    resources: list[dict[str, Any]],
+) -> dict[str, Any]:
+    entry = first_motd_entry(motds, "Rookie Help")
+    instructions = [instruction_for_channel("Rookie Help", entry, messages)] if entry else []
+    return {
+        "summary": (
+            "Rookie Help is isolated from Star Fleet knowledge. It is useful for beginner references and public-channel "
+            "rules, but public-help chat can mix solid advice, rough guesses, context-specific answers, and repeated "
+            "questions, so it should be reviewed separately before being promoted into corp guidance."
+        ),
+        "instructions": instructions,
+        "resources": resources,
+        "sources": source_summary(["Rookie Help"], motds, messages),
     }
 
 
@@ -824,7 +860,7 @@ def build_topics(motds: dict[str, dict[str, ChatMessage]], messages: list[ChatMe
                 "Recruitment text describes three tracks: high-sec academy, null-sec industry/general activity, and null-sec PvP/defense.",
                 "Star Fleet Productions Academy is the high-sec home for new and returning capsuleers; Star Fleet Productions is the null-sec industry/general activity corp; Star Fleet Section 31 is the null-sec PvP/defense corp.",
                 "The alliance goal described in recruitment is to keep high-sec and null-sec divisions close enough that they can help each other.",
-                "Recent corp chat also emphasized moving toward corp HQ, Sisters of EVE epic arc questions, mining, exploration, manufacturing, and basic local-defense readiness.",
+                "Recent corp chat also emphasized moving toward corp HQ, mining, exploration, manufacturing, and basic local-defense readiness.",
                 "Leadership contacts and liaisons are named in the recruitment MOTD; exact personal outreach should still be checked in-game because roles can change.",
             ],
             "sources": source_summary(["Corp", "SFU Library", "SFU Recruitment"], motds, messages),
@@ -838,13 +874,11 @@ def build_topics(motds: dict[str, dict[str, ChatMessage]], messages: list[ChatMe
                 "and treat serious chat problems as a leadership issue."
             ),
             "details": [
-                "Rookie Help has stricter public-channel rules: no trading, begging, recruitment, referral links, advertising, politics, off-topic disruption, swearing, trolling, spam, caps abuse, or text decoration.",
-                "Recruitment/referral contact should use recruitment channels instead of unsolicited mails.",
                 "Star Fleet internal chat asks members to be respectful and move tension into private chat instead of letting public channels escalate.",
                 "Star Fleet Productions' MOTD says chat violations can lead to removal from the chat and, depending on severity, possible removal from corp.",
                 "The mining fleet rules separately warn pilots not to abuse or goad other pilots in local chat.",
             ],
-            "sources": source_summary(["Star Fleet Productions", "Rookie Help"], motds, messages),
+            "sources": source_summary(["Star Fleet Productions", "SFU Mining Fleet Rules"], motds, messages),
         },
         {
             "id": "mining-rules",
@@ -902,24 +936,23 @@ def build_topics(motds: dict[str, dict[str, ChatMessage]], messages: list[ChatMe
                 "Underskilling a ship was called a good way to lose it; fit confidence and escape readiness matter more than rushing into harder sites.",
                 "Salvage was described as more worthwhile around higher-level missions, especially level 4s, but salvage drones can be carried for convenience.",
             ],
-            "sources": source_summary(["Corp", "Rookie Help"], motds, messages),
+            "sources": source_summary(["Corp"], motds, messages),
         },
         {
             "id": "resource-map",
             "title": "Guide And Tool Map",
             "category": "Resources",
             "summary": (
-                "The recent logs repeatedly point to EVE University, WCKG, EVE Gatecheck, zKillboard, Fuzzwork LP Store, "
-                "Signal Cartel safety material, EVE Survival, and official EVE pages."
+                "The Star Fleet reference channels point to reusable tools and guides for travel, market research, industry, "
+                "wormholes, hauling, overview setup, and corp resources."
             ),
             "details": [
-                "Guide clusters include exploration, abyssals, incursions, combat sites, planetary industry, standings, timers, missile mechanics, turret mechanics, and Alpha/Omega basics.",
                 "Tool clusters include route safety, kill reports, LP store research, market/appraisal references, PI references, wormhole references, hauling services, and overview setup.",
                 "The public-safe build redacts Discord invites, referral links, ad-like ISK sale links, private-looking tools, and raw Google Sheets URLs until someone reviews them.",
                 "Study Hall also names market/appraisal and industry tools such as Janice, Evetycoon, Evetrade, Cerlestes, Thonky, Eve-webtools PI, hanns.io/pi, and Eve-cost Calculator.",
                 "Study Hall PT.2 adds ship fitting tools, Magic 14, mining crystals, PI grid, wormhole directory references, hauling services, fleet terminology, Z-S overview, SFU buyback, blueprint library, and reaction formula library.",
             ],
-            "sources": source_summary(["Rookie Help", "SFU Study Hall", "SFU Study Hall PT.2", "Z-S Overview"], motds, messages),
+            "sources": source_summary(["SFU Study Hall", "SFU Study Hall PT.2", "Z-S Overview"], motds, messages),
         },
         {
             "id": "orders-and-logistics",
@@ -1068,6 +1101,13 @@ def render_index_html(data: dict[str, Any]) -> str:
         <p>High-fidelity reproductions of detailed channel instructions, reformatted for reading and public-safe sharing.</p>
       </div>
       <div class="instruction-list" id="instructions"></div>
+    </section>
+    <section>
+      <div class="section-heading">
+        <h2>Rookie Help Review</h2>
+        <p>Public Rookie Help material is isolated from corp knowledge until someone reviews what is worth repeating.</p>
+      </div>
+      <div class="rookie-panel" id="rookie-help"></div>
     </section>
     <section>
       <div class="section-heading">
@@ -1366,6 +1406,15 @@ input, select {
 .topic li {
   margin: 6px 0;
 }
+.rookie-panel {
+  padding: 0;
+}
+.rookie-panel .instruction {
+  margin-top: 12px;
+}
+.rookie-panel .resource-table {
+  margin-top: 12px;
+}
 .source {
   color: var(--muted);
   font-size: 12px;
@@ -1523,7 +1572,9 @@ function renderStats() {
     ["Instructions", stats.instruction_count],
     ["MOTD blocks", stats.motd_count],
     ["Public links", stats.public_link_count],
-    ["Review links", stats.review_link_count]
+    ["Review links", stats.review_link_count],
+    ["Rookie Help", stats.rookie_help_message_count],
+    ["Rookie links", stats.rookie_help_link_count]
   ];
   document.getElementById("stats").innerHTML = items.map(([label, value]) => `
     <div class="stat"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>
@@ -1545,9 +1596,8 @@ function renderTopics() {
   `).join("") || `<div class="topic">No topics match the current search.</div>`;
 }
 
-function renderInstructions() {
-  const instructions = data.instructions.filter(matchesText);
-  document.getElementById("instructions").innerHTML = instructions.map(item => {
+function renderInstructionCards(items) {
+  return items.map(item => {
     const sections = item.sections.map(section => `
       <div class="section-block">
         <h4>${escapeHtml(section.heading)}</h4>
@@ -1572,9 +1622,11 @@ function renderInstructions() {
         <pre class="raw-text" id="raw-${escapeHtml(item.id)}">${escapeHtml(item.raw_reproduction)}</pre>
       </article>
     `;
-  }).join("") || `<div class="instruction">No instructions match the current search.</div>`;
+  }).join("");
+}
 
-  document.querySelectorAll("[data-raw]").forEach(button => {
+function bindRawToggles(root = document) {
+  root.querySelectorAll("[data-raw]").forEach(button => {
     button.addEventListener("click", () => {
       const target = document.getElementById(`raw-${button.dataset.raw}`);
       if (target) target.classList.toggle("open");
@@ -1582,12 +1634,15 @@ function renderInstructions() {
   });
 }
 
-function renderResources() {
-  const resources = data.resources.filter(item => {
-    if (state.status !== "all" && item.status !== state.status) return false;
-    return matchesText(item);
-  });
-  document.getElementById("resources").innerHTML = resources.map(item => {
+function renderInstructions() {
+  const instructions = data.instructions.filter(matchesText);
+  document.getElementById("instructions").innerHTML =
+    renderInstructionCards(instructions) || `<div class="instruction">No instructions match the current search.</div>`;
+  bindRawToggles(document.getElementById("instructions"));
+}
+
+function resourceRows(resources) {
+  return resources.map(item => {
     const title = item.status === "public"
       ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.label)}</a>`
       : `<span class="resource-name">${escapeHtml(item.label)}</span>`;
@@ -1600,7 +1655,40 @@ function renderResources() {
         <div class="muted">${escapeHtml(item.channels.join(", "))}</div>
       </div>
     `;
-  }).join("") || `<div class="resource"><div>No resources match the current filters.</div></div>`;
+  }).join("");
+}
+
+function filteredResources(items) {
+  return items.filter(item => {
+    if (state.status !== "all" && item.status !== state.status) return false;
+    return matchesText(item);
+  });
+}
+
+function renderResources() {
+  const resources = filteredResources(data.resources);
+  document.getElementById("resources").innerHTML =
+    resourceRows(resources) || `<div class="resource"><div>No resources match the current filters.</div></div>`;
+}
+
+function renderRookieHelp() {
+  const rookie = data.rookie_help || { instructions: [], resources: [], sources: [], summary: "" };
+  const instructions = rookie.instructions.filter(matchesText);
+  const resources = filteredResources(rookie.resources || []);
+  const sources = (rookie.sources || []).map(source =>
+    `${source.channel}: ${source.message_count} msgs, ${source.motd_blocks} MOTDs`
+  ).join(" | ");
+  const panel = document.getElementById("rookie-help");
+  panel.innerHTML = `
+    <p>${escapeHtml(rookie.summary)}</p>
+    <div class="source">${escapeHtml(sources)}</div>
+    ${renderInstructionCards(instructions) || `<div class="instruction">No Rookie Help instruction text matches the current search.</div>`}
+    <div class="section-block">
+      <h4>Rookie Help Resource Links</h4>
+      <div class="resource-table">${resourceRows(resources) || `<div class="resource"><div>No Rookie Help resources match the current filters.</div></div>`}</div>
+    </div>
+  `;
+  bindRawToggles(panel);
 }
 
 function renderChannels() {
@@ -1616,6 +1704,7 @@ function renderChannels() {
 function renderAll() {
   renderStats();
   renderInstructions();
+  renderRookieHelp();
   renderTopics();
   renderResources();
   renderChannels();
@@ -1628,6 +1717,7 @@ document.getElementById("search").addEventListener("input", event => {
 document.getElementById("status-filter").addEventListener("change", event => {
   state.status = event.target.value;
   renderResources();
+  renderRookieHelp();
 });
 renderAll();
 """
