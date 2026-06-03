@@ -15,3 +15,5 @@ profiles/my_ocr_watcher_settings.json
 profiles/corp_intel_watchlist.json
 profiles/corp_intel_events.sqlite3
 profiles/corp_intel_events.sqlite3-*
+profiles/corp_intel_pilots.sqlite3
+profiles/corp_intel_pilots.sqlite3-*

@@ -1,24 +1,43 @@
+import base64
+import json
 from pathlib import Path
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import eve_voice_pilot.corp_intel as corp_intel
 from eve_voice_pilot.corp_intel import (
     ChannelFilter,
     ChatMessage,
+    EveSsoConfig,
     EventDatabase,
     IntelWatchlist,
     IntelEvent,
     IntelEventStore,
     IntelParser,
+    PilotRegistry,
     SystemMatcher,
+    VerifiedPilot,
     WatchlistStore,
+    build_sso_authorization_url,
+    decode_eve_access_token,
     eve_timestamp_to_iso,
     ingest_payload,
+    membership_allowed,
     parse_channel_name_from_text,
     parse_chat_line,
+    verify_sso_character,
 )
+
+
+def make_unsigned_jwt(payload: dict) -> str:
+    def encode(part: dict) -> str:
+        raw = json.dumps(part, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{encode({'alg': 'none'})}.{encode(payload)}.signature"
 
 
 def test_parse_chat_line_reads_eve_timestamp_speaker_and_message():
@@ -51,6 +70,113 @@ def test_channel_filter_allows_exact_and_wildcard_names():
     assert channel_filter.allows("Corp")
     assert channel_filter.allows("Standing Intel")
     assert not channel_filter.allows("Private Chat")
+
+
+def test_build_sso_authorization_url_uses_state_callback_and_scopes():
+    config = EveSsoConfig(
+        client_id="client-123",
+        client_secret="secret",
+        callback_url="http://127.0.0.1:8765/auth/callback",
+        scopes=("esi-location.read_location.v1",),
+    )
+    url = build_sso_authorization_url(
+        config,
+        "state-value",
+        metadata={"authorization_endpoint": "https://login.eveonline.com/v2/oauth/authorize"},
+    )
+    assert "response_type=code" in url
+    assert "client_id=client-123" in url
+    assert "state=state-value" in url
+    assert "redirect_uri=http%3A%2F%2F127.0.0.1%3A8765%2Fauth%2Fcallback" in url
+    assert "scope=esi-location.read_location.v1" in url
+
+
+def test_decode_eve_access_token_validates_character_identity():
+    token = make_unsigned_jwt(
+        {
+            "iss": "https://login.eveonline.com/",
+            "aud": ["client-123", "EVE Online"],
+            "exp": int(time.time()) + 600,
+            "sub": "CHARACTER:EVE:123456789",
+            "name": "Scout Pilot",
+            "scp": ["esi-location.read_location.v1"],
+            "owner": "owner-hash",
+        }
+    )
+    payload = decode_eve_access_token(token, client_id="client-123")
+    assert payload["name"] == "Scout Pilot"
+    assert payload["sub"] == "CHARACTER:EVE:123456789"
+
+
+def test_decode_eve_access_token_rejects_wrong_audience():
+    token = make_unsigned_jwt(
+        {
+            "iss": "https://login.eveonline.com/",
+            "aud": ["other-client", "EVE Online"],
+            "exp": int(time.time()) + 600,
+            "sub": "CHARACTER:EVE:123456789",
+            "name": "Scout Pilot",
+        }
+    )
+    try:
+        decode_eve_access_token(token, client_id="client-123")
+    except Exception as exc:
+        assert "audience" in str(exc)
+    else:
+        raise AssertionError("expected wrong audience to be rejected")
+
+
+def test_membership_allowed_accepts_configured_corporation_or_alliance():
+    config = EveSsoConfig(allowed_corporation_ids=(1001,), allowed_alliance_ids=(2002,))
+    assert membership_allowed(config, corporation_id=1001, alliance_id=None)
+    assert membership_allowed(config, corporation_id=9999, alliance_id=2002)
+    assert not membership_allowed(config, corporation_id=9999, alliance_id=None)
+
+
+def test_verify_sso_character_builds_verified_pilot_from_public_esi(monkeypatch):
+    config = EveSsoConfig(
+        client_id="client-123",
+        allowed_corporation_ids=(1001,),
+    )
+    token_payload = {
+        "sub": "CHARACTER:EVE:123456789",
+        "name": "Scout Pilot",
+        "scp": ["esi-location.read_location.v1"],
+        "owner": "owner-hash",
+    }
+
+    monkeypatch.setattr(corp_intel, "fetch_esi_character", lambda _config, _id: {"corporation_id": 1001})
+    monkeypatch.setattr(corp_intel, "fetch_esi_corporation", lambda _config, _id: {"name": "Star Fleet"})
+    monkeypatch.setattr(corp_intel, "fetch_esi_alliance", lambda _config, _id: {})
+
+    pilot = verify_sso_character(config, access_token="unused", token_payload=token_payload)
+    assert pilot.character_id == 123456789
+    assert pilot.character_name == "Scout Pilot"
+    assert pilot.corporation_id == 1001
+    assert pilot.corporation_name == "Star Fleet"
+    assert pilot.membership_ok is True
+    assert pilot.scopes == ("esi-location.read_location.v1",)
+
+
+def test_pilot_registry_persists_verified_pilot(tmp_path):
+    registry = PilotRegistry(tmp_path / "pilots.sqlite3")
+    pilot = VerifiedPilot(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        owner_hash="owner-hash",
+        scopes=("esi-location.read_location.v1",),
+        membership_ok=True,
+        verified_at="2026-06-03T06:30:00Z",
+        last_login_at="2026-06-03T06:30:00Z",
+    )
+    registry.upsert(pilot)
+    reloaded = PilotRegistry(tmp_path / "pilots.sqlite3").get(123456789)
+    assert reloaded is not None
+    assert reloaded.character_name == "Scout Pilot"
+    assert reloaded.membership_ok is True
+    assert reloaded.scopes == ("esi-location.read_location.v1",)
 
 
 def test_system_matcher_finds_canonical_system_names():

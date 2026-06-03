@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import fnmatch
@@ -10,11 +11,13 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
 import threading
 import time
 import sqlite3
 from typing import Any, Callable, Iterable
+from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import uuid
@@ -30,6 +33,8 @@ DEFAULT_MAX_EVENTS = 500
 DEFAULT_CHANNELS = "Corp,Corporation,Fleet,Alliance,Local,*Intel*"
 DEFAULT_WATCHLIST_PATH = ROOT / "profiles" / "corp_intel_watchlist.json"
 DEFAULT_EVENT_DB_PATH = ROOT / "profiles" / "corp_intel_events.sqlite3"
+DEFAULT_PILOT_REGISTRY_PATH = ROOT / "profiles" / "corp_intel_pilots.sqlite3"
+DEFAULT_EVE_SSO_WELL_KNOWN_URL = "https://login.eveonline.com/.well-known/oauth-authorization-server"
 DEFAULT_WATCHLIST_REFRESH_SECONDS = 60.0
 DEFAULT_EVENT_RETENTION_DAYS = 7
 MAX_WATCHLIST_ITEMS = 200
@@ -174,6 +179,83 @@ class IntelEvent:
             observed_at=str(payload.get("observed_at") or ""),
             reported_at=str(payload.get("reported_at") or now_iso()),
             log_path=str(payload.get("log_path") or ""),
+        )
+
+
+@dataclass(frozen=True)
+class EveSsoConfig:
+    client_id: str = ""
+    client_secret: str = ""
+    callback_url: str = ""
+    scopes: tuple[str, ...] = ()
+    allowed_corporation_ids: tuple[int, ...] = ()
+    allowed_alliance_ids: tuple[int, ...] = ()
+    trusted_members_can_edit: bool = False
+    well_known_url: str = DEFAULT_EVE_SSO_WELL_KNOWN_URL
+    esi_base_url: str = DEFAULT_ESI_BASE_URL
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.client_id and self.client_secret and self.callback_url)
+
+    @property
+    def membership_restricted(self) -> bool:
+        return bool(self.allowed_corporation_ids or self.allowed_alliance_ids)
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "scopes": list(self.scopes),
+            "allowed_corporation_ids": list(self.allowed_corporation_ids),
+            "allowed_alliance_ids": list(self.allowed_alliance_ids),
+            "membership_restricted": self.membership_restricted,
+            "trusted_members_can_edit": self.trusted_members_can_edit,
+        }
+
+
+@dataclass(frozen=True)
+class VerifiedPilot:
+    character_id: int
+    character_name: str
+    corporation_id: int
+    corporation_name: str = ""
+    alliance_id: int | None = None
+    alliance_name: str = ""
+    owner_hash: str = ""
+    scopes: tuple[str, ...] = ()
+    membership_ok: bool = False
+    verified_at: str = ""
+    last_login_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "character_id": self.character_id,
+            "character_name": self.character_name,
+            "corporation_id": self.corporation_id,
+            "corporation_name": self.corporation_name,
+            "alliance_id": self.alliance_id,
+            "alliance_name": self.alliance_name,
+            "scopes": list(self.scopes),
+            "membership_ok": self.membership_ok,
+            "verified_at": self.verified_at,
+            "last_login_at": self.last_login_at,
+        }
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "VerifiedPilot":
+        scopes_raw = str(row["scopes"] or "")
+        return cls(
+            character_id=int(row["character_id"]),
+            character_name=str(row["character_name"] or ""),
+            corporation_id=int(row["corporation_id"]),
+            corporation_name=str(row["corporation_name"] or ""),
+            alliance_id=int(row["alliance_id"]) if row["alliance_id"] is not None else None,
+            alliance_name=str(row["alliance_name"] or ""),
+            owner_hash=str(row["owner_hash"] or ""),
+            scopes=tuple(item for item in scopes_raw.split(" ") if item),
+            membership_ok=bool(row["membership_ok"]),
+            verified_at=str(row["verified_at"] or ""),
+            last_login_at=str(row["last_login_at"] or ""),
         )
 
 
@@ -352,6 +434,161 @@ class WatchlistStore:
                     )
                 )
         return tuple(matches)
+
+
+class PilotRegistry:
+    def __init__(self, path: Path):
+        self.path = path.expanduser()
+        self._lock = threading.Lock()
+        self.initialize()
+
+    def initialize(self) -> None:
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(self.path) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS verified_pilots (
+                        character_id INTEGER PRIMARY KEY,
+                        character_name TEXT NOT NULL,
+                        corporation_id INTEGER NOT NULL,
+                        corporation_name TEXT NOT NULL,
+                        alliance_id INTEGER,
+                        alliance_name TEXT NOT NULL,
+                        owner_hash TEXT NOT NULL,
+                        scopes TEXT NOT NULL,
+                        membership_ok INTEGER NOT NULL,
+                        verified_at TEXT NOT NULL,
+                        last_login_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_verified_pilots_corporation ON verified_pilots(corporation_id)"
+                )
+                connection.commit()
+
+    def upsert(self, pilot: VerifiedPilot) -> VerifiedPilot:
+        with self._lock, sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """
+                INSERT INTO verified_pilots (
+                    character_id, character_name, corporation_id, corporation_name, alliance_id, alliance_name,
+                    owner_hash, scopes, membership_ok, verified_at, last_login_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(character_id) DO UPDATE SET
+                    character_name = excluded.character_name,
+                    corporation_id = excluded.corporation_id,
+                    corporation_name = excluded.corporation_name,
+                    alliance_id = excluded.alliance_id,
+                    alliance_name = excluded.alliance_name,
+                    owner_hash = excluded.owner_hash,
+                    scopes = excluded.scopes,
+                    membership_ok = excluded.membership_ok,
+                    verified_at = excluded.verified_at,
+                    last_login_at = excluded.last_login_at
+                """,
+                (
+                    pilot.character_id,
+                    pilot.character_name,
+                    pilot.corporation_id,
+                    pilot.corporation_name,
+                    pilot.alliance_id,
+                    pilot.alliance_name,
+                    pilot.owner_hash,
+                    " ".join(pilot.scopes),
+                    1 if pilot.membership_ok else 0,
+                    pilot.verified_at,
+                    pilot.last_login_at,
+                ),
+            )
+            connection.commit()
+        return pilot
+
+    def get(self, character_id: int) -> VerifiedPilot | None:
+        with self._lock, sqlite3.connect(self.path) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                "SELECT * FROM verified_pilots WHERE character_id = ?",
+                (character_id,),
+            ).fetchone()
+        return VerifiedPilot.from_row(row) if row else None
+
+    def list_recent(self, *, limit: int = 50) -> list[VerifiedPilot]:
+        with self._lock, sqlite3.connect(self.path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM verified_pilots
+                ORDER BY last_login_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [VerifiedPilot.from_row(row) for row in rows]
+
+
+class AuthStateStore:
+    def __init__(self, *, ttl_seconds: int = 600):
+        self.ttl_seconds = ttl_seconds
+        self._states: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def create(self) -> str:
+        state = secrets.token_urlsafe(32)
+        expires_at = time.time() + self.ttl_seconds
+        with self._lock:
+            self._states[state] = expires_at
+            self._prune_locked()
+        return state
+
+    def consume(self, state: str) -> bool:
+        with self._lock:
+            self._prune_locked()
+            expires_at = self._states.pop(state, None)
+        return bool(expires_at and expires_at >= time.time())
+
+    def _prune_locked(self) -> None:
+        now = time.time()
+        expired = [state for state, expires_at in self._states.items() if expires_at < now]
+        for state in expired:
+            self._states.pop(state, None)
+
+
+class SessionStore:
+    def __init__(self, *, ttl_seconds: int = 12 * 60 * 60):
+        self.ttl_seconds = ttl_seconds
+        self._sessions: dict[str, tuple[int, float]] = {}
+        self._lock = threading.Lock()
+
+    def create(self, character_id: int) -> str:
+        session_id = secrets.token_urlsafe(32)
+        expires_at = time.time() + self.ttl_seconds
+        with self._lock:
+            self._sessions[session_id] = (character_id, expires_at)
+            self._prune_locked()
+        return session_id
+
+    def get(self, session_id: str) -> int | None:
+        with self._lock:
+            self._prune_locked()
+            item = self._sessions.get(session_id)
+        if not item:
+            return None
+        character_id, expires_at = item
+        return character_id if expires_at >= time.time() else None
+
+    def delete(self, session_id: str) -> None:
+        with self._lock:
+            self._sessions.pop(session_id, None)
+
+    def _prune_locked(self) -> None:
+        now = time.time()
+        expired = [session_id for session_id, (_, expires_at) in self._sessions.items() if expires_at < now]
+        for session_id in expired:
+            self._sessions.pop(session_id, None)
 
 
 class EventDatabase:
@@ -883,10 +1120,13 @@ def fetch_system_names_from_esi(*, base_url: str = DEFAULT_ESI_BASE_URL) -> tupl
     return tuple(sorted(set(names)))
 
 
-def get_json(url: str, *, timeout_seconds: float = 30.0) -> Any:
+def get_json(url: str, *, timeout_seconds: float = 30.0, headers: dict[str, str] | None = None) -> Any:
+    request_headers = {"Accept": "application/json", "User-Agent": "EVE Voice Pilot Corp Intel Board"}
+    if headers:
+        request_headers.update(headers)
     request = Request(
         url,
-        headers={"Accept": "application/json", "User-Agent": "EVE Voice Pilot Corp Intel Board"},
+        headers=request_headers,
         method="GET",
     )
     try:
@@ -920,6 +1160,184 @@ def post_json(url: str, body: Any, *, token: str = "", timeout_seconds: float = 
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise CorpIntelError(f"POST {url} returned non-JSON data: {raw[:200]!r}") from exc
+
+
+def post_form(
+    url: str,
+    fields: dict[str, str],
+    *,
+    basic_auth: tuple[str, str] | None = None,
+    timeout_seconds: float = 30.0,
+) -> Any:
+    data = urlencode(fields).encode("utf-8")
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "EVE Voice Pilot Corp Intel Board",
+    }
+    if basic_auth:
+        username, password = basic_auth
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {token}"
+    request = Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise CorpIntelError(f"POST {url} returned HTTP {exc.code}: {detail}") from exc
+    except (URLError, TimeoutError) as exc:
+        raise CorpIntelError(f"POST {url} failed: {exc}") from exc
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CorpIntelError(f"POST {url} returned non-JSON data: {raw[:200]!r}") from exc
+
+
+def fetch_sso_metadata(config: EveSsoConfig) -> dict[str, Any]:
+    payload = get_json(config.well_known_url, timeout_seconds=15.0)
+    if not isinstance(payload, dict):
+        raise CorpIntelError("EVE SSO metadata endpoint returned unexpected data.")
+    return payload
+
+
+def build_sso_authorization_url(config: EveSsoConfig, state: str, metadata: dict[str, Any] | None = None) -> str:
+    if not config.enabled:
+        raise CorpIntelError("EVE SSO is not configured.")
+    metadata = metadata or fetch_sso_metadata(config)
+    authorize_url = str(metadata.get("authorization_endpoint") or "https://login.eveonline.com/v2/oauth/authorize")
+    params = {
+        "response_type": "code",
+        "client_id": config.client_id,
+        "redirect_uri": config.callback_url,
+        "state": state,
+    }
+    if config.scopes:
+        params["scope"] = " ".join(config.scopes)
+    return f"{authorize_url}?{urlencode(params)}"
+
+
+def exchange_sso_code(config: EveSsoConfig, code: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = metadata or fetch_sso_metadata(config)
+    token_url = str(metadata.get("token_endpoint") or "https://login.eveonline.com/v2/oauth/token")
+    payload = post_form(
+        token_url,
+        {"grant_type": "authorization_code", "code": code, "redirect_uri": config.callback_url},
+        basic_auth=(config.client_id, config.client_secret),
+        timeout_seconds=30.0,
+    )
+    if not isinstance(payload, dict) or not payload.get("access_token"):
+        raise CorpIntelError("EVE SSO token endpoint did not return an access token.")
+    return payload
+
+
+def decode_eve_access_token(access_token: str, *, client_id: str) -> dict[str, Any]:
+    parts = access_token.split(".")
+    if len(parts) < 2:
+        raise CorpIntelError("EVE SSO access token is not a JWT.")
+    try:
+        payload_bytes = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise CorpIntelError("Could not decode EVE SSO access token.") from exc
+    if not isinstance(payload, dict):
+        raise CorpIntelError("EVE SSO access token payload was not a JSON object.")
+
+    issuer = str(payload.get("iss") or "")
+    if issuer not in {"login.eveonline.com", "https://login.eveonline.com/", "https://login.eveonline.com"}:
+        raise CorpIntelError(f"EVE SSO token had unexpected issuer: {issuer}")
+
+    audience = payload.get("aud")
+    audiences = {str(audience)} if isinstance(audience, str) else {str(item) for item in audience or ()}
+    if client_id not in audiences:
+        raise CorpIntelError("EVE SSO token audience does not include this application.")
+
+    expires_at = int(payload.get("exp") or 0)
+    if expires_at <= int(time.time()):
+        raise CorpIntelError("EVE SSO access token is expired.")
+
+    subject = str(payload.get("sub") or "")
+    if not subject.startswith("CHARACTER:EVE:"):
+        raise CorpIntelError("EVE SSO token subject was not an EVE character.")
+    return payload
+
+
+def character_id_from_sso_payload(payload: dict[str, Any]) -> int:
+    subject = str(payload.get("sub") or "")
+    try:
+        return int(subject.split(":")[-1])
+    except ValueError as exc:
+        raise CorpIntelError("EVE SSO token did not contain a valid character id.") from exc
+
+
+def scopes_from_sso_payload(payload: dict[str, Any]) -> tuple[str, ...]:
+    scopes = payload.get("scp") or payload.get("scope") or ()
+    if isinstance(scopes, str):
+        return tuple(item for item in scopes.split(" ") if item)
+    if isinstance(scopes, list):
+        return tuple(str(item) for item in scopes if str(item))
+    return ()
+
+
+def fetch_esi_character(config: EveSsoConfig, character_id: int) -> dict[str, Any]:
+    url = f"{config.esi_base_url.rstrip('/')}/characters/{character_id}/?datasource=tranquility"
+    payload = get_json(url, timeout_seconds=30.0)
+    if not isinstance(payload, dict):
+        raise CorpIntelError("ESI character endpoint returned unexpected data.")
+    return payload
+
+
+def fetch_esi_corporation(config: EveSsoConfig, corporation_id: int) -> dict[str, Any]:
+    url = f"{config.esi_base_url.rstrip('/')}/corporations/{corporation_id}/?datasource=tranquility"
+    payload = get_json(url, timeout_seconds=30.0)
+    return payload if isinstance(payload, dict) else {}
+
+
+def fetch_esi_alliance(config: EveSsoConfig, alliance_id: int) -> dict[str, Any]:
+    url = f"{config.esi_base_url.rstrip('/')}/alliances/{alliance_id}/?datasource=tranquility"
+    payload = get_json(url, timeout_seconds=30.0)
+    return payload if isinstance(payload, dict) else {}
+
+
+def membership_allowed(config: EveSsoConfig, *, corporation_id: int, alliance_id: int | None = None) -> bool:
+    if not config.membership_restricted:
+        return True
+    if corporation_id in config.allowed_corporation_ids:
+        return True
+    return bool(alliance_id and alliance_id in config.allowed_alliance_ids)
+
+
+def verify_sso_character(
+    config: EveSsoConfig,
+    *,
+    access_token: str,
+    token_payload: dict[str, Any] | None = None,
+) -> VerifiedPilot:
+    token_payload = token_payload or decode_eve_access_token(access_token, client_id=config.client_id)
+    character_id = character_id_from_sso_payload(token_payload)
+    character_info = fetch_esi_character(config, character_id)
+    corporation_id = int(character_info.get("corporation_id") or 0)
+    if corporation_id <= 0:
+        raise CorpIntelError("ESI character endpoint did not return a corporation id.")
+    alliance_id = int(character_info["alliance_id"]) if character_info.get("alliance_id") else None
+    corporation_info = fetch_esi_corporation(config, corporation_id)
+    alliance_info = fetch_esi_alliance(config, alliance_id) if alliance_id else {}
+    timestamp = now_iso()
+    return VerifiedPilot(
+        character_id=character_id,
+        character_name=str(token_payload.get("name") or character_info.get("name") or f"Character {character_id}"),
+        corporation_id=corporation_id,
+        corporation_name=str(corporation_info.get("name") or ""),
+        alliance_id=alliance_id,
+        alliance_name=str(alliance_info.get("name") or ""),
+        owner_hash=str(token_payload.get("owner") or ""),
+        scopes=scopes_from_sso_payload(token_payload),
+        membership_ok=membership_allowed(config, corporation_id=corporation_id, alliance_id=alliance_id),
+        verified_at=timestamp,
+        last_login_at=timestamp,
+    )
 
 
 def fetch_remote_watchlist(server_url: str, *, timeout_seconds: float = 10.0) -> IntelWatchlist:
@@ -1135,6 +1553,20 @@ def run_server(args: argparse.Namespace) -> int:
         retention_days=args.retention_days,
     )
     intel_parser = IntelParser(system_names, watchlist_store=watchlist_store)
+    url_host = url_host_for_bind(args.host)
+    callback_url = args.sso_callback_url or f"http://{url_host}:{args.port}/auth/callback"
+    sso_config = EveSsoConfig(
+        client_id=args.sso_client_id,
+        client_secret=args.sso_client_secret,
+        callback_url=callback_url,
+        scopes=parse_csv(args.sso_scopes),
+        allowed_corporation_ids=parse_int_csv(args.allowed_corporation_ids),
+        allowed_alliance_ids=parse_int_csv(args.allowed_alliance_ids),
+        trusted_members_can_edit=args.trusted_members_can_edit_watchlist,
+    )
+    pilot_registry = PilotRegistry(args.pilot_registry_path)
+    auth_state_store = AuthStateStore()
+    session_store = SessionStore()
 
     if args.watch_local:
         start_local_watcher_thread(
@@ -1154,8 +1586,11 @@ def run_server(args: argparse.Namespace) -> int:
         ingest_token=args.ingest_token,
         watchlist_store=watchlist_store,
         admin_token=args.admin_token,
+        sso_config=sso_config,
+        pilot_registry=pilot_registry,
+        auth_state_store=auth_state_store,
+        session_store=session_store,
     )
-    url_host = "127.0.0.1" if args.host in {"0.0.0.0", ""} else args.host
     url = f"http://{url_host}:{args.port}/"
     print(f"Corp intel board listening at {url}")
     print(f"Watchlist file: {args.watchlist_path}")
@@ -1170,6 +1605,18 @@ def run_server(args: argparse.Namespace) -> int:
         print("Remote watchlist edits require the admin token.")
     else:
         print("Watchlist edits are limited to the host browser unless --admin-token is set.")
+    if sso_config.enabled:
+        print(f"EVE SSO enabled. Callback URL: {sso_config.callback_url}")
+        if sso_config.membership_restricted:
+            print(
+                "Membership allowlist: "
+                f"corps={list(sso_config.allowed_corporation_ids)}, "
+                f"alliances={list(sso_config.allowed_alliance_ids)}"
+            )
+        else:
+            print("No corp/alliance allowlist set; any EVE-authenticated character can sign in.")
+    else:
+        print("EVE SSO is not configured.")
     if args.host == "0.0.0.0":
         print("LAN mode is enabled. Share your computer's LAN IP and port with opted-in corp members.")
     if args.open_browser:
@@ -1190,35 +1637,66 @@ def build_http_server(
     ingest_token: str = "",
     watchlist_store: WatchlistStore | None = None,
     admin_token: str = "",
+    sso_config: EveSsoConfig | None = None,
+    pilot_registry: PilotRegistry | None = None,
+    auth_state_store: AuthStateStore | None = None,
+    session_store: SessionStore | None = None,
 ) -> ThreadingHTTPServer:
     watchlist_store = watchlist_store or WatchlistStore()
+    sso_config = sso_config or EveSsoConfig()
+    pilot_registry = pilot_registry or PilotRegistry(DEFAULT_PILOT_REGISTRY_PATH)
+    auth_state_store = auth_state_store or AuthStateStore()
+    session_store = session_store or SessionStore()
 
     class CorpIntelHandler(BaseHTTPRequestHandler):
         server_version = "CorpIntelBoard/0.1"
 
         def do_GET(self) -> None:
-            if self.path in {"/", "/index.html"}:
+            path = urlparse(self.path).path
+            if path in {"/", "/index.html"}:
                 self._send_html(DASHBOARD_HTML)
                 return
-            if self.path == "/api/state":
+            if path == "/api/state":
                 self._send_json(store.snapshot())
                 return
-            if self.path == "/api/watchlist":
+            if path == "/api/watchlist":
                 payload = watchlist_store.to_dict()
-                payload["can_write"] = request_has_admin_access(self, admin_token)
+                pilot = get_request_pilot(self, session_store, pilot_registry)
+                payload["can_write"] = request_has_admin_access(
+                    self,
+                    admin_token,
+                    sso_config=sso_config,
+                    pilot=pilot,
+                )
                 self._send_json(payload)
                 return
-            if self.path == "/api/health":
+            if path == "/api/me":
+                self._send_json(auth_status_payload(self, sso_config, session_store, pilot_registry))
+                return
+            if path == "/auth/login":
+                self._handle_auth_login()
+                return
+            if path == "/auth/callback":
+                self._handle_auth_callback()
+                return
+            if path == "/auth/logout":
+                self._handle_auth_logout()
+                return
+            if path == "/api/health":
                 self._send_json({"ok": True, "generated_at": now_iso()})
                 return
             self.send_error(404, "Not found")
 
         def do_POST(self) -> None:
-            if self.path == "/api/ingest":
+            path = urlparse(self.path).path
+            if path == "/api/ingest":
                 self._handle_ingest()
                 return
-            if self.path == "/api/watchlist":
+            if path == "/api/watchlist":
                 self._handle_watchlist_update()
+                return
+            if path == "/auth/logout":
+                self._handle_auth_logout()
                 return
             self.send_error(404, "Not found")
 
@@ -1240,8 +1718,9 @@ def build_http_server(
             self._send_json({"ok": True, "added": added})
 
         def _handle_watchlist_update(self) -> None:
-            if not request_has_admin_access(self, admin_token):
-                self.send_error(403, "Watchlist edits require local access or the admin token")
+            pilot = get_request_pilot(self, session_store, pilot_registry)
+            if not request_has_admin_access(self, admin_token, sso_config=sso_config, pilot=pilot):
+                self.send_error(403, "Watchlist edits require local access, admin token, or trusted SSO membership")
                 return
             try:
                 payload = self._read_json_body()
@@ -1261,6 +1740,60 @@ def build_http_server(
             response["counts"] = watchlist.counts()
             response["can_write"] = True
             self._send_json(response)
+
+        def _handle_auth_login(self) -> None:
+            if not sso_config.enabled:
+                self.send_error(503, "EVE SSO is not configured")
+                return
+            try:
+                state = auth_state_store.create()
+                url = build_sso_authorization_url(sso_config, state)
+            except CorpIntelError as exc:
+                self.send_error(502, str(exc))
+                return
+            self._redirect(url)
+
+        def _handle_auth_callback(self) -> None:
+            if not sso_config.enabled:
+                self.send_error(503, "EVE SSO is not configured")
+                return
+            params = parse_qs(urlparse(self.path).query)
+            state = first_query_value(params, "state")
+            code = first_query_value(params, "code")
+            error = first_query_value(params, "error")
+            if error:
+                self._send_html(render_auth_result("EVE SSO declined the login request.", ok=False))
+                return
+            if not state or not auth_state_store.consume(state):
+                self.send_error(400, "Invalid or expired SSO state")
+                return
+            if not code:
+                self.send_error(400, "Missing SSO authorization code")
+                return
+            try:
+                token_payload = exchange_sso_code(sso_config, code)
+                pilot = verify_sso_character(
+                    sso_config,
+                    access_token=str(token_payload["access_token"]),
+                )
+                pilot_registry.upsert(pilot)
+                session_id = session_store.create(pilot.character_id)
+            except CorpIntelError as exc:
+                self._send_html(render_auth_result(str(exc), ok=False))
+                return
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.send_header("Set-Cookie", session_cookie_header(session_id))
+            self.end_headers()
+
+        def _handle_auth_logout(self) -> None:
+            session_id = request_cookie(self, "corp_intel_session")
+            if session_id:
+                session_store.delete(session_id)
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.send_header("Set-Cookie", clear_session_cookie_header())
+            self.end_headers()
 
         def _read_json_body(self) -> Any:
             body = self.rfile.read(int(self.headers.get("Content-Length") or "0"))
@@ -1285,7 +1818,89 @@ def build_http_server(
             self.end_headers()
             self.wfile.write(body)
 
+        def _redirect(self, url: str) -> None:
+            self.send_response(302)
+            self.send_header("Location", url)
+            self.end_headers()
+
     return ThreadingHTTPServer((host, port), CorpIntelHandler)
+
+
+def first_query_value(params: dict[str, list[str]], key: str) -> str:
+    values = params.get(key) or []
+    return values[0] if values else ""
+
+
+def request_cookie(handler: BaseHTTPRequestHandler, name: str) -> str:
+    raw_cookie = handler.headers.get("Cookie", "")
+    for part in raw_cookie.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if key.strip() == name:
+            return value.strip()
+    return ""
+
+
+def session_cookie_header(session_id: str) -> str:
+    return f"corp_intel_session={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age={12 * 60 * 60}"
+
+
+def clear_session_cookie_header() -> str:
+    return "corp_intel_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
+
+def get_request_pilot(
+    handler: BaseHTTPRequestHandler,
+    session_store: SessionStore,
+    pilot_registry: PilotRegistry,
+) -> VerifiedPilot | None:
+    session_id = request_cookie(handler, "corp_intel_session")
+    if not session_id:
+        return None
+    character_id = session_store.get(session_id)
+    if character_id is None:
+        return None
+    return pilot_registry.get(character_id)
+
+
+def auth_status_payload(
+    handler: BaseHTTPRequestHandler,
+    sso_config: EveSsoConfig,
+    session_store: SessionStore,
+    pilot_registry: PilotRegistry,
+) -> dict[str, Any]:
+    pilot = get_request_pilot(handler, session_store, pilot_registry)
+    return {
+        "generated_at": now_iso(),
+        "sso": sso_config.to_public_dict(),
+        "authenticated": pilot is not None,
+        "pilot": pilot.to_dict() if pilot else None,
+    }
+
+
+def render_auth_result(message: str, *, ok: bool) -> str:
+    title = "EVE SSO Login" if ok else "EVE SSO Login Failed"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{ font-family: "Segoe UI", Arial, sans-serif; margin: 32px; color: #1f2528; background: #eef2f1; }}
+    main {{ max-width: 680px; background: #fff; border: 1px solid #d8ddd8; border-radius: 8px; padding: 20px; }}
+    a {{ color: #224e5f; font-weight: 700; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{html.escape(title)}</h1>
+    <p>{html.escape(message)}</p>
+    <p><a href="/">Return to the intel board</a></p>
+  </main>
+</body>
+</html>"""
 
 
 def request_has_token(handler: BaseHTTPRequestHandler, expected: str) -> bool:
@@ -1294,14 +1909,22 @@ def request_has_token(handler: BaseHTTPRequestHandler, expected: str) -> bool:
     return auth == f"Bearer {expected}" or token == expected
 
 
-def request_has_admin_access(handler: BaseHTTPRequestHandler, admin_token: str) -> bool:
+def request_has_admin_access(
+    handler: BaseHTTPRequestHandler,
+    admin_token: str,
+    *,
+    sso_config: EveSsoConfig | None = None,
+    pilot: VerifiedPilot | None = None,
+) -> bool:
     if request_is_loopback(handler):
         return True
     if not admin_token:
-        return False
+        return bool(sso_config and sso_config.trusted_members_can_edit and pilot and pilot.membership_ok)
     auth = handler.headers.get("Authorization", "")
     token = handler.headers.get("X-Admin-Token", "") or handler.headers.get("X-Intel-Token", "")
-    return auth == f"Bearer {admin_token}" or token == admin_token
+    if auth == f"Bearer {admin_token}" or token == admin_token:
+        return True
+    return bool(sso_config and sso_config.trusted_members_can_edit and pilot and pilot.membership_ok)
 
 
 def request_is_loopback(handler: BaseHTTPRequestHandler) -> bool:
@@ -1347,6 +1970,20 @@ def parse_csv(value: str | None) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def parse_int_csv(value: str | None) -> tuple[int, ...]:
+    result: list[int] = []
+    for item in parse_csv(value):
+        try:
+            result.append(int(item))
+        except ValueError as exc:
+            raise CorpIntelError(f"Expected a numeric id, got {item!r}.") from exc
+    return tuple(result)
+
+
+def url_host_for_bind(host: str) -> str:
+    return "127.0.0.1" if host in {"0.0.0.0", ""} else host
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run a read-only EVE corp intel board from opt-in chat logs.",
@@ -1381,6 +2018,47 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-event-db",
         action="store_true",
         help="Disable event persistence and keep intel events in memory only.",
+    )
+    serve.add_argument(
+        "--pilot-registry-path",
+        type=Path,
+        default=DEFAULT_PILOT_REGISTRY_PATH,
+        help="Local SQLite file used to store verified EVE SSO pilot records.",
+    )
+    serve.add_argument(
+        "--sso-client-id",
+        default=os.environ.get("CORP_INTEL_SSO_CLIENT_ID", ""),
+        help="EVE SSO application client id. Can also be set with CORP_INTEL_SSO_CLIENT_ID.",
+    )
+    serve.add_argument(
+        "--sso-client-secret",
+        default=os.environ.get("CORP_INTEL_SSO_CLIENT_SECRET", ""),
+        help="EVE SSO application secret. Can also be set with CORP_INTEL_SSO_CLIENT_SECRET.",
+    )
+    serve.add_argument(
+        "--sso-callback-url",
+        default=os.environ.get("CORP_INTEL_SSO_CALLBACK_URL", ""),
+        help="Registered EVE SSO callback URL. Defaults to this board's /auth/callback URL.",
+    )
+    serve.add_argument(
+        "--sso-scopes",
+        default=os.environ.get("CORP_INTEL_SSO_SCOPES", ""),
+        help="Comma-separated EVE SSO scopes. Leave empty for character identity only.",
+    )
+    serve.add_argument(
+        "--allowed-corporation-ids",
+        default=os.environ.get("CORP_INTEL_ALLOWED_CORPORATION_IDS", ""),
+        help="Comma-separated corporation ids allowed to sign in as trusted corp members.",
+    )
+    serve.add_argument(
+        "--allowed-alliance-ids",
+        default=os.environ.get("CORP_INTEL_ALLOWED_ALLIANCE_IDS", ""),
+        help="Comma-separated alliance ids allowed to sign in as trusted members.",
+    )
+    serve.add_argument(
+        "--trusted-members-can-edit-watchlist",
+        action="store_true",
+        help="Allow SSO-verified members in the configured corp/alliance allowlist to edit watchlists.",
     )
     serve.add_argument(
         "--retention-days",
@@ -1496,6 +2174,31 @@ DASHBOARD_HTML = r"""<!doctype html>
       color: var(--muted);
       font-size: 13px;
       white-space: nowrap;
+    }
+    .header-actions {
+      display: grid;
+      gap: 8px;
+      justify-items: end;
+    }
+    .auth-panel {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+      flex-wrap: wrap;
+    }
+    .auth-panel a {
+      color: var(--accent);
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .auth-panel button {
+      min-height: 30px;
+      padding: 5px 9px;
+      font-size: 12px;
     }
     .dot {
       width: 10px;
@@ -1749,7 +2452,10 @@ DASHBOARD_HTML = r"""<!doctype html>
       <h1>Corp Intel Board</h1>
       <div class="subtitle">Read-only chat intel from opted-in pilots</div>
     </div>
-    <div class="status"><span class="dot"></span><span id="status">Connecting</span></div>
+    <div class="header-actions">
+      <div class="status"><span class="dot"></span><span id="status">Connecting</span></div>
+      <div class="auth-panel" id="auth-panel">Checking identity</div>
+    </div>
   </header>
   <main>
     <section>
@@ -1962,6 +2668,33 @@ DASHBOARD_HTML = r"""<!doctype html>
       document.getElementById("watchlist-status").textContent = payload.updated_at
         ? `Updated ${ageLabel(payload.updated_at)}`
         : "No saved watchlist yet";
+      const saveButton = document.getElementById("save-watchlist");
+      saveButton.disabled = payload.can_write === false;
+      if (payload.can_write === false) {
+        document.getElementById("watchlist-status").textContent = "Sign in or use an admin token to edit";
+      }
+    }
+
+    function renderAuth(payload) {
+      const target = document.getElementById("auth-panel");
+      const sso = payload.sso || {};
+      if (!sso.enabled) {
+        target.textContent = "EVE SSO not configured";
+        return;
+      }
+      if (!payload.authenticated) {
+        target.innerHTML = `<a href="/auth/login">Log in with EVE</a>`;
+        return;
+      }
+      const pilot = payload.pilot || {};
+      const trust = pilot.membership_ok ? "trusted" : "not in allowlist";
+      target.innerHTML = `
+        <span>${escapeHtml(pilot.character_name || "EVE pilot")} - ${escapeHtml(pilot.corporation_name || String(pilot.corporation_id || ""))} - ${trust}</span>
+        <button class="secondary" type="button" id="logout-button">Log out</button>
+      `;
+      document.getElementById("logout-button").addEventListener("click", () => {
+        window.location.href = "/auth/logout";
+      });
     }
 
     function authHeaders() {
@@ -1979,6 +2712,18 @@ DASHBOARD_HTML = r"""<!doctype html>
         renderWatchlist(payload);
       } catch (error) {
         document.getElementById("watchlist-status").textContent = "Watchlist unavailable";
+      }
+    }
+
+    async function loadAuth() {
+      try {
+        const response = await fetch("/api/me", {
+          cache: "no-store",
+          headers: authHeaders()
+        });
+        renderAuth(await response.json());
+      } catch (error) {
+        document.getElementById("auth-panel").textContent = "Identity unavailable";
       }
     }
 
@@ -2008,7 +2753,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       } catch (error) {
         document.getElementById("watchlist-status").textContent = "Save failed";
       } finally {
-        button.disabled = false;
+        button.disabled = state.watchlist?.can_write === false;
       }
     }
 
@@ -2038,6 +2783,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     document.getElementById("save-watchlist").addEventListener("click", saveWatchlist);
     document.getElementById("admin-token").addEventListener("change", loadWatchlist);
 
+    loadAuth();
     loadWatchlist();
     refresh();
     setInterval(refresh, 1500);

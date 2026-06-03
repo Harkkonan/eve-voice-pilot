@@ -91,6 +91,46 @@ The host browser can edit the watchlist without a token. Remote browsers need an
 .\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --ingest-token "change-this-token" --admin-token "change-this-admin-token"
 ```
 
+## EVE SSO Identity
+
+The board can use EVE SSO to verify dashboard users by character and check their public ESI corporation/alliance membership.
+
+Register an EVE SSO web application in the EVE Developers portal and add this callback URL:
+
+```text
+http://HOST-LAN-IP:8765/auth/callback
+```
+
+Then run the server with the SSO application values and the corp or alliance ids that should count as trusted:
+
+```powershell
+.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --ingest-token "change-this-token" --sso-client-id "client-id" --sso-client-secret "client-secret" --sso-callback-url "http://HOST-LAN-IP:8765/auth/callback" --allowed-corporation-ids "123456789"
+```
+
+You can also use environment variables instead of putting SSO values in the command:
+
+```text
+CORP_INTEL_SSO_CLIENT_ID
+CORP_INTEL_SSO_CLIENT_SECRET
+CORP_INTEL_SSO_CALLBACK_URL
+CORP_INTEL_ALLOWED_CORPORATION_IDS
+CORP_INTEL_ALLOWED_ALLIANCE_IDS
+```
+
+Verified pilot records are stored locally in:
+
+```text
+profiles/corp_intel_pilots.sqlite3
+```
+
+This first SSO slice uses SSO only to prove character ownership and check current public corporation/alliance identity. It does not store EVE access tokens or refresh tokens.
+
+By default, SSO-verified members can sign in and see their identity status, but remote watchlist edits still require the admin token. To let verified allowlisted members edit watchlists:
+
+```powershell
+.\scripts\run_corp_intel_board.ps1 serve --trusted-members-can-edit-watchlist
+```
+
 ## Safer Testing
 
 Use dry run before uploading from a corp member PC:
@@ -123,5 +163,7 @@ Aid calls are marked `critical`. Hostile reports with systems are marked `high`.
 - The default agent sends only matching intel events, not every chat line.
 - Uploaded events do not include the sender's local chat-log file path.
 - The event database is local operational data; do not publish or commit it.
+- The pilot registry is local operational data; do not publish or commit it.
+- SSO tokens are used during login and then discarded. Do not add broad ESI scopes unless a future feature truly needs them.
 - Use `--pilot` labels that your corp members are comfortable showing on the board.
-- EVE SSO/ESI should be added later for identity and corp membership checks. ESI does not provide chat logs; local opt-in agents still need to read each pilot's local chat-log files.
+- ESI does not provide chat logs; local opt-in agents still need to read each pilot's local chat-log files.

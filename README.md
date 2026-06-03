@@ -135,6 +135,8 @@ The dashboard also has editable watchlists for hostile pilots, hostile corporati
 
 Recent intel events persist locally in ignored SQLite data at `profiles/corp_intel_events.sqlite3`, with seven-day retention by default.
 
+Optional EVE SSO login verifies dashboard users by character and public ESI corporation/alliance membership. Pilot records persist locally in ignored SQLite data at `profiles/corp_intel_pilots.sqlite3`; access and refresh tokens are not stored.
+
 ## Notes
 
 If EVE is running as administrator and this app is not, Windows may block simulated keypresses. Usually both apps should run normally, without administrator mode.
