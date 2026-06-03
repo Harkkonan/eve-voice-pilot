@@ -4,6 +4,8 @@ The corp intel board is a read-only dashboard for hostile reports and aid calls 
 
 It does not modify the EVE client, send keys, read packets, scrape cache files, or automate gameplay. It only reads opted-in chat log files and turns matching lines into dashboard alerts.
 
+Review the project policy checklist in `docs/eve_developer_license_review.md` before public hosting, new ESI scopes, monetization changes, or broader corp rollout.
+
 ## Local Board
 
 Double-click:
