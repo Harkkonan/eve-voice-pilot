@@ -44,6 +44,33 @@ On each opted-in corp member PC, run:
 
 The agent prints a visible status line showing which server, pilot label, and channel allowlist it is using.
 
+Agents refresh the shared watchlist from the server every 60 seconds by default. This keeps the safer upload model: opted-in pilots send matching intel events, not their full chat logs, while the host can still update the hostile/help terms centrally.
+
+## Dashboard Watchlists
+
+The dashboard has editable watchlists for:
+
+- Hostile pilot names.
+- Hostile corporation names.
+- Help callout phrases.
+- Extra keywords.
+
+Watchlist matches are applied to new chat lines as they arrive. Hostile pilot and corporation matches are marked `high`. Help callout matches are marked `critical`.
+
+The server stores the live watchlist in:
+
+```text
+profiles/corp_intel_watchlist.json
+```
+
+That file is ignored by Git because it can contain operational corp intel.
+
+The host browser can edit the watchlist without a token. Remote browsers need an admin token:
+
+```powershell
+.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --ingest-token "change-this-token" --admin-token "change-this-admin-token"
+```
+
 ## Safer Testing
 
 Use dry run before uploading from a corp member PC:
@@ -65,6 +92,7 @@ The parser watches for:
 - Solar system names from public ESI data.
 - Hostile words such as `hostile`, `red`, `neut`, `war target`, `camp`, `bubble`, `cyno`, `dictor`, and `bombers`.
 - Aid calls such as `need help`, `need reps`, `need logi`, `tackled`, `pointed`, `scrammed`, and `under attack`.
+- Dashboard watchlist terms for hostile pilots, hostile corporations, help callouts, and extra keywords.
 
 Aid calls are marked `critical`. Hostile reports with systems are marked `high`.
 
@@ -73,4 +101,6 @@ Aid calls are marked `critical`. Hostile reports with systems are marked `high`.
 - Keep channel allowlists narrow.
 - Do not use `--all-channels` unless everyone understands what is being shared.
 - The default agent sends only matching intel events, not every chat line.
+- Uploaded events do not include the sender's local chat-log file path.
 - Use `--pilot` labels that your corp members are comfortable showing on the board.
+- EVE SSO/ESI should be added later for identity and corp membership checks. ESI does not provide chat logs; local opt-in agents still need to read each pilot's local chat-log files.

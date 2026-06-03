@@ -131,6 +131,8 @@ Run an opt-in corp member agent:
 
 The agent sends only matching intel events by default, not every chat line. Keep channel allowlists narrow. More detail is in `docs/corp_intel_board.md`.
 
+The dashboard also has editable watchlists for hostile pilots, hostile corporations, help callouts, and extra keywords. The live watchlist is stored in ignored local data at `profiles/corp_intel_watchlist.json`; remote agents refresh it from the shared server every 60 seconds.
+
 ## Notes
 
 If EVE is running as administrator and this app is not, Windows may block simulated keypresses. Usually both apps should run normally, without administrator mode.

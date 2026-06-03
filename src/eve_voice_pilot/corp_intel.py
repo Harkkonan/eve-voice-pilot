@@ -27,6 +27,10 @@ DEFAULT_PORT = 8765
 DEFAULT_POLL_SECONDS = 1.0
 DEFAULT_MAX_EVENTS = 500
 DEFAULT_CHANNELS = "Corp,Corporation,Fleet,Alliance,Local,*Intel*"
+DEFAULT_WATCHLIST_PATH = ROOT / "profiles" / "corp_intel_watchlist.json"
+DEFAULT_WATCHLIST_REFRESH_SECONDS = 60.0
+MAX_WATCHLIST_ITEMS = 200
+MAX_WATCHLIST_TERM_LENGTH = 96
 CHAT_LINE_RE = re.compile(
     r"^\[\s*(?P<timestamp>\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}:\d{2})\s*\]\s*"
     r"(?P<speaker>.*?)\s*>\s*(?P<message>.*)$"
@@ -89,6 +93,13 @@ SEVERITY_RANK = {
     "critical": 3,
 }
 
+WATCHLIST_FIELDS = (
+    "hostile_pilots",
+    "hostile_corporations",
+    "help_phrases",
+    "keywords",
+)
+
 
 class CorpIntelError(RuntimeError):
     pass
@@ -143,7 +154,6 @@ class IntelEvent:
             "keywords": list(self.keywords),
             "observed_at": self.observed_at,
             "reported_at": self.reported_at,
-            "log_path": self.log_path,
         }
 
     @classmethod
@@ -213,10 +223,139 @@ class SystemMatcher:
         return tuple(found)
 
 
+@dataclass(frozen=True)
+class WatchlistMatch:
+    term: str
+    keyword: str
+    categories: tuple[str, ...]
+    severity: str
+
+
+@dataclass(frozen=True)
+class CompiledWatchTerm:
+    term: str
+    keyword: str
+    categories: tuple[str, ...]
+    severity: str
+    pattern: re.Pattern[str]
+
+
+@dataclass(frozen=True)
+class IntelWatchlist:
+    hostile_pilots: tuple[str, ...] = ()
+    hostile_corporations: tuple[str, ...] = ()
+    help_phrases: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
+    updated_at: str = ""
+    updated_by: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hostile_pilots": list(self.hostile_pilots),
+            "hostile_corporations": list(self.hostile_corporations),
+            "help_phrases": list(self.help_phrases),
+            "keywords": list(self.keywords),
+            "updated_at": self.updated_at,
+            "updated_by": self.updated_by,
+        }
+
+    def counts(self) -> dict[str, int]:
+        return {
+            "hostile_pilots": len(self.hostile_pilots),
+            "hostile_corporations": len(self.hostile_corporations),
+            "help_phrases": len(self.help_phrases),
+            "keywords": len(self.keywords),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "IntelWatchlist":
+        return cls(
+            hostile_pilots=clean_watchlist_terms(payload.get("hostile_pilots")),
+            hostile_corporations=clean_watchlist_terms(payload.get("hostile_corporations")),
+            help_phrases=clean_watchlist_terms(payload.get("help_phrases")),
+            keywords=clean_watchlist_terms(payload.get("keywords")),
+            updated_at=str(payload.get("updated_at") or ""),
+            updated_by=str(payload.get("updated_by") or ""),
+        )
+
+
+class WatchlistStore:
+    def __init__(self, path: Path | None = None, *, watchlist: IntelWatchlist | None = None):
+        self.path = path.expanduser() if path else None
+        self._lock = threading.Lock()
+        self._watchlist = watchlist or IntelWatchlist()
+        self._compiled = compile_watchlist_terms(self._watchlist)
+        if self.path:
+            self.load()
+
+    def load(self) -> IntelWatchlist:
+        if not self.path or not self.path.exists():
+            return self.snapshot()
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CorpIntelError(f"Could not read watchlist {self.path}: {exc}") from exc
+        watchlist = IntelWatchlist.from_dict(payload if isinstance(payload, dict) else {})
+        self.replace(watchlist)
+        return watchlist
+
+    def replace(self, watchlist: IntelWatchlist) -> IntelWatchlist:
+        compiled = compile_watchlist_terms(watchlist)
+        with self._lock:
+            self._watchlist = watchlist
+            self._compiled = compiled
+        return watchlist
+
+    def update(self, payload: dict[str, Any], *, updated_by: str = "dashboard") -> IntelWatchlist:
+        clean_payload = dict(payload)
+        clean_payload["updated_at"] = now_iso()
+        clean_payload["updated_by"] = updated_by[:64]
+        watchlist = IntelWatchlist.from_dict(clean_payload)
+        self.replace(watchlist)
+        self.save()
+        return watchlist
+
+    def save(self) -> None:
+        if not self.path:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        body = json.dumps(self.snapshot().to_dict(), indent=2) + "\n"
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp_path.write_text(body, encoding="utf-8")
+        tmp_path.replace(self.path)
+
+    def snapshot(self) -> IntelWatchlist:
+        with self._lock:
+            return self._watchlist
+
+    def to_dict(self) -> dict[str, Any]:
+        watchlist = self.snapshot()
+        payload = watchlist.to_dict()
+        payload["counts"] = watchlist.counts()
+        return payload
+
+    def match(self, text: str) -> tuple[WatchlistMatch, ...]:
+        with self._lock:
+            compiled = tuple(self._compiled)
+        matches: list[WatchlistMatch] = []
+        for item in compiled:
+            if item.pattern.search(text):
+                matches.append(
+                    WatchlistMatch(
+                        term=item.term,
+                        keyword=item.keyword,
+                        categories=item.categories,
+                        severity=item.severity,
+                    )
+                )
+        return tuple(matches)
+
+
 class IntelParser:
-    def __init__(self, system_names: Iterable[str]):
+    def __init__(self, system_names: Iterable[str], *, watchlist_store: WatchlistStore | None = None):
         self.system_matcher = SystemMatcher(system_names)
         self.keyword_rules = build_keyword_rules()
+        self.watchlist_store = watchlist_store or WatchlistStore()
 
     def analyze(self, message: ChatMessage, *, source: str = "local") -> IntelEvent | None:
         categories: set[str] = set()
@@ -229,6 +368,11 @@ class IntelParser:
                 categories.add(rule.category)
                 keywords.append(rule.keyword)
                 severity = higher_severity(severity, rule.severity)
+
+        for match in self.watchlist_store.match(message.text):
+            categories.update(match.categories)
+            keywords.append(match.keyword)
+            severity = higher_severity(severity, match.severity)
 
         if not categories:
             return None
@@ -312,6 +456,90 @@ def build_keyword_rules() -> tuple[KeywordRule, ...]:
             )
         )
     return tuple(rules)
+
+
+def clean_watchlist_terms(values: Any) -> tuple[str, ...]:
+    if isinstance(values, str):
+        raw_values: Iterable[Any] = re.split(r"[\r\n,]+", values)
+    elif isinstance(values, (list, tuple)):
+        raw_values = values
+    else:
+        raw_values = ()
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        value = "".join(char for char in str(raw_value) if char.isprintable())
+        value = SPACE_RE.sub(" ", value).strip()
+        value = value[:MAX_WATCHLIST_TERM_LENGTH].strip()
+        if not value:
+            continue
+        folded = value.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        cleaned.append(value)
+        if len(cleaned) >= MAX_WATCHLIST_ITEMS:
+            break
+    return tuple(cleaned)
+
+
+def compile_watchlist_terms(watchlist: IntelWatchlist) -> tuple[CompiledWatchTerm, ...]:
+    terms: list[CompiledWatchTerm] = []
+    terms.extend(
+        build_compiled_watch_terms(
+            watchlist.hostile_pilots,
+            keyword_prefix="pilot",
+            categories=("hostile", "watchlist-pilot"),
+            severity="high",
+        )
+    )
+    terms.extend(
+        build_compiled_watch_terms(
+            watchlist.hostile_corporations,
+            keyword_prefix="corp",
+            categories=("hostile", "watchlist-corporation"),
+            severity="high",
+        )
+    )
+    terms.extend(
+        build_compiled_watch_terms(
+            watchlist.help_phrases,
+            keyword_prefix="help",
+            categories=("aid", "watchlist-help"),
+            severity="critical",
+        )
+    )
+    terms.extend(
+        build_compiled_watch_terms(
+            watchlist.keywords,
+            keyword_prefix="keyword",
+            categories=("watchlist-keyword",),
+            severity="medium",
+        )
+    )
+    return tuple(terms)
+
+
+def build_compiled_watch_terms(
+    terms: Iterable[str],
+    *,
+    keyword_prefix: str,
+    categories: tuple[str, ...],
+    severity: str,
+) -> list[CompiledWatchTerm]:
+    compiled: list[CompiledWatchTerm] = []
+    for term in terms:
+        compiled.append(
+            CompiledWatchTerm(
+                term=term,
+                keyword=f"{keyword_prefix}: {term}",
+                categories=categories,
+                severity=severity,
+                pattern=compile_phrase_pattern(term),
+            )
+        )
+    return compiled
 
 
 def compile_phrase_pattern(phrase: str) -> re.Pattern[str]:
@@ -578,19 +806,77 @@ def post_json(url: str, body: Any, *, token: str = "", timeout_seconds: float = 
         raise CorpIntelError(f"POST {url} returned non-JSON data: {raw[:200]!r}") from exc
 
 
+def fetch_remote_watchlist(server_url: str, *, timeout_seconds: float = 10.0) -> IntelWatchlist:
+    payload = get_json(f"{server_url.rstrip('/')}/api/watchlist", timeout_seconds=timeout_seconds)
+    if not isinstance(payload, dict):
+        raise CorpIntelError("Remote watchlist endpoint returned unexpected data.")
+    return IntelWatchlist.from_dict(payload)
+
+
+def refresh_remote_watchlist(
+    *,
+    server_url: str,
+    watchlist_store: WatchlistStore,
+    timeout_seconds: float,
+    log: Callable[[str], None] = print,
+) -> None:
+    try:
+        watchlist = fetch_remote_watchlist(server_url, timeout_seconds=timeout_seconds)
+    except CorpIntelError as exc:
+        log(f"Watchlist refresh failed: {exc}")
+        return
+    watchlist_store.replace(watchlist)
+    counts = watchlist.counts()
+    log(
+        "Loaded watchlist: "
+        f"{counts['hostile_pilots']} pilots, "
+        f"{counts['hostile_corporations']} corps, "
+        f"{counts['help_phrases']} help phrases, "
+        f"{counts['keywords']} keywords"
+    )
+
+
+def start_remote_watchlist_refresh_thread(
+    *,
+    server_url: str,
+    watchlist_store: WatchlistStore,
+    interval_seconds: float,
+    timeout_seconds: float,
+) -> threading.Thread:
+    interval_seconds = max(10.0, interval_seconds)
+
+    def refresh_loop() -> None:
+        while True:
+            time.sleep(interval_seconds)
+            refresh_remote_watchlist(
+                server_url=server_url,
+                watchlist_store=watchlist_store,
+                timeout_seconds=timeout_seconds,
+            )
+
+    thread = threading.Thread(target=refresh_loop, daemon=True)
+    thread.start()
+    return thread
+
+
 def chunked(values: list[int], size: int) -> Iterable[list[int]]:
     for index in range(0, len(values), size):
         yield values[index : index + size]
 
 
 def summarize_counts(events: list[IntelEvent]) -> dict[str, int]:
-    counts = {"events": len(events), "critical": 0, "high": 0, "aid": 0, "hostile": 0}
+    counts = {"events": len(events), "critical": 0, "high": 0, "aid": 0, "hostile": 0, "watchlist": 0}
     for event in events:
         if event.severity in {"critical", "high"}:
             counts[event.severity] += 1
+        watchlist_hit = False
         for category in event.categories:
             if category in {"aid", "hostile"}:
                 counts[category] += 1
+            if category.startswith("watchlist-"):
+                watchlist_hit = True
+        if watchlist_hit:
+            counts["watchlist"] += 1
     return counts
 
 
@@ -667,14 +953,31 @@ def start_local_watcher_thread(
 
 def run_agent(args: argparse.Namespace) -> int:
     channel_filter = channel_filter_from_args(args)
+    watchlist_store = WatchlistStore()
+    if not args.disable_remote_watchlist:
+        refresh_remote_watchlist(
+            server_url=args.server,
+            watchlist_store=watchlist_store,
+            timeout_seconds=args.post_timeout,
+        )
+        start_remote_watchlist_refresh_thread(
+            server_url=args.server,
+            watchlist_store=watchlist_store,
+            interval_seconds=args.watchlist_refresh,
+            timeout_seconds=args.post_timeout,
+        )
     system_names = load_system_names(refresh=args.refresh_systems)
-    intel_parser = IntelParser(system_names)
+    intel_parser = IntelParser(system_names, watchlist_store=watchlist_store)
     endpoint = args.server.rstrip("/") + "/api/ingest"
 
     print("Corp intel agent is read-only.")
     print(f"Pilot/source label: {args.pilot}")
     print(f"Server endpoint: {endpoint}")
     print(f"Channel allowlist: {channel_filter.describe()}")
+    if args.disable_remote_watchlist:
+        print("Remote watchlist refresh is disabled.")
+    else:
+        print(f"Remote watchlist refresh: every {max(10.0, args.watchlist_refresh):.0f} seconds.")
     if args.dry_run:
         print("Dry run is on. Matching intel events will be printed but not uploaded.")
 
@@ -707,9 +1010,10 @@ def run_agent(args: argparse.Namespace) -> int:
 
 def run_server(args: argparse.Namespace) -> int:
     channel_filter = channel_filter_from_args(args)
+    watchlist_store = WatchlistStore(args.watchlist_path)
     system_names = load_system_names(refresh=args.refresh_systems)
     store = IntelEventStore(max_events=args.max_events)
-    intel_parser = IntelParser(system_names)
+    intel_parser = IntelParser(system_names, watchlist_store=watchlist_store)
 
     if args.watch_local:
         start_local_watcher_thread(
@@ -722,12 +1026,24 @@ def run_server(args: argparse.Namespace) -> int:
             read_existing=args.read_existing,
         )
 
-    server = build_http_server(args.host, args.port, store, ingest_token=args.ingest_token)
+    server = build_http_server(
+        args.host,
+        args.port,
+        store,
+        ingest_token=args.ingest_token,
+        watchlist_store=watchlist_store,
+        admin_token=args.admin_token,
+    )
     url_host = "127.0.0.1" if args.host in {"0.0.0.0", ""} else args.host
     url = f"http://{url_host}:{args.port}/"
     print(f"Corp intel board listening at {url}")
+    print(f"Watchlist file: {args.watchlist_path}")
     if args.ingest_token:
         print("Remote agent uploads require the shared ingest token.")
+    if args.admin_token:
+        print("Remote watchlist edits require the admin token.")
+    else:
+        print("Watchlist edits are limited to the host browser unless --admin-token is set.")
     if args.host == "0.0.0.0":
         print("LAN mode is enabled. Share your computer's LAN IP and port with opted-in corp members.")
     if args.open_browser:
@@ -740,7 +1056,17 @@ def run_server(args: argparse.Namespace) -> int:
         return 0
 
 
-def build_http_server(host: str, port: int, store: IntelEventStore, *, ingest_token: str = "") -> ThreadingHTTPServer:
+def build_http_server(
+    host: str,
+    port: int,
+    store: IntelEventStore,
+    *,
+    ingest_token: str = "",
+    watchlist_store: WatchlistStore | None = None,
+    admin_token: str = "",
+) -> ThreadingHTTPServer:
+    watchlist_store = watchlist_store or WatchlistStore()
+
     class CorpIntelHandler(BaseHTTPRequestHandler):
         server_version = "CorpIntelBoard/0.1"
 
@@ -751,21 +1077,31 @@ def build_http_server(host: str, port: int, store: IntelEventStore, *, ingest_to
             if self.path == "/api/state":
                 self._send_json(store.snapshot())
                 return
+            if self.path == "/api/watchlist":
+                payload = watchlist_store.to_dict()
+                payload["can_write"] = request_has_admin_access(self, admin_token)
+                self._send_json(payload)
+                return
             if self.path == "/api/health":
                 self._send_json({"ok": True, "generated_at": now_iso()})
                 return
             self.send_error(404, "Not found")
 
         def do_POST(self) -> None:
-            if self.path != "/api/ingest":
-                self.send_error(404, "Not found")
+            if self.path == "/api/ingest":
+                self._handle_ingest()
                 return
+            if self.path == "/api/watchlist":
+                self._handle_watchlist_update()
+                return
+            self.send_error(404, "Not found")
+
+        def _handle_ingest(self) -> None:
             if ingest_token and not request_has_token(self, ingest_token):
                 self.send_error(401, "Missing or invalid ingest token")
                 return
             try:
-                body = self.rfile.read(int(self.headers.get("Content-Length") or "0"))
-                payload = json.loads(body.decode("utf-8"))
+                payload = self._read_json_body()
             except (ValueError, json.JSONDecodeError) as exc:
                 self.send_error(400, f"Invalid JSON: {exc}")
                 return
@@ -776,6 +1112,33 @@ def build_http_server(host: str, port: int, store: IntelEventStore, *, ingest_to
                 self.send_error(400, f"Invalid event payload: {exc}")
                 return
             self._send_json({"ok": True, "added": added})
+
+        def _handle_watchlist_update(self) -> None:
+            if not request_has_admin_access(self, admin_token):
+                self.send_error(403, "Watchlist edits require local access or the admin token")
+                return
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_error(400, f"Invalid JSON: {exc}")
+                return
+            if not isinstance(payload, dict):
+                self.send_error(400, "Watchlist payload must be a JSON object")
+                return
+
+            try:
+                watchlist = watchlist_store.update(payload, updated_by="dashboard")
+            except (OSError, ValueError) as exc:
+                self.send_error(500, f"Could not save watchlist: {exc}")
+                return
+            response = watchlist.to_dict()
+            response["counts"] = watchlist.counts()
+            response["can_write"] = True
+            self._send_json(response)
+
+        def _read_json_body(self) -> Any:
+            body = self.rfile.read(int(self.headers.get("Content-Length") or "0"))
+            return json.loads(body.decode("utf-8"))
 
         def log_message(self, format: str, *args: Any) -> None:
             print(f"{self.address_string()} - {format % args}")
@@ -803,6 +1166,21 @@ def request_has_token(handler: BaseHTTPRequestHandler, expected: str) -> bool:
     auth = handler.headers.get("Authorization", "")
     token = handler.headers.get("X-Intel-Token", "")
     return auth == f"Bearer {expected}" or token == expected
+
+
+def request_has_admin_access(handler: BaseHTTPRequestHandler, admin_token: str) -> bool:
+    if request_is_loopback(handler):
+        return True
+    if not admin_token:
+        return False
+    auth = handler.headers.get("Authorization", "")
+    token = handler.headers.get("X-Admin-Token", "") or handler.headers.get("X-Intel-Token", "")
+    return auth == f"Bearer {admin_token}" or token == admin_token
+
+
+def request_is_loopback(handler: BaseHTTPRequestHandler) -> bool:
+    host = str(handler.client_address[0])
+    return host == "::1" or host.startswith("127.")
 
 
 def ingest_payload(payload: Any, store: IntelEventStore) -> int:
@@ -856,6 +1234,17 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--watch-local", action="store_true", help="Watch this computer's chat logs too.")
     serve.add_argument("--source", default=os.environ.get("USERNAME", "local"), help="Source label for local events.")
     serve.add_argument("--ingest-token", default="", help="Shared token required for remote agent uploads.")
+    serve.add_argument(
+        "--admin-token",
+        default=os.environ.get("CORP_INTEL_ADMIN_TOKEN", ""),
+        help="Token required for remote watchlist edits. The host browser can edit without it.",
+    )
+    serve.add_argument(
+        "--watchlist-path",
+        type=Path,
+        default=DEFAULT_WATCHLIST_PATH,
+        help="Local JSON file used to persist dashboard watchlist settings.",
+    )
     serve.add_argument("--max-events", type=int, default=DEFAULT_MAX_EVENTS, help="Maximum events retained in memory.")
     serve.add_argument("--open-browser", action="store_true", help="Open the dashboard in your default browser.")
     serve.set_defaults(func=run_server)
@@ -867,6 +1256,17 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--pilot", default=os.environ.get("USERNAME", "pilot"), help="Pilot/source label shown on events.")
     agent.add_argument("--dry-run", action="store_true", help="Print matching events without uploading.")
     agent.add_argument("--post-timeout", type=float, default=10.0, help="Seconds to wait for upload responses.")
+    agent.add_argument(
+        "--watchlist-refresh",
+        type=float,
+        default=DEFAULT_WATCHLIST_REFRESH_SECONDS,
+        help="Seconds between shared watchlist refreshes from the dashboard server.",
+    )
+    agent.add_argument(
+        "--disable-remote-watchlist",
+        action="store_true",
+        help="Do not fetch the shared watchlist; only built-in hostile/help phrases are matched.",
+    )
     agent.set_defaults(func=run_agent)
 
     return parser
@@ -903,17 +1303,20 @@ DASHBOARD_HTML = r"""<!doctype html>
   <title>Corp Intel Board</title>
   <style>
     :root {
-      --bg: #f5f6f3;
+      --bg: #eef2f1;
       --panel: #ffffff;
       --ink: #1f2528;
       --muted: #667078;
       --line: #d8ddd8;
+      --line-strong: #b8c1bd;
       --critical: #b42318;
       --high: #b05d00;
       --medium: #276a73;
       --info: #4d6678;
       --green: #2f6f54;
       --blue: #285f91;
+      --accent: #224e5f;
+      --accent-soft: #e4eef1;
     }
     * { box-sizing: border-box; }
     body {
@@ -930,7 +1333,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       align-items: center;
       padding: 16px 22px;
       border-bottom: 1px solid var(--line);
-      background: #fbfcfa;
+      background: #fbfcfc;
     }
     h1 {
       margin: 0;
@@ -1001,7 +1404,101 @@ DASHBOARD_HTML = r"""<!doctype html>
       padding: 12px 14px;
       font-size: 15px;
       border-bottom: 1px solid var(--line);
-      background: #f9faf7;
+      background: #f8faf9;
+    }
+    .panel-body {
+      padding: 14px;
+    }
+    .panel + .panel {
+      margin-top: 16px;
+    }
+    .field {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .field label, label.field {
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    input, select, textarea, button {
+      font: inherit;
+    }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--ink);
+      min-height: 36px;
+      padding: 8px 10px;
+      font-size: 13px;
+      line-height: 1.3;
+    }
+    textarea {
+      min-height: 76px;
+      resize: vertical;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: 2px solid var(--accent-soft);
+      border-color: var(--accent);
+    }
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      border: 1px solid var(--accent);
+      border-radius: 7px;
+      background: var(--accent);
+      color: #fff;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: #fff;
+      color: var(--accent);
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.65;
+    }
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .filter-grid .wide {
+      grid-column: 1 / -1;
+    }
+    .button-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+    .save-status {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .watchlist-counts {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .watchlist-counts span {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 7px;
+      background: #f8faf9;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
     }
     .system-list {
       display: grid;
@@ -1091,6 +1588,9 @@ DASHBOARD_HTML = r"""<!doctype html>
       .metric-row {
         grid-template-columns: 1fr;
       }
+      .filter-grid, .watchlist-counts {
+        grid-template-columns: 1fr;
+      }
       .system {
         grid-template-columns: 1fr;
       }
@@ -1115,10 +1615,75 @@ DASHBOARD_HTML = r"""<!doctype html>
         <div class="metric"><strong id="count-high">0</strong><span>high hostile reports</span></div>
         <div class="metric"><strong id="count-aid">0</strong><span>aid matches</span></div>
         <div class="metric"><strong id="count-hostile">0</strong><span>hostile matches</span></div>
+        <div class="metric"><strong id="count-watchlist">0</strong><span>watchlist hits</span></div>
+      </div>
+      <div class="panel">
+        <h2>Filters</h2>
+        <div class="panel-body">
+          <div class="filter-grid">
+            <label class="field wide">Search
+              <input id="filter-search" type="search" autocomplete="off">
+            </label>
+            <label class="field">Severity
+              <select id="filter-severity">
+                <option value="">Any</option>
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="info">Info</option>
+              </select>
+            </label>
+            <label class="field">Category
+              <select id="filter-category">
+                <option value="">Any</option>
+                <option value="aid">Aid</option>
+                <option value="hostile">Hostile</option>
+                <option value="watchlist-pilot">Watched pilot</option>
+                <option value="watchlist-corporation">Watched corporation</option>
+                <option value="watchlist-help">Watched help phrase</option>
+                <option value="watchlist-keyword">Watched keyword</option>
+              </select>
+            </label>
+          </div>
+          <div class="button-row">
+            <button class="secondary" id="clear-filters" type="button">Clear filters</button>
+            <span class="save-status" id="filter-status"></span>
+          </div>
+        </div>
       </div>
       <div class="panel">
         <h2>Hot Systems</h2>
         <div class="system-list" id="systems"></div>
+      </div>
+      <div class="panel">
+        <h2>Watchlist</h2>
+        <div class="panel-body">
+          <div class="watchlist-counts">
+            <span><strong id="watch-count-pilots">0</strong> pilots</span>
+            <span><strong id="watch-count-corps">0</strong> corps</span>
+            <span><strong id="watch-count-help">0</strong> help</span>
+            <span><strong id="watch-count-keywords">0</strong> keywords</span>
+          </div>
+          <label class="field">Admin token
+            <input id="admin-token" type="password" autocomplete="off">
+          </label>
+          <label class="field">Hostile pilots
+            <textarea id="watch-hostile-pilots" spellcheck="false"></textarea>
+          </label>
+          <label class="field">Hostile corporations
+            <textarea id="watch-hostile-corporations" spellcheck="false"></textarea>
+          </label>
+          <label class="field">Help callouts
+            <textarea id="watch-help-phrases" spellcheck="false"></textarea>
+          </label>
+          <label class="field">Extra keywords
+            <textarea id="watch-keywords" spellcheck="false"></textarea>
+          </label>
+          <div class="button-row">
+            <button id="save-watchlist" type="button">Save watchlist</button>
+            <span class="save-status" id="watchlist-status"></span>
+          </div>
+        </div>
       </div>
     </section>
     <section>
@@ -1129,7 +1694,10 @@ DASHBOARD_HTML = r"""<!doctype html>
     </section>
   </main>
   <script>
-    const state = { lastEventId: "" };
+    const state = {
+      events: [],
+      watchlist: null
+    };
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -1152,6 +1720,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       document.getElementById("count-high").textContent = counts.high ?? 0;
       document.getElementById("count-aid").textContent = counts.aid ?? 0;
       document.getElementById("count-hostile").textContent = counts.hostile ?? 0;
+      document.getElementById("count-watchlist").textContent = counts.watchlist ?? 0;
     }
 
     function renderSystems(systems) {
@@ -1172,13 +1741,43 @@ DASHBOARD_HTML = r"""<!doctype html>
       `).join("");
     }
 
+    function activeFilters() {
+      return {
+        search: document.getElementById("filter-search").value.trim().toLowerCase(),
+        severity: document.getElementById("filter-severity").value,
+        category: document.getElementById("filter-category").value
+      };
+    }
+
+    function eventMatchesFilters(event, filters) {
+      if (filters.severity && event.severity !== filters.severity) return false;
+      const categories = event.categories || [];
+      if (filters.category && !categories.includes(filters.category)) return false;
+      if (!filters.search) return true;
+      const haystack = [
+        event.message,
+        event.channel,
+        event.source,
+        event.speaker,
+        ...(event.systems || []),
+        ...(event.keywords || []),
+        ...categories
+      ].join(" ").toLowerCase();
+      return haystack.includes(filters.search);
+    }
+
     function renderEvents(events) {
       const target = document.getElementById("events");
-      if (!events.length) {
-        target.innerHTML = `<div class="empty">Waiting for hostile reports or aid calls.</div>`;
+      const filters = activeFilters();
+      const filtered = events.filter(event => eventMatchesFilters(event, filters));
+      document.getElementById("filter-status").textContent =
+        events.length ? `${filtered.length} of ${events.length} shown` : "";
+      if (!filtered.length) {
+        const label = events.length ? "No intel matches current filters." : "Waiting for hostile reports or aid calls.";
+        target.innerHTML = `<div class="empty">${label}</div>`;
         return;
       }
-      target.innerHTML = events.slice(0, 100).map(event => {
+      target.innerHTML = filtered.slice(0, 100).map(event => {
         const systems = (event.systems || []).length ? event.systems.join(", ") : "No system";
         const keywords = (event.keywords || []).join(", ");
         return `
@@ -1195,19 +1794,108 @@ DASHBOARD_HTML = r"""<!doctype html>
       }).join("");
     }
 
+    function linesFromTextarea(id) {
+      return document.getElementById(id).value
+        .split(/\r?\n/)
+        .map(value => value.trim())
+        .filter(Boolean);
+    }
+
+    function textareaText(values) {
+      return (values || []).join("\n");
+    }
+
+    function renderWatchlist(payload) {
+      state.watchlist = payload;
+      document.getElementById("watch-hostile-pilots").value = textareaText(payload.hostile_pilots);
+      document.getElementById("watch-hostile-corporations").value = textareaText(payload.hostile_corporations);
+      document.getElementById("watch-help-phrases").value = textareaText(payload.help_phrases);
+      document.getElementById("watch-keywords").value = textareaText(payload.keywords);
+      const counts = payload.counts || {};
+      document.getElementById("watch-count-pilots").textContent = counts.hostile_pilots ?? 0;
+      document.getElementById("watch-count-corps").textContent = counts.hostile_corporations ?? 0;
+      document.getElementById("watch-count-help").textContent = counts.help_phrases ?? 0;
+      document.getElementById("watch-count-keywords").textContent = counts.keywords ?? 0;
+      document.getElementById("watchlist-status").textContent = payload.updated_at
+        ? `Updated ${ageLabel(payload.updated_at)}`
+        : "No saved watchlist yet";
+    }
+
+    function authHeaders() {
+      const token = document.getElementById("admin-token").value.trim();
+      return token ? { "Authorization": `Bearer ${token}` } : {};
+    }
+
+    async function loadWatchlist() {
+      try {
+        const response = await fetch("/api/watchlist", {
+          cache: "no-store",
+          headers: authHeaders()
+        });
+        const payload = await response.json();
+        renderWatchlist(payload);
+      } catch (error) {
+        document.getElementById("watchlist-status").textContent = "Watchlist unavailable";
+      }
+    }
+
+    async function saveWatchlist() {
+      const button = document.getElementById("save-watchlist");
+      button.disabled = true;
+      document.getElementById("watchlist-status").textContent = "Saving";
+      const payload = {
+        hostile_pilots: linesFromTextarea("watch-hostile-pilots"),
+        hostile_corporations: linesFromTextarea("watch-hostile-corporations"),
+        help_phrases: linesFromTextarea("watch-help-phrases"),
+        keywords: linesFromTextarea("watch-keywords")
+      };
+      try {
+        const response = await fetch("/api/watchlist", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders()
+          },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        renderWatchlist(await response.json());
+      } catch (error) {
+        document.getElementById("watchlist-status").textContent = "Save failed";
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     async function refresh() {
       try {
         const response = await fetch("/api/state", { cache: "no-store" });
         const payload = await response.json();
+        state.events = payload.events || [];
         renderCounts(payload.counts || {});
         renderSystems(payload.systems || []);
-        renderEvents(payload.events || []);
+        renderEvents(state.events);
         document.getElementById("status").textContent = `Live - ${ageLabel(payload.generated_at)}`;
       } catch (error) {
         document.getElementById("status").textContent = "Connection lost";
       }
     }
 
+    document.getElementById("filter-search").addEventListener("input", () => renderEvents(state.events));
+    document.getElementById("filter-severity").addEventListener("change", () => renderEvents(state.events));
+    document.getElementById("filter-category").addEventListener("change", () => renderEvents(state.events));
+    document.getElementById("clear-filters").addEventListener("click", () => {
+      document.getElementById("filter-search").value = "";
+      document.getElementById("filter-severity").value = "";
+      document.getElementById("filter-category").value = "";
+      renderEvents(state.events);
+    });
+    document.getElementById("save-watchlist").addEventListener("click", saveWatchlist);
+    document.getElementById("admin-token").addEventListener("change", loadWatchlist);
+
+    loadWatchlist();
     refresh();
     setInterval(refresh, 1500);
   </script>
