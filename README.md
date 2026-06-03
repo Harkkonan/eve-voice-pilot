@@ -111,6 +111,26 @@ Send for real after the value changes:
 
 By default, key sending is blocked unless the active window title contains `EVE`. Use `--window-title-contains ""` only if you intentionally want to disable that guard.
 
+## Corp Intel Board
+
+The corp intel board is a read-only dashboard for EVE chat-log intel. It watches selected chat channels for hostile reports, enemy sightings, system names, and calls for aid, then shows them at `http://127.0.0.1:8765/`.
+
+Double-click `Start-EveCorpIntelBoard.bat` for the local board. It watches `Corp`, `Corporation`, `Fleet`, `Alliance`, `Local`, and `*Intel*` channel names by default, and starts at the end of existing logs so only new chat is processed.
+
+Run the shared server on a trusted host:
+
+```powershell
+.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --ingest-token "change-this-token"
+```
+
+Run an opt-in corp member agent:
+
+```powershell
+.\scripts\run_corp_intel_board.ps1 agent --server "http://HOST-LAN-IP:8765" --token "change-this-token" --pilot "Pilot Name" --channels "Corp,Fleet,Alliance,Local,*Intel*"
+```
+
+The agent sends only matching intel events by default, not every chat line. Keep channel allowlists narrow. More detail is in `docs/corp_intel_board.md`.
+
 ## Notes
 
 If EVE is running as administrator and this app is not, Windows may block simulated keypresses. Usually both apps should run normally, without administrator mode.
