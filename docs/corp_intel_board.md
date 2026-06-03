@@ -131,6 +131,34 @@ By default, SSO-verified members can sign in and see their identity status, but 
 .\scripts\run_corp_intel_board.ps1 serve --trusted-members-can-edit-watchlist
 ```
 
+## Verified Agent Uploads
+
+After a trusted member signs in with EVE SSO, they can create an agent upload token from the dashboard's Agent Upload panel.
+
+Use that token on the member PC:
+
+```powershell
+.\scripts\run_corp_intel_board.ps1 agent --server "http://HOST-LAN-IP:8765" --agent-token "cit_generated_token" --channels "Corp,Fleet,Alliance,Local,*Intel*"
+```
+
+Agent upload tokens are stored only as hashes in:
+
+```text
+profiles/corp_intel_pilots.sqlite3
+```
+
+The raw token is shown once when created. If it is lost, create a new token and revoke the old one.
+
+When an agent uploads with a valid agent token, the server replaces the uploaded source label with the verified EVE character name and records the verified character/corporation ids in the event. The uploaded event still does not include the sender's local chat-log file path.
+
+For stricter corp deployments, require verified agent tokens for all remote uploads:
+
+```powershell
+.\scripts\run_corp_intel_board.ps1 serve --require-verified-ingest
+```
+
+The older shared `--ingest-token` path still works unless `--require-verified-ingest` is enabled.
+
 ## Safer Testing
 
 Use dry run before uploading from a corp member PC:
@@ -165,5 +193,6 @@ Aid calls are marked `critical`. Hostile reports with systems are marked `high`.
 - The event database is local operational data; do not publish or commit it.
 - The pilot registry is local operational data; do not publish or commit it.
 - SSO tokens are used during login and then discarded. Do not add broad ESI scopes unless a future feature truly needs them.
+- Prefer per-pilot agent upload tokens over a shared ingest token once SSO is configured.
 - Use `--pilot` labels that your corp members are comfortable showing on the board.
 - ESI does not provide chat logs; local opt-in agents still need to read each pilot's local chat-log files.

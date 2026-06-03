@@ -24,6 +24,7 @@ from eve_voice_pilot.corp_intel import (
     build_sso_authorization_url,
     decode_eve_access_token,
     eve_timestamp_to_iso,
+    hash_agent_token,
     ingest_payload,
     membership_allowed,
     parse_channel_name_from_text,
@@ -177,6 +178,47 @@ def test_pilot_registry_persists_verified_pilot(tmp_path):
     assert reloaded.character_name == "Scout Pilot"
     assert reloaded.membership_ok is True
     assert reloaded.scopes == ("esi-location.read_location.v1",)
+
+
+def test_pilot_registry_creates_hash_only_agent_token(tmp_path):
+    registry = PilotRegistry(tmp_path / "pilots.sqlite3")
+    pilot = VerifiedPilot(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        membership_ok=True,
+        verified_at="2026-06-03T06:30:00Z",
+        last_login_at="2026-06-03T06:30:00Z",
+    )
+    registry.upsert(pilot)
+
+    token, record = registry.create_agent_token(pilot.character_id, label="Home PC")
+    assert token.startswith("cit_")
+    assert record.label == "Home PC"
+    assert registry.resolve_agent_token(token).character_name == "Scout Pilot"
+
+    with corp_intel.sqlite3.connect(tmp_path / "pilots.sqlite3") as connection:
+        raw = connection.execute("SELECT token_hash FROM agent_tokens").fetchone()[0]
+    assert raw == hash_agent_token(token)
+    assert token not in raw
+
+
+def test_pilot_registry_revokes_agent_token(tmp_path):
+    registry = PilotRegistry(tmp_path / "pilots.sqlite3")
+    pilot = VerifiedPilot(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        membership_ok=True,
+        verified_at="2026-06-03T06:30:00Z",
+        last_login_at="2026-06-03T06:30:00Z",
+    )
+    registry.upsert(pilot)
+    token, record = registry.create_agent_token(pilot.character_id, label="Home PC")
+    assert registry.revoke_agent_token(character_id=pilot.character_id, token_id=record.token_id)
+    assert registry.resolve_agent_token(token) is None
 
 
 def test_system_matcher_finds_canonical_system_names():
@@ -416,3 +458,35 @@ def test_ingest_payload_accepts_single_event_dict():
     )
     assert added == 1
     assert store.snapshot()["counts"]["events"] == 1
+
+
+def test_ingest_payload_stamps_verified_pilot_identity():
+    store = IntelEventStore(max_events=10)
+    pilot = VerifiedPilot(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        membership_ok=True,
+    )
+    added = ingest_payload(
+        {
+            "source": "Typed Label",
+            "channel": "Local",
+            "speaker": "Scout",
+            "message": "hostile in Tama",
+            "categories": ["hostile"],
+            "severity": "high",
+            "systems": ["Tama"],
+            "keywords": ["hostile"],
+            "log_path": r"C:\Users\Pilot\Documents\EVE\logs\Chatlogs\Local.txt",
+        },
+        store,
+        verified_pilot=pilot,
+    )
+    event = store.snapshot()["events"][0]
+    assert added == 1
+    assert event["source"] == "Scout Pilot"
+    assert event["verified_character_id"] == 123456789
+    assert event["verified_corporation_id"] == 1001
+    assert "log_path" not in event

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import base64
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import fnmatch
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
 import json
@@ -147,10 +148,14 @@ class IntelEvent:
     observed_at: str = ""
     reported_at: str = ""
     log_path: str = ""
+    verified_character_id: int | None = None
+    verified_character_name: str = ""
+    verified_corporation_id: int | None = None
+    verified_corporation_name: str = ""
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.event_id,
             "source": self.source,
             "channel": self.channel,
@@ -163,9 +168,18 @@ class IntelEvent:
             "observed_at": self.observed_at,
             "reported_at": self.reported_at,
         }
+        if self.verified_character_id is not None:
+            payload["verified_character_id"] = self.verified_character_id
+            payload["verified_character_name"] = self.verified_character_name
+        if self.verified_corporation_id is not None:
+            payload["verified_corporation_id"] = self.verified_corporation_id
+            payload["verified_corporation_name"] = self.verified_corporation_name
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "IntelEvent":
+        verified_character_id = payload.get("verified_character_id")
+        verified_corporation_id = payload.get("verified_corporation_id")
         return cls(
             event_id=str(payload.get("id") or payload.get("event_id") or uuid.uuid4().hex),
             source=str(payload.get("source") or "unknown"),
@@ -179,6 +193,10 @@ class IntelEvent:
             observed_at=str(payload.get("observed_at") or ""),
             reported_at=str(payload.get("reported_at") or now_iso()),
             log_path=str(payload.get("log_path") or ""),
+            verified_character_id=int(verified_character_id) if verified_character_id is not None else None,
+            verified_character_name=str(payload.get("verified_character_name") or ""),
+            verified_corporation_id=int(verified_corporation_id) if verified_corporation_id is not None else None,
+            verified_corporation_name=str(payload.get("verified_corporation_name") or ""),
         )
 
 
@@ -256,6 +274,37 @@ class VerifiedPilot:
             membership_ok=bool(row["membership_ok"]),
             verified_at=str(row["verified_at"] or ""),
             last_login_at=str(row["last_login_at"] or ""),
+        )
+
+
+@dataclass(frozen=True)
+class AgentTokenRecord:
+    token_id: str
+    character_id: int
+    label: str
+    created_at: str
+    last_used_at: str = ""
+    revoked_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "token_id": self.token_id,
+            "character_id": self.character_id,
+            "label": self.label,
+            "created_at": self.created_at,
+            "last_used_at": self.last_used_at,
+            "revoked_at": self.revoked_at,
+        }
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "AgentTokenRecord":
+        return cls(
+            token_id=str(row["token_id"]),
+            character_id=int(row["character_id"]),
+            label=str(row["label"] or ""),
+            created_at=str(row["created_at"] or ""),
+            last_used_at=str(row["last_used_at"] or ""),
+            revoked_at=str(row["revoked_at"] or ""),
         )
 
 
@@ -466,6 +515,26 @@ class PilotRegistry:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_verified_pilots_corporation ON verified_pilots(corporation_id)"
                 )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_tokens (
+                        token_id TEXT PRIMARY KEY,
+                        character_id INTEGER NOT NULL,
+                        label TEXT NOT NULL,
+                        token_hash TEXT NOT NULL UNIQUE,
+                        created_at TEXT NOT NULL,
+                        last_used_at TEXT NOT NULL,
+                        revoked_at TEXT NOT NULL,
+                        FOREIGN KEY(character_id) REFERENCES verified_pilots(character_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_tokens_character ON agent_tokens(character_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_tokens_hash ON agent_tokens(token_hash)"
+                )
                 connection.commit()
 
     def upsert(self, pilot: VerifiedPilot) -> VerifiedPilot:
@@ -528,6 +597,96 @@ class PilotRegistry:
                 (limit,),
             ).fetchall()
         return [VerifiedPilot.from_row(row) for row in rows]
+
+    def create_agent_token(self, character_id: int, *, label: str = "") -> tuple[str, AgentTokenRecord]:
+        pilot = self.get(character_id)
+        if pilot is None:
+            raise CorpIntelError("Only verified pilots can create agent tokens.")
+        if not pilot.membership_ok:
+            raise CorpIntelError("Only allowlisted verified pilots can create agent tokens.")
+        token = f"cit_{secrets.token_urlsafe(32)}"
+        token_id = uuid.uuid4().hex
+        timestamp = now_iso()
+        clean_label = SPACE_RE.sub(" ", label).strip()[:80] or "Chatlog agent"
+        record = AgentTokenRecord(
+            token_id=token_id,
+            character_id=character_id,
+            label=clean_label,
+            created_at=timestamp,
+        )
+        with self._lock, sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_tokens (
+                    token_id, character_id, label, token_hash, created_at, last_used_at, revoked_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.token_id,
+                    record.character_id,
+                    record.label,
+                    hash_agent_token(token),
+                    record.created_at,
+                    record.last_used_at,
+                    record.revoked_at,
+                ),
+            )
+            connection.commit()
+        return token, record
+
+    def list_agent_tokens(self, character_id: int) -> list[AgentTokenRecord]:
+        with self._lock, sqlite3.connect(self.path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                SELECT token_id, character_id, label, created_at, last_used_at, revoked_at
+                FROM agent_tokens
+                WHERE character_id = ?
+                ORDER BY created_at DESC
+                """,
+                (character_id,),
+            ).fetchall()
+        return [AgentTokenRecord.from_row(row) for row in rows]
+
+    def revoke_agent_token(self, *, character_id: int, token_id: str) -> bool:
+        timestamp = now_iso()
+        with self._lock, sqlite3.connect(self.path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE agent_tokens
+                SET revoked_at = ?
+                WHERE character_id = ? AND token_id = ? AND revoked_at = ''
+                """,
+                (timestamp, character_id, token_id),
+            )
+            connection.commit()
+            return cursor.rowcount > 0
+
+    def resolve_agent_token(self, token: str) -> VerifiedPilot | None:
+        token_hash = hash_agent_token(token)
+        timestamp = now_iso()
+        with self._lock, sqlite3.connect(self.path) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                """
+                SELECT p.*
+                FROM agent_tokens AS t
+                JOIN verified_pilots AS p ON p.character_id = t.character_id
+                WHERE t.token_hash = ? AND t.revoked_at = ''
+                """,
+                (token_hash,),
+            ).fetchone()
+            if row:
+                connection.execute(
+                    "UPDATE agent_tokens SET last_used_at = ? WHERE token_hash = ?",
+                    (timestamp, token_hash),
+                )
+                connection.commit()
+        if not row:
+            return None
+        pilot = VerifiedPilot.from_row(row)
+        return pilot if pilot.membership_ok else None
 
 
 class AuthStateStore:
@@ -1523,7 +1682,7 @@ def run_agent(args: argparse.Namespace) -> int:
             print(format_event_line(event))
             return
         try:
-            post_json(endpoint, event.to_dict(), token=args.token, timeout_seconds=args.post_timeout)
+            post_json(endpoint, event.to_dict(), token=args.agent_token or args.token, timeout_seconds=args.post_timeout)
             print(format_event_line(event))
         except CorpIntelError as exc:
             print(f"Upload failed: {exc}", file=sys.stderr)
@@ -1590,6 +1749,7 @@ def run_server(args: argparse.Namespace) -> int:
         pilot_registry=pilot_registry,
         auth_state_store=auth_state_store,
         session_store=session_store,
+        require_verified_ingest=args.require_verified_ingest,
     )
     url = f"http://{url_host}:{args.port}/"
     print(f"Corp intel board listening at {url}")
@@ -1641,6 +1801,7 @@ def build_http_server(
     pilot_registry: PilotRegistry | None = None,
     auth_state_store: AuthStateStore | None = None,
     session_store: SessionStore | None = None,
+    require_verified_ingest: bool = False,
 ) -> ThreadingHTTPServer:
     watchlist_store = watchlist_store or WatchlistStore()
     sso_config = sso_config or EveSsoConfig()
@@ -1673,6 +1834,9 @@ def build_http_server(
             if path == "/api/me":
                 self._send_json(auth_status_payload(self, sso_config, session_store, pilot_registry))
                 return
+            if path == "/api/agent-tokens":
+                self._handle_agent_tokens_list()
+                return
             if path == "/auth/login":
                 self._handle_auth_login()
                 return
@@ -1695,13 +1859,25 @@ def build_http_server(
             if path == "/api/watchlist":
                 self._handle_watchlist_update()
                 return
+            if path == "/api/agent-tokens":
+                self._handle_agent_token_create()
+                return
+            if path == "/api/agent-tokens/revoke":
+                self._handle_agent_token_revoke()
+                return
             if path == "/auth/logout":
                 self._handle_auth_logout()
                 return
             self.send_error(404, "Not found")
 
         def _handle_ingest(self) -> None:
-            if ingest_token and not request_has_token(self, ingest_token):
+            allowed, pilot = resolve_ingest_pilot(
+                self,
+                ingest_token=ingest_token,
+                pilot_registry=pilot_registry,
+                require_verified=require_verified_ingest,
+            )
+            if not allowed:
                 self.send_error(401, "Missing or invalid ingest token")
                 return
             try:
@@ -1711,11 +1887,64 @@ def build_http_server(
                 return
 
             try:
-                added = ingest_payload(payload, store)
+                added = ingest_payload(payload, store, verified_pilot=pilot)
             except (TypeError, ValueError) as exc:
                 self.send_error(400, f"Invalid event payload: {exc}")
                 return
             self._send_json({"ok": True, "added": added})
+
+        def _handle_agent_tokens_list(self) -> None:
+            pilot = get_request_pilot(self, session_store, pilot_registry)
+            if not pilot:
+                self.send_error(401, "Sign in with EVE SSO first")
+                return
+            self._send_json(
+                {
+                    "ok": True,
+                    "can_create": pilot.membership_ok,
+                    "tokens": [record.to_dict() for record in pilot_registry.list_agent_tokens(pilot.character_id)],
+                }
+            )
+
+        def _handle_agent_token_create(self) -> None:
+            pilot = get_request_pilot(self, session_store, pilot_registry)
+            if not pilot:
+                self.send_error(401, "Sign in with EVE SSO first")
+                return
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_error(400, f"Invalid JSON: {exc}")
+                return
+            if not isinstance(payload, dict):
+                self.send_error(400, "Agent token payload must be a JSON object")
+                return
+            try:
+                token, record = pilot_registry.create_agent_token(
+                    pilot.character_id,
+                    label=str(payload.get("label") or ""),
+                )
+            except CorpIntelError as exc:
+                self.send_error(403, str(exc))
+                return
+            self._send_json({"ok": True, "token": token, "record": record.to_dict()})
+
+        def _handle_agent_token_revoke(self) -> None:
+            pilot = get_request_pilot(self, session_store, pilot_registry)
+            if not pilot:
+                self.send_error(401, "Sign in with EVE SSO first")
+                return
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_error(400, f"Invalid JSON: {exc}")
+                return
+            token_id = str(payload.get("token_id") or "") if isinstance(payload, dict) else ""
+            if not token_id:
+                self.send_error(400, "token_id is required")
+                return
+            revoked = pilot_registry.revoke_agent_token(character_id=pilot.character_id, token_id=token_id)
+            self._send_json({"ok": True, "revoked": revoked})
 
         def _handle_watchlist_update(self) -> None:
             pilot = get_request_pilot(self, session_store, pilot_registry)
@@ -1831,6 +2060,17 @@ def first_query_value(params: dict[str, list[str]], key: str) -> str:
     return values[0] if values else ""
 
 
+def hash_agent_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def request_auth_token(handler: BaseHTTPRequestHandler) -> str:
+    auth = handler.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth.removeprefix("Bearer ").strip()
+    return handler.headers.get("X-Intel-Token", "").strip()
+
+
 def request_cookie(handler: BaseHTTPRequestHandler, name: str) -> str:
     raw_cookie = handler.headers.get("Cookie", "")
     for part in raw_cookie.split(";"):
@@ -1904,9 +2144,29 @@ def render_auth_result(message: str, *, ok: bool) -> str:
 
 
 def request_has_token(handler: BaseHTTPRequestHandler, expected: str) -> bool:
-    auth = handler.headers.get("Authorization", "")
-    token = handler.headers.get("X-Intel-Token", "")
-    return auth == f"Bearer {expected}" or token == expected
+    return bool(expected and request_auth_token(handler) == expected)
+
+
+def resolve_ingest_pilot(
+    handler: BaseHTTPRequestHandler,
+    *,
+    ingest_token: str,
+    pilot_registry: PilotRegistry,
+    require_verified: bool,
+) -> tuple[bool, VerifiedPilot | None]:
+    token = request_auth_token(handler)
+    if token:
+        pilot = pilot_registry.resolve_agent_token(token)
+        if pilot:
+            return True, pilot
+        if ingest_token and token == ingest_token and not require_verified:
+            return True, None
+        return False, None
+    if require_verified:
+        return False, None
+    if ingest_token:
+        return False, None
+    return True, None
 
 
 def request_has_admin_access(
@@ -1932,7 +2192,7 @@ def request_is_loopback(handler: BaseHTTPRequestHandler) -> bool:
     return host == "::1" or host.startswith("127.")
 
 
-def ingest_payload(payload: Any, store: IntelEventStore) -> int:
+def ingest_payload(payload: Any, store: IntelEventStore, *, verified_pilot: VerifiedPilot | None = None) -> int:
     if isinstance(payload, dict) and isinstance(payload.get("events"), list):
         events = payload["events"]
     else:
@@ -1944,6 +2204,15 @@ def ingest_payload(payload: Any, store: IntelEventStore) -> int:
         event = IntelEvent.from_dict(item)
         if not event.message:
             raise ValueError("Event message is required.")
+        if verified_pilot:
+            event = replace(
+                event,
+                source=verified_pilot.character_name,
+                verified_character_id=verified_pilot.character_id,
+                verified_character_name=verified_pilot.character_name,
+                verified_corporation_id=verified_pilot.corporation_id,
+                verified_corporation_name=verified_pilot.corporation_name,
+            )
         store.add(event)
         print(format_event_line(event))
         added += 1
@@ -1997,6 +2266,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--watch-local", action="store_true", help="Watch this computer's chat logs too.")
     serve.add_argument("--source", default=os.environ.get("USERNAME", "local"), help="Source label for local events.")
     serve.add_argument("--ingest-token", default="", help="Shared token required for remote agent uploads.")
+    serve.add_argument(
+        "--require-verified-ingest",
+        action="store_true",
+        help="Require remote uploads to use a valid SSO-created agent token.",
+    )
     serve.add_argument(
         "--admin-token",
         default=os.environ.get("CORP_INTEL_ADMIN_TOKEN", ""),
@@ -2074,6 +2348,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_watch_args(agent)
     agent.add_argument("--server", required=True, help="Dashboard server URL, like http://1.2.3.4:8765")
     agent.add_argument("--token", default="", help="Shared ingest token from the dashboard server.")
+    agent.add_argument(
+        "--agent-token",
+        default=os.environ.get("CORP_INTEL_AGENT_TOKEN", ""),
+        help="Per-pilot upload token generated after EVE SSO login. Can also be set with CORP_INTEL_AGENT_TOKEN.",
+    )
     agent.add_argument("--pilot", default=os.environ.get("USERNAME", "pilot"), help="Pilot/source label shown on events.")
     agent.add_argument("--dry-run", action="store_true", help="Print matching events without uploading.")
     agent.add_argument("--post-timeout", type=float, default=10.0, help="Seconds to wait for upload responses.")
@@ -2346,6 +2625,24 @@ DASHBOARD_HTML = r"""<!doctype html>
       font-size: 12px;
       text-align: center;
     }
+    .token-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .token-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 8px;
+      background: #f8faf9;
+    }
+    .token-output {
+      margin-top: 10px;
+    }
     .system-list {
       display: grid;
     }
@@ -2534,6 +2831,20 @@ DASHBOARD_HTML = r"""<!doctype html>
           </div>
         </div>
       </div>
+      <div class="panel">
+        <h2>Agent Upload</h2>
+        <div class="panel-body">
+          <label class="field">Token label
+            <input id="agent-token-label" type="text" autocomplete="off">
+          </label>
+          <div class="button-row">
+            <button id="create-agent-token" type="button">Create token</button>
+            <span class="save-status" id="agent-token-status"></span>
+          </div>
+          <textarea class="token-output" id="new-agent-token" readonly spellcheck="false"></textarea>
+          <div class="token-list" id="agent-token-list"></div>
+        </div>
+      </div>
     </section>
     <section>
       <div class="panel">
@@ -2697,6 +3008,37 @@ DASHBOARD_HTML = r"""<!doctype html>
       });
     }
 
+    function renderAgentTokens(payload) {
+      const status = document.getElementById("agent-token-status");
+      const createButton = document.getElementById("create-agent-token");
+      const list = document.getElementById("agent-token-list");
+      if (!payload || payload.ok !== true) {
+        status.textContent = "Sign in with EVE to create upload tokens";
+        createButton.disabled = true;
+        list.innerHTML = "";
+        return;
+      }
+      createButton.disabled = payload.can_create === false;
+      status.textContent = payload.can_create === false ? "Your character is not in the allowlist" : "";
+      const tokens = payload.tokens || [];
+      if (!tokens.length) {
+        list.innerHTML = `<div class="empty">No agent tokens yet.</div>`;
+        return;
+      }
+      list.innerHTML = tokens.map(token => `
+        <div class="token-row">
+          <div>
+            <div class="system-name">${escapeHtml(token.label || "Chatlog agent")}</div>
+            <div class="details">created ${ageLabel(token.created_at)}${token.last_used_at ? ` - used ${ageLabel(token.last_used_at)}` : ""}${token.revoked_at ? ` - revoked ${ageLabel(token.revoked_at)}` : ""}</div>
+          </div>
+          <button class="secondary revoke-token" type="button" data-token-id="${escapeHtml(token.token_id)}" ${token.revoked_at ? "disabled" : ""}>Revoke</button>
+        </div>
+      `).join("");
+      for (const button of document.querySelectorAll(".revoke-token")) {
+        button.addEventListener("click", () => revokeAgentToken(button.dataset.tokenId));
+      }
+    }
+
     function authHeaders() {
       const token = document.getElementById("admin-token").value.trim();
       return token ? { "Authorization": `Bearer ${token}` } : {};
@@ -2724,6 +3066,72 @@ DASHBOARD_HTML = r"""<!doctype html>
         renderAuth(await response.json());
       } catch (error) {
         document.getElementById("auth-panel").textContent = "Identity unavailable";
+      }
+    }
+
+    async function loadAgentTokens() {
+      try {
+        const response = await fetch("/api/agent-tokens", {
+          cache: "no-store",
+          headers: authHeaders()
+        });
+        if (!response.ok) {
+          renderAgentTokens(null);
+          return;
+        }
+        renderAgentTokens(await response.json());
+      } catch (error) {
+        document.getElementById("agent-token-status").textContent = "Agent tokens unavailable";
+      }
+    }
+
+    async function createAgentToken() {
+      const button = document.getElementById("create-agent-token");
+      button.disabled = true;
+      document.getElementById("agent-token-status").textContent = "Creating";
+      try {
+        const response = await fetch("/api/agent-tokens", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders()
+          },
+          body: JSON.stringify({
+            label: document.getElementById("agent-token-label").value.trim()
+          })
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        const payload = await response.json();
+        document.getElementById("new-agent-token").value = payload.token || "";
+        document.getElementById("agent-token-status").textContent = "Token created";
+        await loadAgentTokens();
+      } catch (error) {
+        document.getElementById("agent-token-status").textContent = "Create failed";
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function revokeAgentToken(tokenId) {
+      document.getElementById("agent-token-status").textContent = "Revoking";
+      try {
+        const response = await fetch("/api/agent-tokens/revoke", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders()
+          },
+          body: JSON.stringify({ token_id: tokenId })
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        document.getElementById("agent-token-status").textContent = "Token revoked";
+        await loadAgentTokens();
+      } catch (error) {
+        document.getElementById("agent-token-status").textContent = "Revoke failed";
       }
     }
 
@@ -2782,8 +3190,10 @@ DASHBOARD_HTML = r"""<!doctype html>
     });
     document.getElementById("save-watchlist").addEventListener("click", saveWatchlist);
     document.getElementById("admin-token").addEventListener("change", loadWatchlist);
+    document.getElementById("create-agent-token").addEventListener("click", createAgentToken);
 
     loadAuth();
+    loadAgentTokens();
     loadWatchlist();
     refresh();
     setInterval(refresh, 1500);
