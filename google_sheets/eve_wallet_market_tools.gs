@@ -12,6 +12,7 @@ const EVE_SHEET = Object.freeze({
   MARKET_PICKER_DRAFT: 'Market Picker Draft',
   INVENTORY_LEDGER: 'Inventory Ledger',
   TRADE_OPPORTUNITIES: 'Trade Opportunities',
+  MISSION_WALLET_IMPORT: 'Mission Wallet Import',
   WALLET_IMPORT: 'Wallet Import',
   PURCHASE_LEDGER: 'Purchase Ledger',
   PURCHASE_GROUPS: 'Purchase Groups',
@@ -151,6 +152,15 @@ const EVE_HEADERS = Object.freeze({
   ],
 });
 
+const MISSION_WALLET_REF_TYPES = Object.freeze([
+  'agent_mission_reward',
+  'agent_mission_time_bonus_reward',
+  'bounty',
+  'bounty_prize',
+  'bounty_prizes',
+  'mission_reward',
+]);
+
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('EVE Market')
@@ -174,6 +184,8 @@ function onOpen() {
 
   ui.createMenu('EVE Missions')
     .addItem('Set Up Mission Tracker', 'setupMissionTracker')
+    .addItem('Set Up Mission Wallet Import', 'setupMissionWalletImport')
+    .addItem('Append Mission Wallet Journal', 'appendMissionWalletJournal')
     .addToUi();
 
   ui.createMenu('EVE Inventory')
@@ -191,6 +203,48 @@ function setupMissionTracker() {
   const sheet = ensureSheet_(ss, EVE_SHEET.MISSION_TRACKER);
   setupMissionTrackerSheet_(sheet);
   SpreadsheetApp.getUi().alert('Mission Tracker is ready. Enter each mission as one row starting on row 11.');
+}
+
+function setupMissionWalletImport() {
+  const ss = SpreadsheetApp.getActive();
+  setupMissionTrackerSheet_(ensureSheet_(ss, EVE_SHEET.MISSION_TRACKER));
+  setupMissionWalletImportSheet_(ensureSheet_(ss, EVE_SHEET.MISSION_WALLET_IMPORT));
+  SpreadsheetApp.getUi().alert(
+    'Mission Wallet Import is ready. Wait for GESI wallet journal data to load, then run EVE Missions > Append Mission Wallet Journal.'
+  );
+}
+
+function appendMissionWalletJournal() {
+  const ss = SpreadsheetApp.getActive();
+  const tracker = ensureSheet_(ss, EVE_SHEET.MISSION_TRACKER);
+  const importSheet = ensureSheet_(ss, EVE_SHEET.MISSION_WALLET_IMPORT);
+  setupMissionTrackerSheet_(tracker);
+  setupMissionWalletImportSheet_(importSheet);
+
+  SpreadsheetApp.flush();
+  const imported = readWalletJournalImportRows_(importSheet).filter(isMissionWalletJournalRow_);
+  if (!imported.length) {
+    SpreadsheetApp.getUi().alert(
+      'No mission-related wallet journal rows were found. Check that GESI has loaded wallet journal data and that your character has wallet journal access.'
+    );
+    return;
+  }
+
+  const existingIds = readMissionTrackerImportIds_(tracker);
+  const newRows = imported.filter(row => {
+    const id = walletJournalId_(row);
+    return id && !existingIds.has(id);
+  });
+  if (!newRows.length) {
+    SpreadsheetApp.getUi().alert('No new mission wallet journal rows to append.');
+    return;
+  }
+
+  const characterName = String(importSheet.getRange('B2').getValue() || tracker.getRange('B5').getValue() || '').trim();
+  const appended = appendMissionJournalRows_(tracker, newRows, characterName);
+  SpreadsheetApp.getUi().alert(
+    `Appended ${appended} mission payout row(s). ESI wallet data tracks rewards/bonuses/bounties, not live mission objectives or progress.`
+  );
 }
 
 function setupMarketTool() {
@@ -1213,6 +1267,175 @@ function setMissionConditionalFormats_(sheet) {
       .build(),
   ];
   sheet.setConditionalFormatRules(rules);
+}
+
+function setupMissionWalletImportSheet_(sheet) {
+  const alreadySetUp = sheet.getRange('A1').getValue() === 'Mission Wallet Import';
+  if (!alreadySetUp) sheet.clear();
+
+  sheet.getRange('A1').setValue('Mission Wallet Import');
+  sheet.getRange('A2').setValue('Character name (optional)');
+  sheet.getRange('A3').setValue('GESI wallet journal formula');
+  sheet.getRange('A4').setValue('Next step');
+  sheet.getRange('A5').setValue('What this can capture');
+  if (!alreadySetUp) sheet.getRange('B2').setValue('');
+  sheet.getRange('B3').setValue('The live wallet journal import starts in A7.');
+  sheet.getRange('B4').setValue('Run EVE Missions > Append Mission Wallet Journal after GESI loads data below.');
+  sheet.getRange('B5').setValue('Rewards, time bonuses, and bounties. ESI does not expose live mission objectives, mission title, or exact mission progress.');
+  if (!alreadySetUp || !sheet.getRange('A7').getFormula()) {
+    sheet.getRange('A7').setFormula('=IF(LEN($B$2),characters_character_wallet_journal($B$2,TRUE),characters_character_wallet_journal(,TRUE))');
+  }
+  sheet.getRange('A1:B5').setFontWeight('bold').setWrap(true);
+  sheet.getRange('B4').setBackground('#dbeafe');
+  sheet.getRange('B5').setBackground('#fef3c7');
+  sheet.setFrozenRows(7);
+  sheet.autoResizeColumns(1, 12);
+}
+
+function readWalletJournalImportRows_(sheet) {
+  const values = sheet.getDataRange().getValues();
+  const headerRowIndex = values.findIndex(row => {
+    const normalized = row.map(normalizeHeader_);
+    return normalized.includes('id') && normalized.includes('date') && normalized.includes('ref_type');
+  });
+  if (headerRowIndex < 0) return [];
+
+  const headers = values[headerRowIndex].map(normalizeHeader_);
+  return values.slice(headerRowIndex + 1)
+    .filter(row => row.some(cell => cell !== '' && cell !== null))
+    .map(row => {
+      const obj = {};
+      headers.forEach((header, index) => {
+        if (header) obj[header] = row[index];
+      });
+      return obj;
+    });
+}
+
+function isMissionWalletJournalRow_(row) {
+  const refType = walletJournalRefType_(row);
+  if (!walletJournalId_(row) || !row.date) return false;
+  if (numberValue_(row.amount) <= 0) return false;
+  return MISSION_WALLET_REF_TYPES.includes(refType);
+}
+
+function appendMissionJournalRows_(tracker, rows, characterName) {
+  let appended = 0;
+  rows
+    .slice()
+    .sort((a, b) => {
+      const left = parseEveDate_(a.date);
+      const right = parseEveDate_(b.date);
+      return (left ? left.getTime() : 0) - (right ? right.getTime() : 0);
+    })
+    .forEach(row => {
+      const buckets = missionJournalAmountBuckets_(row);
+      if (!buckets.reward && !buckets.bonus && !buckets.bounty) return;
+
+      const rowNumber = findFirstBlankMissionTrackerRow_(tracker);
+      const firstSegment = Array(30).fill('');
+      firstSegment[0] = parseEveDate_(row.date) || row.date;
+      firstSegment[1] = characterName || '';
+      firstSegment[2] = missionJournalName_(row);
+      firstSegment[6] = 'Wallet Import';
+      firstSegment[17] = buckets.reward;
+      firstSegment[18] = buckets.bonus;
+      firstSegment[19] = buckets.bounty;
+
+      tracker.getRange(rowNumber, 1, 1, firstSegment.length).setValues([firstSegment]);
+      tracker.getRange(rowNumber, 38, 1, 4).setValues([['Imported', '', '', missionJournalNotes_(row)]]);
+      setMissionFormulaColumns_(tracker, rowNumber, 1);
+      setMissionDropdowns_(tracker, rowNumber, 1);
+      appended += 1;
+    });
+  return appended;
+}
+
+function missionJournalAmountBuckets_(row) {
+  const refType = walletJournalRefType_(row);
+  const amount = numberValue_(row.amount);
+  return {
+    reward: refType.includes('mission_reward') && !refType.includes('time_bonus') ? amount : '',
+    bonus: refType.includes('time_bonus') ? amount : '',
+    bounty: refType.includes('bounty') ? amount : '',
+  };
+}
+
+function missionJournalName_(row) {
+  const refType = walletJournalRefType_(row);
+  if (refType.includes('time_bonus')) return 'Mission Time Bonus';
+  if (refType.includes('mission_reward')) return 'Mission Reward';
+  if (refType.includes('bounty')) return 'Bounty Payout';
+  return humanizeRefType_(refType);
+}
+
+function missionJournalNotes_(row) {
+  const pieces = [
+    `Wallet Journal ID: ${walletJournalId_(row)}`,
+    `Ref Type: ${walletJournalRefType_(row)}`,
+  ];
+  if (row.description) pieces.push(`Description: ${row.description}`);
+  if (row.reason) pieces.push(`Reason: ${row.reason}`);
+  if (row.context_id) pieces.push(`Context ID: ${row.context_id}`);
+  if (row.context_id_type) pieces.push(`Context Type: ${row.context_id_type}`);
+  if (row.first_party_id) pieces.push(`First Party ID: ${row.first_party_id}`);
+  if (row.second_party_id) pieces.push(`Second Party ID: ${row.second_party_id}`);
+  return pieces.join(' | ');
+}
+
+function readMissionTrackerImportIds_(tracker) {
+  const startRow = 11;
+  const notesCol = 41;
+  const rowCount = Math.max(tracker.getMaxRows() - startRow + 1, 1);
+  const notes = tracker.getRange(startRow, notesCol, rowCount, 1).getValues().flat();
+  const ids = new Set();
+  notes.forEach(note => {
+    const match = String(note || '').match(/Wallet Journal ID:\s*([^|]+)/i);
+    if (match) ids.add(match[1].trim());
+  });
+  return ids;
+}
+
+function findFirstBlankMissionTrackerRow_(sheet) {
+  const startRow = 11;
+  const width = EVE_HEADERS.MISSION_TRACKER.length;
+  const rowCount = Math.max(sheet.getMaxRows() - startRow + 1, 1);
+  const values = sheet.getRange(startRow, 1, rowCount, width).getValues();
+  const index = values.findIndex(row => !missionTrackerRowHasUserData_(row));
+  if (index >= 0) return startRow + index;
+
+  const oldMaxRows = sheet.getMaxRows();
+  sheet.insertRowsAfter(oldMaxRows, 100);
+  return oldMaxRows + 1;
+}
+
+function missionTrackerRowHasUserData_(row) {
+  const formulaIndexes = new Set([13, 22, 30, 31, 32, 33, 34, 35, 36]);
+  return row.some((cell, index) => {
+    return !formulaIndexes.has(index) && cell !== '' && cell !== null;
+  });
+}
+
+function walletJournalId_(row) {
+  return String(row.id || '').trim();
+}
+
+function walletJournalRefType_(row) {
+  return String(row.ref_type || '').trim().toLowerCase();
+}
+
+function humanizeRefType_(value) {
+  return String(value || '')
+    .split('_')
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function numberValue_(value) {
+  if (typeof value === 'number') return value;
+  const parsed = Number(String(value || '').replace(/,/g, '').trim());
+  return isNaN(parsed) ? 0 : parsed;
 }
 
 function setDropdown_(range, values) {
