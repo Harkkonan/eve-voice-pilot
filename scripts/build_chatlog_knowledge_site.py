@@ -257,7 +257,7 @@ def build_knowledge_data(
     return {
         "meta": {
             "title": "EVE Chatlog Knowledge Base",
-            "source_root": str(logs_root),
+            "source_root": "Local EVE logs folder (path not published)",
             "generated_at": now_iso(),
             "window_start": min(timestamps).isoformat().replace("+00:00", "Z"),
             "window_end": max(timestamps).isoformat().replace("+00:00", "Z"),
@@ -1331,7 +1331,7 @@ This folder contains a static, public-safe knowledge website generated from rece
 Regenerate from the repository root:
 
 ```powershell
-.\\.venv\\Scripts\\python.exe .\\scripts\\build_chatlog_knowledge_site.py --logs-root "C:\\Users\\Brian\\OneDrive\\Documents\\EVE\\logs" --since-date 2026-06-01
+.\\.venv\\Scripts\\python.exe .\\scripts\\build_chatlog_knowledge_site.py --logs-root "$env:USERPROFILE\\OneDrive\\Documents\\EVE\\logs" --since-date 2026-06-01
 ```
 """
 
