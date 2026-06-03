@@ -1,0 +1,1371 @@
+{
+  "meta": {
+    "title": "EVE Chatlog Knowledge Base",
+    "source_root": "C:\\Users\\Brian\\OneDrive\\Documents\\EVE\\logs",
+    "generated_at": "2026-06-03T06:00:04Z",
+    "window_start": "2026-06-01T01:56:10Z",
+    "window_end": "2026-06-03T05:58:41Z",
+    "since_date": "2026-06-01",
+    "public_safe": true,
+    "privacy_note": "Raw chat logs, private chat channels, player-by-player transcripts, referral links, ad/spam links, private-looking invites, and unreviewed external links are not published in the public-safe build. Instruction text is reproduced from channel MOTDs with risky links redacted."
+  },
+  "stats": {
+    "file_count": 185,
+    "message_count": 8691,
+    "channel_count": 15,
+    "motd_count": 13,
+    "instruction_count": 10,
+    "link_count": 44,
+    "public_link_count": 32,
+    "review_link_count": 12
+  },
+  "channels": [
+    {
+      "name": "Rookie Help",
+      "message_count": 5594
+    },
+    {
+      "name": "Local",
+      "message_count": 2038
+    },
+    {
+      "name": "Corp",
+      "message_count": 644
+    },
+    {
+      "name": "Fleet",
+      "message_count": 178
+    },
+    {
+      "name": "Star Fleet Productions",
+      "message_count": 116
+    },
+    {
+      "name": "SFU Recruitment",
+      "message_count": 30
+    },
+    {
+      "name": "SFU Study Hall PT.2",
+      "message_count": 28
+    },
+    {
+      "name": "SFU Library",
+      "message_count": 27
+    },
+    {
+      "name": "Militia",
+      "message_count": 12
+    },
+    {
+      "name": "SFU Mining Fleet Rules",
+      "message_count": 10
+    },
+    {
+      "name": "Z-S Overview",
+      "message_count": 5
+    },
+    {
+      "name": "Starfleet (Ship/Fit/Mod Ordering)",
+      "message_count": 3
+    },
+    {
+      "name": "SFU Doctrine 3.2",
+      "message_count": 2
+    },
+    {
+      "name": "SFU Study Hall",
+      "message_count": 2
+    }
+  ],
+  "instructions": [
+    {
+      "id": "sfu-mining-fleet-rules",
+      "channel": "SFU Mining Fleet Rules",
+      "title": "SFU Mining Fleet Rules - Full Procedure",
+      "summary": "Rules for casual and official mining fleets, FC duties, ore handling, SRP, and payout expectations.",
+      "seen_at": "2026-06-01T01:56:11Z",
+      "source": "Channel MOTD",
+      "seen_range": {
+        "first_seen": "2026-06-01T01:56:11Z",
+        "last_seen": "2026-06-03T05:36:52Z",
+        "message_count": 10
+      },
+      "sections": [
+        {
+          "heading": "Fleet Types",
+          "items": [
+            "SFU mining fleets are split into Casual fleets and Official fleets.",
+            "Rules in the common section apply to both fleet types."
+          ]
+        },
+        {
+          "heading": "Rules For Both Casual And Official Fleets",
+          "items": [
+            "1.1 Do not abuse or goad other pilots in local chat. The MOTD emphasizes that this is very important.",
+            "1.2 The fleet commander must safeguard miner security.",
+            "1.2.1 The FC should not go AFK while leading the fleet.",
+            "1.2.2 The FC must be prepared to kill NPC rats.",
+            "1.2.3 The FC must observe local chat and warn the fleet about red or orange spikes.",
+            "1.3 Every mining fleet MOTD must link back to the mining fleet rules.",
+            "1.4 Ship Replacement Program coverage is only given to pilots flying the SFU Procurer."
+          ]
+        },
+        {
+          "heading": "Casual Fleet Rules",
+          "items": [
+            "2.1 Miners self-haul their own ore.",
+            "2.2 Fleet commanders should not offer alternative buyback programs without permission. Promoting the official SFU buyback program is allowed."
+          ]
+        },
+        {
+          "heading": "Official Fleet Rules",
+          "items": [
+            "3.1 Only mining ships are allowed to mine. PvP ships may be present to guard, but may not mine.",
+            "3.2 Miners jetcan ore to the FC.",
+            "3.3 Do not fly an Orca or Porpoise without FC permission.",
+            "3.4 Official mining fleets may only be led by pilots with the Mining Foreman or Mining Commander titles.",
+            "3.5 FCs must pay miners the correct rate for all jetcans: 90 percent Jita buy price for ore, moon ore, gas, and ice.",
+            "3.6 The MOTD recommends that miners do not fly Coveter, Retriever, or Hulk. Mackinaw is allowed if it is at or near 70k EHP."
+          ]
+        },
+        {
+          "heading": "Reporting",
+          "items": [
+            "Rule violations should be reported to Drakon Trelos."
+          ]
+        }
+      ],
+      "raw_reproduction": "SFU Mining Fleet RulesThere are two types of SFU mining fleets - Casual and Official. Rules that apply to both types of fleet:1.1 Do not abuse or goad other pilots in local chat - this is very important1.2 The fleet commander (FC) must safeguard the security of their miners. The FC must: 1.2.1 avoid AFKing while leading a fleet 1.2.2 must be prepared to kill NPC rats 1.2.3 observe local chat and inform the fleet about red or orange spikes1.3 A fleet MOTD must be provided in all mining fleets relaying a link to these rules1.4 SRP (Ship Replacement Program) will only be given to those flying the SFU Procurer Rules that apply to casual fleets:2.1 Miners must self-haul their own ore2.2 No FC should offer alternative buyback programs without permission (promoting the official SFU buyback program is fine)Rules that only apply to official fleets:3.1 Only mining ships are allowed to mine. PVP ships can be present to guard; but are not allowed to mine3.2 Miners must jetcan their ore to the FC3.3 Do not fly an Orca/Porpoise without permission from the FC3.4 Official mining fleets can only be led by those with the Mining Foreman or Mining Commander titles3.5 FCs must ensure that they pay all miners the correct rate for all jetcans (90% Jita buy price for ore, moon ore, gas, ice)3.6 Recommend no miner fly a Coveter, Retriever, or Hulk. Mackinaw is allowed if at/near 70k ehp Violations of these rules are to be reported to Drakon Trelos"
+    },
+    {
+      "id": "starfleet-ship-fit-mod-ordering",
+      "channel": "Starfleet (Ship/Fit/Mod Ordering)",
+      "title": "Starfleet Ship, Fit, And Module Ordering Procedure",
+      "summary": "Order process for hulls, fits, modules, delivery location, timeframe, and quote approval.",
+      "seen_at": "2026-06-03T03:32:41Z",
+      "source": "Channel MOTD",
+      "seen_range": {
+        "first_seen": "2026-06-03T03:32:41Z",
+        "last_seen": "2026-06-03T05:36:51Z",
+        "message_count": 3
+      },
+      "sections": [
+        {
+          "heading": "Purpose",
+          "items": [
+            "Use this channel/process when you need a ship, a specific fit, modules, hulls, or delivered items instead of buying from a market hub.",
+            "The MOTD names Amarr, Providence, and Catch blue-region delivery areas."
+          ]
+        },
+        {
+          "heading": "How To Submit An Order",
+          "items": [
+            "Send the order to Drakon Trelos or General Gasanov.",
+            "Use the subject line: Starfleet Order.",
+            "Include item name or fit link.",
+            "Include quantity.",
+            "Include destination station.",
+            "Include the timeframe you need it by.",
+            "Include any special notes."
+          ]
+        },
+        {
+          "heading": "Timing And Response",
+          "items": [
+            "Capital ships can sometimes take up to three weeks to deliver, depending on the ship.",
+            "After the order is received, the order team replies within 24 to 48 hours with price and comments.",
+            "After that reply, you may accept or refuse the order."
+          ]
+        },
+        {
+          "heading": "Example Order Format",
+          "items": [
+            "Subject: Starfleet Order",
+            "Simulated Venture Fitting x 10 units",
+            "Liquid Ozone x 5000 units",
+            "Timeframe: 1 week",
+            "Location: KBP7-G - Heir of Athra",
+            "Note: Please send an in-game message once the contract is ready."
+          ]
+        }
+      ],
+      "raw_reproduction": "STAR FLEET ORDERS Are you in need of a ship? Do you have a certain fit in mind and don't want to bother with high prices or getting it from a market hub?Do you need mods, hulls delivered to you in Amarr/Providence/Catch (Blue Regions) ?please send your orders to Drakon Trelos or General Gasanov in the subject line put: Starfleet OrderPlease provide the following information in the body of the email:1. Item Name / Fit link2. Quantity3. Destination Station4. Timeframe you will need it by (keep in mind capital ships can sometimes take up to 3 weeks to deliver, depending on the ship)5. Any special notesHere is an example of an orderSubject: Starfleet Order*Simulated Venture Fitting x 10 unitsLiquid Ozone x 5000 unitsTimeframe: 1 weekLocation: KBP7-G - Heir of Athra Note: Please send me a message in game once the contract is ready____________________________________________________Once we receive your order we will reply within 24-48 hours with a price and any comments at whichpoint you can accept it or refuse it."
+    },
+    {
+      "id": "z-s-overview",
+      "channel": "Z-S Overview",
+      "title": "Z-S Overview Setup Procedure",
+      "summary": "Z-S Overview setup steps, packs, layouts, and fleet broadcast settings.",
+      "seen_at": "2026-06-02T20:25:11Z",
+      "source": "Channel MOTD",
+      "seen_range": {
+        "first_seen": "2026-06-02T20:25:11Z",
+        "last_seen": "2026-06-03T04:25:32Z",
+        "message_count": 5
+      },
+      "sections": [
+        {
+          "heading": "Setup Steps",
+          "items": [
+            "1. Open Overview Settings.",
+            "2. On the Misc tab, click Reset All Overview Settings.",
+            "3. Click the Core pack, then add any additional packs you want or need.",
+            "4. Click a layout.",
+            "5. Refresh brackets, then click the Ships tab in Overview Settings."
+          ]
+        },
+        {
+          "heading": "Referenced Packs And Layouts",
+          "items": [
+            "Z-S v10.04.30 Core is listed as required.",
+            "Z-S v10.04.30 Targets is listed as required.",
+            "Z-S v10.04.30 Compact is listed as a layout option.",
+            "Z-S v9.09b Incursion is listed as an incursion pack option.",
+            "Z-S Fleet Broadcast Settings v0.5 is listed for fleet broadcast settings."
+          ]
+        }
+      ],
+      "raw_reproduction": "Welcome to Z-S Overview1) Overview Settings 2) Misc tab, click Reset All Overview Settings.3) Click Core pack, then additional packs you want/need.4) Click a Layout.5) Refresh brackets, click Ships tab in Overview Settings.v10.04.30 - Updated 26.04.30 - Compatible Catalyst (New Yacht + Capsuleer day)FAQ / Changelog / Screenshots / Videos / Feedback / DiscordMailing Lists: Z-S Overview 1 Z-S Updates Only (for alts!)Packs\u2022 Z-S v10.04.30 Core 1 Optional\u2022 Z-S v10.04.30 Targets 1 Layouts [Required]Z-S v10.04.30 Compact 1 Incursion\u2022 Z-S v9.09b Incursion[Load/share stand-alone, or over a Layout]Fleet Broadcast Settings\u2022 Z-S Fleet Broadcast Settings v0.5"
+    },
+    {
+      "id": "star-fleet-productions",
+      "channel": "Star Fleet Productions",
+      "title": "Unified Star Fleet Chat Expectations And Staff Notes",
+      "summary": "Unified high-sec/null-sec staff chat expectations, miner notes, Discord, mailing lists, and videos.",
+      "seen_at": "2026-06-01T01:56:11Z",
+      "source": "Channel MOTD",
+      "seen_range": {
+        "first_seen": "2026-06-01T01:56:11Z",
+        "last_seen": "2026-06-03T05:36:51Z",
+        "message_count": 116
+      },
+      "sections": [
+        {
+          "heading": "Chat Expectations",
+          "items": [
+            "1. Be respectful of each other in chats.",
+            "2. If there are issues or tension, take the chat to a private chat.",
+            "3. Violators may be removed from the chat and, depending on severity, may be removed from corp."
+          ]
+        },
+        {
+          "heading": "Miner Notes",
+          "items": [
+            "Check the calendar for schedule information.",
+            "If near Oipo/Jita, watch the AO Mining mailing list.",
+            "Mining as a fleet is encouraged.",
+            "Review corporation bulletins."
+          ]
+        },
+        {
+          "heading": "Communications And Contacts",
+          "items": [
+            "Discord is used for out-of-game text and voice communication. The public-safe build redacts the invite URL.",
+            "Important mail lists mentioned: AO mining, Star Fleet Mining, and AO Admin.",
+            "Issues or concerns should be taken to Drakon Trelos."
+          ]
+        }
+      ],
+      "raw_reproduction": "HELLO STAR FLEET STAFFThis is our unified chat between HS and Null Sec corpsChat Expectations1 - Be respectful of each other in chats.2 - If there is issues or tension take the chat to a private chat.3 - Violaters will be removed from chat and depending on severity possible removal from corp. MINERS1 - Check Calendar for schedule2 - If near Oipo ( Jita ) watch \" AO Mining \" Mailing list as well. 3 - it is encouraged to mine as a fleet PLEASE REVIEW Corporation Bulletins If you feel we are missing any information please contact Drakon Trelos COMMUNICATIONSWe use Discord for our outta game communications. There are channels set up for text and voice. Please feel free to reach out on there as well if needed.DISCORD LINK: [redacted: private or unclear link] to hear from you all. IMPORTANT EMAIL LISTSAO miningStar Fleet MiningAO AdminCORP VIDEO'sRecruitment - https://www.youtube.com/watch?v=9wtX5EhWP6A Promo - https://www.youtube.com/watch?v=A4Fey508pqc Issues or Concerns contact: Drakon Trelos"
+    },
+    {
+      "id": "sfu-recruitment",
+      "channel": "SFU Recruitment",
+      "title": "Star Fleet Union Recruitment Brief",
+      "summary": "Recruitment overview for SFU high-sec academy and null-sec corps.",
+      "seen_at": "2026-06-03T03:13:41Z",
+      "source": "Channel MOTD",
+      "seen_range": {
+        "first_seen": "2026-06-03T03:13:41Z",
+        "last_seen": "2026-06-03T05:36:53Z",
+        "message_count": 30
+      },
+      "sections": [
+        {
+          "heading": "Corps To Choose From",
+          "items": [
+            "Star Fleet Section 31: Null-sec PvP corp focused on regional defense, solo PvP, and group PvP.",
+            "Star Fleet Productions: Null-sec corp for industry, mining, exploration, ratting, and PvP reinforcements.",
+            "Star Fleet Productions Academy: High-sec based corp for helping new and returning capsuleers and high-sec life."
+          ]
+        },
+        {
+          "heading": "Alliance Goal",
+          "items": [
+            "The stated goal is to build a home for both null-sec and high-sec divisions close enough to help one another.",
+            "Discord is used for comms. The public-safe build redacts the invite URL."
+          ]
+        },
+        {
+          "heading": "Leadership And Liaisons",
+          "items": [
+            "Command staff listed: Drakon Trelos as Fleet Admiral and General Gasanov as Admiral/Russian liaison.",
+            "Alliance liaison roles include German, Spanish, French, and Russian contacts.",
+            "The MOTD notes that more liaisons are welcome."
+          ]
+        }
+      ],
+      "raw_reproduction": "Hello CapsuleerWelcome to the Star Fleet Union Recruitment ChannelWe have 3 corps to choose from:Star Fleet Section 31 - Our Null Sec PVP Corp( Focus on Regional Defence, Solo and Group PVP )Star Fleet Productions - Null Sec everything else ( Indy, Mining, Exploration, Ratting, PVP reinforcements )Star Fleet Productions Academy - High Sec Based( Help New & Returning Capsuleers, HS life )Our ultimate goal is to create a home for both our Null Sec and High Sec Divisions that are close enough to help one another.We use Discord for comms. DISCORD Here is our WEBSITE & RECRUITMENT VIDEO COMMAND STAFFDrakon Trelos Fleet AdmiralGeneral Gasanov Admiral ( \u0420\u0443\u0441\u0441\u043a\u0438\u0439 \u0441\u0432\u044f\u0437\u043d\u043e\u0439 )Alliance LiaisonsDeutsch Liaison: Sazah Zateki Enlace espa\u00f1ol: Jon Darksei Liaison fran\u00e7aise: Rogendra Oreau \u0420\u0443\u0441\u0441\u043a\u0438\u0439 \u0441\u0432\u044f\u0437\u043d\u043e\u0439: General Gasanov We are open to more Liaisons as well.Thank you for your time."
+    },
+    {
+      "id": "sfu-library",
+      "channel": "SFU Library",
+      "title": "SFU Library Channel Directory",
+      "summary": "Directory of SFU, ally, doctrine, training, command, and reference channels.",
+      "seen_at": "2026-06-02T07:51:54Z",
+      "source": "Channel MOTD",
+      "seen_range": {
+        "first_seen": "2026-06-01T01:56:11Z",
+        "last_seen": "2026-06-03T05:36:51Z",
+        "message_count": 27
+      },
+      "sections": [
+        {
+          "heading": "SFU Chat Channels",
+          "items": [
+            "Star Fleet Productions: alliance and academy unified chat.",
+            "Starfleet (Ship/Fit/Mod Ordering): ship, fit, and module ordering.",
+            "SFU Study Hall and SFU Study Hall PT.2: reference and training channels.",
+            "SFU Video Library and SFU Video Library PT.2: video reference channels.",
+            "SFU Mining Fleet Rules: mining fleet rules.",
+            "SFU Recruitment: recruitment channel."
+          ]
+        },
+        {
+          "heading": "Ally And Intel Channels",
+          "items": [
+            "Absolute Order: ally unified chat.",
+            "south moon alliance time: high-sec allied moon timers.",
+            "Null Focused is marked alliance-only.",
+            "Providence_Intel is marked alliance-only."
+          ]
+        },
+        {
+          "heading": "Doctrine, Training, And Command References",
+          "items": [
+            "Doctrine fit channels include SFU Doctrine and SFU Mining Fits.",
+            "Ally fit channels include SFU Ally Bombers, SFU Ally Faction Warfare, SFU Null Defense 1.0, and SFU Null Defense 1.1.",
+            "Training plans include AO TP Fatherland/FW and AO TP FEAR/FW.",
+            "SFU Upper Command is for upper-command staff."
+          ]
+        }
+      ],
+      "raw_reproduction": "Welcome to Star Fleet Union LibrarySFU Library ChannelsStarfleet (Ship/Fit/Mod Ordering) SFU Study Hall SFU Study Hall PT.2 SFU Video Library SFU Video Library PT.2 SFU Mining Fleet Rules SFU Recruitment - Recruitment ChannelAlly Chat Channelssouth moon alliance time Absolute Order AO South Null FocusedProvidence_Intel - Alliance members onlySFU Upper CommandSFU Upper Command - SFU Upper Command Staff OnlySFU & Ally Doctrine FitsSFU Doctrine Fits"
+    },
+    {
+      "id": "rookie-help",
+      "channel": "Rookie Help",
+      "title": "Rookie Help Channel Rules And Starter References",
+      "summary": "Public Rookie Help rules and starter learning references.",
+      "seen_at": "2026-06-01T01:56:10Z",
+      "source": "Channel MOTD",
+      "seen_range": {
+        "first_seen": "2026-06-01T01:56:10Z",
+        "last_seen": "2026-06-03T05:58:41Z",
+        "message_count": 5594
+      },
+      "sections": [
+        {
+          "heading": "Channel Purpose",
+          "items": [
+            "Rookie Help is for EVE-related questions and is English-only."
+          ]
+        },
+        {
+          "heading": "Prohibited In Rookie Help",
+          "items": [
+            "Trading or other financial interactions.",
+            "Begging.",
+            "Recruitment, referral links, freelance project links, soliciting, or advertising.",
+            "Political discussion, in-game or out-of-game.",
+            "Other off-topic discussion.",
+            "Swearing, trolling, spam, typing in caps, text decoration, or other disruptive behavior.",
+            "Unsolicited recruitment or referral mails to channel members."
+          ]
+        },
+        {
+          "heading": "Starter References Named In The MOTD",
+          "items": [
+            "EVE Academy, patch notes, support tickets, game rules, EULA, Terms of Service, exploits, and Discord are named as useful official references.",
+            "Advanced tutorial references include Career Agents and the level 1 Sisters of EVE epic arc from Sister Alitura in Arnon.",
+            "EVE University Wiki and The Alpha's Guide are named as starter learning references.",
+            "Bug reports should be filed with F12, then Report Bug."
+          ]
+        }
+      ],
+      "raw_reproduction": "Welcome to the EVE Rookie Help Channel! For your EVE related questions. Prohibited in this channel: Trading or other financial interactions; begging; recruitment, posting referral links, linking to freelance projects, soliciting, or advertising of any sort; political (ingame or out) or other offtopic discussion. Swearing, trolling, spam, typing in caps, text decoration, or being otherwise disruptive....Unsolicited sending of recruitment or referral mails to members of the channel is not allowed. If you wish to contact people regarding recruitment please use the Recruitment channels. Useful Links: EVE Academy Patch notes / Support Tickets Game Rules, EULA, ToS / ExploitsDiscordAdvanced Tutorials: Card - Career Agents Level 1 Epic Arc: Speak to Sister Alitura at Arnon (also join Sisters of EVE Help channel)EVE Uni Wiki: [redacted: truncated Rookie Help MOTD link] Alphas Guide: www.thealphasguide.comReporting a bug: F12 (click Report Bug) This channel is English only."
+    },
+    {
+      "id": "sfu-study-hall",
+      "channel": "SFU Study Hall",
+      "title": "SFU Study Hall Resource Index",
+      "summary": "Market, mining, PI, travel, PvP, PvE, mission, and wormhole reference index.",
+      "seen_at": "2026-06-03T04:23:34Z",
+      "source": "Channel MOTD",
+      "seen_range": {
+        "first_seen": "2026-06-03T04:23:34Z",
+        "last_seen": "2026-06-03T05:36:51Z",
+        "message_count": 2
+      },
+      "sections": [
+        {
+          "heading": "Market And Industry Tools",
+          "items": [
+            "Appraisal Tool v1.1, Janice, Evetycoon, Evetrade, Eve Harvest, Cerlestes Ore Prices, Thonky Planet Checker, Eve-webtools PI, hanns.io/pi, and Eve-cost Calculator are listed."
+          ]
+        },
+        {
+          "heading": "Travel, PvP, And PvE References",
+          "items": [
+            "Travel/PvP references include Gatecheck, Dotlan Maps, zKillboard, Battle Reports, Dscan.info, and Localthreat.",
+            "PvE references include insta undock/dock setup, MWD/Cloak trick, LP store lists, mission cheatsheets, NPC damage, NPCs to deal and heal, and Rykki's PvE wormhole guide."
+          ]
+        }
+      ],
+      "raw_reproduction": "Markets InfoAppraisal Tool v1.1 Janice Evetycoon Evetrade Eve Harvest Mining/PICerlestes Ore PricesThonky Planet CheckerEve-webtools PIhanns.io/pi/Eve-cost CalculatorMining FAQ Travel/PVPGatecheckDotlan MapszKillboardBattle ReportsDscan.infoLocalthreatPVEInsta (un)Dock SetupMWD/Cloak trick LP Store ListsMission CheatsheetsNPC damageNPCs, what to deal and what to healRykki's PVE WH Guide"
+    },
+    {
+      "id": "sfu-study-hall-pt-2",
+      "channel": "SFU Study Hall PT.2",
+      "title": "SFU Study Hall PT.2 Resource Index",
+      "summary": "General references, fitting tools, Magic 14, PI, wormholes, hauling, fleet terminology, and SFU resources.",
+      "seen_at": "2026-06-02T05:02:53Z",
+      "source": "Channel MOTD",
+      "seen_range": {
+        "first_seen": "2026-06-01T01:56:11Z",
+        "last_seen": "2026-06-03T05:36:52Z",
+        "message_count": 28
+      },
+      "sections": [
+        {
+          "heading": "General And Skill References",
+          "items": [
+            "General references include a ship fitting tool, the Comprehensive Guide to EVE, test server info, EveWho, and the Magic 14 skills.",
+            "Mining/PI references include mining crystals and PI grid."
+          ]
+        },
+        {
+          "heading": "Wormhole, Hauling, Fleet, And SFU References",
+          "items": [
+            "Wormhole references include wormhole directory and anoik.is/wormholes.",
+            "Hauling references include AO HS Hauling Guide, Red Frog, and PushX.",
+            "Fleet references include fleet terminology and overview/Z-S references.",
+            "SFU references include Human Resources, 8 Stars of Success, departments and ranks, buyback, blueprint library, and reaction formula library."
+          ]
+        }
+      ],
+      "raw_reproduction": "GeneralShip Fitting ToolThe Comprehensive Guide to Eve some info out of dateTest Server Info EveWho Magic 14 Skills Mining/PIMining CrystalsPI Grid WormHolesWormhole Directoryanoik.is/wormholesHauling ServicesAO HS Hauling Guidered-frog.orgPushXFleetFleet TerminologyOverviewsZ-SStar Fleet UnionHuman ResourcesSFU 8 Stars of SuccessSFU Departments & Ranks SFU Buyback SFU Blueprint Library SFU Reaction Formula Library"
+    },
+    {
+      "id": "sfu-doctrine-3-2",
+      "channel": "SFU Doctrine 3.2",
+      "title": "SFU Doctrine 3.2 Faction Warfare Fit Index",
+      "summary": "Faction warfare doctrine list covering command, DPS, tackle, cruiser DPS, and basic fits.",
+      "seen_at": "2026-06-03T04:23:33Z",
+      "source": "Channel MOTD",
+      "seen_range": {
+        "first_seen": "2026-06-03T04:23:33Z",
+        "last_seen": "2026-06-03T05:36:50Z",
+        "message_count": 2
+      },
+      "sections": [
+        {
+          "heading": "Faction Warfare Elite",
+          "items": [
+            "Command: AO Fury Command Ship FW TFS Pontifex.",
+            "DPS: AO Fury DPS Corm Storm T1 Cormorant, Corm Storm T2 Cormorant, and FW Insurgency Algos.",
+            "Tackle: AO Fury Tackle FW Insurgence Condor.",
+            "Cruiser DPS: AO Fury Cruiser DPS Exequror, Exequror Navy Issue, and Thorax."
+          ]
+        },
+        {
+          "heading": "Faction Warfare Basic",
+          "items": [
+            "[FW TFS] Exequror.",
+            "[FW TFS] Thorax.",
+            "[FW TFS] Thorax L1.",
+            "[FW TFS] Exequror NI.",
+            "[FW TFS] Exequror NI Rails.",
+            "[FW TFS] Cormorant T1.",
+            "[FW TFS] Cormorant T2.",
+            "[FW TFS] Catalyst."
+          ]
+        }
+      ],
+      "raw_reproduction": "FACTION WARFARE ELITECommandAO Fury - Command Ship-fw tfs - PontifexDPSAO Fury - DPS - Corm Storm T1 - CormorantAO Fury - DPS - Corm Storm T2 - CormorantAO Fury - DPS - FW Insurgency - AlgosTACKLEAO Fury - Tackle - FW Insurgence - CondorCRUISER DPSAO Fury - Cruiser DPS - ExequrorAO Fury - Cruiser DPS-FW TFS- Exequror Navy IssueAO Fury - Cruiser DPS FW TFS - ThoraxFACTION WARFARE BASIC[FW TFS] Exequror[FW TFS] Thorax[FW TFS] Thorax L1[FW TFS] Exequror NI[FW TFS] Exequror NI Rails[FW TFS] Cormorant T1[FW TFS] Cormorant T2[FW TFS] Catalyst"
+    }
+  ],
+  "topics": [
+    {
+      "id": "corp-orientation",
+      "title": "Corp Orientation",
+      "category": "Corp operations",
+      "summary": "The corp MOTD frames Star Fleet as a practical, social home base: have fun, make ISK, use Discord for questions, watch corporation bulletins, and use the unified Star Fleet chat for high-sec and null-sec members.",
+      "details": [
+        "The SFU Library points members to unified chat, study channels, doctrine fits, mining rules, recruitment, and ally channels.",
+        "Recruitment text describes three tracks: high-sec academy, null-sec industry/general activity, and null-sec PvP/defense.",
+        "Star Fleet Productions Academy is the high-sec home for new and returning capsuleers; Star Fleet Productions is the null-sec industry/general activity corp; Star Fleet Section 31 is the null-sec PvP/defense corp.",
+        "The alliance goal described in recruitment is to keep high-sec and null-sec divisions close enough that they can help each other.",
+        "Recent corp chat also emphasized moving toward corp HQ, Sisters of EVE epic arc questions, mining, exploration, manufacturing, and basic local-defense readiness.",
+        "Leadership contacts and liaisons are named in the recruitment MOTD; exact personal outreach should still be checked in-game because roles can change."
+      ],
+      "sources": [
+        {
+          "channel": "Corp",
+          "message_count": 644,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:42:34Z"
+        },
+        {
+          "channel": "SFU Library",
+          "message_count": 27,
+          "motd_blocks": 2,
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:36:51Z"
+        },
+        {
+          "channel": "SFU Recruitment",
+          "message_count": 30,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-03T03:13:41Z",
+          "last_seen": "2026-06-03T05:36:53Z"
+        }
+      ]
+    },
+    {
+      "id": "chat-expectations",
+      "title": "Chat Expectations",
+      "category": "Rules",
+      "summary": "Internal chat expectations are simple: be respectful, move tension or disputes to private chat, and treat serious chat problems as a leadership issue.",
+      "details": [
+        "Rookie Help has stricter public-channel rules: no trading, begging, recruitment, referral links, advertising, politics, off-topic disruption, swearing, trolling, spam, caps abuse, or text decoration.",
+        "Recruitment/referral contact should use recruitment channels instead of unsolicited mails.",
+        "Star Fleet internal chat asks members to be respectful and move tension into private chat instead of letting public channels escalate.",
+        "Star Fleet Productions' MOTD says chat violations can lead to removal from the chat and, depending on severity, possible removal from corp.",
+        "The mining fleet rules separately warn pilots not to abuse or goad other pilots in local chat."
+      ],
+      "sources": [
+        {
+          "channel": "Star Fleet Productions",
+          "message_count": 116,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:36:51Z"
+        },
+        {
+          "channel": "Rookie Help",
+          "message_count": 5594,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-01T01:56:10Z",
+          "last_seen": "2026-06-03T05:58:41Z"
+        }
+      ]
+    },
+    {
+      "id": "mining-rules",
+      "title": "Mining Fleet Rules",
+      "category": "Mining",
+      "summary": "SFU mining fleets are split into casual and official fleets. The common rule is safety first: do not abuse pilots in local, FCs must stay present, watch local, handle NPC rats, and link the rules in the fleet MOTD.",
+      "details": [
+        "Casual fleets: miners self-haul ore, and unofficial buyback programs need permission.",
+        "Official fleets: mining ships mine, PvP ships may guard, miners jetcan ore to the FC, and Orca/Porpoise use needs FC permission.",
+        "Official FCs should have the Mining Foreman or Mining Commander title and pay the stated 90 percent Jita buy rate for ore, moon ore, gas, and ice.",
+        "SRP is tied to the SFU Procurer; the rules recommend avoiding Coveter, Retriever, or Hulk in fleet contexts, while Mackinaw is acceptable near 70k EHP.",
+        "FCs are explicitly responsible for miner security: do not lead while AFK, be prepared for NPC rats, and watch local for red/orange spikes.",
+        "Recent fleet chat reinforced the practical side: compress ore before hauling, use doctrine fits when possible, and fleet mining helps the corp produce more ships."
+      ],
+      "sources": [
+        {
+          "channel": "SFU Mining Fleet Rules",
+          "message_count": 10,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:36:52Z"
+        },
+        {
+          "channel": "Fleet",
+          "message_count": 178,
+          "motd_blocks": 0,
+          "first_seen": "2026-06-01T23:16:48Z",
+          "last_seen": "2026-06-02T01:55:15Z"
+        },
+        {
+          "channel": "Corp",
+          "message_count": 644,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:42:34Z"
+        }
+      ]
+    },
+    {
+      "id": "mining-and-industry-notes",
+      "title": "Mining And Industry Notes",
+      "category": "Mining",
+      "summary": "The useful recurring advice is to compress ore, mine with fleets when possible, and treat ship choice as a balance of yield, survivability, and logistics.",
+      "details": [
+        "Venture was described as fragile but useful for sneaky low-sec gas huffing.",
+        "Endurance was called a better ore miner than Venture and can use Improved Cloaking Device II.",
+        "Retriever plus Strip Miner I was suggested as a practical starter step before modulated strip miners and crystals.",
+        "Fleet chat explained doctrine fits as standardized fits that are easier for the corp to sustain and replace.",
+        "Progression advice in corp chat mentioned training Strip Miner I first, then Modulated Strip Miners, then the correct crystals.",
+        "A Hulk was described as very fast for mining with the right fit but lacking cargo capacity; this should be balanced against fleet SRP and survivability rules.",
+        "Low-sec mining was discussed as possible, but the surrounding rules make security awareness and local monitoring central rather than optional."
+      ],
+      "sources": [
+        {
+          "channel": "Corp",
+          "message_count": 644,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:42:34Z"
+        },
+        {
+          "channel": "Fleet",
+          "message_count": 178,
+          "motd_blocks": 0,
+          "first_seen": "2026-06-01T23:16:48Z",
+          "last_seen": "2026-06-02T01:55:15Z"
+        },
+        {
+          "channel": "SFU Mining Fleet Rules",
+          "message_count": 10,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:36:52Z"
+        }
+      ]
+    },
+    {
+      "id": "missions-combat-sites",
+      "title": "Missions, Combat Sites, And Fitting",
+      "category": "PvE",
+      "summary": "The logs contain practical starter PvE advice: train skills and T2 weapons for DPS, do not underskill expensive ships, treat combat-site difficulty labels carefully, and be ready to warp out.",
+      "details": [
+        "A chat explanation said level 1.3 sites can be harder than level 2.0 sites, and suggested trying Refuge-level sites before tougher Dens.",
+        "Dens were described as level 4 difficulty and not something to run casually without a good fit.",
+        "Level 3 and 4 missions require NPC corporation standing; level 4 missions were described as strong money and salvage sources.",
+        "Fleeted mission running can let one pilot accept missions while everyone shares completion rewards.",
+        "Mobile Tractor Units loot wrecks but do not salvage them; salvage drones or salvagers are still needed.",
+        "For DPS gains, corp chat emphasized T2 weapons and trained support skills before chasing more expensive ships.",
+        "Underskilling a ship was called a good way to lose it; fit confidence and escape readiness matter more than rushing into harder sites.",
+        "Salvage was described as more worthwhile around higher-level missions, especially level 4s, but salvage drones can be carried for convenience."
+      ],
+      "sources": [
+        {
+          "channel": "Corp",
+          "message_count": 644,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:42:34Z"
+        },
+        {
+          "channel": "Rookie Help",
+          "message_count": 5594,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-01T01:56:10Z",
+          "last_seen": "2026-06-03T05:58:41Z"
+        }
+      ]
+    },
+    {
+      "id": "resource-map",
+      "title": "Guide And Tool Map",
+      "category": "Resources",
+      "summary": "The recent logs repeatedly point to EVE University, WCKG, EVE Gatecheck, zKillboard, Fuzzwork LP Store, Signal Cartel safety material, EVE Survival, and official EVE pages.",
+      "details": [
+        "Guide clusters include exploration, abyssals, incursions, combat sites, planetary industry, standings, timers, missile mechanics, turret mechanics, and Alpha/Omega basics.",
+        "Tool clusters include route safety, kill reports, LP store research, market/appraisal references, PI references, wormhole references, hauling services, and overview setup.",
+        "The public-safe build redacts Discord invites, referral links, ad-like ISK sale links, private-looking tools, and raw Google Sheets URLs until someone reviews them.",
+        "Study Hall also names market/appraisal and industry tools such as Janice, Evetycoon, Evetrade, Cerlestes, Thonky, Eve-webtools PI, hanns.io/pi, and Eve-cost Calculator.",
+        "Study Hall PT.2 adds ship fitting tools, Magic 14, mining crystals, PI grid, wormhole directory references, hauling services, fleet terminology, Z-S overview, SFU buyback, blueprint library, and reaction formula library."
+      ],
+      "sources": [
+        {
+          "channel": "Rookie Help",
+          "message_count": 5594,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-01T01:56:10Z",
+          "last_seen": "2026-06-03T05:58:41Z"
+        },
+        {
+          "channel": "SFU Study Hall",
+          "message_count": 2,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-03T04:23:34Z",
+          "last_seen": "2026-06-03T05:36:51Z"
+        },
+        {
+          "channel": "SFU Study Hall PT.2",
+          "message_count": 28,
+          "motd_blocks": 2,
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:36:52Z"
+        },
+        {
+          "channel": "Z-S Overview",
+          "message_count": 5,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-02T20:25:11Z",
+          "last_seen": "2026-06-03T04:25:32Z"
+        }
+      ]
+    },
+    {
+      "id": "orders-and-logistics",
+      "title": "Ship, Fit, And Mod Ordering",
+      "category": "Logistics",
+      "summary": "The Starfleet ordering channel gives a simple procurement workflow for hulls, modules, and fits delivered around Amarr, Providence, and Catch blue-region logistics.",
+      "details": [
+        "Use an in-game mail subject of Starfleet Order.",
+        "Include item or fit link, quantity, destination station, desired timeframe, and special notes.",
+        "Capital ships can take up to about three weeks depending on the request.",
+        "The order team replies with price and comments, after which the request can be accepted or declined.",
+        "The example order includes both fitted ships and bulk materials, showing that the process is not only for whole hulls.",
+        "Delivery areas named in the MOTD include Amarr, Providence, and Catch blue-region logistics."
+      ],
+      "sources": [
+        {
+          "channel": "Starfleet (Ship/Fit/Mod Ordering)",
+          "message_count": 3,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-03T03:32:41Z",
+          "last_seen": "2026-06-03T05:36:51Z"
+        }
+      ]
+    },
+    {
+      "id": "overview-and-doctrines",
+      "title": "Overview And Doctrine References",
+      "category": "Fitting",
+      "summary": "The logs include overview setup references and doctrine fit channels. Z-S Overview instructions say to reset overview settings, load the core pack, add desired packs, choose a layout, and refresh brackets.",
+      "details": [
+        "Doctrine references include faction warfare command, DPS, tackle, cruiser DPS, and basic FW fits.",
+        "Study Hall channels list fitting tools, Magic 14 skills, mining crystals, PI grid, wormhole references, hauling services, fleet terminology, and SFU buyback/library references.",
+        "Z-S Overview setup has a concrete sequence: reset overview settings, load core and optional packs, pick a layout, refresh brackets, and update the Ships tab.",
+        "Doctrine channels should be treated as indexes, not final fit validation; check the in-game channel before fleet use because doctrine fits can change."
+      ],
+      "sources": [
+        {
+          "channel": "Z-S Overview",
+          "message_count": 5,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-02T20:25:11Z",
+          "last_seen": "2026-06-03T04:25:32Z"
+        },
+        {
+          "channel": "SFU Doctrine 3.2",
+          "message_count": 2,
+          "motd_blocks": 1,
+          "first_seen": "2026-06-03T04:23:33Z",
+          "last_seen": "2026-06-03T05:36:50Z"
+        },
+        {
+          "channel": "SFU Study Hall PT.2",
+          "message_count": 28,
+          "motd_blocks": 2,
+          "first_seen": "2026-06-01T01:56:11Z",
+          "last_seen": "2026-06-03T05:36:52Z"
+        }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "label": "Discord invite",
+      "url": "",
+      "display_url": "[redacted: private or unclear link]",
+      "category": "Review before publishing",
+      "status": "redacted",
+      "reason": "private or unclear link",
+      "count": 23,
+      "channels": [
+        "Corp"
+      ]
+    },
+    {
+      "label": "Discord invite",
+      "url": "",
+      "display_url": "[redacted: private or unclear link]",
+      "category": "Review before publishing",
+      "status": "redacted",
+      "reason": "private or unclear link",
+      "count": 23,
+      "channels": [
+        "Corp"
+      ]
+    },
+    {
+      "label": "Discord invite",
+      "url": "",
+      "display_url": "[redacted: private or unclear link]",
+      "category": "Review before publishing",
+      "status": "redacted",
+      "reason": "private or unclear link",
+      "count": 23,
+      "channels": [
+        "Star Fleet Productions"
+      ]
+    },
+    {
+      "label": "The Alpha's Guide",
+      "url": "https://www.thealphasguide.com",
+      "display_url": "https://www.thealphasguide.com",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 23,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "YouTube video",
+      "url": "https://www.youtube.com/watch?v=9wtX5EhWP6A",
+      "display_url": "https://www.youtube.com/watch?v=9wtX5EhWP6A",
+      "category": "Videos",
+      "status": "public",
+      "reason": "public resource",
+      "count": 23,
+      "channels": [
+        "Star Fleet Productions"
+      ]
+    },
+    {
+      "label": "YouTube video",
+      "url": "https://www.youtube.com/watch?v=A4Fey508pqc",
+      "display_url": "https://www.youtube.com/watch?v=A4Fey508pqc",
+      "category": "Videos",
+      "status": "public",
+      "reason": "public resource",
+      "count": 23,
+      "channels": [
+        "Star Fleet Productions"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - The",
+      "url": "",
+      "display_url": "[redacted: truncated Rookie Help MOTD link]",
+      "category": "Review before publishing",
+      "status": "redacted",
+      "reason": "truncated Rookie Help MOTD link",
+      "count": 23,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "Rejected ISK-sale/ad link",
+      "url": "",
+      "display_url": "[redacted: ISK sale or ad link]",
+      "category": "Rejected / spam seen in chat",
+      "status": "redacted",
+      "reason": "ISK sale or ad link",
+      "count": 19,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "EVE Online - recruit",
+      "url": "https://www.eveonline.com/recruit",
+      "display_url": "https://www.eveonline.com/recruit",
+      "category": "Official EVE",
+      "status": "public",
+      "reason": "public resource",
+      "count": 6,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "Redacted review link",
+      "url": "",
+      "display_url": "[redacted: private or unclear link]",
+      "category": "Review before publishing",
+      "status": "redacted",
+      "reason": "private or unclear link",
+      "count": 5,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "www.wckg.net - exploration",
+      "url": "https://www.wckg.net/PVE/exploration",
+      "display_url": "https://www.wckg.net/PVE/exploration",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 4,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "Rejected ISK-sale/ad link",
+      "url": "",
+      "display_url": "[redacted: ISK sale or ad link]",
+      "category": "Rejected / spam seen in chat",
+      "status": "redacted",
+      "reason": "ISK sale or ad link",
+      "count": 3,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "EVE Gatecheck route safety",
+      "url": "https://eve-gatecheck.space/eve",
+      "display_url": "https://eve-gatecheck.space/eve",
+      "category": "Tools",
+      "status": "public",
+      "reason": "public resource",
+      "count": 2,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "EVE Online - csm",
+      "url": "https://community.eveonline.com/community/csm",
+      "display_url": "https://community.eveonline.com/community/csm",
+      "category": "Official EVE",
+      "status": "public",
+      "reason": "public resource",
+      "count": 2,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "www.wckg.net - Newbie",
+      "url": "https://www.wckg.net/Newbie",
+      "display_url": "https://www.wckg.net/Newbie",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 2,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "EVE Online - cradle of war in focus",
+      "url": "https://www.eveonline.com/news/view/cradle-of-war-in-focus",
+      "display_url": "https://www.eveonline.com/news/view/cradle-of-war-in-focus",
+      "category": "Official EVE",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "EVE Survival mission report",
+      "url": "https://eve-survival.org/wikka.php?wakka=SuntendiRecall1anca&show_comments=1",
+      "display_url": "https://eve-survival.org/wikka.php?wakka=SuntendiRecall1anca&show_comments=1",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "Fuzzwork LP Store",
+      "url": "https://www.fuzzwork.co.uk/lpstore",
+      "display_url": "https://www.fuzzwork.co.uk/lpstore",
+      "category": "Tools",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "Redacted review link",
+      "url": "",
+      "display_url": "[redacted: private or unclear link]",
+      "category": "Review before publishing",
+      "status": "redacted",
+      "reason": "private or unclear link",
+      "count": 1,
+      "channels": [
+        "Local"
+      ]
+    },
+    {
+      "label": "Redacted review link",
+      "url": "",
+      "display_url": "[redacted: private or unclear link]",
+      "category": "Review before publishing",
+      "status": "redacted",
+      "reason": "private or unclear link",
+      "count": 1,
+      "channels": [
+        "Local"
+      ]
+    },
+    {
+      "label": "Redacted review link",
+      "url": "",
+      "display_url": "[redacted: private or unclear link]",
+      "category": "Review before publishing",
+      "status": "redacted",
+      "reason": "private or unclear link",
+      "count": 1,
+      "channels": [
+        "Local"
+      ]
+    },
+    {
+      "label": "Referral link",
+      "url": "",
+      "display_url": "[redacted: referral link]",
+      "category": "Review before publishing",
+      "status": "redacted",
+      "reason": "referral link",
+      "count": 1,
+      "channels": [
+        "Local"
+      ]
+    },
+    {
+      "label": "Signal Cartel exploration safety guide",
+      "url": "https://wiki.signalcartel.space/Public:Exploration_Site_Safety_Guide",
+      "display_url": "https://wiki.signalcartel.space/Public:Exploration_Site_Safety_Guide",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "Star Fleet Productions website",
+      "url": "https://starfleetproductions.space",
+      "display_url": "https://starfleetproductions.space",
+      "category": "Corp / alliance",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Corp"
+      ]
+    },
+    {
+      "label": "YouTube video",
+      "url": "https://www.youtube.com/watch?v=G745Nccmy4w",
+      "display_url": "https://www.youtube.com/watch?v=G745Nccmy4w",
+      "category": "Videos",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "YouTube video",
+      "url": "https://youtu.be/mNdVYYwXzlY",
+      "display_url": "https://youtu.be/mNdVYYwXzlY",
+      "category": "Videos",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "forums.eveonline.com - 60",
+      "url": "https://forums.eveonline.com/c/marketplace/character-bazaar/60",
+      "display_url": "https://forums.eveonline.com/c/marketplace/character-bazaar/60",
+      "category": "Official EVE",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "support.eveonline.com - 213020969 Alpha and Omega Clone",
+      "url": "https://support.eveonline.com/hc/en-us/articles/213020969-Alpha-and-Omega-Clone",
+      "display_url": "https://support.eveonline.com/hc/en-us/articles/213020969-Alpha-and-Omega-Clone",
+      "category": "Official EVE",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - Capsuleer Day XXIII",
+      "url": "https://wiki.eveuniversity.org/Capsuleer_Day_XXIII",
+      "display_url": "https://wiki.eveuniversity.org/Capsuleer_Day_XXIII",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - Character Bazaar",
+      "url": "https://wiki.eveuniversity.org/Character_Bazaar",
+      "display_url": "https://wiki.eveuniversity.org/Character_Bazaar",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - Combat site",
+      "url": "https://wiki.eveuniversity.org/Combat_site",
+      "display_url": "https://wiki.eveuniversity.org/Combat_site",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - Exploration",
+      "url": "https://wiki.eveuniversity.org/Exploration",
+      "display_url": "https://wiki.eveuniversity.org/Exploration",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - Main Page",
+      "url": "https://wiki.eveuniversity.org/Main_Page",
+      "display_url": "https://wiki.eveuniversity.org/Main_Page",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - Missile mechanics",
+      "url": "https://wiki.eveuniversity.org/Missile_mechanics",
+      "display_url": "https://wiki.eveuniversity.org/Missile_mechanics",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - NPC standings",
+      "url": "https://wiki.eveuniversity.org/NPC_standings#Gaining_and_losing_standings",
+      "display_url": "https://wiki.eveuniversity.org/NPC_standings#Gaining_and_losing_standings",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - Planetary Industry",
+      "url": "https://wiki.eveuniversity.org/Planetary_Industry",
+      "display_url": "https://wiki.eveuniversity.org/Planetary_Industry",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - Suntendi Recall",
+      "url": "https://wiki.eveuniversity.org/Suntendi_Recall#Part_5Opponent",
+      "display_url": "https://wiki.eveuniversity.org/Suntendi_Recall#Part_5Opponent",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - Timers",
+      "url": "https://wiki.eveuniversity.org/Timers#Weapon_Timer",
+      "display_url": "https://wiki.eveuniversity.org/Timers#Weapon_Timer",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "wiki.eveuniversity.org - Turret mechanics",
+      "url": "https://wiki.eveuniversity.org/Turret_mechanics",
+      "display_url": "https://wiki.eveuniversity.org/Turret_mechanics",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "www.tomshardware.com",
+      "url": "",
+      "display_url": "[redacted: unclassified external link]",
+      "category": "Review before publishing",
+      "status": "redacted",
+      "reason": "unclassified external link",
+      "count": 1,
+      "channels": [
+        "Corp"
+      ]
+    },
+    {
+      "label": "www.wckg.net - Vet",
+      "url": "https://www.wckg.net/Vet",
+      "display_url": "https://www.wckg.net/Vet",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "www.wckg.net - abyssals",
+      "url": "https://www.wckg.net/PVE/abyssals",
+      "display_url": "https://www.wckg.net/PVE/abyssals",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "www.wckg.net - incursions",
+      "url": "https://www.wckg.net/PVE/incursions",
+      "display_url": "https://www.wckg.net/PVE/incursions",
+      "category": "Guides and wiki",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    },
+    {
+      "label": "zKillboard reference",
+      "url": "https://zkillboard.com/kill/135404056",
+      "display_url": "https://zkillboard.com/kill/135404056",
+      "category": "Tools",
+      "status": "public",
+      "reason": "public resource",
+      "count": 1,
+      "channels": [
+        "Rookie Help"
+      ]
+    }
+  ],
+  "motds": [
+    {
+      "channel": "Corp",
+      "seen_at": "2026-06-01T01:56:11Z",
+      "summary": "1 - Have Fun 2 - Star Fleet Discord: [redacted: private or unclear link] 3 - Have Fun4 - Ally AO Discord: [redacted: private or unclear link] 5 - Make isk6 - Corporation Bulletins 7 - Have fun and make more isk8 - Any questions feel free to reach out on discord or contact Denis Leary or Drak..."
+    },
+    {
+      "channel": "Rookie Help",
+      "seen_at": "2026-06-01T01:56:10Z",
+      "summary": "Public Rookie Help rules and starter learning references."
+    },
+    {
+      "channel": "SFU Doctrine 3.2",
+      "seen_at": "2026-06-03T04:23:33Z",
+      "summary": "Faction warfare doctrine list covering command, DPS, tackle, cruiser DPS, and basic fits."
+    },
+    {
+      "channel": "SFU Library",
+      "seen_at": "2026-06-01T01:56:11Z",
+      "summary": "Directory of SFU, ally, doctrine, training, command, and reference channels."
+    },
+    {
+      "channel": "SFU Library",
+      "seen_at": "2026-06-02T07:51:54Z",
+      "summary": "Directory of SFU, ally, doctrine, training, command, and reference channels."
+    },
+    {
+      "channel": "SFU Mining Fleet Rules",
+      "seen_at": "2026-06-01T01:56:11Z",
+      "summary": "Rules for casual and official mining fleets, FC duties, ore handling, SRP, and payout expectations."
+    },
+    {
+      "channel": "SFU Recruitment",
+      "seen_at": "2026-06-03T03:13:41Z",
+      "summary": "Recruitment overview for SFU high-sec academy and null-sec corps."
+    },
+    {
+      "channel": "SFU Study Hall",
+      "seen_at": "2026-06-03T04:23:34Z",
+      "summary": "Market, mining, PI, travel, PvP, PvE, mission, and wormhole reference index."
+    },
+    {
+      "channel": "SFU Study Hall PT.2",
+      "seen_at": "2026-06-01T01:56:11Z",
+      "summary": "General references, fitting tools, Magic 14, PI, wormholes, hauling, fleet terminology, and SFU resources."
+    },
+    {
+      "channel": "SFU Study Hall PT.2",
+      "seen_at": "2026-06-02T05:02:53Z",
+      "summary": "General references, fitting tools, Magic 14, PI, wormholes, hauling, fleet terminology, and SFU resources."
+    },
+    {
+      "channel": "Star Fleet Productions",
+      "seen_at": "2026-06-01T01:56:11Z",
+      "summary": "Unified high-sec/null-sec staff chat expectations, miner notes, Discord, mailing lists, and videos."
+    },
+    {
+      "channel": "Starfleet (Ship/Fit/Mod Ordering)",
+      "seen_at": "2026-06-03T03:32:41Z",
+      "summary": "Order process for hulls, fits, modules, delivery location, timeframe, and quote approval."
+    },
+    {
+      "channel": "Z-S Overview",
+      "seen_at": "2026-06-02T20:25:11Z",
+      "summary": "Z-S Overview setup steps, packs, layouts, and fleet broadcast settings."
+    }
+  ]
+}

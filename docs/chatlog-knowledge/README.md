@@ -1,0 +1,15 @@
+# EVE Chatlog Knowledge Base
+
+This folder contains a static, public-safe knowledge website generated from recent local EVE chat logs.
+
+- Open `index.html` in a browser.
+- `knowledge.json` is the structured database for reuse in other tools.
+- Raw chat logs are not included.
+- Generated at: 2026-06-03T06:00:04Z
+- Source window: 2026-06-01T01:56:10Z to 2026-06-03T05:58:41Z
+
+Regenerate from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\build_chatlog_knowledge_site.py --logs-root "C:\Users\Brian\OneDrive\Documents\EVE\logs" --since-date 2026-06-01
+```
