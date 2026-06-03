@@ -135,7 +135,7 @@ The dashboard also has editable watchlists for hostile pilots, hostile corporati
 
 Recent intel events persist locally in ignored SQLite data at `profiles/corp_intel_events.sqlite3`, with seven-day retention by default.
 
-Optional EVE SSO login verifies dashboard users by character and public ESI corporation/alliance membership. Pilot records persist locally in ignored SQLite data at `profiles/corp_intel_pilots.sqlite3`; access and refresh tokens are not stored.
+Optional EVE SSO login verifies dashboard users by character and public ESI corporation/alliance membership. The returned SSO access token is signature-checked against EVE's JWKS before the character identity is trusted. Pilot records persist locally in ignored SQLite data at `profiles/corp_intel_pilots.sqlite3`; access and refresh tokens are not stored.
 
 For a shared corp-hosted board, add `--require-sso-dashboard` plus `--allowed-corporation-ids` or `--allowed-alliance-ids` so the dashboard and JSON APIs require an allowlisted EVE SSO session.
 

@@ -123,7 +123,7 @@ Verified pilot records are stored locally in:
 profiles/corp_intel_pilots.sqlite3
 ```
 
-This first SSO slice uses SSO only to prove character ownership and check current public corporation/alliance identity. It does not store EVE access tokens or refresh tokens.
+This SSO layer uses SSO only to prove character ownership and check current public corporation/alliance identity. The returned access token is signature-verified against EVE's JWKS before the board trusts the character claim. It does not store EVE access tokens or refresh tokens.
 
 By default, SSO is available but the dashboard remains visible to anyone who can reach the web host. For a shared corp deployment, require a signed-in SSO member session for the dashboard and JSON APIs:
 
@@ -202,7 +202,7 @@ Aid calls are marked `critical`. Hostile reports with systems are marked `high`.
 - Uploaded events do not include the sender's local chat-log file path.
 - The event database is local operational data; do not publish or commit it.
 - The pilot registry is local operational data; do not publish or commit it.
-- SSO tokens are used during login and then discarded. Do not add broad ESI scopes unless a future feature truly needs them.
+- SSO tokens are signature-verified during login and then discarded. Do not add broad ESI scopes unless a future feature truly needs them.
 - Prefer per-pilot agent upload tokens over a shared ingest token once SSO is configured.
 - Use `--pilot` labels that your corp members are comfortable showing on the board.
 - ESI does not provide chat logs; local opt-in agents still need to read each pilot's local chat-log files.

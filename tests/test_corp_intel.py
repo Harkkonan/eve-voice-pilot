@@ -4,6 +4,9 @@ from pathlib import Path
 import sys
 import time
 
+import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -42,6 +45,25 @@ def make_unsigned_jwt(payload: dict) -> str:
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
     return f"{encode({'alg': 'none'})}.{encode(payload)}.signature"
+
+
+class FakeSigningKey:
+    def __init__(self, key):
+        self.key = key
+
+
+class FakeJwkClient:
+    def __init__(self, key):
+        self.key = key
+
+    def get_signing_key_from_jwt(self, _token: str) -> FakeSigningKey:
+        return FakeSigningKey(self.key)
+
+
+def make_signed_jwt(payload: dict, *, private_key=None) -> tuple[str, object]:
+    private_key = private_key or rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+    return token, private_key.public_key()
 
 
 def test_parse_chat_line_reads_eve_timestamp_speaker_and_message():
@@ -96,7 +118,7 @@ def test_build_sso_authorization_url_uses_state_callback_and_scopes():
 
 
 def test_decode_eve_access_token_validates_character_identity():
-    token = make_unsigned_jwt(
+    token, public_key = make_signed_jwt(
         {
             "iss": "https://login.eveonline.com/",
             "aud": ["client-123", "EVE Online"],
@@ -107,13 +129,13 @@ def test_decode_eve_access_token_validates_character_identity():
             "owner": "owner-hash",
         }
     )
-    payload = decode_eve_access_token(token, client_id="client-123")
+    payload = decode_eve_access_token(token, client_id="client-123", jwk_client=FakeJwkClient(public_key))
     assert payload["name"] == "Scout Pilot"
     assert payload["sub"] == "CHARACTER:EVE:123456789"
 
 
 def test_decode_eve_access_token_rejects_wrong_audience():
-    token = make_unsigned_jwt(
+    token, public_key = make_signed_jwt(
         {
             "iss": "https://login.eveonline.com/",
             "aud": ["other-client", "EVE Online"],
@@ -123,11 +145,49 @@ def test_decode_eve_access_token_rejects_wrong_audience():
         }
     )
     try:
-        decode_eve_access_token(token, client_id="client-123")
+        decode_eve_access_token(token, client_id="client-123", jwk_client=FakeJwkClient(public_key))
     except Exception as exc:
         assert "audience" in str(exc)
     else:
         raise AssertionError("expected wrong audience to be rejected")
+
+
+def test_decode_eve_access_token_rejects_bad_signature():
+    token, _public_key = make_signed_jwt(
+        {
+            "iss": "https://login.eveonline.com/",
+            "aud": ["client-123", "EVE Online"],
+            "exp": int(time.time()) + 600,
+            "sub": "CHARACTER:EVE:123456789",
+            "name": "Scout Pilot",
+        }
+    )
+    wrong_private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    try:
+        decode_eve_access_token(token, client_id="client-123", jwk_client=FakeJwkClient(wrong_private_key.public_key()))
+    except Exception as exc:
+        assert "failed verification" in str(exc)
+    else:
+        raise AssertionError("expected bad signature to be rejected")
+
+
+def test_decode_eve_access_token_rejects_unsigned_token():
+    token = make_unsigned_jwt(
+        {
+            "iss": "https://login.eveonline.com/",
+            "aud": ["client-123", "EVE Online"],
+            "exp": int(time.time()) + 600,
+            "sub": "CHARACTER:EVE:123456789",
+            "name": "Scout Pilot",
+        }
+    )
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    try:
+        decode_eve_access_token(token, client_id="client-123", jwk_client=FakeJwkClient(private_key.public_key()))
+    except Exception as exc:
+        assert "failed verification" in str(exc)
+    else:
+        raise AssertionError("expected unsigned token to be rejected")
 
 
 def test_membership_allowed_accepts_configured_corporation_or_alliance():

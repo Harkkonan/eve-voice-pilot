@@ -24,6 +24,10 @@ from urllib.request import Request, urlopen
 import uuid
 import webbrowser
 
+import jwt
+from jwt import PyJWKClient
+from jwt.exceptions import InvalidTokenError, PyJWKClientError
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SYSTEM_CACHE_PATH = ROOT / "cache" / "eve_solar_systems.json"
@@ -38,6 +42,12 @@ DEFAULT_PILOT_REGISTRY_PATH = ROOT / "profiles" / "corp_intel_pilots.sqlite3"
 DEFAULT_EVE_SSO_WELL_KNOWN_URL = "https://login.eveonline.com/.well-known/oauth-authorization-server"
 DEFAULT_WATCHLIST_REFRESH_SECONDS = 60.0
 DEFAULT_EVENT_RETENTION_DAYS = 7
+EXPECTED_EVE_SSO_AUDIENCE = "EVE Online"
+ACCEPTED_EVE_SSO_ISSUERS = {
+    "login.eveonline.com",
+    "https://login.eveonline.com",
+    "https://login.eveonline.com/",
+}
 MAX_WATCHLIST_ITEMS = 200
 MAX_WATCHLIST_TERM_LENGTH = 96
 CHAT_LINE_RE = re.compile(
@@ -1399,34 +1409,69 @@ def exchange_sso_code(config: EveSsoConfig, code: str, metadata: dict[str, Any] 
     return payload
 
 
-def decode_eve_access_token(access_token: str, *, client_id: str) -> dict[str, Any]:
-    parts = access_token.split(".")
-    if len(parts) < 2:
-        raise CorpIntelError("EVE SSO access token is not a JWT.")
-    try:
-        payload_bytes = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
-        payload = json.loads(payload_bytes.decode("utf-8"))
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise CorpIntelError("Could not decode EVE SSO access token.") from exc
-    if not isinstance(payload, dict):
-        raise CorpIntelError("EVE SSO access token payload was not a JSON object.")
+def jwks_uri_from_metadata(metadata: dict[str, Any]) -> str:
+    jwks_uri = str(metadata.get("jwks_uri") or "").strip()
+    if not jwks_uri:
+        raise CorpIntelError("EVE SSO metadata did not include a JWKS endpoint.")
+    return jwks_uri
 
+
+def jwk_client_for_uri(jwks_uri: str) -> PyJWKClient:
+    return PyJWKClient(
+        jwks_uri,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "EVE Voice Pilot Corp Intel Board",
+        },
+    )
+
+
+def validate_eve_access_token_claims(payload: dict[str, Any], *, client_id: str) -> None:
     issuer = str(payload.get("iss") or "")
-    if issuer not in {"login.eveonline.com", "https://login.eveonline.com/", "https://login.eveonline.com"}:
+    if issuer not in ACCEPTED_EVE_SSO_ISSUERS:
         raise CorpIntelError(f"EVE SSO token had unexpected issuer: {issuer}")
 
     audience = payload.get("aud")
     audiences = {str(audience)} if isinstance(audience, str) else {str(item) for item in audience or ()}
+    if EXPECTED_EVE_SSO_AUDIENCE not in audiences:
+        raise CorpIntelError("EVE SSO token audience does not include EVE Online.")
     if client_id not in audiences:
         raise CorpIntelError("EVE SSO token audience does not include this application.")
-
-    expires_at = int(payload.get("exp") or 0)
-    if expires_at <= int(time.time()):
-        raise CorpIntelError("EVE SSO access token is expired.")
 
     subject = str(payload.get("sub") or "")
     if not subject.startswith("CHARACTER:EVE:"):
         raise CorpIntelError("EVE SSO token subject was not an EVE character.")
+
+
+def decode_eve_access_token(
+    access_token: str,
+    *,
+    client_id: str,
+    metadata: dict[str, Any] | None = None,
+    jwk_client: Any | None = None,
+) -> dict[str, Any]:
+    if access_token.count(".") < 2:
+        raise CorpIntelError("EVE SSO access token is not a JWT.")
+    if jwk_client is None:
+        metadata = metadata or fetch_sso_metadata(EveSsoConfig())
+        jwk_client = jwk_client_for_uri(jwks_uri_from_metadata(metadata))
+    try:
+        signing_key = jwk_client.get_signing_key_from_jwt(access_token)
+        payload = jwt.decode(
+            access_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=EXPECTED_EVE_SSO_AUDIENCE,
+            options={
+                "require": ["aud", "exp", "iss", "sub"],
+                "verify_iss": False,
+            },
+        )
+    except (InvalidTokenError, PyJWKClientError) as exc:
+        raise CorpIntelError(f"EVE SSO access token failed verification: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CorpIntelError("EVE SSO access token payload was not a JSON object.")
+    validate_eve_access_token_claims(payload, client_id=client_id)
     return payload
 
 
@@ -1481,7 +1526,11 @@ def verify_sso_character(
     access_token: str,
     token_payload: dict[str, Any] | None = None,
 ) -> VerifiedPilot:
-    token_payload = token_payload or decode_eve_access_token(access_token, client_id=config.client_id)
+    token_payload = token_payload or decode_eve_access_token(
+        access_token,
+        client_id=config.client_id,
+        metadata=fetch_sso_metadata(config),
+    )
     character_id = character_id_from_sso_payload(token_payload)
     character_info = fetch_esi_character(config, character_id)
     corporation_id = int(character_info.get("corporation_id") or 0)
