@@ -22,6 +22,7 @@ from eve_voice_pilot.corp_market import (
     build_discord_webhook_payload,
     build_flight_buyers_payload,
     build_flight_industry_payload,
+    build_flight_profitability_payload,
     build_flight_status_payload,
     build_mail_draft,
     clean_multiline,
@@ -213,6 +214,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/status" in page
     assert "/api/flight/industry" in page
     assert "/api/flight/buyers" in page
+    assert "/api/flight/profitability" in page
     assert "/flight/login" in page
     assert "id=\"flight-system-name\"" in page
     assert "id=\"flight-login-link\"" in page
@@ -223,6 +225,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-route-summary\"" in page
     assert "id=\"flight-buyer-scan\"" in page
     assert "id=\"flight-buyer-summary\"" in page
+    assert "id=\"flight-profit-scan\"" in page
+    assert "id=\"flight-profit-summary\"" in page
 
 
 def test_flight_status_reports_missing_sso_configuration():
@@ -629,6 +633,145 @@ def test_build_flight_buyers_payload_scans_nearby_owned_blueprint_products(monke
     assert product["best_order"]["jumps"] == 1
 
 
+def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monkeypatch, tmp_path):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Industry Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(
+            "esi-location.read_location.v1",
+            "esi-assets.read_assets.v1",
+            "esi-characters.read_blueprints.v1",
+        ),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+    route_cache = RouteGraphCache(
+        path=tmp_path / "route.json",
+        available=True,
+        build_number=3374020,
+        systems={
+            1: RouteSystem(solar_system_id=1, name="Start", region_id=100, security_status=0.9),
+            2: RouteSystem(solar_system_id=2, name="One Jump", region_id=100, security_status=0.8),
+            3: RouteSystem(solar_system_id=3, name="Too Far", region_id=100, security_status=0.7),
+        },
+        adjacency={1: (2,), 2: (1, 3), 3: (2,)},
+    )
+    recipe_cache = IndustryRecipeCache(
+        path=tmp_path / "recipes.json",
+        available=True,
+        build_number=3374020,
+        recipes={
+            681: IndustryRecipe(
+                blueprint_type_id=681,
+                blueprint_name="Hobgoblin I Blueprint",
+                product_type_id=165,
+                product_name="Hobgoblin I",
+                product_quantity=1,
+                materials=(
+                    IndustryMaterial(type_id=34, name="Tritanium", quantity=1000),
+                    IndustryMaterial(type_id=35, name="Pyerite", quantity=500),
+                ),
+            )
+        },
+    )
+    buy_calls = []
+    sell_calls = []
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_location",
+        lambda config, session: {
+            "solar_system_id": 1,
+            "solar_system_name": "Start",
+            "updated_at": "2026-06-04T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(corp_market, "fetch_flight_blueprints", lambda config, session: [{"type_id": 681, "quantity": -1}])
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_assets",
+        lambda config, session: [
+            {"type_id": 34, "quantity": 1000, "location_id": 60008494},
+            {"type_id": 35, "quantity": 100, "location_id": 60008494},
+        ],
+    )
+    monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
+    monkeypatch.setattr(corp_market, "load_industry_recipe_cache", lambda: recipe_cache)
+
+    def fake_fetch_market_buy_orders(config, *, region_id, type_id):
+        buy_calls.append((region_id, type_id))
+        return [
+            {
+                "order_id": 10,
+                "is_buy_order": True,
+                "system_id": 2,
+                "location_id": 60008494,
+                "price": 10000.0,
+                "volume_remain": 300,
+                "min_volume": 1,
+            },
+            {
+                "order_id": 11,
+                "is_buy_order": True,
+                "system_id": 3,
+                "location_id": 60003760,
+                "price": 99999.0,
+                "volume_remain": 999,
+                "min_volume": 1,
+            },
+        ]
+
+    def fake_fetch_market_sell_orders(config, *, region_id, type_id):
+        sell_calls.append((region_id, type_id))
+        prices = {34: 2.0, 35: 5.0}
+        return [
+            {
+                "order_id": type_id,
+                "is_buy_order": False,
+                "system_id": 2,
+                "location_id": 60008494,
+                "price": prices[type_id],
+                "volume_remain": 100000,
+                "min_volume": 1,
+            }
+        ]
+
+    monkeypatch.setattr(corp_market, "fetch_market_buy_orders", fake_fetch_market_buy_orders)
+    monkeypatch.setattr(corp_market, "fetch_market_sell_orders", fake_fetch_market_sell_orders)
+
+    payload = build_flight_profitability_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        max_jumps=1,
+    )
+
+    assert payload["ok"] is True
+    assert buy_calls == [(100, 165)]
+    assert sell_calls == [(100, 34), (100, 35)]
+    profitability = payload["profitability"]
+    assert profitability["ranked_products"] == 1
+    assert profitability["profitable_products"] == 1
+    assert profitability["buildable_now_products"] == 0
+    product = profitability["products"][0]
+    assert product["product_name"] == "Hobgoblin I"
+    assert product["best_buyer"]["system_name"] == "One Jump"
+    assert product["product_revenue"] == 10000.0
+    assert product["replacement_cost"] == 4500.0
+    assert product["replacement_profit"] == 5500.0
+    assert product["missing_replacement_cost"] == 2000.0
+    assert product["cash_profit"] == 8000.0
+    assert product["can_build_one_run"] is False
+    assert product["missing_material_types"] == 1
+    assert product["missing_materials"][0]["name"] == "Pyerite"
+    assert product["missing_materials"][0]["missing"] == 400
+    assert product["confidence"] == "strong"
+
+
 def test_fetch_market_buy_orders_uses_public_market_endpoint(monkeypatch):
     requests = []
 
@@ -655,15 +798,27 @@ def test_fetch_market_buy_orders_uses_public_market_endpoint(monkeypatch):
         region_id=10000002,
         type_id=165,
     )
+    sell_orders = corp_market.fetch_market_sell_orders(
+        corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        region_id=10000002,
+        type_id=34,
+    )
 
     assert orders == [{"order_id": 10, "is_buy_order": True}]
+    assert sell_orders == [{"order_id": 10, "is_buy_order": True}]
     url = requests[0].full_url
     assert url.startswith("https://esi.test/latest/markets/10000002/orders/?")
     assert "order_type=buy" in url
     assert "type_id=165" in url
     assert "page=1" in url
+    sell_url = requests[1].full_url
+    assert sell_url.startswith("https://esi.test/latest/markets/10000002/orders/?")
+    assert "order_type=sell" in sell_url
+    assert "type_id=34" in sell_url
+    assert "page=1" in sell_url
     assert requests[0].headers["Accept"] == "application/json"
     assert "Authorization" not in requests[0].headers
+    assert "Authorization" not in requests[1].headers
 
 
 def test_flight_industry_payload_requires_blueprint_and_asset_scopes(monkeypatch):

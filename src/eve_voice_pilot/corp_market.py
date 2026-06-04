@@ -45,6 +45,7 @@ DEFAULT_FLIGHT_MAX_JUMPS = 5
 MAX_FLIGHT_MAX_JUMPS = 25
 MAX_FLIGHT_BUYER_SCAN_PRODUCTS = 40
 MAX_FLIGHT_BUYER_SCAN_REGIONS = 8
+MAX_FLIGHT_PROFIT_MATERIAL_TYPES = 120
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
@@ -1112,17 +1113,34 @@ def fetch_flight_assets(config: EveSsoConfig, session: FlightEsiSession) -> list
     )
 
 
-def fetch_market_buy_orders(config: EveSsoConfig, *, region_id: int, type_id: int) -> list[dict[str, Any]]:
+def fetch_market_orders(
+    config: EveSsoConfig,
+    *,
+    region_id: int,
+    type_id: int,
+    order_type: str,
+) -> list[dict[str, Any]]:
+    clean_order_type = str(order_type).strip().lower()
+    if clean_order_type not in {"buy", "sell"}:
+        raise CorpMarketError(f"Unsupported market order type: {order_type}")
     base_url = config.esi_base_url.rstrip("/")
     url = add_query_params(
         f"{base_url}/markets/{region_id}/orders/?datasource=tranquility",
-        {"order_type": "buy", "type_id": str(type_id)},
+        {"order_type": clean_order_type, "type_id": str(type_id)},
     )
     return get_esi_json_pages(
         url,
         headers=flight_esi_headers(),
-        label=f"ESI market buy orders for type {type_id} in region {region_id}",
+        label=f"ESI market {clean_order_type} orders for type {type_id} in region {region_id}",
     )
+
+
+def fetch_market_buy_orders(config: EveSsoConfig, *, region_id: int, type_id: int) -> list[dict[str, Any]]:
+    return fetch_market_orders(config, region_id=region_id, type_id=type_id, order_type="buy")
+
+
+def fetch_market_sell_orders(config: EveSsoConfig, *, region_id: int, type_id: int) -> list[dict[str, Any]]:
+    return fetch_market_orders(config, region_id=region_id, type_id=type_id, order_type="sell")
 
 
 def get_esi_json_pages(url: str, *, headers: dict[str, str], label: str) -> list[dict[str, Any]]:
@@ -1574,6 +1592,48 @@ def build_flight_buyers_payload(
     }
 
 
+def build_flight_profitability_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    max_jumps: int = DEFAULT_FLIGHT_MAX_JUMPS,
+) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_ASSETS_SCOPE, FLIGHT_BLUEPRINTS_SCOPE))
+    location = fetch_flight_location(config, session)
+    current_solar_system_id = int(location.get("solar_system_id") or 0)
+    route_cache = load_route_graph_cache()
+    nearby_systems = build_nearby_systems_payload(
+        current_solar_system_id=current_solar_system_id,
+        max_jumps=max_jumps,
+        route_cache=route_cache,
+    )
+    if not nearby_systems.get("available"):
+        raise CorpMarketError(str(nearby_systems.get("error") or "Route graph cache is not available."))
+
+    recipe_cache = load_industry_recipe_cache()
+    if not recipe_cache.available:
+        raise CorpMarketError(recipe_cache.error or "Recipe cache is not available.")
+    blueprints = fetch_flight_blueprints(config, session)
+    assets = fetch_flight_assets(config, session)
+    profitability = rank_profitability_for_owned_blueprints(
+        config=config,
+        blueprints=blueprints,
+        assets=assets,
+        recipe_cache=recipe_cache,
+        route_cache=route_cache,
+        current_solar_system_id=current_solar_system_id,
+        max_jumps=max_jumps,
+    )
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "location": location,
+        "nearby_systems": nearby_systems,
+        "profitability": profitability,
+    }
+
+
 def scan_buyers_for_owned_blueprints(
     *,
     config: EveSsoConfig,
@@ -1665,6 +1725,257 @@ def scan_buyers_for_owned_blueprints(
     }
 
 
+def rank_profitability_for_owned_blueprints(
+    *,
+    config: EveSsoConfig,
+    blueprints: Iterable[dict[str, Any]],
+    assets: Iterable[dict[str, Any]],
+    recipe_cache: IndustryRecipeCache,
+    route_cache: RouteGraphCache,
+    current_solar_system_id: int,
+    max_jumps: int,
+) -> dict[str, Any]:
+    systems = route_cache.systems or {}
+    adjacency = route_cache.adjacency or {}
+    jump_distances = jump_distances_within(
+        start_system_id=current_solar_system_id,
+        max_jumps=clamp_flight_max_jumps(max_jumps),
+        adjacency=adjacency,
+    )
+    region_ids = sorted(
+        {
+            system.region_id
+            for system_id, system in systems.items()
+            if system_id in jump_distances and system.region_id is not None
+        }
+    )
+    region_truncated = len(region_ids) > MAX_FLIGHT_BUYER_SCAN_REGIONS
+    scan_region_ids = region_ids[:MAX_FLIGHT_BUYER_SCAN_REGIONS]
+
+    recipes = recipe_cache.recipes or {}
+    product_targets = owned_blueprint_product_targets(blueprints=blueprints, recipes=recipes)
+    product_truncated = len(product_targets) > MAX_FLIGHT_BUYER_SCAN_PRODUCTS
+    scan_targets = product_targets[:MAX_FLIGHT_BUYER_SCAN_PRODUCTS]
+    asset_quantities = quantity_by_type_id(item for item in assets if isinstance(item, dict))
+
+    material_type_counts: dict[int, int] = {}
+    for target in scan_targets:
+        recipe = recipes.get(int(target["blueprint_type_id"]))
+        if recipe is None:
+            continue
+        for material in recipe.materials:
+            material_type_counts[material.type_id] = material_type_counts.get(material.type_id, 0) + 1
+    material_type_ids = sorted(material_type_counts, key=lambda type_id: (-material_type_counts[type_id], type_id))
+    material_truncated = len(material_type_ids) > MAX_FLIGHT_PROFIT_MATERIAL_TYPES
+    scan_material_type_ids = material_type_ids[:MAX_FLIGHT_PROFIT_MATERIAL_TYPES]
+
+    best_buyers, product_order_count, product_errors = scan_best_reachable_market_orders(
+        config=config,
+        type_ids=[int(target["product_type_id"]) for target in scan_targets],
+        region_ids=scan_region_ids,
+        systems=systems,
+        jump_distances=jump_distances,
+        order_type="buy",
+    )
+    best_material_sells, material_order_count, material_errors = scan_best_reachable_market_orders(
+        config=config,
+        type_ids=scan_material_type_ids,
+        region_ids=scan_region_ids,
+        systems=systems,
+        jump_distances=jump_distances,
+        order_type="sell",
+    )
+
+    products = []
+    for target in scan_targets:
+        recipe = recipes.get(int(target["blueprint_type_id"]))
+        if recipe is None:
+            continue
+        buyer = best_buyers.get(int(target["product_type_id"]))
+        revenue = float(buyer["price"]) * int(target["product_quantity"]) if buyer else None
+        material_rows = []
+        missing_materials = []
+        priced_material_types = 0
+        missing_priced_material_types = 0
+        replacement_cost = 0.0
+        missing_replacement_cost = 0.0
+        for material in recipe.materials:
+            available = asset_quantities.get(material.type_id, 0)
+            required = material.quantity
+            missing = max(0, required - available)
+            sell_order = best_material_sells.get(material.type_id)
+            unit_price = float(sell_order["price"]) if sell_order else None
+            material_replacement_cost = required * unit_price if unit_price is not None else None
+            material_missing_cost = missing * unit_price if unit_price is not None else None
+            if unit_price is not None:
+                priced_material_types += 1
+                replacement_cost += material_replacement_cost or 0.0
+                if missing > 0:
+                    missing_priced_material_types += 1
+                missing_replacement_cost += material_missing_cost or 0.0
+            material_row = {
+                "type_id": material.type_id,
+                "name": material.name,
+                "required": required,
+                "available": available,
+                "missing": missing,
+                "unit_sell_price": unit_price,
+                "replacement_cost": material_replacement_cost,
+                "missing_cost": material_missing_cost,
+                "sell_order": sell_order,
+            }
+            material_rows.append(material_row)
+            if missing > 0:
+                missing_materials.append(material_row)
+
+        required_material_types = len(recipe.materials)
+        missing_material_types = sum(1 for item in material_rows if int(item["missing"]) > 0)
+        can_build = missing_material_types == 0
+        all_material_prices_known = priced_material_types == required_material_types
+        missing_prices_known = all(
+            int(item["missing"]) <= 0 or item["unit_sell_price"] is not None
+            for item in material_rows
+        )
+        replacement_profit = revenue - replacement_cost if revenue is not None and all_material_prices_known else None
+        cash_profit = revenue - missing_replacement_cost if revenue is not None and missing_prices_known else None
+        products.append(
+            {
+                **target,
+                "best_buyer": buyer,
+                "product_revenue": revenue,
+                "replacement_cost": replacement_cost if all_material_prices_known else None,
+                "missing_replacement_cost": missing_replacement_cost if missing_prices_known else None,
+                "replacement_profit": replacement_profit,
+                "cash_profit": cash_profit,
+                "profitable": replacement_profit is not None and replacement_profit > 0,
+                "can_build_one_run": can_build,
+                "required_material_types": required_material_types,
+                "priced_material_types": priced_material_types,
+                "missing_material_types": missing_material_types,
+                "missing_priced_material_types": missing_priced_material_types,
+                "materials": material_rows[:10],
+                "missing_materials": sorted(missing_materials, key=lambda item: int(item["missing"]), reverse=True)[:5],
+                "confidence": profitability_confidence(
+                    has_buyer=buyer is not None,
+                    can_build=can_build,
+                    all_material_prices_known=all_material_prices_known,
+                    missing_prices_known=missing_prices_known,
+                ),
+            }
+        )
+
+    products.sort(
+        key=lambda item: (
+            0 if item["best_buyer"] else 1,
+            0 if item["replacement_profit"] is not None else 1,
+            -profit_sort_value(item),
+            0 if item["can_build_one_run"] else 1,
+            item["product_name"],
+        )
+    )
+    errors = product_errors + material_errors
+    return {
+        "max_jumps": clamp_flight_max_jumps(max_jumps),
+        "reachable_system_count": len(jump_distances),
+        "regions_scanned": len(scan_region_ids),
+        "total_regions_in_range": len(region_ids),
+        "region_truncated": region_truncated,
+        "scanned_products": len(scan_targets),
+        "total_known_products": len(product_targets),
+        "product_truncated": product_truncated,
+        "scanned_material_types": len(scan_material_type_ids),
+        "total_material_types": len(material_type_ids),
+        "material_truncated": material_truncated,
+        "product_order_count": product_order_count,
+        "material_order_count": material_order_count,
+        "ranked_products": len(products),
+        "products_with_buyers": sum(1 for item in products if item["best_buyer"]),
+        "profitable_products": sum(1 for item in products if item["profitable"]),
+        "buildable_now_products": sum(1 for item in products if item["can_build_one_run"]),
+        "replacement_priced_products": sum(1 for item in products if item["replacement_profit"] is not None),
+        "cash_priced_products": sum(1 for item in products if item["cash_profit"] is not None),
+        "products": products[:20],
+        "errors": errors[:12],
+        "pricing_note": (
+            "Replacement profit charges every material at nearby sell prices; cash profit charges only missing materials. "
+            "ESI market orders do not expose buyer character names."
+        ),
+    }
+
+
+def scan_best_reachable_market_orders(
+    *,
+    config: EveSsoConfig,
+    type_ids: Iterable[int],
+    region_ids: Iterable[int],
+    systems: dict[int, RouteSystem],
+    jump_distances: dict[int, int],
+    order_type: str,
+) -> tuple[dict[int, dict[str, Any]], int, list[dict[str, Any]]]:
+    best_orders: dict[int, dict[str, Any]] = {}
+    total_order_count = 0
+    errors = []
+    clean_type_ids = [int(type_id) for type_id in type_ids if int(type_id) > 0]
+    fetcher = fetch_market_buy_orders if order_type == "buy" else fetch_market_sell_orders
+    for type_id in clean_type_ids:
+        reachable_orders = []
+        for region_id in region_ids:
+            try:
+                raw_orders = fetcher(config, region_id=region_id, type_id=type_id)
+            except CorpMarketError as exc:
+                errors.append({"order_type": order_type, "type_id": type_id, "region_id": region_id, "error": str(exc)})
+                continue
+            for order in raw_orders:
+                record = build_reachable_market_order_record(
+                    order,
+                    systems=systems,
+                    jump_distances=jump_distances,
+                    region_id=region_id,
+                    order_type=order_type,
+                )
+                if record is not None:
+                    reachable_orders.append(record)
+        reachable_orders.sort(key=lambda item: market_order_sort_key(item, order_type=order_type))
+        total_order_count += len(reachable_orders)
+        if reachable_orders:
+            best_orders[type_id] = reachable_orders[0]
+    return best_orders, total_order_count, errors
+
+
+def market_order_sort_key(order: dict[str, Any], *, order_type: str) -> tuple[float, int, int]:
+    price = float(order.get("price") or 0.0)
+    price_rank = -price if order_type == "buy" else price
+    return (price_rank, int(order.get("jumps") or 0), -int(order.get("volume_remain") or 0))
+
+
+def profit_sort_value(item: dict[str, Any]) -> float:
+    replacement_profit = item.get("replacement_profit")
+    if replacement_profit is not None:
+        return float(replacement_profit)
+    cash_profit = item.get("cash_profit")
+    if cash_profit is not None:
+        return float(cash_profit)
+    return float("-inf")
+
+
+def profitability_confidence(
+    *,
+    has_buyer: bool,
+    can_build: bool,
+    all_material_prices_known: bool,
+    missing_prices_known: bool,
+) -> str:
+    if not has_buyer:
+        return "no-buyer"
+    if all_material_prices_known:
+        return "strong"
+    if can_build:
+        return "owned-materials"
+    if missing_prices_known:
+        return "partial-replacement"
+    return "incomplete"
+
+
 def owned_blueprint_product_targets(
     *,
     blueprints: Iterable[dict[str, Any]],
@@ -1699,13 +2010,41 @@ def build_buyer_order_record(
     jump_distances: dict[int, int],
     region_id: int,
 ) -> dict[str, Any] | None:
+    record = build_reachable_market_order_record(
+        order,
+        systems=systems,
+        jump_distances=jump_distances,
+        region_id=region_id,
+        order_type="buy",
+    )
+    if record is None:
+        return None
+    return {
+        **record,
+        "product_type_id": target["product_type_id"],
+        "product_name": target["product_name"],
+        "blueprint_type_id": target["blueprint_type_id"],
+        "blueprint_name": target["blueprint_name"],
+    }
+
+
+def build_reachable_market_order_record(
+    order: dict[str, Any],
+    *,
+    systems: dict[int, RouteSystem],
+    jump_distances: dict[int, int],
+    region_id: int,
+    order_type: str,
+) -> dict[str, Any] | None:
     try:
         system_id = int(order.get("system_id") or 0)
         price = float(order.get("price") or 0)
         volume_remain = int(order.get("volume_remain") or 0)
     except (TypeError, ValueError):
         return None
-    if order.get("is_buy_order") is False:
+    if order_type == "buy" and order.get("is_buy_order") is False:
+        return None
+    if order_type == "sell" and order.get("is_buy_order") is True:
         return None
     if system_id not in jump_distances or price <= 0 or volume_remain <= 0:
         return None
@@ -1725,10 +2064,6 @@ def build_buyer_order_record(
         "range": str(order.get("range") or ""),
         "issued": str(order.get("issued") or ""),
         "duration": clean_optional_int(order.get("duration")) or 0,
-        "product_type_id": target["product_type_id"],
-        "product_name": target["product_name"],
-        "blueprint_type_id": target["blueprint_type_id"],
-        "blueprint_name": target["blueprint_name"],
     }
 
 
@@ -1878,6 +2213,9 @@ def build_http_server(
             if path == "/api/flight/buyers":
                 self._handle_flight_buyers()
                 return
+            if path == "/api/flight/profitability":
+                self._handle_flight_profitability()
+                return
             if path == "/flight/login":
                 self._handle_flight_login()
                 return
@@ -1978,6 +2316,23 @@ def build_http_server(
             max_jumps = clamp_flight_max_jumps((query.get("max_jumps") or [DEFAULT_FLIGHT_MAX_JUMPS])[0])
             try:
                 payload = build_flight_buyers_payload(config=sso_config, session=session, max_jumps=max_jumps)
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
+        def _handle_flight_profitability(self) -> None:
+            if not sso_config.enabled:
+                self._send_json({"ok": False, "error": "EVE SSO is not configured."}, status=503)
+                return
+            session = self._flight_session()
+            if session is None:
+                self._send_json({"ok": False, "error": "Connect ESI before ranking profitability."}, status=401)
+                return
+            query = parse_qs(urlparse(self.path).query)
+            max_jumps = clamp_flight_max_jumps((query.get("max_jumps") or [DEFAULT_FLIGHT_MAX_JUMPS])[0])
+            try:
+                payload = build_flight_profitability_payload(config=sso_config, session=session, max_jumps=max_jumps)
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
@@ -2996,6 +3351,12 @@ def _render_flight_attendant_dashboard() -> str:
                   <div id="flight-buyer-top" class="meta"></div>
                 </div>
                 <div class="module">
+                  <h3 class="warning">Profitability Ranking</h3>
+                  <button id="flight-profit-scan" class="ghost" type="button">Rank Profit</button>
+                  <div id="flight-profit-summary" class="meta">Connect ESI to rank owned blueprint profitability.</div>
+                  <div id="flight-profit-top" class="meta"></div>
+                </div>
+                <div class="module">
                   <h3 class="signal">Recipe Cache</h3>
                   <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
                   <div id="flight-buildability-top" class="meta"></div>
@@ -3083,6 +3444,9 @@ def _render_flight_attendant_dashboard() -> str:
     const flightBuyerScanButton = document.querySelector("#flight-buyer-scan");
     const flightBuyerSummary = document.querySelector("#flight-buyer-summary");
     const flightBuyerTop = document.querySelector("#flight-buyer-top");
+    const flightProfitScanButton = document.querySelector("#flight-profit-scan");
+    const flightProfitSummary = document.querySelector("#flight-profit-summary");
+    const flightProfitTop = document.querySelector("#flight-profit-top");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
@@ -3222,6 +3586,13 @@ def _render_flight_attendant_dashboard() -> str:
       return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2})} ISK`;
     }
 
+    function formatSignedIsk(value) {
+      if (value == null) return "unknown";
+      const number = Number(value || 0);
+      const sign = number > 0 ? "+" : "";
+      return `${sign}${formatIsk(number)}`;
+    }
+
     function readMaxJumps() {
       const value = Number(window.localStorage.getItem(jumpsKey) || flightMaxJumps.value || 5);
       if (!Number.isFinite(value)) return 5;
@@ -3248,6 +3619,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightMessage.textContent = error.message;
         resetFlightRoute("Flight Attendant route status is offline.");
         resetFlightBuyers("Flight Attendant buyer scanner is offline.");
+        resetFlightProfitability("Flight Attendant profitability ranking is offline.");
         resetFlightIndustry("Flight Attendant ESI status is offline.");
       }
     }
@@ -3267,6 +3639,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightMessage.textContent = `Scope: ${scopeLabel} | Callback: ${data.callback_url || "not set"}`;
         resetFlightRoute("Configure EVE SSO before calculating nearby systems.");
         resetFlightBuyers("Configure EVE SSO before scanning buyer orders.");
+        resetFlightProfitability("Configure EVE SSO before ranking profitability.");
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
         return;
       }
@@ -3278,6 +3651,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightMessage.textContent = "";
         resetFlightRoute("Connect ESI to calculate nearby systems.");
         resetFlightBuyers("Connect ESI to scan nearby public buy orders.");
+        resetFlightProfitability("Connect ESI to rank owned blueprint profitability.");
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
       }
@@ -3291,6 +3665,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightMessage.textContent = "Try reconnecting ESI if the token expired.";
         resetFlightRoute("Resolve the ESI error before calculating nearby systems.");
         resetFlightBuyers("Resolve the ESI error before scanning buyer orders.");
+        resetFlightProfitability("Resolve the ESI error before ranking profitability.");
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
         return;
       }
@@ -3299,6 +3674,7 @@ def _render_flight_attendant_dashboard() -> str:
       flightMessage.textContent = `${character.character_name || "Pilot"} connected with ${requiredScopes.length} read-only ESI scopes.`;
       renderFlightRoute(data.nearby_systems || {});
       resetFlightBuyers(`Ready to scan buy orders within ${readMaxJumps()} jumps.`);
+      resetFlightProfitability(`Ready to rank profitability within ${readMaxJumps()} jumps.`);
       loadFlightIndustry();
     }
 
@@ -3375,6 +3751,65 @@ def _render_flight_attendant_dashboard() -> str:
       }).join("<br>");
     }
 
+    function resetFlightProfitability(message) {
+      flightProfitSummary.textContent = message;
+      flightProfitTop.textContent = "";
+      flightProfitScanButton.disabled = false;
+    }
+
+    async function loadFlightProfitability() {
+      const maxJumps = writeMaxJumps(readMaxJumps());
+      flightProfitScanButton.disabled = true;
+      flightProfitSummary.textContent = `Ranking profitability within ${maxJumps} jumps...`;
+      flightProfitTop.textContent = "";
+      try {
+        const response = await fetch(`/api/flight/profitability?max_jumps=${encodeURIComponent(maxJumps)}`);
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Could not rank profitability");
+        renderFlightProfitability(data.profitability || {});
+      } catch (error) {
+        flightProfitSummary.textContent = error.message;
+        flightProfitTop.textContent = "";
+      } finally {
+        flightProfitScanButton.disabled = false;
+      }
+    }
+
+    function renderFlightProfitability(profitability) {
+      const productLimit = profitability.product_truncated ? ` Limited to ${formatNumber(profitability.scanned_products)} of ${formatNumber(profitability.total_known_products)} products.` : "";
+      const materialLimit = profitability.material_truncated ? ` Limited to ${formatNumber(profitability.scanned_material_types)} of ${formatNumber(profitability.total_material_types)} material types.` : "";
+      const regionLimit = profitability.region_truncated ? ` Limited to ${formatNumber(profitability.regions_scanned)} of ${formatNumber(profitability.total_regions_in_range)} regions.` : "";
+      flightProfitSummary.innerHTML = `
+        <strong>${formatNumber(profitability.profitable_products)}</strong> profitable on replacement pricing;
+        <strong>${formatNumber(profitability.buildable_now_products)}</strong> buildable now.
+        <br>${formatNumber(profitability.products_with_buyers)} products have nearby buyers; scanned
+        ${formatNumber(profitability.scanned_products)} products and ${formatNumber(profitability.scanned_material_types)} material types.
+        ${escapeHtml(productLimit + materialLimit + regionLimit)}
+        <br>${escapeHtml(profitability.pricing_note || "Profit ranking uses nearby public market orders.")}
+      `;
+      flightProfitTop.innerHTML = renderProfitabilityProducts(profitability.products || []);
+    }
+
+    function renderProfitabilityProducts(products) {
+      if (!products.length) return "No profitability products returned yet.";
+      return products.slice(0, 10).map((product) => {
+        const buyer = product.best_buyer
+          ? `${escapeHtml(product.best_buyer.system_name)} (${formatNumber(product.best_buyer.jumps)}j)`
+          : "no nearby buyer";
+        const build = product.can_build_one_run
+          ? "buildable now"
+          : `missing ${formatNumber(product.missing_material_types)} material types`;
+        return `
+          <div>
+            <strong>${escapeHtml(product.product_name)}</strong>:
+            ${formatSignedIsk(product.replacement_profit)} replacement &middot;
+            ${formatSignedIsk(product.cash_profit)} cash &middot;
+            ${buyer} &middot; ${build} &middot; ${escapeHtml(product.confidence || "unknown")}
+          </div>
+        `;
+      }).join("");
+    }
+
     function resetFlightIndustry(message) {
       flightBlueprintSummary.textContent = message;
       flightBlueprintTop.textContent = "";
@@ -3402,6 +3837,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightAssetSummary.textContent = error.message;
         flightRecipeSummary.textContent = error.message;
         flightBuildabilityTop.textContent = "";
+        resetFlightProfitability("Industry analysis requires a connected ESI session with blueprint and asset scopes.");
         flightIndustryNote.textContent = "Industry analysis requires a connected ESI session with blueprint and asset scopes.";
       }
     }
@@ -3578,9 +4014,14 @@ def _render_flight_attendant_dashboard() -> str:
       loadFlightBuyers();
     });
 
+    flightProfitScanButton.addEventListener("click", () => {
+      loadFlightProfitability();
+    });
+
     flightMaxJumps.addEventListener("change", () => {
       writeMaxJumps(flightMaxJumps.value);
       resetFlightBuyers(`Ready to scan buy orders within ${readMaxJumps()} jumps.`);
+      resetFlightProfitability(`Ready to rank profitability within ${readMaxJumps()} jumps.`);
       loadFlightStatus();
     });
 
