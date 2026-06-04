@@ -13,6 +13,7 @@ from eve_voice_pilot.corp_market import (
     build_mail_draft,
     format_isk,
     parse_isk_amount,
+    post_discord_webhook,
 )
 
 
@@ -140,3 +141,37 @@ def test_discord_payload_contains_copy_mail_link_and_no_mentions(tmp_path):
     assert f"http://market.test/offers/{listing.listing_id}" in payload["content"]
     assert payload["embeds"][0]["title"] == "WTS Venture"
     assert payload["embeds"][0]["fields"][1]["value"] == format_isk(1_000_000)
+    assert "thread_name" not in payload
+
+
+def test_discord_payload_for_forum_channel_includes_thread_name_and_tags(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    listing = store.create_listing(
+        {
+            "listing_type": "want",
+            "item_name": "Tritanium",
+            "quantity": 1_000_000,
+            "unit_price": "3",
+            "location": "Dhira",
+            "owner": "Dandin Ridderston",
+        }
+    )
+
+    payload = build_discord_webhook_payload(
+        listing,
+        public_base_url="http://market.test",
+        forum_post=True,
+        forum_tag_ids=("123", "456"),
+    )
+
+    assert payload["thread_name"] == "WTB Tritanium x1,000,000"
+    assert payload["applied_tags"] == ["123", "456"]
+
+
+def test_post_discord_webhook_rejects_channel_links_before_network():
+    with pytest.raises(CorpMarketError, match="Copy it from Channel Settings"):
+        post_discord_webhook(
+            "https://discord.com/channels/123/456",
+            {"content": "test"},
+            timeout_seconds=1,
+        )

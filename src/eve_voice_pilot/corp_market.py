@@ -24,10 +24,12 @@ DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 1200
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
+DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
 LISTING_STATUSES = {"open", "reserved", "sold", "cancelled"}
 SPACE_RE = re.compile(r"\s+")
 ISK_AMOUNT_RE = re.compile(r"^\s*(?P<number>\d+(?:\.\d+)?)\s*(?P<suffix>[kKmMbB]?)\s*$")
+DISCORD_WEBHOOK_PATH_RE = re.compile(r"^/api/(?:v\d+/)?webhooks/\d+/[^/]+/?$")
 
 
 class CorpMarketError(RuntimeError):
@@ -325,7 +327,13 @@ def build_mail_draft(listing: MarketListing, *, actor: str = "") -> MailDraft:
     return MailDraft(subject=subject, body="\n".join(lines))
 
 
-def build_discord_webhook_payload(listing: MarketListing, *, public_base_url: str) -> dict[str, Any]:
+def build_discord_webhook_payload(
+    listing: MarketListing,
+    *,
+    public_base_url: str,
+    forum_post: bool = False,
+    forum_tag_ids: Iterable[str] = (),
+) -> dict[str, Any]:
     url = listing_public_url(listing.listing_id, public_base_url)
     color = 0x2E7D32 if listing.listing_type == "sell" else 0x1565C0
     title = f"{listing.label} {listing.item_name}"
@@ -356,16 +364,23 @@ def build_discord_webhook_payload(listing: MarketListing, *, public_base_url: st
     }
     if listing.notes:
         embed["description"] = shorten(listing.notes, 700)
-    return {
+    payload: dict[str, Any] = {
         "content": f"{title} - copy EVE mail draft: {url}",
         "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
+    if forum_post:
+        payload["thread_name"] = discord_thread_name(listing)
+        tag_ids = tuple(tag_id.strip() for tag_id in forum_tag_ids if tag_id.strip())
+        if tag_ids:
+            payload["applied_tags"] = list(tag_ids)
+    return payload
 
 
 def post_discord_webhook(webhook_url: str, payload: dict[str, Any], *, timeout_seconds: float) -> None:
     if not webhook_url:
         return
+    validate_discord_webhook_url(webhook_url)
     request = Request(
         webhook_url,
         data=json.dumps(payload).encode("utf-8"),
@@ -383,6 +398,25 @@ def post_discord_webhook(webhook_url: str, payload: dict[str, Any], *, timeout_s
         raise CorpMarketError(f"Discord webhook failed: {exc.reason}") from exc
 
 
+def validate_discord_webhook_url(webhook_url: str) -> None:
+    parsed = urlparse(webhook_url)
+    if parsed.scheme != "https" or parsed.netloc not in {"discord.com", "discordapp.com"}:
+        raise CorpMarketError("Discord webhook URL must start with https://discord.com/api/webhooks/...")
+    if not DISCORD_WEBHOOK_PATH_RE.match(parsed.path):
+        raise CorpMarketError(
+            "Discord webhook URL looks wrong. Copy it from Channel Settings > Integrations > Webhooks > Copy "
+            "Webhook URL; do not use the Discord channel or forum post link."
+        )
+
+
+def discord_thread_name(listing: MarketListing) -> str:
+    name = f"{listing.label} {listing.item_name} x{listing.quantity:,}"
+    name = SPACE_RE.sub(" ", name).strip()
+    if len(name) <= DISCORD_THREAD_NAME_MAX_LENGTH:
+        return name
+    return name[: DISCORD_THREAD_NAME_MAX_LENGTH - 3].rstrip() + "..."
+
+
 def build_http_server(
     host: str,
     port: int,
@@ -391,6 +425,8 @@ def build_http_server(
     public_base_url: str,
     discord_webhook_url: str = "",
     discord_timeout_seconds: float = DEFAULT_WEBHOOK_TIMEOUT_SECONDS,
+    discord_forum_posts: bool = False,
+    discord_forum_tag_ids: Iterable[str] = (),
     admin_token: str = "",
 ) -> ThreadingHTTPServer:
     public_base_url = public_base_url.rstrip("/")
@@ -498,7 +534,12 @@ def build_http_server(
                 return
             try:
                 listing = store.create_listing(payload)
-                discord_payload = build_discord_webhook_payload(listing, public_base_url=public_base_url)
+                discord_payload = build_discord_webhook_payload(
+                    listing,
+                    public_base_url=public_base_url,
+                    forum_post=discord_forum_posts,
+                    forum_tag_ids=discord_forum_tag_ids,
+                )
                 posted = False
                 if discord_webhook_url:
                     post_discord_webhook(
@@ -1009,6 +1050,8 @@ def run_server(args: argparse.Namespace) -> int:
         public_base_url=public_base_url,
         discord_webhook_url=args.discord_webhook_url,
         discord_timeout_seconds=args.discord_timeout,
+        discord_forum_posts=args.discord_forum_posts,
+        discord_forum_tag_ids=parse_csv(args.discord_forum_tag_ids),
         admin_token=args.admin_token,
     )
     url = f"http://{url_host}:{args.port}/"
@@ -1017,6 +1060,8 @@ def run_server(args: argparse.Namespace) -> int:
     print(f"Public offer URL base: {public_base_url}")
     if args.discord_webhook_url:
         print("Discord webhook posting is enabled.")
+        if args.discord_forum_posts:
+            print("Discord forum mode is enabled; each offer will create a forum post/thread.")
     else:
         print("Discord webhook posting is disabled. Set --discord-webhook-url to post new offers.")
     if args.admin_token:
@@ -1054,6 +1099,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_WEBHOOK_TIMEOUT_SECONDS,
         help="Seconds to wait for Discord webhook responses.",
+    )
+    serve.add_argument(
+        "--discord-forum-posts",
+        action="store_true",
+        help="Use Discord forum/media webhook mode by creating a new post/thread for each offer.",
+    )
+    serve.add_argument(
+        "--discord-forum-tag-ids",
+        default=os.environ.get("CORP_MARKET_DISCORD_FORUM_TAG_IDS", ""),
+        help="Optional comma-separated Discord forum tag ids to apply to created posts.",
     )
     serve.add_argument(
         "--public-base-url",
@@ -1160,6 +1215,12 @@ def listing_public_url(listing_id: str, public_base_url: str) -> str:
 def first_query_value(params: dict[str, list[str]], key: str) -> str:
     values = params.get(key) or []
     return values[0] if values else ""
+
+
+def parse_csv(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 def now_iso() -> str:

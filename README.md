@@ -197,6 +197,8 @@ To post new offers into Discord, create a Discord channel webhook and run:
 .\scripts\run_corp_market.ps1 serve --discord-webhook-url "https://discord.com/api/webhooks/..."
 ```
 
+If the Discord target is a forum channel, add `--discord-forum-posts` so each offer creates a forum post/thread.
+
 For a shared LAN test, set the public link base that Discord members should open:
 
 ```powershell

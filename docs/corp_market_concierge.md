@@ -36,6 +36,16 @@ Create a Discord webhook for the market channel, then run:
 .\scripts\run_corp_market.ps1 serve --discord-webhook-url "https://discord.com/api/webhooks/..."
 ```
 
+For a normal text channel, that is enough.
+
+For a Discord forum or media channel, add forum mode so Discord creates a new post/thread for each offer:
+
+```powershell
+.\scripts\run_corp_market.ps1 serve --discord-webhook-url "https://discord.com/api/webhooks/..." --discord-forum-posts
+```
+
+The webhook URL must come from **Channel Settings > Integrations > Webhooks > Copy Webhook URL**. Do not use the Discord channel link or a forum post link.
+
 If corp members need to open links from other computers, set a LAN or tunnel URL:
 
 ```powershell
