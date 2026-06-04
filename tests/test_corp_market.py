@@ -21,6 +21,7 @@ from eve_voice_pilot.corp_market import (
     parse_fit_note,
     parse_forum_tag_map,
     post_discord_webhook,
+    render_dashboard,
     render_offer_page,
 )
 
@@ -171,6 +172,27 @@ def test_market_store_records_discord_sync_metadata(tmp_path):
     assert synced.discord_thread_id == "223456789012345678"
     assert synced.discord_synced_at.endswith("Z")
     assert synced.discord_sync_error == ""
+
+
+def test_dashboard_includes_flight_attendant_tab_and_safety_charter():
+    page = render_dashboard()
+
+    assert "data-tab-target=\"flight\"" in page
+    assert "Flight Attendant" in page
+    assert "Captain's Notes" in page
+    assert "Read-only ESI" in page
+    assert "No EVE client control" in page
+    assert "OCR-driven reactions" in page
+
+
+def test_dashboard_keeps_market_offer_workflow_controls():
+    page = render_dashboard()
+
+    assert "id=\"offer-form\"" in page
+    assert "data-tab-target=\"market\"" in page
+    assert "Post Offer" in page
+    assert "/api/offers" in page
+    assert "Mail draft" in page
 
 
 def test_reserve_listing_marks_buyer_and_expiry(tmp_path):

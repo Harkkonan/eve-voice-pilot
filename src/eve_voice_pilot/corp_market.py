@@ -1371,6 +1371,708 @@ loadOffers().catch((error) => {
 """
 
 
+def _render_flight_attendant_dashboard() -> str:
+    category_options = "\n".join(
+        f'                    <option value="{html.escape(key)}">{html.escape(label)}</option>'
+        for key, label in LISTING_CATEGORIES.items()
+    )
+    markup = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Corp Market Concierge</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b0d;
+      --panel: #111819;
+      --panel-2: #172021;
+      --text: #edf4ef;
+      --muted: #95a59d;
+      --line: #2c3a38;
+      --line-bright: #3f5550;
+      --green: #64c47d;
+      --cyan: #61c7d9;
+      --amber: #e0a84a;
+      --red: #e57466;
+      --ink: #081012;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, rgba(19, 29, 28, .88), rgba(8, 11, 13, .94) 260px),
+        repeating-linear-gradient(90deg, rgba(97, 199, 217, .05) 0 1px, transparent 1px 64px),
+        var(--bg);
+      color: var(--text);
+      font-family: Segoe UI, system-ui, sans-serif;
+      font-size: 15px;
+      line-height: 1.45;
+      overflow-x: hidden;
+    }
+    .shell { width: min(1360px, calc(100vw - 32px)); margin: 0 auto; padding-bottom: 34px; min-width: 0; }
+    header { padding: 24px 0 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: end; }
+    h1 { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: 0; }
+    h2 { margin: 0 0 14px; font-size: 18px; font-weight: 680; letter-spacing: 0; }
+    h3 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: 0; }
+    .brand { display: flex; align-items: center; gap: 13px; min-width: 0; }
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border: 1px solid rgba(224, 168, 74, .55);
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: var(--amber);
+      background: linear-gradient(135deg, rgba(224, 168, 74, .16), rgba(97, 199, 217, .09));
+      font-weight: 800;
+    }
+    .brand > div:last-child { min-width: 0; }
+    .deck { color: var(--muted); font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+      border: 1px solid var(--line);
+      background: rgba(17, 24, 25, .86);
+      border-radius: 8px;
+      padding: 9px 11px;
+      min-width: 148px;
+    }
+    .tabbar {
+      display: flex;
+      gap: 6px;
+      border-top: 1px solid rgba(97, 199, 217, .2);
+      border-bottom: 1px solid var(--line);
+      padding: 10px 0;
+      margin-bottom: 16px;
+      overflow-x: auto;
+    }
+    .tabbar button {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: rgba(17, 24, 25, .7);
+      border-radius: 7px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .tabbar button[aria-selected="true"] {
+      color: #061113;
+      border-color: rgba(97, 199, 217, .75);
+      background: linear-gradient(180deg, #75d6e2, #4baebe);
+    }
+    .tab-panel[hidden] { display: none; }
+    .market-grid { display: grid; grid-template-columns: minmax(0, 382px) minmax(0, 1fr); gap: 16px; min-width: 0; }
+    .flight-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; min-width: 0; }
+    .panel {
+      background: rgba(17, 24, 25, .94);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 18px 44px rgba(0, 0, 0, .22);
+      min-width: 0;
+    }
+    .panel-header { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .panel-header > div { min-width: 0; max-width: 100%; }
+    .panel-header .meta { max-width: 620px; }
+    form { display: grid; gap: 12px; }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: 13px; }
+    input, select, textarea, button { font: inherit; border-radius: 7px; }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #090d0f;
+      color: var(--text);
+      padding: 9px 10px;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: 2px solid rgba(97, 199, 217, .28);
+      border-color: rgba(97, 199, 217, .72);
+    }
+    textarea { min-height: 150px; resize: vertical; }
+    button {
+      border: 0;
+      background: var(--cyan);
+      color: var(--ink);
+      font-weight: 800;
+      padding: 10px 12px;
+      cursor: pointer;
+    }
+    button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+    button.ghost { background: transparent; color: var(--cyan); border: 1px solid rgba(97, 199, 217, .45); }
+    button[disabled] { opacity: .58; cursor: not-allowed; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .filters button { padding: 7px 10px; font-size: 13px; }
+    .filters button.active { color: var(--ink); background: var(--amber); border-color: var(--amber); }
+    .offers { display: grid; gap: 9px; }
+    .offer {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      padding: 12px;
+      background: linear-gradient(180deg, rgba(28, 40, 40, .92), rgba(18, 26, 27, .92));
+      border: 1px solid var(--line);
+      border-radius: 7px;
+    }
+    .offer h3 { margin: 0 0 5px; font-size: 16px; letter-spacing: 0; }
+    .offer-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-top: 8px; }
+    .readout {
+      border: 1px solid rgba(63, 85, 80, .78);
+      background: rgba(8, 13, 15, .42);
+      border-radius: 6px;
+      padding: 7px 8px;
+      min-height: 45px;
+    }
+    .readout b { display: block; color: var(--text); font-size: 13px; line-height: 1.2; overflow-wrap: anywhere; }
+    .meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .pill { display: inline-flex; align-items: center; min-height: 23px; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 800; }
+    .sell { background: rgba(100, 196, 125, .16); color: var(--green); }
+    .want { background: rgba(97, 199, 217, .16); color: var(--cyan); }
+    .reserved { background: rgba(224, 168, 74, .16); color: var(--amber); }
+    .sold, .cancelled { background: rgba(229, 116, 102, .16); color: var(--red); }
+    .actions { display: flex; gap: 8px; align-items: start; flex-wrap: wrap; justify-content: flex-end; max-width: 260px; }
+    .actions a, .actions button {
+      min-width: 38px;
+      text-align: center;
+      text-decoration: none;
+      border: 1px solid var(--line);
+      background: #090d0f;
+      color: var(--text);
+      border-radius: 7px;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .actions button { color: var(--ink); background: var(--amber); border-color: var(--amber); }
+    .ops-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-bottom: 12px; }
+    .ops-tile {
+      border: 1px solid var(--line);
+      background: rgba(8, 13, 15, .44);
+      border-radius: 7px;
+      padding: 10px;
+      min-height: 76px;
+    }
+    .ops-tile strong { display: block; color: var(--text); font-size: 16px; margin-top: 3px; overflow-wrap: anywhere; }
+    .ops-tile span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .briefing { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, .42fr); gap: 14px; }
+    .system-board {
+      border: 1px solid rgba(224, 168, 74, .42);
+      background: linear-gradient(135deg, rgba(224, 168, 74, .12), rgba(97, 199, 217, .05)), rgba(8, 13, 15, .52);
+      border-radius: 8px;
+      padding: 16px;
+      min-height: 260px;
+    }
+    .system-name { font-size: 34px; font-weight: 800; letter-spacing: 0; margin: 4px 0 6px; }
+    .constellation-line { color: var(--muted); margin-bottom: 16px; }
+    .flight-actions { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 16px; }
+    .module-stack { display: grid; gap: 10px; }
+    .module { border: 1px solid var(--line); background: rgba(17, 24, 25, .78); border-radius: 7px; padding: 11px; }
+    .module h3 { margin-bottom: 5px; }
+    .signal { color: var(--cyan); }
+    .warning { color: var(--amber); }
+    .danger { color: var(--red); }
+    .note-form textarea { min-height: 112px; }
+    .note-list { display: grid; gap: 9px; margin-top: 12px; }
+    .note-card {
+      border: 1px solid var(--line);
+      background: rgba(8, 13, 15, .5);
+      border-radius: 7px;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+    }
+    .note-card strong { display: block; margin-bottom: 3px; overflow-wrap: anywhere; }
+    .note-card p { margin: 0; color: var(--muted); overflow-wrap: anywhere; white-space: pre-wrap; }
+    .note-card button {
+      align-self: start;
+      padding: 6px 8px;
+      background: transparent;
+      color: var(--red);
+      border: 1px solid rgba(229, 116, 102, .45);
+      font-size: 12px;
+    }
+    .charter-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 9px; }
+    .charter-list li { border-left: 3px solid var(--line-bright); padding-left: 9px; color: var(--muted); }
+    .charter-list strong { color: var(--text); }
+    .empty, .error { color: var(--muted); padding: 18px 0; }
+    .error { color: var(--red); }
+    @media (max-width: 1040px) {
+      .market-grid, .flight-grid, .briefing { grid-template-columns: 1fr; }
+      .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+      .shell { width: auto; margin: 0 10px; }
+      header { grid-template-columns: 1fr; align-items: start; }
+      .status { text-align: left; }
+      .brand { align-items: start; display: grid; grid-template-columns: 42px minmax(0, 1fr); }
+      .deck { display: none; }
+      .panel-header { display: block; }
+      .panel-header .pill { margin-top: 8px; }
+      .panel-header .meta { max-width: 100%; }
+      h1 { font-size: 24px; }
+      .row, .offer-grid, .ops-strip { grid-template-columns: 1fr; }
+      .offer, .note-card { grid-template-columns: 1fr; }
+      .actions { justify-content: stretch; max-width: none; }
+      .actions a, .actions button { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <div class="brand-mark">CM</div>
+        <div>
+          <h1>Corp Market Concierge</h1>
+          <div class="deck">Quartermaster board, flight briefing, and manual capsuleer handoffs.</div>
+        </div>
+      </div>
+      <div id="status" class="status">Loading offers...</div>
+    </header>
+
+    <nav class="tabbar" aria-label="Dashboard tabs">
+      <button type="button" data-tab-target="market" aria-selected="true">Market Board</button>
+      <button type="button" data-tab-target="flight" aria-selected="false">Flight Attendant</button>
+    </nav>
+
+    <main>
+      <section id="tab-market" class="tab-panel" data-tab-panel="market">
+        <div class="market-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Create Offer</h2>
+                <div class="meta">Create Discord-ready offers and mail drafts.</div>
+              </div>
+            </div>
+            <form id="offer-form">
+              <div class="row">
+                <label>Type
+                  <select name="listing_type">
+                    <option value="sell">For sale</option>
+                    <option value="want">Want to buy</option>
+                  </select>
+                </label>
+                <label>Category
+                  <select name="category">
+@@CATEGORY_OPTIONS@@
+                  </select>
+                </label>
+              </div>
+              <div class="row">
+                <label>Quantity
+                  <input name="quantity" type="number" min="1" step="1" value="1">
+                </label>
+                <label>Unit Price
+                  <input name="unit_price" autocomplete="off" placeholder="12.5m or blank">
+                </label>
+              </div>
+              <label>Item
+                <input name="item_name" autocomplete="off" placeholder="Venture, Water, 10MN Afterburner I">
+              </label>
+              <div class="row">
+                <label>Contact
+                  <input name="owner" autocomplete="off" placeholder="EVE character">
+                </label>
+                <label>Location
+                  <input name="location" autocomplete="off" placeholder="Station or system">
+                </label>
+              </div>
+              <label>Delivery
+                <input name="delivery" autocomplete="off" placeholder="Pickup, delivery available, high-sec only">
+              </label>
+              <label>Fit Image URL
+                <input name="fit_image_url" autocomplete="off" placeholder="Optional Discord/CDN screenshot URL">
+              </label>
+              <label>Notes
+                <textarea name="notes" placeholder="[Hawk, Fit name]\nPaste EFT fit blocks, contract details, timing, limits"></textarea>
+              </label>
+              <button type="submit">Post Offer</button>
+              <div id="form-error" class="error" hidden></div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Market Board</h2>
+                <div class="meta">Scan open requests, reserve manually, then use the mail draft page for in-game contact.</div>
+              </div>
+            </div>
+            <div class="ops-strip">
+              <div class="ops-tile"><span>Mode</span><strong>Manual Trade</strong></div>
+              <div class="ops-tile"><span>Mail</span><strong>Copy Drafts</strong></div>
+              <div class="ops-tile"><span>Discord</span><strong>Webhook Ready</strong></div>
+              <div class="ops-tile"><span>Safety</span><strong>No Client Control</strong></div>
+            </div>
+            <div class="filters">
+              <button class="secondary active" type="button" data-filter="">Open</button>
+              <button class="secondary" type="button" data-filter="sell">For sale</button>
+              <button class="secondary" type="button" data-filter="want">Want to buy</button>
+              <button class="secondary" type="button" data-closed="1">All statuses</button>
+            </div>
+            <div id="offers" class="offers"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-flight" class="tab-panel" data-tab-panel="flight" hidden>
+        <div class="flight-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Flight Attendant</h2>
+                <div class="meta">A lore-friendly briefing console for local notes, future read-only ESI context, and human decisions.</div>
+              </div>
+              <span class="pill reserved">Preview</span>
+            </div>
+            <div class="briefing">
+              <div class="system-board">
+                <div class="meta">Current system briefing</div>
+                <div class="system-name">Awaiting ESI</div>
+                <div class="constellation-line">No live location scope connected in this preview.</div>
+                <div class="offer-grid">
+                  <div class="readout"><span class="meta">Assets</span><b>Check nearby hangars</b></div>
+                  <div class="readout"><span class="meta">Notes</span><b>Local captain notes</b></div>
+                  <div class="readout"><span class="meta">Market Purser</span><b>Route-aware deals</b></div>
+                </div>
+                <div class="flight-actions">
+                  <button type="button" disabled>Connect ESI</button>
+                  <button class="ghost" type="button" disabled>Generate Briefing</button>
+                </div>
+              </div>
+              <div class="module-stack">
+                <div class="module">
+                  <h3 class="signal">Nearby Assets</h3>
+                  <div class="meta">Future read-only ESI can show nearby owned items.</div>
+                </div>
+                <div class="module">
+                  <h3 class="warning">Market Purser</h3>
+                  <div class="meta">Future checks can compare public market data for better nearby deals.</div>
+                </div>
+                <div class="module">
+                  <h3 class="danger">Pilot Still Acts</h3>
+                  <div class="meta">No warps, orders, contracts, clicks, or client input are performed by this page.</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Captain's Notes</h2>
+                <div class="meta">Saved in this browser only. Good for system reminders while backend storage is still planned.</div>
+              </div>
+            </div>
+            <form id="flight-note-form" class="note-form">
+              <div class="row">
+                <label>System
+                  <input name="system" autocomplete="off" placeholder="Jita, Amarr, Hek">
+                </label>
+                <label>Priority
+                  <select name="priority">
+                    <option value="normal">Normal</option>
+                    <option value="asset">Asset</option>
+                    <option value="market">Market</option>
+                    <option value="warning">Warning</option>
+                  </select>
+                </label>
+              </div>
+              <label>Note
+                <textarea name="note" placeholder="Fuel cache, doctrine hulls, avoid undock, cheap robotics nearby"></textarea>
+              </label>
+              <button type="submit">Save Local Note</button>
+            </form>
+            <div id="flight-notes" class="note-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Safety Charter</h2>
+                <div class="meta">The Flight Attendant should advise like a crew member, not fly the ship.</div>
+              </div>
+            </div>
+            <ul class="charter-list">
+              <li><strong>Read-only ESI:</strong> location, assets, wallet, or market context only after reviewed scopes.</li>
+              <li><strong>Local notes:</strong> pilot-authored reminders can be stored without touching the EVE client.</li>
+              <li><strong>No EVE client control:</strong> no keypresses, clicks, warps, contract creation, order placement, packet reading, OCR-driven reactions, or cache scraping.</li>
+              <li><strong>Human confirmation:</strong> every trade, route, and market action remains a pilot decision inside EVE.</li>
+            </ul>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const offersEl = document.querySelector("#offers");
+    const statusEl = document.querySelector("#status");
+    const errorEl = document.querySelector("#form-error");
+    const tabButtons = document.querySelectorAll("[data-tab-target]");
+    const tabPanels = document.querySelectorAll("[data-tab-panel]");
+    const notesForm = document.querySelector("#flight-note-form");
+    const notesList = document.querySelector("#flight-notes");
+    const notesKey = "eve-flight-attendant-notes-v1";
+    const validTabs = new Set(["market", "flight"]);
+    let filterType = "";
+    let includeClosed = false;
+
+    function escapeHtml(value) {
+      const replacements = {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      };
+      return String(value ?? "").replace(/[&<>"']/g, (char) => replacements[char]);
+    }
+
+    function showTab(tabName) {
+      const targetTab = validTabs.has(tabName) ? tabName : "market";
+      tabButtons.forEach((button) => {
+        const selected = button.dataset.tabTarget === targetTab;
+        button.setAttribute("aria-selected", selected ? "true" : "false");
+      });
+      tabPanels.forEach((panel) => {
+        panel.hidden = panel.dataset.tabPanel !== targetTab;
+      });
+    }
+
+    function initialTab() {
+      const requested = window.location.hash.replace("#", "");
+      return validTabs.has(requested) ? requested : "market";
+    }
+
+    function updateFilterButtons() {
+      document.querySelectorAll(".filters button").forEach((button) => {
+        const isClosed = Boolean(button.dataset.closed);
+        const isActive = isClosed ? includeClosed : button.dataset.filter === filterType;
+        button.classList.toggle("active", isActive);
+      });
+    }
+
+    async function loadOffers() {
+      const params = new URLSearchParams();
+      if (filterType) params.set("type", filterType);
+      if (includeClosed) params.set("include_closed", "1");
+      const response = await fetch(`/api/offers?${params}`);
+      const data = await response.json();
+      if (!data.ok) throw new Error(data.error || "Could not load offers");
+      renderOffers(data.offers);
+      statusEl.textContent = `${data.offers.length} offer${data.offers.length === 1 ? "" : "s"}`;
+    }
+
+    function statusControls(offer) {
+      const controls = [];
+      if (offer.status === "open") {
+        controls.push(`<button type="button" data-reserve="${escapeHtml(offer.id)}">Reserve</button>`);
+      }
+      if (offer.status !== "sold") {
+        controls.push(`<button type="button" data-status-id="${escapeHtml(offer.id)}" data-status="sold">Sold</button>`);
+      }
+      if (offer.status !== "cancelled") {
+        controls.push(`<button type="button" data-status-id="${escapeHtml(offer.id)}" data-status="cancelled">Cancel</button>`);
+      }
+      if (offer.status !== "open") {
+        controls.push(`<button type="button" data-status-id="${escapeHtml(offer.id)}" data-status="open">Reopen</button>`);
+      }
+      return controls.join("");
+    }
+
+    function renderOffers(offers) {
+      if (!offers.length) {
+        offersEl.innerHTML = `<div class="empty">No matching offers.</div>`;
+        return;
+      }
+      offersEl.innerHTML = offers.map((offer) => `
+        <article class="offer">
+          <div>
+            <h3><span class="pill ${offer.listing_type}">${offer.label}</span> ${escapeHtml(offer.item_name)}</h3>
+            <div class="meta">
+              ${escapeHtml(offer.quantity.toLocaleString())} units &middot; ${escapeHtml(offer.unit_price_display)} each &middot; ${escapeHtml(offer.total_price_display)} total
+            </div>
+            <div class="meta">${escapeHtml(offer.category_label)} &middot; ${escapeHtml(offer.location)} &middot; ${escapeHtml(offer.owner)}${offer.delivery ? ` &middot; ${escapeHtml(offer.delivery)}` : ""}</div>
+            <div class="offer-grid">
+              <div class="readout"><span class="meta">Location</span><b>${escapeHtml(offer.location)}</b></div>
+              <div class="readout"><span class="meta">Contact</span><b>${escapeHtml(offer.owner)}</b></div>
+              <div class="readout"><span class="meta">Total</span><b>${escapeHtml(offer.total_price_display)}</b></div>
+            </div>
+            ${offer.status !== "open" ? `<div class="meta"><span class="pill ${offer.status}">${escapeHtml(offer.status)}</span>${offer.reserved_by ? ` by ${escapeHtml(offer.reserved_by)}` : ""}</div>` : ""}
+            ${offer.fit_image_url ? `<div class="meta">Fit screenshot attached.</div>` : ""}
+          </div>
+          <div class="actions">
+            <a href="${escapeHtml(offer.url)}" title="Mail draft">Mail</a>
+            ${statusControls(offer)}
+          </div>
+        </article>
+      `).join("");
+    }
+
+    function readNotes() {
+      try {
+        const notes = JSON.parse(window.localStorage.getItem(notesKey) || "[]");
+        return Array.isArray(notes) ? notes : [];
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    function writeNotes(notes) {
+      window.localStorage.setItem(notesKey, JSON.stringify(notes.slice(0, 30)));
+    }
+
+    function renderNotes() {
+      const notes = readNotes();
+      if (!notes.length) {
+        notesList.innerHTML = `<div class="empty">No local Flight Attendant notes yet.</div>`;
+        return;
+      }
+      notesList.innerHTML = notes.map((note, index) => `
+        <article class="note-card">
+          <div>
+            <strong>${escapeHtml(note.system)} <span class="pill ${note.priority === "warning" ? "reserved" : note.priority === "market" ? "want" : "sell"}">${escapeHtml(note.priority)}</span></strong>
+            <p>${escapeHtml(note.note)}</p>
+          </div>
+          <button type="button" data-delete-note="${index}">Remove</button>
+        </article>
+      `).join("");
+    }
+
+    tabButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const tabName = button.dataset.tabTarget;
+        showTab(tabName);
+        window.history.replaceState(null, "", `#${tabName}`);
+      });
+    });
+
+    document.querySelector("#offer-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      errorEl.hidden = true;
+      const formEl = event.currentTarget;
+      const form = new FormData(formEl);
+      const payload = Object.fromEntries(form.entries());
+      try {
+        const response = await fetch("/api/offers", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Offer was not created");
+        formEl.reset();
+        formEl.quantity.value = "1";
+        alertDiscordSyncProblem(data);
+        await loadOffers();
+      } catch (error) {
+        errorEl.textContent = error.message;
+        errorEl.hidden = false;
+      }
+    });
+
+    document.querySelector(".filters").addEventListener("click", async (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      if (button.dataset.closed) {
+        includeClosed = !includeClosed;
+      } else {
+        filterType = button.dataset.filter || "";
+      }
+      updateFilterButtons();
+      await loadOffers();
+    });
+
+    offersEl.addEventListener("click", async (event) => {
+      const reserveButton = event.target.closest("button[data-reserve]");
+      if (reserveButton) {
+        const reservedBy = window.prompt("Reserve for which character?");
+        if (!reservedBy) return;
+        const response = await fetch(`/api/offers/${reserveButton.dataset.reserve}/reserve`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({reserved_by: reservedBy, hours: 24}),
+        });
+        const data = await response.json();
+        if (!data.ok) {
+          window.alert(data.error || "Could not reserve offer");
+          return;
+        }
+        alertDiscordSyncProblem(data);
+        await loadOffers();
+        return;
+      }
+
+      const statusButton = event.target.closest("button[data-status-id]");
+      if (!statusButton) return;
+      const nextStatus = statusButton.dataset.status;
+      if (!window.confirm(`Set this listing to ${nextStatus}?`)) return;
+      const response = await fetch(`/api/offers/${statusButton.dataset.statusId}/status`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({status: nextStatus}),
+      });
+      const data = await response.json();
+      if (!data.ok) {
+        window.alert(data.error || "Could not update listing");
+        return;
+      }
+      alertDiscordSyncProblem(data);
+      await loadOffers();
+    });
+
+    notesForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const form = new FormData(notesForm);
+      const system = String(form.get("system") || "").trim();
+      const note = String(form.get("note") || "").trim();
+      const priority = String(form.get("priority") || "normal");
+      if (!system || !note) return;
+      const notes = readNotes();
+      notes.unshift({system, note, priority});
+      writeNotes(notes);
+      notesForm.reset();
+      renderNotes();
+    });
+
+    notesList.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-delete-note]");
+      if (!button) return;
+      const index = Number(button.dataset.deleteNote);
+      const notes = readNotes();
+      notes.splice(index, 1);
+      writeNotes(notes);
+      renderNotes();
+    });
+
+    function alertDiscordSyncProblem(data) {
+      if (data.discord_sync_error) {
+        window.alert(`Updated locally, but Discord did not sync: ${data.discord_sync_error}`);
+      }
+    }
+
+    showTab(initialTab());
+    updateFilterButtons();
+    renderNotes();
+    loadOffers().catch((error) => {
+      offersEl.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+      statusEl.textContent = "Load failed";
+    });
+  </script>
+</body>
+</html>
+"""
+    return markup.replace("@@CATEGORY_OPTIONS@@", category_options)
+
+
 def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:
     listing_json = html.escape(json.dumps(listing.to_dict()), quote=True)
     draft_json = html.escape(json.dumps(draft.to_dict()), quote=True)
