@@ -1,0 +1,248 @@
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import shutil
+import sys
+from typing import Any, Iterable
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+from zipfile import ZipFile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_OUTPUT_PATH = ROOT / "cache" / "eve_industry_recipes.json"
+LATEST_SDE_INFO_URL = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl"
+LATEST_JSONL_ZIP_URL = "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
+SCHEMA = "eve_voice_pilot.industry_recipes.v1"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        latest_info = load_latest_sde_info()
+        sde_zip = args.sde_zip
+        source_url = ""
+        if sde_zip is None:
+            sde_zip = download_latest_sde_zip(latest_info, force=args.force_download)
+            source_url = LATEST_JSONL_ZIP_URL
+        sde_zip = sde_zip.expanduser()
+        cache = build_recipe_cache(sde_zip=sde_zip, fallback_info=latest_info, source_url=source_url)
+        write_json(args.output.expanduser(), cache)
+    except (CorpRecipeCacheError, OSError, HTTPError, URLError) as exc:
+        print(f"Could not update industry recipe cache: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Wrote {cache['recipe_count']} manufacturing recipes to {args.output}")
+    print(f"SDE build: {cache.get('build_number') or 'unknown'}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Build the local Flight Attendant blueprint recipe cache from CCP's JSONL SDE.",
+    )
+    parser.add_argument(
+        "--sde-zip",
+        type=Path,
+        help="Existing eve-online-static-data-*-jsonl.zip. Defaults to downloading the latest SDE into cache.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT_PATH,
+        help="Output recipe cache path.",
+    )
+    parser.add_argument(
+        "--force-download",
+        action="store_true",
+        help="Download the current SDE zip again even if the local cache copy exists.",
+    )
+    return parser
+
+
+class CorpRecipeCacheError(RuntimeError):
+    pass
+
+
+def load_latest_sde_info() -> dict[str, Any]:
+    request = Request(LATEST_SDE_INFO_URL, headers={"Accept": "application/json"}, method="GET")
+    with urlopen(request, timeout=30.0) as response:
+        raw = response.read().decode("utf-8")
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        if isinstance(payload, dict) and payload.get("_key") == "sde":
+            return payload
+    raise CorpRecipeCacheError("Latest SDE metadata did not include the sde record.")
+
+
+def download_latest_sde_zip(latest_info: dict[str, Any], *, force: bool) -> Path:
+    build_number = clean_int(latest_info.get("buildNumber"))
+    if build_number <= 0:
+        raise CorpRecipeCacheError("Latest SDE metadata did not include a build number.")
+    target = ROOT / "cache" / f"eve-online-static-data-{build_number}-jsonl.zip"
+    if target.exists() and not force:
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_target = target.with_suffix(".zip.part")
+    request = Request(LATEST_JSONL_ZIP_URL, headers={"Accept": "application/zip"}, method="GET")
+    with urlopen(request, timeout=120.0) as response, temp_target.open("wb") as handle:
+        shutil.copyfileobj(response, handle)
+    temp_target.replace(target)
+    return target
+
+
+def build_recipe_cache(*, sde_zip: Path, fallback_info: dict[str, Any], source_url: str = "") -> dict[str, Any]:
+    if not sde_zip.exists():
+        raise CorpRecipeCacheError(f"SDE zip does not exist: {sde_zip}")
+    with ZipFile(sde_zip) as archive:
+        names = read_type_names(archive)
+        sde_info = read_sde_info(archive) or fallback_info
+        recipes = read_manufacturing_recipes(archive, names)
+
+    sorted_recipes = {str(key): recipes[key] for key in sorted(recipes)}
+    return {
+        "schema": SCHEMA,
+        "source": "eve_sde_jsonl",
+        "source_url": source_url,
+        "build_number": clean_int(sde_info.get("buildNumber")) or None,
+        "release_date": str(sde_info.get("releaseDate") or ""),
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "recipe_count": len(sorted_recipes),
+        "recipes": sorted_recipes,
+    }
+
+
+def read_type_names(archive: ZipFile) -> dict[int, str]:
+    names: dict[int, str] = {}
+    for record in iter_jsonl_member(archive, "types.jsonl"):
+        type_id = clean_int(record.get("_key"))
+        if type_id <= 0:
+            continue
+        name = english_name(record.get("name"))
+        if name:
+            names[type_id] = name
+    return names
+
+
+def read_sde_info(archive: ZipFile) -> dict[str, Any] | None:
+    for record in iter_jsonl_member(archive, "_sde.jsonl"):
+        if record.get("_key") == "sde":
+            return record
+    return None
+
+
+def read_manufacturing_recipes(archive: ZipFile, names: dict[int, str]) -> dict[int, dict[str, Any]]:
+    recipes: dict[int, dict[str, Any]] = {}
+    for record in iter_jsonl_member(archive, "blueprints.jsonl"):
+        blueprint_type_id = clean_int(record.get("blueprintTypeID") or record.get("_key"))
+        activities = record.get("activities")
+        if blueprint_type_id <= 0 or not isinstance(activities, dict):
+            continue
+        manufacturing = activities.get("manufacturing")
+        if not isinstance(manufacturing, dict):
+            continue
+        product_records = list(clean_records(manufacturing.get("products")))
+        material_records = list(clean_records(manufacturing.get("materials")))
+        if not product_records or not material_records:
+            continue
+
+        products = []
+        for product in product_records:
+            product_type_id = clean_int(product.get("typeID") or product.get("type_id"))
+            quantity = clean_int(product.get("quantity"))
+            if product_type_id > 0 and quantity > 0:
+                products.append(
+                    {
+                        "type_id": product_type_id,
+                        "name": names.get(product_type_id, f"Type {product_type_id}"),
+                        "quantity": quantity,
+                    }
+                )
+        materials = []
+        for material in material_records:
+            material_type_id = clean_int(material.get("typeID") or material.get("type_id"))
+            quantity = clean_int(material.get("quantity"))
+            if material_type_id > 0 and quantity > 0:
+                materials.append(
+                    {
+                        "type_id": material_type_id,
+                        "name": names.get(material_type_id, f"Type {material_type_id}"),
+                        "quantity": quantity,
+                    }
+                )
+        if not products or not materials:
+            continue
+
+        first_product = products[0]
+        recipes[blueprint_type_id] = {
+            "blueprint_type_id": blueprint_type_id,
+            "blueprint_name": names.get(blueprint_type_id, f"Blueprint {blueprint_type_id}"),
+            "activity": "manufacturing",
+            "product_type_id": first_product["type_id"],
+            "product_name": first_product["name"],
+            "product_quantity": first_product["quantity"],
+            "products": products,
+            "manufacturing_time_seconds": clean_int(manufacturing.get("time")),
+            "materials": materials,
+        }
+    return recipes
+
+
+def iter_jsonl_member(archive: ZipFile, name: str) -> Iterable[dict[str, Any]]:
+    if name not in archive.namelist():
+        raise CorpRecipeCacheError(f"SDE zip is missing {name}.")
+    with archive.open(name) as handle:
+        for raw_line in handle:
+            line = raw_line.decode("utf-8").strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise CorpRecipeCacheError(f"{name} has invalid JSONL: {exc}") from exc
+            if isinstance(payload, dict):
+                yield payload
+
+
+def clean_records(value: Any) -> Iterable[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def english_name(value: Any) -> str:
+    if isinstance(value, dict):
+        candidate = value.get("en")
+        if candidate:
+            return str(candidate)
+        for item in value.values():
+            if item:
+                return str(item)
+    if value:
+        return str(value)
+    return ""
+
+
+def clean_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

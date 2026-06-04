@@ -36,6 +36,7 @@ from eve_voice_pilot.corp_intel import (
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
+DEFAULT_INDUSTRY_RECIPE_CACHE_PATH = ROOT / "cache" / "eve_industry_recipes.json"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
@@ -182,6 +183,95 @@ class FlightEsiSessionStore:
         expired = [session_id for session_id, session in self._sessions.items() if session.expired]
         for session_id in expired:
             self._sessions.pop(session_id, None)
+
+
+@dataclass(frozen=True)
+class IndustryMaterial:
+    type_id: int
+    name: str
+    quantity: int
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "IndustryMaterial | None":
+        try:
+            type_id = int(payload.get("type_id") or payload.get("typeID") or 0)
+            quantity = int(payload.get("quantity") or 0)
+        except (TypeError, ValueError):
+            return None
+        name = str(payload.get("name") or "").strip()
+        if type_id <= 0 or quantity <= 0:
+            return None
+        return cls(type_id=type_id, name=name or f"Type {type_id}", quantity=quantity)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type_id": self.type_id, "name": self.name, "quantity": self.quantity}
+
+
+@dataclass(frozen=True)
+class IndustryRecipe:
+    blueprint_type_id: int
+    blueprint_name: str
+    product_type_id: int
+    product_name: str
+    product_quantity: int
+    materials: tuple[IndustryMaterial, ...]
+    manufacturing_time_seconds: int = 0
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "IndustryRecipe | None":
+        try:
+            blueprint_type_id = int(payload.get("blueprint_type_id") or payload.get("blueprintTypeID") or 0)
+            product_type_id = int(payload.get("product_type_id") or payload.get("productTypeID") or 0)
+            product_quantity = int(payload.get("product_quantity") or payload.get("quantity") or 0)
+            manufacturing_time = int(payload.get("manufacturing_time_seconds") or payload.get("time") or 0)
+        except (TypeError, ValueError):
+            return None
+        materials = tuple(
+            material
+            for item in payload.get("materials", [])
+            if isinstance(item, dict)
+            for material in [IndustryMaterial.from_dict(item)]
+            if material is not None
+        )
+        if blueprint_type_id <= 0 or product_type_id <= 0 or product_quantity <= 0 or not materials:
+            return None
+        blueprint_name = str(payload.get("blueprint_name") or "").strip() or f"Blueprint {blueprint_type_id}"
+        product_name = str(payload.get("product_name") or "").strip() or f"Type {product_type_id}"
+        return cls(
+            blueprint_type_id=blueprint_type_id,
+            blueprint_name=blueprint_name,
+            product_type_id=product_type_id,
+            product_name=product_name,
+            product_quantity=product_quantity,
+            materials=materials,
+            manufacturing_time_seconds=max(0, manufacturing_time),
+        )
+
+
+@dataclass(frozen=True)
+class IndustryRecipeCache:
+    path: Path
+    available: bool
+    build_number: int | None = None
+    release_date: str = ""
+    generated_at: str = ""
+    recipes: dict[int, IndustryRecipe] | None = None
+    error: str = ""
+
+    @property
+    def recipe_count(self) -> int:
+        return len(self.recipes or {})
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "path": str(self.path),
+            "build_number": self.build_number,
+            "release_date": self.release_date,
+            "generated_at": self.generated_at,
+            "recipe_count": self.recipe_count,
+            "error": self.error,
+        }
 
 
 @dataclass(frozen=True)
@@ -1015,11 +1105,17 @@ def build_flight_industry_payload(*, config: EveSsoConfig, session: FlightEsiSes
     require_flight_scopes(session, (FLIGHT_ASSETS_SCOPE, FLIGHT_BLUEPRINTS_SCOPE))
     blueprints = fetch_flight_blueprints(config, session)
     assets = fetch_flight_assets(config, session)
+    recipe_cache = load_industry_recipe_cache()
     return {
         "ok": True,
         "generated_at": now_iso(),
         "character": session.to_public_dict(),
-        "industry": summarize_flight_industry(config, blueprints=blueprints, assets=assets),
+        "industry": summarize_flight_industry(
+            config,
+            blueprints=blueprints,
+            assets=assets,
+            recipe_cache=recipe_cache,
+        ),
     }
 
 
@@ -1028,6 +1124,7 @@ def summarize_flight_industry(
     *,
     blueprints: Iterable[dict[str, Any]],
     assets: Iterable[dict[str, Any]],
+    recipe_cache: IndustryRecipeCache | None = None,
 ) -> dict[str, Any]:
     blueprint_items = [item for item in blueprints if isinstance(item, dict)]
     asset_items = [item for item in assets if isinstance(item, dict)]
@@ -1038,6 +1135,15 @@ def summarize_flight_industry(
     names = fetch_universe_names(
         config,
         [type_id for type_id, _count in top_blueprints] + [type_id for type_id, _quantity in top_assets],
+    )
+    cache = recipe_cache or load_industry_recipe_cache()
+    recipes = cache.recipes or {}
+    owned_blueprint_type_ids = set(blueprint_type_counts)
+    known_recipe_type_ids = owned_blueprint_type_ids.intersection(recipes)
+    buildability = build_recipe_buildability(
+        blueprint_type_counts=blueprint_type_counts,
+        asset_quantities=asset_quantities,
+        recipes=recipes,
     )
     original_count = sum(1 for item in blueprint_items if int(item.get("quantity") or 0) == -1)
     copy_count = sum(1 for item in blueprint_items if int(item.get("quantity") or 0) == -2)
@@ -1050,8 +1156,12 @@ def summarize_flight_industry(
             "top_types": [
                 {
                     "type_id": type_id,
-                    "name": names.get(type_id) or f"Type {type_id}",
+                    "name": blueprint_display_name(type_id, names=names, recipes=recipes),
                     "count": count,
+                    "recipe_known": type_id in recipes,
+                    "product_name": recipes[type_id].product_name if type_id in recipes else "",
+                    "product_quantity": recipes[type_id].product_quantity if type_id in recipes else 0,
+                    "material_count": len(recipes[type_id].materials) if type_id in recipes else 0,
                 }
                 for type_id, count in top_blueprints
             ],
@@ -1070,8 +1180,148 @@ def summarize_flight_industry(
                 for type_id, quantity in top_assets
             ],
         },
-        "next_step": "Recipe cache and market orders are needed before profitability ranking.",
+        "recipes": {
+            **cache.to_public_dict(),
+            "known_blueprint_types": len(known_recipe_type_ids),
+            "missing_blueprint_types": max(0, len(owned_blueprint_type_ids) - len(known_recipe_type_ids)),
+        },
+        "buildability": buildability,
+        "next_step": industry_next_step(
+            cache=cache,
+            owned_blueprint_type_count=len(owned_blueprint_type_ids),
+            known_blueprint_type_count=len(known_recipe_type_ids),
+        ),
     }
+
+
+def load_industry_recipe_cache(cache_path: Path = DEFAULT_INDUSTRY_RECIPE_CACHE_PATH) -> IndustryRecipeCache:
+    path = Path(cache_path)
+    if not path.exists():
+        return IndustryRecipeCache(path=path, available=False, error="Recipe cache file is missing.")
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        return IndustryRecipeCache(path=path, available=False, error=f"Recipe cache could not be read: {exc}")
+    if not isinstance(payload, dict):
+        return IndustryRecipeCache(path=path, available=False, error="Recipe cache has unexpected format.")
+
+    recipes_payload = payload.get("recipes")
+    if not isinstance(recipes_payload, dict):
+        return IndustryRecipeCache(path=path, available=False, error="Recipe cache is missing recipes.")
+    recipes: dict[int, IndustryRecipe] = {}
+    for key, item in recipes_payload.items():
+        if not isinstance(item, dict):
+            continue
+        recipe = IndustryRecipe.from_dict(item)
+        if recipe is None:
+            continue
+        recipes[recipe.blueprint_type_id] = recipe
+    if not recipes:
+        return IndustryRecipeCache(path=path, available=False, error="Recipe cache has no usable manufacturing recipes.")
+    try:
+        build_number = int(payload.get("build_number") or payload.get("buildNumber") or 0) or None
+    except (TypeError, ValueError):
+        build_number = None
+    return IndustryRecipeCache(
+        path=path,
+        available=True,
+        build_number=build_number,
+        release_date=str(payload.get("release_date") or payload.get("releaseDate") or ""),
+        generated_at=str(payload.get("generated_at") or ""),
+        recipes=recipes,
+    )
+
+
+def build_recipe_buildability(
+    *,
+    blueprint_type_counts: dict[int, int],
+    asset_quantities: dict[int, int],
+    recipes: dict[int, IndustryRecipe],
+) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    ready_count = 0
+    for blueprint_type_id, owned_count in blueprint_type_counts.items():
+        recipe = recipes.get(blueprint_type_id)
+        if recipe is None:
+            continue
+        missing_materials = []
+        covered_material_types = 0
+        for material in recipe.materials:
+            available_quantity = asset_quantities.get(material.type_id, 0)
+            shortage = max(0, material.quantity - available_quantity)
+            if shortage:
+                missing_materials.append(
+                    {
+                        "type_id": material.type_id,
+                        "name": material.name,
+                        "required": material.quantity,
+                        "available": available_quantity,
+                        "shortage": shortage,
+                    }
+                )
+            else:
+                covered_material_types += 1
+        can_build = not missing_materials
+        if can_build:
+            ready_count += 1
+        candidates.append(
+            {
+                "blueprint_type_id": blueprint_type_id,
+                "blueprint_name": recipe.blueprint_name,
+                "product_type_id": recipe.product_type_id,
+                "product_name": recipe.product_name,
+                "product_quantity": recipe.product_quantity,
+                "owned_blueprints": owned_count,
+                "can_build_one_run": can_build,
+                "required_material_types": len(recipe.materials),
+                "covered_material_types": covered_material_types,
+                "missing_material_types": len(missing_materials),
+                "missing_materials": sorted(missing_materials, key=lambda item: item["shortage"], reverse=True)[:3],
+            }
+        )
+    candidates.sort(
+        key=lambda item: (
+            0 if item["can_build_one_run"] else 1,
+            item["missing_material_types"],
+            -int(item["owned_blueprints"]),
+            item["product_name"],
+        )
+    )
+    return {
+        "known_blueprint_types": len(candidates),
+        "buildable_one_run_types": ready_count,
+        "top_candidates": candidates[:5],
+    }
+
+
+def blueprint_display_name(
+    type_id: int,
+    *,
+    names: dict[int, str],
+    recipes: dict[int, IndustryRecipe],
+) -> str:
+    recipe = recipes.get(type_id)
+    if recipe and recipe.blueprint_name:
+        return recipe.blueprint_name
+    return names.get(type_id) or f"Type {type_id}"
+
+
+def industry_next_step(
+    *,
+    cache: IndustryRecipeCache,
+    owned_blueprint_type_count: int,
+    known_blueprint_type_count: int,
+) -> str:
+    if not cache.available:
+        return "Recipe cache missing; static recipe analysis is waiting."
+    if owned_blueprint_type_count <= 0:
+        return f"Recipe cache build {cache.build_number or 'unknown'} is ready; no owned blueprint types were returned by ESI."
+    return (
+        f"Recipe cache build {cache.build_number or 'unknown'} matches "
+        f"{known_blueprint_type_count} of {owned_blueprint_type_count} owned blueprint types. "
+        "Market pricing is the next layer before profitability ranking."
+    )
 
 
 def count_by_type_id(items: Iterable[dict[str, Any]]) -> dict[int, int]:
@@ -2267,6 +2517,11 @@ def _render_flight_attendant_dashboard() -> str:
                   <div id="flight-asset-top" class="meta"></div>
                 </div>
                 <div class="module">
+                  <h3 class="signal">Recipe Cache</h3>
+                  <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
+                  <div id="flight-buildability-top" class="meta"></div>
+                </div>
+                <div class="module">
                   <h3 class="danger">Pilot Still Acts</h3>
                   <div id="flight-industry-note" class="meta">No warps, orders, contracts, clicks, or client input are performed by this page.</div>
                 </div>
@@ -2343,6 +2598,8 @@ def _render_flight_attendant_dashboard() -> str:
     const flightBlueprintTop = document.querySelector("#flight-blueprint-top");
     const flightAssetSummary = document.querySelector("#flight-asset-summary");
     const flightAssetTop = document.querySelector("#flight-asset-top");
+    const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
+    const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
     const notesKey = "eve-flight-attendant-notes-v1";
     const validTabs = new Set(["market", "flight"]);
@@ -2536,6 +2793,8 @@ def _render_flight_attendant_dashboard() -> str:
       flightBlueprintTop.textContent = "";
       flightAssetSummary.textContent = message;
       flightAssetTop.textContent = "";
+      flightRecipeSummary.textContent = message;
+      flightBuildabilityTop.textContent = "";
       flightIndustryNote.textContent = "No warps, orders, contracts, clicks, or client input are performed by this page.";
     }
 
@@ -2544,6 +2803,8 @@ def _render_flight_attendant_dashboard() -> str:
       flightBlueprintTop.textContent = "";
       flightAssetSummary.textContent = "Scanning owned asset stacks...";
       flightAssetTop.textContent = "";
+      flightRecipeSummary.textContent = "Checking static recipe cache...";
+      flightBuildabilityTop.textContent = "";
       try {
         const response = await fetch("/api/flight/industry");
         const data = await response.json();
@@ -2552,6 +2813,8 @@ def _render_flight_attendant_dashboard() -> str:
       } catch (error) {
         flightBlueprintSummary.textContent = error.message;
         flightAssetSummary.textContent = error.message;
+        flightRecipeSummary.textContent = error.message;
+        flightBuildabilityTop.textContent = "";
         flightIndustryNote.textContent = "Industry analysis requires a connected ESI session with blueprint and asset scopes.";
       }
     }
@@ -2559,6 +2822,8 @@ def _render_flight_attendant_dashboard() -> str:
     function renderFlightIndustry(industry) {
       const blueprints = industry.blueprints || {};
       const assets = industry.assets || {};
+      const recipes = industry.recipes || {};
+      const buildability = industry.buildability || {};
       flightBlueprintSummary.innerHTML = `
         <strong>${formatNumber(blueprints.total)}</strong> blueprints across
         <strong>${formatNumber(blueprints.unique_types)}</strong> types.
@@ -2571,6 +2836,8 @@ def _render_flight_attendant_dashboard() -> str:
         <br>Total units: ${formatNumber(assets.total_units)} &middot; Locations: ${formatNumber(assets.locations)}
       `;
       flightAssetTop.innerHTML = renderTopList(assets.top_types || [], "quantity");
+      flightRecipeSummary.innerHTML = renderRecipeSummary(recipes, buildability);
+      flightBuildabilityTop.innerHTML = renderBuildabilityList(buildability.top_candidates || []);
       flightIndustryNote.textContent = industry.next_step || "Recipe cache and market orders are needed before profitability ranking.";
     }
 
@@ -2578,7 +2845,35 @@ def _render_flight_attendant_dashboard() -> str:
       if (!items.length) return "No top items returned yet.";
       return items.map((item) => {
         const value = formatNumber(item[valueKey]);
-        return `${escapeHtml(item.name)} (${value})`;
+        const product = item.product_name ? ` to ${escapeHtml(item.product_name)}` : "";
+        const recipe = item.recipe_known === true ? " &middot; recipe" : item.recipe_known === false ? " &middot; no recipe" : "";
+        return `${escapeHtml(item.name)}${product} (${value})${recipe}`;
+      }).join("<br>");
+    }
+
+    function renderRecipeSummary(recipes, buildability) {
+      if (!recipes.available) {
+        return `${escapeHtml(recipes.error || "Recipe cache missing.")}`;
+      }
+      const build = recipes.build_number ? ` build <strong>${escapeHtml(recipes.build_number)}</strong>` : "";
+      return `
+        Static recipes${build}: <strong>${formatNumber(recipes.known_blueprint_types)}</strong> known,
+        <strong>${formatNumber(recipes.missing_blueprint_types)}</strong> missing.
+        <br>One-run material coverage: <strong>${formatNumber(buildability.buildable_one_run_types)}</strong>
+        of <strong>${formatNumber(buildability.known_blueprint_types)}</strong> known types.
+      `;
+    }
+
+    function renderBuildabilityList(items) {
+      if (!items.length) return "No recipe candidates ready yet.";
+      return items.map((item) => {
+        if (item.can_build_one_run) {
+          return `${escapeHtml(item.product_name)}: base one-run materials covered`;
+        }
+        const missing = (item.missing_materials || [])
+          .map((material) => `${escapeHtml(material.name)} ${formatNumber(material.shortage)}`)
+          .join(", ");
+        return `${escapeHtml(item.product_name)}: missing ${missing || "materials"}`;
       }).join("<br>");
     }
 

@@ -33,8 +33,8 @@ The local board now includes a `Flight Attendant` tab beside the market board.
 The first version is a safe briefing surface:
 
 - It stores captain's notes in the browser only.
-- It can use read-only ESI location scope to show the connected pilot's current system.
-- It previews future read-only ESI uses such as nearby personal assets and route-aware market reminders.
+- It can use read-only ESI location, assets, and blueprints to show the connected pilot's current system, owned blueprint summary, and material stacks.
+- It can compare owned blueprint type IDs with a local static recipe cache before market pricing is added.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
@@ -49,10 +49,12 @@ Register an EVE SSO web application in the EVE Developers portal with this callb
 http://127.0.0.1:8770/flight/callback
 ```
 
-Request this scope:
+Request these scopes:
 
 ```text
 esi-location.read_location.v1
+esi-assets.read_assets.v1
+esi-characters.read_blueprints.v1
 ```
 
 Start the market board with your SSO app credentials, either through environment variables:
@@ -70,6 +72,22 @@ Or directly on the command line:
 ```
 
 Do not commit SSO secrets. Keep them in your local shell, Windows environment, or another private secret store.
+
+### Local Industry Recipe Cache
+
+Flight Attendant uses ESI to learn your actual owned blueprints and materials. It uses CCP's Static Data Export for blueprint recipes. Build or refresh the local recipe cache from PowerShell:
+
+```powershell
+python .\scripts\update_industry_recipe_cache.py
+```
+
+The generated recipe cache is written to ignored local data:
+
+```text
+cache\eve_industry_recipes.json
+```
+
+If the cache is missing, the Flight Attendant tab still requires ESI and will show the owned blueprint/material summary, but recipe matching and buildability previews will stay unavailable.
 
 ## Discord Channel Posting
 

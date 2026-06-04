@@ -13,6 +13,9 @@ from eve_voice_pilot.corp_market import (
     CorpMarketError,
     FlightEsiSession,
     FlightEsiSessionStore,
+    IndustryMaterial,
+    IndustryRecipe,
+    IndustryRecipeCache,
     MarketStore,
     build_discord_webhook_payload,
     build_flight_industry_payload,
@@ -211,6 +214,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-login-link\"" in page
     assert "id=\"flight-blueprint-summary\"" in page
     assert "id=\"flight-asset-summary\"" in page
+    assert "id=\"flight-recipe-summary\"" in page
 
 
 def test_flight_status_reports_missing_sso_configuration():
@@ -282,7 +286,7 @@ def test_fetch_flight_location_uses_read_only_esi_scope(monkeypatch):
     assert "X-Compatibility-Date" in calls[0][1]
 
 
-def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch):
+def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch, tmp_path):
     session = FlightEsiSession(
         character_id=123456789,
         character_name="Industry Pilot",
@@ -323,6 +327,31 @@ def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypa
         "fetch_universe_names",
         lambda config, ids: {681: "Hobgoblin I Blueprint", 983: "Badger Blueprint", 34: "Tritanium", 35: "Pyerite"},
     )
+    monkeypatch.setattr(
+        corp_market,
+        "load_industry_recipe_cache",
+        lambda: IndustryRecipeCache(
+            path=tmp_path / "eve_industry_recipes.json",
+            available=True,
+            build_number=3374020,
+            release_date="2026-06-03T12:42:22Z",
+            generated_at="2026-06-04T00:00:00Z",
+            recipes={
+                681: IndustryRecipe(
+                    blueprint_type_id=681,
+                    blueprint_name="Hobgoblin I Blueprint",
+                    product_type_id=165,
+                    product_name="Hobgoblin I",
+                    product_quantity=1,
+                    materials=(
+                        IndustryMaterial(type_id=34, name="Tritanium", quantity=5000),
+                        IndustryMaterial(type_id=35, name="Pyerite", quantity=500),
+                    ),
+                    manufacturing_time_seconds=600,
+                )
+            },
+        ),
+    )
 
     payload = build_flight_industry_payload(
         config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
@@ -335,11 +364,50 @@ def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypa
     assert payload["industry"]["blueprints"]["originals"] == 2
     assert payload["industry"]["blueprints"]["copies"] == 1
     assert payload["industry"]["blueprints"]["top_types"][0]["name"] == "Hobgoblin I Blueprint"
+    assert payload["industry"]["blueprints"]["top_types"][0]["product_name"] == "Hobgoblin I"
+    assert payload["industry"]["recipes"]["available"] is True
+    assert payload["industry"]["recipes"]["known_blueprint_types"] == 1
+    assert payload["industry"]["recipes"]["missing_blueprint_types"] == 1
+    assert payload["industry"]["buildability"]["buildable_one_run_types"] == 1
+    assert payload["industry"]["buildability"]["top_candidates"][0]["can_build_one_run"] is True
     assert payload["industry"]["assets"]["stacks"] == 3
     assert payload["industry"]["assets"]["unique_types"] == 2
     assert payload["industry"]["assets"]["total_units"] == 9000
     assert payload["industry"]["assets"]["locations"] == 2
     assert payload["industry"]["assets"]["top_types"][0]["name"] == "Tritanium"
+
+
+def test_load_industry_recipe_cache_reads_compact_cache(tmp_path):
+    cache_path = tmp_path / "eve_industry_recipes.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "schema": "eve_voice_pilot.industry_recipes.v1",
+                "build_number": 3374020,
+                "release_date": "2026-06-03T12:42:22Z",
+                "generated_at": "2026-06-04T00:00:00Z",
+                "recipes": {
+                    "681": {
+                        "blueprint_type_id": 681,
+                        "blueprint_name": "Hobgoblin I Blueprint",
+                        "product_type_id": 165,
+                        "product_name": "Hobgoblin I",
+                        "product_quantity": 1,
+                        "materials": [{"type_id": 34, "name": "Tritanium", "quantity": 5000}],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cache = corp_market.load_industry_recipe_cache(cache_path)
+
+    assert cache.available is True
+    assert cache.build_number == 3374020
+    assert cache.recipe_count == 1
+    assert cache.recipes[681].product_name == "Hobgoblin I"
+    assert cache.recipes[681].materials[0].name == "Tritanium"
 
 
 def test_flight_industry_payload_requires_blueprint_and_asset_scopes(monkeypatch):
