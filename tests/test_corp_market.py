@@ -11,11 +11,15 @@ import pytest
 import eve_voice_pilot.corp_market as corp_market
 from eve_voice_pilot.corp_market import (
     CorpMarketError,
+    FlightEsiSession,
+    FlightEsiSessionStore,
     MarketStore,
     build_discord_webhook_payload,
+    build_flight_status_payload,
     build_mail_draft,
     clean_multiline,
     edit_discord_webhook_message,
+    fetch_flight_location,
     format_isk,
     parse_isk_amount,
     parse_fit_note,
@@ -183,6 +187,7 @@ def test_dashboard_includes_flight_attendant_tab_and_safety_charter():
     assert "Read-only ESI" in page
     assert "No EVE client control" in page
     assert "OCR-driven reactions" in page
+    assert "No token file yet" in page
 
 
 def test_dashboard_keeps_market_offer_workflow_controls():
@@ -193,6 +198,84 @@ def test_dashboard_keeps_market_offer_workflow_controls():
     assert "Post Offer" in page
     assert "/api/offers" in page
     assert "Mail draft" in page
+
+
+def test_dashboard_includes_flight_esi_hooks():
+    page = render_dashboard()
+
+    assert "/api/flight/status" in page
+    assert "/flight/login" in page
+    assert "id=\"flight-system-name\"" in page
+    assert "id=\"flight-login-link\"" in page
+
+
+def test_flight_status_reports_missing_sso_configuration():
+    payload = build_flight_status_payload(
+        config=corp_market.EveSsoConfig(callback_url="http://127.0.0.1:8770/flight/callback"),
+        session=None,
+        callback_url="http://127.0.0.1:8770/flight/callback",
+    )
+
+    assert payload["ok"] is True
+    assert payload["sso_configured"] is False
+    assert payload["connected"] is False
+    assert payload["callback_url"] == "http://127.0.0.1:8770/flight/callback"
+
+
+def test_flight_esi_session_store_keeps_access_token_in_memory():
+    pilot = corp_market.VerifiedPilot(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1",),
+    )
+    store = FlightEsiSessionStore()
+
+    session_id = store.create(pilot, access_token="access-token", expires_in=600)
+    session = store.get(session_id)
+
+    assert session is not None
+    assert session.character_name == "Scout Pilot"
+    assert session.access_token == "access-token"
+    assert session.expires_in_seconds > 0
+
+
+def test_fetch_flight_location_uses_read_only_esi_scope(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1",),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+    calls = []
+
+    def fake_get_json(url, *, timeout_seconds=30.0, headers=None):
+        calls.append((url, headers or {}))
+        if "/location/" in url:
+            return {"solar_system_id": 30000142}
+        if "/universe/systems/30000142/" in url:
+            return {"name": "Jita", "constellation_id": 20000020}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(corp_market, "get_json", fake_get_json)
+
+    location = fetch_flight_location(corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"), session)
+
+    assert location["solar_system_id"] == 30000142
+    assert location["solar_system_name"] == "Jita"
+    assert location["source"] == "esi-location.read_location.v1"
+    assert calls[0][0] == "https://esi.test/latest/characters/123456789/location/?datasource=tranquility"
+    assert calls[0][1]["Authorization"] == "Bearer access-token"
+    assert "X-Compatibility-Date" in calls[0][1]
 
 
 def test_reserve_listing_marks_buyer_and_expiry(tmp_path):

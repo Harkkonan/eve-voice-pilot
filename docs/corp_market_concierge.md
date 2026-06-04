@@ -33,11 +33,43 @@ The local board now includes a `Flight Attendant` tab beside the market board.
 The first version is a safe briefing surface:
 
 - It stores captain's notes in the browser only.
-- It previews future read-only ESI uses such as current-system context, nearby personal assets, and route-aware market reminders.
-- It keeps disabled placeholders for ESI connection and briefing generation until scopes and storage are reviewed.
+- It can use read-only ESI location scope to show the connected pilot's current system.
+- It previews future read-only ESI uses such as nearby personal assets and route-aware market reminders.
+- It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
+- It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
 
 Treat future Flight Attendant work like a crew member giving advice: the tool can brief the pilot, but the pilot takes every in-game action manually.
+
+### Flight Attendant ESI Setup
+
+Register an EVE SSO web application in the EVE Developers portal with this callback URL for the default local board:
+
+```text
+http://127.0.0.1:8770/flight/callback
+```
+
+Request this scope:
+
+```text
+esi-location.read_location.v1
+```
+
+Start the market board with your SSO app credentials, either through environment variables:
+
+```powershell
+$env:CORP_MARKET_SSO_CLIENT_ID = "client-id"
+$env:CORP_MARKET_SSO_CLIENT_SECRET = "client-secret"
+.\scripts\run_corp_market.ps1 serve --open-browser
+```
+
+Or directly on the command line:
+
+```powershell
+.\scripts\run_corp_market.ps1 serve --sso-client-id "client-id" --sso-client-secret "client-secret" --open-browser
+```
+
+Do not commit SSO secrets. Keep them in your local shell, Windows environment, or another private secret store.
 
 ## Discord Channel Posting
 

@@ -9,8 +9,11 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 import sys
+import threading
+import time
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
@@ -18,12 +21,26 @@ from urllib.request import Request, urlopen
 import uuid
 import webbrowser
 
+from eve_voice_pilot.corp_intel import (
+    AuthStateStore,
+    CorpIntelError,
+    DEFAULT_ESI_BASE_URL,
+    EveSsoConfig,
+    VerifiedPilot,
+    build_sso_authorization_url,
+    exchange_sso_code,
+    get_json,
+    verify_sso_character,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
+DEFAULT_FLIGHT_ESI_SCOPES = ("esi-location.read_location.v1",)
+FLIGHT_SESSION_COOKIE_NAME = "corp_market_flight_session"
 DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
 LISTING_STATUSES = {"open", "reserved", "sold", "cancelled"}
@@ -78,6 +95,86 @@ class DiscordPostResult:
     message_id: str = ""
     channel_id: str = ""
     thread_id: str = ""
+
+
+@dataclass(frozen=True)
+class FlightEsiSession:
+    character_id: int
+    character_name: str
+    corporation_id: int
+    corporation_name: str
+    alliance_id: int | None
+    alliance_name: str
+    scopes: tuple[str, ...]
+    access_token: str
+    connected_at: str
+    expires_at: float
+
+    @property
+    def expired(self) -> bool:
+        return self.expires_at <= time.time()
+
+    @property
+    def expires_in_seconds(self) -> int:
+        return max(0, int(self.expires_at - time.time()))
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "character_id": self.character_id,
+            "character_name": self.character_name,
+            "corporation_id": self.corporation_id,
+            "corporation_name": self.corporation_name,
+            "alliance_id": self.alliance_id,
+            "alliance_name": self.alliance_name,
+            "scopes": list(self.scopes),
+            "connected_at": self.connected_at,
+            "expires_in_seconds": self.expires_in_seconds,
+        }
+
+
+class FlightEsiSessionStore:
+    def __init__(self) -> None:
+        self._sessions: dict[str, FlightEsiSession] = {}
+        self._lock = threading.Lock()
+
+    def create(self, pilot: VerifiedPilot, *, access_token: str, expires_in: Any = None) -> str:
+        ttl_seconds = clean_token_ttl_seconds(expires_in)
+        session_id = secrets.token_urlsafe(32)
+        session = FlightEsiSession(
+            character_id=pilot.character_id,
+            character_name=pilot.character_name,
+            corporation_id=pilot.corporation_id,
+            corporation_name=pilot.corporation_name,
+            alliance_id=pilot.alliance_id,
+            alliance_name=pilot.alliance_name,
+            scopes=pilot.scopes,
+            access_token=access_token,
+            connected_at=now_iso(),
+            expires_at=time.time() + ttl_seconds,
+        )
+        with self._lock:
+            self._sessions[session_id] = session
+            self._prune_locked()
+        return session_id
+
+    def get(self, session_id: str) -> FlightEsiSession | None:
+        if not session_id:
+            return None
+        with self._lock:
+            self._prune_locked()
+            session = self._sessions.get(session_id)
+        return session
+
+    def delete(self, session_id: str) -> None:
+        if not session_id:
+            return
+        with self._lock:
+            self._sessions.pop(session_id, None)
+
+    def _prune_locked(self) -> None:
+        expired = [session_id for session_id, session in self._sessions.items() if session.expired]
+        for session_id in expired:
+            self._sessions.pop(session_id, None)
 
 
 @dataclass(frozen=True)
@@ -779,6 +876,88 @@ def sync_listing_to_discord(
         return listing, False, str(exc)
 
 
+def fetch_flight_location(config: EveSsoConfig, session: FlightEsiSession) -> dict[str, Any]:
+    if "esi-location.read_location.v1" not in session.scopes:
+        raise CorpMarketError("Flight Attendant needs esi-location.read_location.v1 to read the current system.")
+    base_url = config.esi_base_url.rstrip("/")
+    headers = flight_esi_headers(session.access_token)
+    location = get_json(
+        f"{base_url}/characters/{session.character_id}/location/?datasource=tranquility",
+        timeout_seconds=30.0,
+        headers=headers,
+    )
+    if not isinstance(location, dict):
+        raise CorpMarketError("ESI location endpoint returned unexpected data.")
+    solar_system_id = int(location.get("solar_system_id") or 0)
+    if solar_system_id <= 0:
+        raise CorpMarketError("ESI location endpoint did not return a solar system id.")
+    system_payload = get_json(
+        f"{base_url}/universe/systems/{solar_system_id}/?datasource=tranquility",
+        timeout_seconds=30.0,
+        headers=flight_esi_headers(),
+    )
+    system_name = ""
+    constellation_id = None
+    if isinstance(system_payload, dict):
+        system_name = str(system_payload.get("name") or "")
+        constellation_id = system_payload.get("constellation_id")
+    return {
+        "solar_system_id": solar_system_id,
+        "solar_system_name": system_name or f"System {solar_system_id}",
+        "station_id": location.get("station_id"),
+        "structure_id": location.get("structure_id"),
+        "constellation_id": constellation_id,
+        "source": "esi-location.read_location.v1",
+        "updated_at": now_iso(),
+    }
+
+
+def build_flight_status_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession | None,
+    callback_url: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "ok": True,
+        "sso_configured": config.enabled,
+        "connected": bool(session),
+        "required_scopes": list(config.scopes or DEFAULT_FLIGHT_ESI_SCOPES),
+        "login_url": "/flight/login",
+        "logout_url": "/flight/logout",
+        "callback_url": callback_url,
+        "character": session.to_public_dict() if session else None,
+        "location": None,
+        "error": "",
+        "note": "",
+    }
+    if not config.enabled:
+        payload["note"] = "EVE SSO is not configured for this local market server yet."
+        return payload
+    if not session:
+        payload["note"] = "Connect ESI to show your current system."
+        return payload
+    try:
+        payload["location"] = fetch_flight_location(config, session)
+    except (CorpIntelError, CorpMarketError, ValueError) as exc:
+        payload["error"] = str(exc)
+    return payload
+
+
+def flight_esi_headers(access_token: str = "") -> dict[str, str]:
+    headers = {
+        "User-Agent": "EveVoicePilot-FlightAttendant/0.1",
+        "X-Compatibility-Date": esi_compatibility_date(),
+    }
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    return headers
+
+
+def esi_compatibility_date() -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=11)).date().isoformat()
+
+
 def build_http_server(
     host: str,
     port: int,
@@ -791,8 +970,14 @@ def build_http_server(
     discord_forum_tag_ids: Iterable[str] = (),
     discord_forum_tag_map: dict[str, tuple[str, ...]] | None = None,
     admin_token: str = "",
+    sso_config: EveSsoConfig | None = None,
+    auth_state_store: AuthStateStore | None = None,
+    flight_session_store: FlightEsiSessionStore | None = None,
 ) -> ThreadingHTTPServer:
     public_base_url = public_base_url.rstrip("/")
+    sso_config = sso_config or EveSsoConfig()
+    auth_state_store = auth_state_store or AuthStateStore()
+    flight_session_store = flight_session_store or FlightEsiSessionStore()
 
     class CorpMarketHandler(BaseHTTPRequestHandler):
         server_version = "CorpMarketConcierge/0.1"
@@ -804,6 +989,18 @@ def build_http_server(
                 return
             if path == "/api/offers":
                 self._handle_offer_list()
+                return
+            if path == "/api/flight/status":
+                self._handle_flight_status()
+                return
+            if path == "/flight/login":
+                self._handle_flight_login()
+                return
+            if path == "/flight/callback":
+                self._handle_flight_callback()
+                return
+            if path == "/flight/logout":
+                self._handle_flight_logout()
                 return
             if path.startswith("/api/offers/") and path.endswith("/mail"):
                 self._handle_mail_api(path)
@@ -834,6 +1031,9 @@ def build_http_server(
                     return
                 self._handle_offer_status(path)
                 return
+            if path == "/flight/logout":
+                self._handle_flight_logout()
+                return
             self.send_error(404, "Not found")
 
         def _handle_offer_list(self) -> None:
@@ -853,6 +1053,82 @@ def build_http_server(
                     "offers": [listing.to_dict(public_base_url=public_base_url) for listing in listings],
                 }
             )
+
+        def _handle_flight_status(self) -> None:
+            session = self._flight_session()
+            payload = build_flight_status_payload(
+                config=sso_config,
+                session=session,
+                callback_url=sso_config.callback_url,
+            )
+            self._send_json(payload)
+
+        def _handle_flight_login(self) -> None:
+            if not sso_config.enabled:
+                self._send_html(
+                    render_flight_auth_result(
+                        "EVE SSO is not configured for this local market server yet.",
+                        ok=False,
+                        details=[
+                            f"Register this callback URL in the EVE Developers portal: {sso_config.callback_url or 'not set'}",
+                            "Then start the server with --sso-client-id and --sso-client-secret.",
+                        ],
+                    ),
+                    status=503,
+                )
+                return
+            try:
+                state = auth_state_store.create()
+                url = build_sso_authorization_url(sso_config, state)
+            except (CorpIntelError, CorpMarketError) as exc:
+                self._send_html(render_flight_auth_result(str(exc), ok=False), status=502)
+                return
+            self._redirect(url)
+
+        def _handle_flight_callback(self) -> None:
+            if not sso_config.enabled:
+                self._send_html(render_flight_auth_result("EVE SSO is not configured.", ok=False), status=503)
+                return
+            params = parse_qs(urlparse(self.path).query)
+            state = first_query_value(params, "state")
+            code = first_query_value(params, "code")
+            error = first_query_value(params, "error")
+            if error:
+                self._send_html(render_flight_auth_result("EVE SSO declined the Flight Attendant login.", ok=False))
+                return
+            if not state or not auth_state_store.consume(state):
+                self._send_html(render_flight_auth_result("Invalid or expired ESI login state.", ok=False), status=400)
+                return
+            if not code:
+                self._send_html(render_flight_auth_result("Missing ESI authorization code.", ok=False), status=400)
+                return
+            try:
+                token_response = exchange_sso_code(sso_config, code)
+                access_token = str(token_response["access_token"])
+                pilot = verify_sso_character(sso_config, access_token=access_token)
+                session_id = flight_session_store.create(
+                    pilot,
+                    access_token=access_token,
+                    expires_in=token_response.get("expires_in"),
+                )
+            except (CorpIntelError, CorpMarketError, ValueError) as exc:
+                self._send_html(render_flight_auth_result(str(exc), ok=False), status=502)
+                return
+            self.send_response(302)
+            self.send_header("Location", "/#flight")
+            self.send_header("Set-Cookie", flight_session_cookie_header(session_id))
+            self.end_headers()
+
+        def _handle_flight_logout(self) -> None:
+            session_id = request_cookie(self, FLIGHT_SESSION_COOKIE_NAME)
+            flight_session_store.delete(session_id)
+            self.send_response(302)
+            self.send_header("Location", "/#flight")
+            self.send_header("Set-Cookie", clear_flight_session_cookie_header())
+            self.end_headers()
+
+        def _flight_session(self) -> FlightEsiSession | None:
+            return flight_session_store.get(request_cookie(self, FLIGHT_SESSION_COOKIE_NAME))
 
         def _handle_offer_api(self, path: str) -> None:
             listing_id = path.removeprefix("/api/offers/").split("/", 1)[0]
@@ -1032,6 +1308,11 @@ def build_http_server(
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _redirect(self, url: str) -> None:
+            self.send_response(302)
+            self.send_header("Location", url)
+            self.end_headers()
 
     return ThreadingHTTPServer((host, port), CorpMarketHandler)
 
@@ -1506,6 +1787,24 @@ def _render_flight_attendant_dashboard() -> str:
     button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
     button.ghost { background: transparent; color: var(--cyan); border: 1px solid rgba(97, 199, 217, .45); }
     button[disabled] { opacity: .58; cursor: not-allowed; }
+    .button-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 39px;
+      border-radius: 7px;
+      padding: 9px 12px;
+      background: var(--cyan);
+      color: var(--ink);
+      font-weight: 800;
+      text-decoration: none;
+    }
+    .button-link.secondary {
+      background: transparent;
+      color: var(--cyan);
+      border: 1px solid rgba(97, 199, 217, .45);
+    }
+    .button-link[hidden] { display: none; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
     .filters button { padding: 7px 10px; font-size: 13px; }
@@ -1736,17 +2035,20 @@ def _render_flight_attendant_dashboard() -> str:
             <div class="briefing">
               <div class="system-board">
                 <div class="meta">Current system briefing</div>
-                <div class="system-name">Awaiting ESI</div>
-                <div class="constellation-line">No live location scope connected in this preview.</div>
+                <div id="flight-system-name" class="system-name">Awaiting ESI</div>
+                <div id="flight-location-line" class="constellation-line">Checking Flight Attendant ESI status...</div>
                 <div class="offer-grid">
-                  <div class="readout"><span class="meta">Assets</span><b>Check nearby hangars</b></div>
-                  <div class="readout"><span class="meta">Notes</span><b>Local captain notes</b></div>
-                  <div class="readout"><span class="meta">Market Purser</span><b>Route-aware deals</b></div>
+                  <div class="readout"><span class="meta">Pilot</span><b id="flight-pilot-name">Not connected</b></div>
+                  <div class="readout"><span class="meta">Scope</span><b id="flight-scope-name">Location</b></div>
+                  <div class="readout"><span class="meta">Token</span><b id="flight-token-status">Not active</b></div>
                 </div>
                 <div class="flight-actions">
-                  <button type="button" disabled>Connect ESI</button>
+                  <a id="flight-login-link" class="button-link" href="/flight/login">Connect ESI</a>
+                  <a id="flight-logout-link" class="button-link secondary" href="/flight/logout" hidden>Disconnect</a>
+                  <button id="flight-refresh" class="ghost" type="button">Refresh</button>
                   <button class="ghost" type="button" disabled>Generate Briefing</button>
                 </div>
+                <div id="flight-esi-message" class="meta"></div>
               </div>
               <div class="module-stack">
                 <div class="module">
@@ -1802,7 +2104,8 @@ def _render_flight_attendant_dashboard() -> str:
               </div>
             </div>
             <ul class="charter-list">
-              <li><strong>Read-only ESI:</strong> location, assets, wallet, or market context only after reviewed scopes.</li>
+              <li><strong>Read-only ESI:</strong> location now; assets, wallet, or market context only after reviewed scopes.</li>
+              <li><strong>No token file yet:</strong> this first ESI slice keeps the access token in server memory only.</li>
               <li><strong>Local notes:</strong> pilot-authored reminders can be stored without touching the EVE client.</li>
               <li><strong>No EVE client control:</strong> no keypresses, clicks, warps, contract creation, order placement, packet reading, OCR-driven reactions, or cache scraping.</li>
               <li><strong>Human confirmation:</strong> every trade, route, and market action remains a pilot decision inside EVE.</li>
@@ -1820,6 +2123,15 @@ def _render_flight_attendant_dashboard() -> str:
     const tabPanels = document.querySelectorAll("[data-tab-panel]");
     const notesForm = document.querySelector("#flight-note-form");
     const notesList = document.querySelector("#flight-notes");
+    const flightSystemName = document.querySelector("#flight-system-name");
+    const flightLocationLine = document.querySelector("#flight-location-line");
+    const flightPilotName = document.querySelector("#flight-pilot-name");
+    const flightScopeName = document.querySelector("#flight-scope-name");
+    const flightTokenStatus = document.querySelector("#flight-token-status");
+    const flightMessage = document.querySelector("#flight-esi-message");
+    const flightLoginLink = document.querySelector("#flight-login-link");
+    const flightLogoutLink = document.querySelector("#flight-logout-link");
+    const flightRefreshButton = document.querySelector("#flight-refresh");
     const notesKey = "eve-flight-attendant-notes-v1";
     const validTabs = new Set(["market", "flight"]);
     let filterType = "";
@@ -1947,6 +2259,57 @@ def _render_flight_attendant_dashboard() -> str:
       `).join("");
     }
 
+    async function loadFlightStatus() {
+      try {
+        const response = await fetch("/api/flight/status");
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Could not read Flight Attendant status");
+        renderFlightStatus(data);
+      } catch (error) {
+        flightSystemName.textContent = "ESI Offline";
+        flightLocationLine.textContent = "Could not load Flight Attendant status.";
+        flightMessage.textContent = error.message;
+      }
+    }
+
+    function renderFlightStatus(data) {
+      const requiredScopes = data.required_scopes || [];
+      const scopeLabel = requiredScopes.join(", ") || "esi-location.read_location.v1";
+      flightLoginLink.href = data.login_url || "/flight/login";
+      flightLogoutLink.href = data.logout_url || "/flight/logout";
+      flightLogoutLink.hidden = !data.connected;
+      flightScopeName.textContent = requiredScopes.length > 1 ? `${requiredScopes.length} scopes` : "Location only";
+      if (!data.sso_configured) {
+        flightSystemName.textContent = "ESI Setup Needed";
+        flightLocationLine.textContent = "Register the callback URL, then restart with SSO credentials.";
+        flightPilotName.textContent = "No app key";
+        flightTokenStatus.textContent = "Not configured";
+        flightMessage.textContent = `Scope: ${scopeLabel} | Callback: ${data.callback_url || "not set"}`;
+        return;
+      }
+      if (!data.connected) {
+        flightSystemName.textContent = "Awaiting ESI";
+        flightLocationLine.textContent = data.note || "Connect ESI to show your current system.";
+        flightPilotName.textContent = "Not connected";
+        flightTokenStatus.textContent = "Not active";
+        flightMessage.textContent = "";
+        return;
+      }
+      const character = data.character || {};
+      const location = data.location || {};
+      flightPilotName.textContent = character.character_name || "Connected pilot";
+      flightTokenStatus.textContent = `${Math.ceil((character.expires_in_seconds || 0) / 60)} min`;
+      if (data.error) {
+        flightSystemName.textContent = "ESI Error";
+        flightLocationLine.textContent = data.error;
+        flightMessage.textContent = "Try reconnecting ESI if the token expired.";
+        return;
+      }
+      flightSystemName.textContent = location.solar_system_name || "Unknown System";
+      flightLocationLine.textContent = `Live ESI location ${location.updated_at || ""}`;
+      flightMessage.textContent = `${character.character_name || "Pilot"} connected with read-only location scope.`;
+    }
+
     tabButtons.forEach((button) => {
       button.addEventListener("click", () => {
         const tabName = button.dataset.tabTarget;
@@ -2053,6 +2416,10 @@ def _render_flight_attendant_dashboard() -> str:
       renderNotes();
     });
 
+    flightRefreshButton.addEventListener("click", () => {
+      loadFlightStatus();
+    });
+
     function alertDiscordSyncProblem(data) {
       if (data.discord_sync_error) {
         window.alert(`Updated locally, but Discord did not sync: ${data.discord_sync_error}`);
@@ -2062,6 +2429,7 @@ def _render_flight_attendant_dashboard() -> str:
     showTab(initialTab());
     updateFilterButtons();
     renderNotes();
+    loadFlightStatus();
     loadOffers().catch((error) => {
       offersEl.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
       statusEl.textContent = "Load failed";
@@ -2246,10 +2614,42 @@ def render_not_found(message: str) -> str:
 """
 
 
+def render_flight_auth_result(message: str, *, ok: bool, details: Iterable[str] = ()) -> str:
+    color = "#64c47d" if ok else "#e57466"
+    detail_items = "\n".join(f"<li>{escape_html(item)}</li>" for item in details if item)
+    details_block = f"<ul>{detail_items}</ul>" if detail_items else ""
+    return f"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flight Attendant ESI</title>
+</head>
+<body style="font-family: Segoe UI, system-ui, sans-serif; background:#080b0d; color:#edf4ef; margin:32px;">
+  <main style="max-width:720px;">
+    <h1 style="color:{color};">Flight Attendant ESI</h1>
+    <p>{escape_html(message)}</p>
+    {details_block}
+    <p><a style="color:#61c7d9;" href="/#flight">Return to Flight Attendant</a></p>
+  </main>
+</body>
+</html>
+"""
+
+
 def run_server(args: argparse.Namespace) -> int:
     store = MarketStore(args.market_db_path)
     url_host = url_host_for_bind(args.host)
     public_base_url = (args.public_base_url or f"http://{url_host}:{args.port}").rstrip("/")
+    sso_callback_url = args.sso_callback_url or f"http://{url_host}:{args.port}/flight/callback"
+    sso_config = EveSsoConfig(
+        client_id=args.sso_client_id,
+        client_secret=args.sso_client_secret,
+        callback_url=sso_callback_url,
+        scopes=tuple(parse_csv(args.sso_scopes)) or DEFAULT_FLIGHT_ESI_SCOPES,
+        esi_base_url=args.esi_base_url,
+    )
     server = build_http_server(
         args.host,
         args.port,
@@ -2261,11 +2661,22 @@ def run_server(args: argparse.Namespace) -> int:
         discord_forum_tag_ids=parse_csv(args.discord_forum_tag_ids),
         discord_forum_tag_map=parse_forum_tag_map(args.discord_forum_tag_map),
         admin_token=args.admin_token,
+        sso_config=sso_config,
+        auth_state_store=AuthStateStore(),
+        flight_session_store=FlightEsiSessionStore(),
     )
     url = f"http://{url_host}:{args.port}/"
     print(f"Corp market concierge listening at {url}")
     print(f"Market database: {args.market_db_path}")
     print(f"Public offer URL base: {public_base_url}")
+    if sso_config.enabled:
+        print(f"Flight Attendant ESI enabled. Callback URL: {sso_config.callback_url}")
+        print(f"Flight Attendant ESI scopes: {', '.join(sso_config.scopes)}")
+        print("Flight Attendant access tokens are kept in server memory only.")
+    else:
+        print("Flight Attendant ESI is not configured.")
+        print(f"Register callback URL: {sso_callback_url}")
+        print("Then start with --sso-client-id and --sso-client-secret.")
     if args.discord_webhook_url:
         print("Discord webhook posting is enabled.")
         if args.discord_forum_posts:
@@ -2335,6 +2746,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--admin-token",
         default=os.environ.get("CORP_MARKET_ADMIN_TOKEN", ""),
         help="Optional token for remote offer creation and status changes.",
+    )
+    serve.add_argument(
+        "--sso-client-id",
+        default=os.environ.get("CORP_MARKET_SSO_CLIENT_ID", os.environ.get("EVE_SSO_CLIENT_ID", "")),
+        help="EVE SSO application client ID for Flight Attendant ESI login.",
+    )
+    serve.add_argument(
+        "--sso-client-secret",
+        default=os.environ.get("CORP_MARKET_SSO_CLIENT_SECRET", os.environ.get("EVE_SSO_CLIENT_SECRET", "")),
+        help="EVE SSO application client secret for Flight Attendant ESI login.",
+    )
+    serve.add_argument(
+        "--sso-callback-url",
+        default=os.environ.get("CORP_MARKET_SSO_CALLBACK_URL", ""),
+        help="Registered EVE SSO callback URL. Defaults to this board's /flight/callback URL.",
+    )
+    serve.add_argument(
+        "--sso-scopes",
+        default=os.environ.get("CORP_MARKET_SSO_SCOPES", " ".join(DEFAULT_FLIGHT_ESI_SCOPES)),
+        help="Space or comma-separated EVE SSO scopes for Flight Attendant.",
+    )
+    serve.add_argument(
+        "--esi-base-url",
+        default=os.environ.get("CORP_MARKET_ESI_BASE_URL", DEFAULT_ESI_BASE_URL),
+        help="Base ESI URL.",
     )
     serve.add_argument("--open-browser", action="store_true", help="Open the market board in your default browser.")
     serve.set_defaults(func=run_server)
@@ -2470,7 +2906,7 @@ def first_query_value(params: dict[str, list[str]], key: str) -> str:
 def parse_csv(value: str | None) -> tuple[str, ...]:
     if not value:
         return ()
-    return tuple(item.strip() for item in value.split(",") if item.strip())
+    return tuple(item.strip() for item in re.split(r"[,\s]+", value) if item.strip())
 
 
 def parse_forum_tag_map(value: str | None) -> dict[str, tuple[str, ...]]:
@@ -2500,6 +2936,37 @@ def future_iso(*, hours: float) -> str:
 def request_is_loopback(handler: BaseHTTPRequestHandler) -> bool:
     host = str(handler.client_address[0])
     return host == "::1" or host.startswith("127.")
+
+
+def request_cookie(handler: BaseHTTPRequestHandler, name: str) -> str:
+    raw_cookie = handler.headers.get("Cookie", "")
+    for part in raw_cookie.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if key.strip() == name:
+            return value.strip()
+    return ""
+
+
+def flight_session_cookie_header(session_id: str) -> str:
+    return (
+        f"{FLIGHT_SESSION_COOKIE_NAME}={session_id}; Path=/; HttpOnly; SameSite=Lax; "
+        f"Max-Age={60 * 60}"
+    )
+
+
+def clear_flight_session_cookie_header() -> str:
+    return f"{FLIGHT_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
+
+def clean_token_ttl_seconds(value: Any) -> int:
+    try:
+        ttl = int(float(value or 20 * 60))
+    except (TypeError, ValueError):
+        ttl = 20 * 60
+    ttl = max(60, min(ttl, 12 * 60 * 60))
+    return max(60, ttl - 30)
 
 
 def url_host_for_bind(host: str) -> str:
