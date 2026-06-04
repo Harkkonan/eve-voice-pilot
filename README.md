@@ -197,7 +197,7 @@ To post new offers into Discord, create a Discord channel webhook and run:
 .\scripts\run_corp_market.ps1 serve --discord-webhook-url "https://discord.com/api/webhooks/..."
 ```
 
-If the Discord target is a forum channel, add `--discord-forum-posts` so each offer creates a forum post/thread.
+If the Discord target is a forum channel, add `--discord-forum-posts` so each offer creates a forum post/thread. Optional forum tag mapping can use listing types or categories, such as `--discord-forum-tag-map "sell:WTS_TAG_ID,want:WTB_TAG_ID,ships:SHIPS_TAG_ID,pi:PI_TAG_ID"`.
 
 For a shared LAN test, set the public link base that Discord members should open:
 

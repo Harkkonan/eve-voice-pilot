@@ -44,6 +44,12 @@ For a Discord forum or media channel, add forum mode so Discord creates a new po
 .\scripts\run_corp_market.ps1 serve --discord-webhook-url "https://discord.com/api/webhooks/..." --discord-forum-posts
 ```
 
+To apply Discord forum tags automatically, copy the tag ids from Discord developer mode and map listing types or categories:
+
+```powershell
+.\scripts\run_corp_market.ps1 serve --discord-webhook-url "https://discord.com/api/webhooks/..." --discord-forum-posts --discord-forum-tag-map "sell:WTS_TAG_ID,want:WTB_TAG_ID,ships:SHIPS_TAG_ID,pi:PI_TAG_ID,ore:ORE_TAG_ID"
+```
+
 The webhook URL must come from **Channel Settings > Integrations > Webhooks > Copy Webhook URL**. Do not use the Discord channel link or a forum post link.
 
 If corp members need to open links from other computers, set a LAN or tunnel URL:
@@ -73,6 +79,7 @@ Loopback browser requests from the host computer can always create and edit offe
 ## Good Offer Habits
 
 - Use the EVE character name that should receive mail.
+- Pick a category such as Ships, Modules, PI, Ore, Minerals, or Hauling so Discord forum posts are easier to scan.
 - Put the station, structure, or system in `Location`.
 - Use normal EVE shorthand in `Unit Price`, such as `750k`, `12.5m`, or `1.2b`.
 - Use `Delivery` for pickup-only, delivery-available, high-sec-only, or blue-space notes.

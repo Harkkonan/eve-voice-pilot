@@ -27,6 +27,18 @@ DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
 DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
 LISTING_STATUSES = {"open", "reserved", "sold", "cancelled"}
+LISTING_CATEGORIES = {
+    "general": "General",
+    "ships": "Ships",
+    "modules": "Modules",
+    "ammo": "Ammo",
+    "ore": "Ore",
+    "minerals": "Minerals",
+    "pi": "PI",
+    "salvage": "Salvage",
+    "blueprints": "Blueprints",
+    "hauling": "Hauling",
+}
 SPACE_RE = re.compile(r"\s+")
 ISK_AMOUNT_RE = re.compile(r"^\s*(?P<number>\d+(?:\.\d+)?)\s*(?P<suffix>[kKmMbB]?)\s*$")
 DISCORD_WEBHOOK_PATH_RE = re.compile(r"^/api/(?:v\d+/)?webhooks/\d+/[^/]+/?$")
@@ -50,6 +62,7 @@ class MarketListing:
     listing_id: str
     listing_type: str
     status: str
+    category: str
     item_name: str
     quantity: int
     unit_price_isk: float | None
@@ -67,6 +80,10 @@ class MarketListing:
         return "WTS" if self.listing_type == "sell" else "WTB"
 
     @property
+    def category_label(self) -> str:
+        return LISTING_CATEGORIES.get(self.category, self.category.title())
+
+    @property
     def total_price_isk(self) -> float | None:
         if self.unit_price_isk is None:
             return None
@@ -79,6 +96,7 @@ class MarketListing:
             listing_id=str(row["listing_id"]),
             listing_type=str(row["listing_type"]),
             status=str(row["status"]),
+            category=str(row["category"] or "general"),
             item_name=str(row["item_name"]),
             quantity=int(row["quantity"]),
             unit_price_isk=float(unit_price) if unit_price is not None else None,
@@ -98,6 +116,8 @@ class MarketListing:
             "listing_type": self.listing_type,
             "label": self.label,
             "status": self.status,
+            "category": self.category,
+            "category_label": self.category_label,
             "item_name": self.item_name,
             "quantity": self.quantity,
             "unit_price_isk": self.unit_price_isk,
@@ -137,6 +157,7 @@ class MarketStore:
                     listing_id TEXT PRIMARY KEY,
                     listing_type TEXT NOT NULL,
                     status TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'general',
                     item_name TEXT NOT NULL,
                     quantity INTEGER NOT NULL,
                     unit_price_isk REAL,
@@ -151,13 +172,22 @@ class MarketStore:
                 )
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(corp_market_listings)").fetchall()}
+            if "category" not in columns:
+                connection.execute(
+                    "ALTER TABLE corp_market_listings ADD COLUMN category TEXT NOT NULL DEFAULT 'general'"
+                )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_corp_market_status ON corp_market_listings(status)")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_corp_market_type_status ON corp_market_listings(listing_type, status)"
             )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_corp_market_category ON corp_market_listings(category)"
+            )
 
     def create_listing(self, payload: dict[str, Any]) -> MarketListing:
         listing_type = clean_choice(payload.get("listing_type") or payload.get("type") or "sell", LISTING_TYPES, "listing_type")
+        category = clean_choice(payload.get("category") or "general", set(LISTING_CATEGORIES), "category")
         item_name = clean_text(payload.get("item_name") or payload.get("item"), "item_name", max_length=120, required=True)
         quantity = clean_positive_int(payload.get("quantity"), "quantity")
         unit_price = clean_optional_isk(payload.get("unit_price_isk") or payload.get("unit_price") or payload.get("price"))
@@ -170,6 +200,7 @@ class MarketStore:
             listing_id=str(payload.get("id") or uuid.uuid4().hex[:12]),
             listing_type=listing_type,
             status="open",
+            category=category,
             item_name=item_name,
             quantity=quantity,
             unit_price_isk=unit_price,
@@ -184,15 +215,16 @@ class MarketStore:
             connection.execute(
                 """
                 INSERT INTO corp_market_listings (
-                    listing_id, listing_type, status, item_name, quantity, unit_price_isk,
+                    listing_id, listing_type, status, category, item_name, quantity, unit_price_isk,
                     location, owner, notes, delivery, reserved_by, reserved_until, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     listing.listing_id,
                     listing.listing_type,
                     listing.status,
+                    listing.category,
                     listing.item_name,
                     listing.quantity,
                     listing.unit_price_isk,
@@ -307,6 +339,7 @@ def build_mail_draft(listing: MarketListing, *, actor: str = "") -> MailDraft:
         "",
         f"Item: {listing.item_name}",
         f"Quantity: {listing.quantity:,}",
+        f"Category: {listing.category_label}",
         f"Unit price: {format_isk(listing.unit_price_isk) if listing.unit_price_isk is not None else 'Quote requested'}",
         f"Total: {format_isk(listing.total_price_isk) if listing.total_price_isk is not None else 'Quote requested'}",
         f"Location: {listing.location}",
@@ -333,11 +366,14 @@ def build_discord_webhook_payload(
     public_base_url: str,
     forum_post: bool = False,
     forum_tag_ids: Iterable[str] = (),
+    forum_tag_map: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     url = listing_public_url(listing.listing_id, public_base_url)
     color = 0x2E7D32 if listing.listing_type == "sell" else 0x1565C0
-    title = f"{listing.label} {listing.item_name}"
+    title = discord_listing_title(listing)
+    contact_label = "Seller" if listing.listing_type == "sell" else "Buyer"
     fields = [
+        {"name": "Category", "value": listing.category_label, "inline": True},
         {"name": "Quantity", "value": f"{listing.quantity:,}", "inline": True},
         {
             "name": "Unit",
@@ -350,7 +386,7 @@ def build_discord_webhook_payload(
             "inline": True,
         },
         {"name": "Location", "value": listing.location or "Not specified", "inline": False},
-        {"name": "Contact", "value": listing.owner, "inline": True},
+        {"name": contact_label, "value": listing.owner, "inline": True},
     ]
     if listing.delivery:
         fields.append({"name": "Delivery", "value": listing.delivery, "inline": True})
@@ -359,19 +395,23 @@ def build_discord_webhook_payload(
         "url": url,
         "color": color,
         "fields": fields,
-        "footer": {"text": f"Corp Market {listing.listing_id}"},
+        "footer": {"text": f"Offer {listing.listing_id} · manual EVE mail"},
         "timestamp": listing.created_at,
     }
     if listing.notes:
         embed["description"] = shorten(listing.notes, 700)
     payload: dict[str, Any] = {
-        "content": f"{title} - copy EVE mail draft: {url}",
+        "content": f"Open the listing to copy an EVE mail draft:\n{url}",
         "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
     if forum_post:
         payload["thread_name"] = discord_thread_name(listing)
-        tag_ids = tuple(tag_id.strip() for tag_id in forum_tag_ids if tag_id.strip())
+        tag_ids = resolve_forum_tag_ids(
+            listing,
+            default_tag_ids=forum_tag_ids,
+            tag_map=forum_tag_map or {},
+        )
         if tag_ids:
             payload["applied_tags"] = list(tag_ids)
     return payload
@@ -410,11 +450,39 @@ def validate_discord_webhook_url(webhook_url: str) -> None:
 
 
 def discord_thread_name(listing: MarketListing) -> str:
-    name = f"{listing.label} {listing.item_name} x{listing.quantity:,}"
+    name = discord_listing_title(listing)
     name = SPACE_RE.sub(" ", name).strip()
     if len(name) <= DISCORD_THREAD_NAME_MAX_LENGTH:
         return name
     return name[: DISCORD_THREAD_NAME_MAX_LENGTH - 3].rstrip() + "..."
+
+
+def discord_listing_title(listing: MarketListing) -> str:
+    return f"{listing.label} {listing.item_name} x{listing.quantity:,}"
+
+
+def resolve_forum_tag_ids(
+    listing: MarketListing,
+    *,
+    default_tag_ids: Iterable[str],
+    tag_map: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    tag_ids: list[str] = []
+    for raw_id in default_tag_ids:
+        tag_id = raw_id.strip()
+        if tag_id and tag_id not in tag_ids:
+            tag_ids.append(tag_id)
+    keys = (
+        listing.listing_type,
+        listing.label.lower(),
+        listing.category,
+        listing.category_label.lower(),
+    )
+    for key in keys:
+        for tag_id in tag_map.get(key, ()):
+            if tag_id and tag_id not in tag_ids:
+                tag_ids.append(tag_id)
+    return tuple(tag_ids)
 
 
 def build_http_server(
@@ -427,6 +495,7 @@ def build_http_server(
     discord_timeout_seconds: float = DEFAULT_WEBHOOK_TIMEOUT_SECONDS,
     discord_forum_posts: bool = False,
     discord_forum_tag_ids: Iterable[str] = (),
+    discord_forum_tag_map: dict[str, tuple[str, ...]] | None = None,
     admin_token: str = "",
 ) -> ThreadingHTTPServer:
     public_base_url = public_base_url.rstrip("/")
@@ -539,6 +608,7 @@ def build_http_server(
                     public_base_url=public_base_url,
                     forum_post=discord_forum_posts,
                     forum_tag_ids=discord_forum_tag_ids,
+                    forum_tag_map=discord_forum_tag_map,
                 )
                 posted = False
                 if discord_webhook_url:
@@ -758,24 +828,40 @@ def render_dashboard() -> str:
               <option value="want">Want to buy</option>
             </select>
           </label>
+          <label>Category
+            <select name="category">
+              <option value="general">General</option>
+              <option value="ships">Ships</option>
+              <option value="modules">Modules</option>
+              <option value="ammo">Ammo</option>
+              <option value="ore">Ore</option>
+              <option value="minerals">Minerals</option>
+              <option value="pi">PI</option>
+              <option value="salvage">Salvage</option>
+              <option value="blueprints">Blueprints</option>
+              <option value="hauling">Hauling</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
           <label>Quantity
             <input name="quantity" type="number" min="1" step="1" value="1">
+          </label>
+          <label>Unit Price
+            <input name="unit_price" autocomplete="off" placeholder="12.5m or blank">
           </label>
         </div>
         <label>Item
           <input name="item_name" autocomplete="off" placeholder="Venture, Water, 10MN Afterburner I">
         </label>
         <div class="row">
-          <label>Unit Price
-            <input name="unit_price" autocomplete="off" placeholder="12.5m or blank">
-          </label>
           <label>Contact
             <input name="owner" autocomplete="off" placeholder="EVE character">
           </label>
+          <label>Location
+            <input name="location" autocomplete="off" placeholder="Station, structure, or system">
+          </label>
         </div>
-        <label>Location
-          <input name="location" autocomplete="off" placeholder="Station, structure, or system">
-        </label>
         <label>Delivery
           <input name="delivery" autocomplete="off" placeholder="Pickup, delivery available, high-sec only">
         </label>
@@ -841,7 +927,7 @@ def render_dashboard() -> str:
             <div class="meta">
               ${escapeHtml(offer.quantity.toLocaleString())} units · ${escapeHtml(offer.unit_price_display)} each · ${escapeHtml(offer.total_price_display)} total
             </div>
-            <div class="meta">${escapeHtml(offer.location)} · ${escapeHtml(offer.owner)}${offer.delivery ? ` · ${escapeHtml(offer.delivery)}` : ""}</div>
+            <div class="meta">${escapeHtml(offer.category_label)} · ${escapeHtml(offer.location)} · ${escapeHtml(offer.owner)}${offer.delivery ? ` · ${escapeHtml(offer.delivery)}` : ""}</div>
             ${offer.status !== "open" ? `<div class="meta"><span class="pill ${offer.status}">${escapeHtml(offer.status)}</span>${offer.reserved_by ? ` by ${escapeHtml(offer.reserved_by)}` : ""}</div>` : ""}
           </div>
           <div class="actions">
@@ -992,6 +1078,7 @@ def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:
     <section>
       <dl>
         <dt>Quantity</dt><dd>{listing.quantity:,}</dd>
+        <dt>Category</dt><dd>{escape_html(listing.category_label)}</dd>
         <dt>Unit price</dt><dd>{escape_html(format_isk(listing.unit_price_isk) if listing.unit_price_isk is not None else "Quote")}</dd>
         <dt>Total</dt><dd>{escape_html(format_isk(listing.total_price_isk) if listing.total_price_isk is not None else "Quote")}</dd>
         <dt>Delivery</dt><dd>{escape_html(listing.delivery or "Not specified")}</dd>
@@ -1052,6 +1139,7 @@ def run_server(args: argparse.Namespace) -> int:
         discord_timeout_seconds=args.discord_timeout,
         discord_forum_posts=args.discord_forum_posts,
         discord_forum_tag_ids=parse_csv(args.discord_forum_tag_ids),
+        discord_forum_tag_map=parse_forum_tag_map(args.discord_forum_tag_map),
         admin_token=args.admin_token,
     )
     url = f"http://{url_host}:{args.port}/"
@@ -1109,6 +1197,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--discord-forum-tag-ids",
         default=os.environ.get("CORP_MARKET_DISCORD_FORUM_TAG_IDS", ""),
         help="Optional comma-separated Discord forum tag ids to apply to created posts.",
+    )
+    serve.add_argument(
+        "--discord-forum-tag-map",
+        default=os.environ.get("CORP_MARKET_DISCORD_FORUM_TAG_MAP", ""),
+        help=(
+            "Optional tag mapping like sell:TAGID,want:TAGID,ships:TAGID,pi:TAGID. "
+            "Keys can be listing types, WTS/WTB, or category names."
+        ),
     )
     serve.add_argument(
         "--public-base-url",
@@ -1221,6 +1317,22 @@ def parse_csv(value: str | None) -> tuple[str, ...]:
     if not value:
         return ()
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def parse_forum_tag_map(value: str | None) -> dict[str, tuple[str, ...]]:
+    result: dict[str, list[str]] = {}
+    for item in parse_csv(value):
+        if ":" not in item:
+            raise CorpMarketError("Forum tag map entries must look like key:tag_id.")
+        key, tag_id = item.split(":", 1)
+        normalized_key = key.strip().lower()
+        normalized_tag_id = tag_id.strip()
+        if not normalized_key or not normalized_tag_id:
+            raise CorpMarketError("Forum tag map entries must include both key and tag id.")
+        result.setdefault(normalized_key, [])
+        if normalized_tag_id not in result[normalized_key]:
+            result[normalized_key].append(normalized_tag_id)
+    return {key: tuple(values) for key, values in result.items()}
 
 
 def now_iso() -> str:
