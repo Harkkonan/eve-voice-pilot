@@ -36,6 +36,7 @@ The first version is a safe briefing surface:
 - It can use read-only ESI location, assets, and blueprints to show the connected pilot's current system, owned blueprint summary, and material stacks.
 - It can compare owned blueprint type IDs with a local static recipe cache before market pricing is added.
 - It can use a local SDE route graph to show systems within the selected jump range of the current ESI location.
+- It can scan public ESI buy orders for products made by owned blueprints and filter those buyer orders to the selected jump range.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
@@ -90,6 +91,10 @@ cache\eve_route_graph.json
 ```
 
 If these caches are missing, the Flight Attendant tab still requires ESI and will show the data it can safely fetch, but recipe matching, buildability previews, and jump-aware nearby system coverage will stay unavailable.
+
+### Buyer Order Scanner
+
+The Flight Attendant buyer scanner uses your connected ESI location and blueprint list, the local recipe cache, the local route graph, and public ESI market orders. It does not reveal buyer character names because public ESI market orders do not expose those identities. It shows public buy orders by product, price, remaining volume, system, and jumps from your current location.
 
 ## Discord Channel Posting
 

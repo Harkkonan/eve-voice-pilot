@@ -43,6 +43,8 @@ DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
 DEFAULT_FLIGHT_MAX_JUMPS = 5
 MAX_FLIGHT_MAX_JUMPS = 25
+MAX_FLIGHT_BUYER_SCAN_PRODUCTS = 40
+MAX_FLIGHT_BUYER_SCAN_REGIONS = 8
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
@@ -1110,6 +1112,19 @@ def fetch_flight_assets(config: EveSsoConfig, session: FlightEsiSession) -> list
     )
 
 
+def fetch_market_buy_orders(config: EveSsoConfig, *, region_id: int, type_id: int) -> list[dict[str, Any]]:
+    base_url = config.esi_base_url.rstrip("/")
+    url = add_query_params(
+        f"{base_url}/markets/{region_id}/orders/?datasource=tranquility",
+        {"order_type": "buy", "type_id": str(type_id)},
+    )
+    return get_esi_json_pages(
+        url,
+        headers=flight_esi_headers(),
+        label=f"ESI market buy orders for type {type_id} in region {region_id}",
+    )
+
+
 def get_esi_json_pages(url: str, *, headers: dict[str, str], label: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     page = 1
@@ -1519,6 +1534,204 @@ def build_nearby_systems_payload(
     return payload
 
 
+def build_flight_buyers_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    max_jumps: int = DEFAULT_FLIGHT_MAX_JUMPS,
+) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_BLUEPRINTS_SCOPE))
+    location = fetch_flight_location(config, session)
+    current_solar_system_id = int(location.get("solar_system_id") or 0)
+    route_cache = load_route_graph_cache()
+    nearby_systems = build_nearby_systems_payload(
+        current_solar_system_id=current_solar_system_id,
+        max_jumps=max_jumps,
+        route_cache=route_cache,
+    )
+    if not nearby_systems.get("available"):
+        raise CorpMarketError(str(nearby_systems.get("error") or "Route graph cache is not available."))
+
+    recipe_cache = load_industry_recipe_cache()
+    if not recipe_cache.available:
+        raise CorpMarketError(recipe_cache.error or "Recipe cache is not available.")
+    blueprints = fetch_flight_blueprints(config, session)
+    buyers = scan_buyers_for_owned_blueprints(
+        config=config,
+        blueprints=blueprints,
+        recipe_cache=recipe_cache,
+        route_cache=route_cache,
+        current_solar_system_id=current_solar_system_id,
+        max_jumps=max_jumps,
+    )
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "location": location,
+        "nearby_systems": nearby_systems,
+        "buyers": buyers,
+    }
+
+
+def scan_buyers_for_owned_blueprints(
+    *,
+    config: EveSsoConfig,
+    blueprints: Iterable[dict[str, Any]],
+    recipe_cache: IndustryRecipeCache,
+    route_cache: RouteGraphCache,
+    current_solar_system_id: int,
+    max_jumps: int,
+) -> dict[str, Any]:
+    systems = route_cache.systems or {}
+    adjacency = route_cache.adjacency or {}
+    jump_distances = jump_distances_within(
+        start_system_id=current_solar_system_id,
+        max_jumps=clamp_flight_max_jumps(max_jumps),
+        adjacency=adjacency,
+    )
+    region_ids = sorted(
+        {
+            system.region_id
+            for system_id, system in systems.items()
+            if system_id in jump_distances and system.region_id is not None
+        }
+    )
+    region_truncated = len(region_ids) > MAX_FLIGHT_BUYER_SCAN_REGIONS
+    scan_region_ids = region_ids[:MAX_FLIGHT_BUYER_SCAN_REGIONS]
+
+    product_targets = owned_blueprint_product_targets(blueprints=blueprints, recipes=recipe_cache.recipes or {})
+    product_truncated = len(product_targets) > MAX_FLIGHT_BUYER_SCAN_PRODUCTS
+    scan_targets = product_targets[:MAX_FLIGHT_BUYER_SCAN_PRODUCTS]
+
+    products = []
+    total_order_count = 0
+    scan_errors = []
+    for target in scan_targets:
+        product_orders = []
+        for region_id in scan_region_ids:
+            try:
+                raw_orders = fetch_market_buy_orders(config, region_id=region_id, type_id=target["product_type_id"])
+            except CorpMarketError as exc:
+                scan_errors.append(
+                    {
+                        "product_type_id": target["product_type_id"],
+                        "product_name": target["product_name"],
+                        "region_id": region_id,
+                        "error": str(exc),
+                    }
+                )
+                continue
+            for order in raw_orders:
+                record = build_buyer_order_record(
+                    order,
+                    target=target,
+                    systems=systems,
+                    jump_distances=jump_distances,
+                    region_id=region_id,
+                )
+                if record is not None:
+                    product_orders.append(record)
+        product_orders.sort(key=lambda item: (-float(item["price"]), int(item["jumps"]), -int(item["volume_remain"])))
+        total_order_count += len(product_orders)
+        products.append(
+            {
+                **target,
+                "order_count": len(product_orders),
+                "best_order": product_orders[0] if product_orders else None,
+                "top_orders": product_orders[:3],
+            }
+        )
+    products.sort(
+        key=lambda item: (
+            0 if item["best_order"] else 1,
+            item["product_name"],
+        )
+    )
+    return {
+        "max_jumps": clamp_flight_max_jumps(max_jumps),
+        "reachable_system_count": len(jump_distances),
+        "regions_scanned": len(scan_region_ids),
+        "total_regions_in_range": len(region_ids),
+        "region_truncated": region_truncated,
+        "scanned_products": len(scan_targets),
+        "total_known_products": len(product_targets),
+        "product_truncated": product_truncated,
+        "order_count": total_order_count,
+        "products_with_buyers": sum(1 for item in products if item["best_order"]),
+        "products": products[:20],
+        "errors": scan_errors[:10],
+        "identity_note": "ESI market orders do not expose buyer character names; these are public buy orders.",
+    }
+
+
+def owned_blueprint_product_targets(
+    *,
+    blueprints: Iterable[dict[str, Any]],
+    recipes: dict[int, IndustryRecipe],
+) -> list[dict[str, Any]]:
+    blueprint_counts = count_by_type_id(item for item in blueprints if isinstance(item, dict))
+    targets_by_product_id: dict[int, dict[str, Any]] = {}
+    for blueprint_type_id, owned_blueprints in sorted(blueprint_counts.items(), key=lambda item: (-item[1], item[0])):
+        recipe = recipes.get(blueprint_type_id)
+        if recipe is None:
+            continue
+        target = targets_by_product_id.setdefault(
+            recipe.product_type_id,
+            {
+                "product_type_id": recipe.product_type_id,
+                "product_name": recipe.product_name,
+                "product_quantity": recipe.product_quantity,
+                "blueprint_type_id": recipe.blueprint_type_id,
+                "blueprint_name": recipe.blueprint_name,
+                "owned_blueprints": 0,
+            },
+        )
+        target["owned_blueprints"] = int(target["owned_blueprints"]) + owned_blueprints
+    return sorted(targets_by_product_id.values(), key=lambda item: (-int(item["owned_blueprints"]), item["product_name"]))
+
+
+def build_buyer_order_record(
+    order: dict[str, Any],
+    *,
+    target: dict[str, Any],
+    systems: dict[int, RouteSystem],
+    jump_distances: dict[int, int],
+    region_id: int,
+) -> dict[str, Any] | None:
+    try:
+        system_id = int(order.get("system_id") or 0)
+        price = float(order.get("price") or 0)
+        volume_remain = int(order.get("volume_remain") or 0)
+    except (TypeError, ValueError):
+        return None
+    if order.get("is_buy_order") is False:
+        return None
+    if system_id not in jump_distances or price <= 0 or volume_remain <= 0:
+        return None
+    system = systems.get(system_id)
+    if system is None:
+        return None
+    return {
+        "order_id": clean_optional_int(order.get("order_id")) or 0,
+        "region_id": region_id,
+        "system_id": system_id,
+        "system_name": system.name,
+        "jumps": jump_distances[system_id],
+        "location_id": clean_optional_int(order.get("location_id")) or 0,
+        "price": price,
+        "volume_remain": volume_remain,
+        "min_volume": clean_optional_int(order.get("min_volume")) or 1,
+        "range": str(order.get("range") or ""),
+        "issued": str(order.get("issued") or ""),
+        "duration": clean_optional_int(order.get("duration")) or 0,
+        "product_type_id": target["product_type_id"],
+        "product_name": target["product_name"],
+        "blueprint_type_id": target["blueprint_type_id"],
+        "blueprint_name": target["blueprint_name"],
+    }
+
+
 def jump_distances_within(
     *,
     start_system_id: int,
@@ -1662,6 +1875,9 @@ def build_http_server(
             if path == "/api/flight/industry":
                 self._handle_flight_industry()
                 return
+            if path == "/api/flight/buyers":
+                self._handle_flight_buyers()
+                return
             if path == "/flight/login":
                 self._handle_flight_login()
                 return
@@ -1745,6 +1961,23 @@ def build_http_server(
                 return
             try:
                 payload = build_flight_industry_payload(config=sso_config, session=session)
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
+        def _handle_flight_buyers(self) -> None:
+            if not sso_config.enabled:
+                self._send_json({"ok": False, "error": "EVE SSO is not configured."}, status=503)
+                return
+            session = self._flight_session()
+            if session is None:
+                self._send_json({"ok": False, "error": "Connect ESI before scanning buyer orders."}, status=401)
+                return
+            query = parse_qs(urlparse(self.path).query)
+            max_jumps = clamp_flight_max_jumps((query.get("max_jumps") or [DEFAULT_FLIGHT_MAX_JUMPS])[0])
+            try:
+                payload = build_flight_buyers_payload(config=sso_config, session=session, max_jumps=max_jumps)
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
@@ -2757,6 +2990,12 @@ def _render_flight_attendant_dashboard() -> str:
                   <div id="flight-route-top" class="meta"></div>
                 </div>
                 <div class="module">
+                  <h3 class="warning">Buyer Orders</h3>
+                  <button id="flight-buyer-scan" class="ghost" type="button">Scan Buyers</button>
+                  <div id="flight-buyer-summary" class="meta">Connect ESI to scan nearby public buy orders.</div>
+                  <div id="flight-buyer-top" class="meta"></div>
+                </div>
+                <div class="module">
                   <h3 class="signal">Recipe Cache</h3>
                   <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
                   <div id="flight-buildability-top" class="meta"></div>
@@ -2841,6 +3080,9 @@ def _render_flight_attendant_dashboard() -> str:
     const flightMaxJumps = document.querySelector("#flight-max-jumps");
     const flightRouteSummary = document.querySelector("#flight-route-summary");
     const flightRouteTop = document.querySelector("#flight-route-top");
+    const flightBuyerScanButton = document.querySelector("#flight-buyer-scan");
+    const flightBuyerSummary = document.querySelector("#flight-buyer-summary");
+    const flightBuyerTop = document.querySelector("#flight-buyer-top");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
@@ -2976,6 +3218,10 @@ def _render_flight_attendant_dashboard() -> str:
       return Number(value || 0).toLocaleString();
     }
 
+    function formatIsk(value) {
+      return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2})} ISK`;
+    }
+
     function readMaxJumps() {
       const value = Number(window.localStorage.getItem(jumpsKey) || flightMaxJumps.value || 5);
       if (!Number.isFinite(value)) return 5;
@@ -3001,6 +3247,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightLocationLine.textContent = "Could not load Flight Attendant status.";
         flightMessage.textContent = error.message;
         resetFlightRoute("Flight Attendant route status is offline.");
+        resetFlightBuyers("Flight Attendant buyer scanner is offline.");
         resetFlightIndustry("Flight Attendant ESI status is offline.");
       }
     }
@@ -3019,6 +3266,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightTokenStatus.textContent = "Not configured";
         flightMessage.textContent = `Scope: ${scopeLabel} | Callback: ${data.callback_url || "not set"}`;
         resetFlightRoute("Configure EVE SSO before calculating nearby systems.");
+        resetFlightBuyers("Configure EVE SSO before scanning buyer orders.");
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
         return;
       }
@@ -3029,6 +3277,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightTokenStatus.textContent = "Not active";
         flightMessage.textContent = "";
         resetFlightRoute("Connect ESI to calculate nearby systems.");
+        resetFlightBuyers("Connect ESI to scan nearby public buy orders.");
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
       }
@@ -3041,6 +3290,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightLocationLine.textContent = data.error;
         flightMessage.textContent = "Try reconnecting ESI if the token expired.";
         resetFlightRoute("Resolve the ESI error before calculating nearby systems.");
+        resetFlightBuyers("Resolve the ESI error before scanning buyer orders.");
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
         return;
       }
@@ -3048,6 +3298,7 @@ def _render_flight_attendant_dashboard() -> str:
       flightLocationLine.textContent = `Live ESI location ${location.updated_at || ""}`;
       flightMessage.textContent = `${character.character_name || "Pilot"} connected with ${requiredScopes.length} read-only ESI scopes.`;
       renderFlightRoute(data.nearby_systems || {});
+      resetFlightBuyers(`Ready to scan buy orders within ${readMaxJumps()} jumps.`);
       loadFlightIndustry();
     }
 
@@ -3074,6 +3325,53 @@ def _render_flight_attendant_dashboard() -> str:
       return systems.slice(0, 8).map((system) => {
         const security = system.security_status == null ? "" : ` &middot; ${Number(system.security_status).toFixed(1)}`;
         return `${escapeHtml(system.name)} (${formatNumber(system.jumps)}j${security})`;
+      }).join("<br>");
+    }
+
+    function resetFlightBuyers(message) {
+      flightBuyerSummary.textContent = message;
+      flightBuyerTop.textContent = "";
+      flightBuyerScanButton.disabled = false;
+    }
+
+    async function loadFlightBuyers() {
+      const maxJumps = writeMaxJumps(readMaxJumps());
+      flightBuyerScanButton.disabled = true;
+      flightBuyerSummary.textContent = `Scanning buyer orders within ${maxJumps} jumps...`;
+      flightBuyerTop.textContent = "";
+      try {
+        const response = await fetch(`/api/flight/buyers?max_jumps=${encodeURIComponent(maxJumps)}`);
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Could not scan buyer orders");
+        renderFlightBuyers(data.buyers || {});
+      } catch (error) {
+        flightBuyerSummary.textContent = error.message;
+        flightBuyerTop.textContent = "";
+      } finally {
+        flightBuyerScanButton.disabled = false;
+      }
+    }
+
+    function renderFlightBuyers(buyers) {
+      const productLimit = buyers.product_truncated ? ` Limited to ${formatNumber(buyers.scanned_products)} of ${formatNumber(buyers.total_known_products)} products.` : "";
+      const regionLimit = buyers.region_truncated ? ` Limited to ${formatNumber(buyers.regions_scanned)} of ${formatNumber(buyers.total_regions_in_range)} regions.` : "";
+      flightBuyerSummary.innerHTML = `
+        <strong>${formatNumber(buyers.products_with_buyers)}</strong> products have nearby buy orders.
+        <br>Scanned ${formatNumber(buyers.scanned_products)} products across ${formatNumber(buyers.regions_scanned)} regions;
+        found ${formatNumber(buyers.order_count)} buy orders.${escapeHtml(productLimit + regionLimit)}
+        <br>${escapeHtml(buyers.identity_note || "ESI does not expose buyer character names.")}
+      `;
+      flightBuyerTop.innerHTML = renderBuyerProducts(buyers.products || []);
+    }
+
+    function renderBuyerProducts(products) {
+      if (!products.length) return "No buyer scan products returned yet.";
+      return products.slice(0, 10).map((product) => {
+        const order = product.best_order;
+        if (!order) {
+          return `${escapeHtml(product.product_name)}: no nearby buy orders`;
+        }
+        return `${escapeHtml(product.product_name)}: ${formatIsk(order.price)} &middot; ${formatNumber(order.volume_remain)} units &middot; ${escapeHtml(order.system_name)} (${formatNumber(order.jumps)}j)`;
       }).join("<br>");
     }
 
@@ -3276,8 +3574,13 @@ def _render_flight_attendant_dashboard() -> str:
       loadFlightStatus();
     });
 
+    flightBuyerScanButton.addEventListener("click", () => {
+      loadFlightBuyers();
+    });
+
     flightMaxJumps.addEventListener("change", () => {
       writeMaxJumps(flightMaxJumps.value);
+      resetFlightBuyers(`Ready to scan buy orders within ${readMaxJumps()} jumps.`);
       loadFlightStatus();
     });
 
