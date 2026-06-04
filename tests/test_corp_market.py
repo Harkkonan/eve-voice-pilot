@@ -227,6 +227,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-buyer-summary\"" in page
     assert "id=\"flight-profit-scan\"" in page
     assert "id=\"flight-profit-summary\"" in page
+    assert "id=\"flight-profit-filters\"" in page
+    assert "data-profit-filter=\"build-now\"" in page
+    assert "data-profit-filter=\"source-missing\"" in page
+    assert "data-profit-filter=\"price-check\"" in page
 
 
 def test_flight_status_reports_missing_sso_configuration():
@@ -757,14 +761,19 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
     assert profitability["ranked_products"] == 1
     assert profitability["profitable_products"] == 1
     assert profitability["buildable_now_products"] == 0
+    assert profitability["decision_counts"] == {"source-missing": 1}
     product = profitability["products"][0]
     assert product["product_name"] == "Hobgoblin I"
+    assert product["decision"]["code"] == "source-missing"
+    assert product["decision"]["label"] == "Buy Missing"
     assert product["best_buyer"]["system_name"] == "One Jump"
     assert product["product_revenue"] == 10000.0
     assert product["replacement_cost"] == 4500.0
     assert product["replacement_profit"] == 5500.0
+    assert product["replacement_margin_percent"] == 55.0
     assert product["missing_replacement_cost"] == 2000.0
     assert product["cash_profit"] == 8000.0
+    assert product["cash_margin_percent"] == 80.0
     assert product["can_build_one_run"] is False
     assert product["missing_material_types"] == 1
     assert product["missing_materials"][0]["name"] == "Pyerite"

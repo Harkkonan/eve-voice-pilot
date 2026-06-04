@@ -1838,15 +1838,27 @@ def rank_profitability_for_owned_blueprints(
         )
         replacement_profit = revenue - replacement_cost if revenue is not None and all_material_prices_known else None
         cash_profit = revenue - missing_replacement_cost if revenue is not None and missing_prices_known else None
+        decision = profitability_decision(
+            has_buyer=buyer is not None,
+            can_build=can_build,
+            missing_material_types=missing_material_types,
+            replacement_profit=replacement_profit,
+            cash_profit=cash_profit,
+            all_material_prices_known=all_material_prices_known,
+            missing_prices_known=missing_prices_known,
+        )
         products.append(
             {
                 **target,
+                "decision": decision,
                 "best_buyer": buyer,
                 "product_revenue": revenue,
                 "replacement_cost": replacement_cost if all_material_prices_known else None,
                 "missing_replacement_cost": missing_replacement_cost if missing_prices_known else None,
                 "replacement_profit": replacement_profit,
                 "cash_profit": cash_profit,
+                "replacement_margin_percent": profit_margin_percent(replacement_profit, revenue),
+                "cash_margin_percent": profit_margin_percent(cash_profit, revenue),
                 "profitable": replacement_profit is not None and replacement_profit > 0,
                 "can_build_one_run": can_build,
                 "required_material_types": required_material_types,
@@ -1866,6 +1878,7 @@ def rank_profitability_for_owned_blueprints(
 
     products.sort(
         key=lambda item: (
+            int((item.get("decision") or {}).get("rank") or 99),
             0 if item["best_buyer"] else 1,
             0 if item["replacement_profit"] is not None else 1,
             -profit_sort_value(item),
@@ -1874,6 +1887,10 @@ def rank_profitability_for_owned_blueprints(
         )
     )
     errors = product_errors + material_errors
+    decision_counts: dict[str, int] = {}
+    for item in products:
+        decision_code = str((item.get("decision") or {}).get("code") or "unknown")
+        decision_counts[decision_code] = decision_counts.get(decision_code, 0) + 1
     return {
         "max_jumps": clamp_flight_max_jumps(max_jumps),
         "reachable_system_count": len(jump_distances),
@@ -1894,6 +1911,7 @@ def rank_profitability_for_owned_blueprints(
         "buildable_now_products": sum(1 for item in products if item["can_build_one_run"]),
         "replacement_priced_products": sum(1 for item in products if item["replacement_profit"] is not None),
         "cash_priced_products": sum(1 for item in products if item["cash_profit"] is not None),
+        "decision_counts": decision_counts,
         "products": products[:20],
         "errors": errors[:12],
         "pricing_note": (
@@ -1974,6 +1992,71 @@ def profitability_confidence(
     if missing_prices_known:
         return "partial-replacement"
     return "incomplete"
+
+
+def profitability_decision(
+    *,
+    has_buyer: bool,
+    can_build: bool,
+    missing_material_types: int,
+    replacement_profit: float | None,
+    cash_profit: float | None,
+    all_material_prices_known: bool,
+    missing_prices_known: bool,
+) -> dict[str, Any]:
+    if not has_buyer:
+        return {
+            "code": "skip",
+            "label": "Skip",
+            "rank": 60,
+            "tone": "skip",
+            "reason": "No nearby public buyer was found inside the jump range.",
+        }
+    if replacement_profit is not None and replacement_profit > 0 and can_build:
+        return {
+            "code": "build-now",
+            "label": "Build Now",
+            "rank": 10,
+            "tone": "build",
+            "reason": "Nearby buyer and current materials support a profitable one-run build.",
+        }
+    if replacement_profit is not None and replacement_profit > 0 and missing_material_types > 0 and missing_prices_known:
+        return {
+            "code": "source-missing",
+            "label": "Buy Missing",
+            "rank": 20,
+            "tone": "source",
+            "reason": "Still profitable after pricing the missing materials nearby.",
+        }
+    if cash_profit is not None and cash_profit > 0 and can_build:
+        return {
+            "code": "use-stock",
+            "label": "Use Stock",
+            "rank": 30,
+            "tone": "stock",
+            "reason": "Cash-positive with materials already on hand, but replacement profit is not positive.",
+        }
+    if has_buyer and not all_material_prices_known:
+        return {
+            "code": "price-check",
+            "label": "Price Check",
+            "rank": 40,
+            "tone": "price",
+            "reason": "A buyer exists, but one or more material prices were not found nearby.",
+        }
+    return {
+        "code": "watch",
+        "label": "Watch",
+        "rank": 50,
+        "tone": "watch",
+        "reason": "A buyer exists, but current nearby pricing does not clear the profit threshold.",
+    }
+
+
+def profit_margin_percent(profit: float | None, revenue: float | None) -> float | None:
+    if profit is None or revenue is None or revenue <= 0:
+        return None
+    return round((float(profit) / float(revenue)) * 100.0, 4)
 
 
 def owned_blueprint_product_targets(
@@ -3148,6 +3231,26 @@ def _render_flight_attendant_dashboard() -> str:
     .module-stack { display: grid; gap: 10px; }
     .module { border: 1px solid var(--line); background: rgba(17, 24, 25, .78); border-radius: 7px; padding: 11px; }
     .module h3 { margin-bottom: 5px; }
+    .decision-filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 9px 0; }
+    .decision-filters button { padding: 6px 8px; font-size: 12px; }
+    .decision-filters button.active { color: var(--ink); background: var(--amber); border-color: var(--amber); }
+    .decision-list { display: grid; gap: 8px; margin-top: 9px; }
+    .decision-row {
+      border: 1px solid rgba(63, 85, 80, .82);
+      background: rgba(8, 13, 15, .44);
+      border-radius: 6px;
+      padding: 9px;
+    }
+    .decision-head { display: flex; align-items: start; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+    .decision-head strong { overflow-wrap: anywhere; }
+    .decision-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 7px 0; }
+    .decision-metric { border: 1px solid rgba(63, 85, 80, .58); border-radius: 6px; padding: 6px; background: rgba(17, 24, 25, .62); }
+    .decision-metric span { display: block; color: var(--muted); font-size: 11px; }
+    .decision-metric b { display: block; color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+    .decision-build { background: rgba(100, 196, 125, .16); color: var(--green); }
+    .decision-source, .decision-stock { background: rgba(97, 199, 217, .16); color: var(--cyan); }
+    .decision-price, .decision-watch { background: rgba(224, 168, 74, .16); color: var(--amber); }
+    .decision-skip { background: rgba(229, 116, 102, .16); color: var(--red); }
     .signal { color: var(--cyan); }
     .warning { color: var(--amber); }
     .danger { color: var(--red); }
@@ -3354,6 +3457,15 @@ def _render_flight_attendant_dashboard() -> str:
                   <h3 class="warning">Profitability Ranking</h3>
                   <button id="flight-profit-scan" class="ghost" type="button">Rank Profit</button>
                   <div id="flight-profit-summary" class="meta">Connect ESI to rank owned blueprint profitability.</div>
+                  <div id="flight-profit-filters" class="decision-filters" role="group" aria-label="Profitability decision filters">
+                    <button class="secondary active" type="button" data-profit-filter="all">All</button>
+                    <button class="secondary" type="button" data-profit-filter="build-now">Build</button>
+                    <button class="secondary" type="button" data-profit-filter="source-missing">Buy Missing</button>
+                    <button class="secondary" type="button" data-profit-filter="use-stock">Use Stock</button>
+                    <button class="secondary" type="button" data-profit-filter="price-check">Price Check</button>
+                    <button class="secondary" type="button" data-profit-filter="watch">Watch</button>
+                    <button class="secondary" type="button" data-profit-filter="skip">Skip</button>
+                  </div>
                   <div id="flight-profit-top" class="meta"></div>
                 </div>
                 <div class="module">
@@ -3446,6 +3558,7 @@ def _render_flight_attendant_dashboard() -> str:
     const flightBuyerTop = document.querySelector("#flight-buyer-top");
     const flightProfitScanButton = document.querySelector("#flight-profit-scan");
     const flightProfitSummary = document.querySelector("#flight-profit-summary");
+    const flightProfitFilters = document.querySelector("#flight-profit-filters");
     const flightProfitTop = document.querySelector("#flight-profit-top");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
@@ -3455,6 +3568,8 @@ def _render_flight_attendant_dashboard() -> str:
     const validTabs = new Set(["market", "flight"]);
     let filterType = "";
     let includeClosed = false;
+    let flightProfitFilter = "all";
+    let flightProfitProducts = [];
 
     function escapeHtml(value) {
       const replacements = {
@@ -3591,6 +3706,11 @@ def _render_flight_attendant_dashboard() -> str:
       const number = Number(value || 0);
       const sign = number > 0 ? "+" : "";
       return `${sign}${formatIsk(number)}`;
+    }
+
+    function formatPercent(value) {
+      if (value == null) return "unknown";
+      return `${Number(value || 0).toFixed(1)}%`;
     }
 
     function readMaxJumps() {
@@ -3755,6 +3875,8 @@ def _render_flight_attendant_dashboard() -> str:
       flightProfitSummary.textContent = message;
       flightProfitTop.textContent = "";
       flightProfitScanButton.disabled = false;
+      flightProfitProducts = [];
+      updateProfitFilterButtons();
     }
 
     async function loadFlightProfitability() {
@@ -3779,35 +3901,97 @@ def _render_flight_attendant_dashboard() -> str:
       const productLimit = profitability.product_truncated ? ` Limited to ${formatNumber(profitability.scanned_products)} of ${formatNumber(profitability.total_known_products)} products.` : "";
       const materialLimit = profitability.material_truncated ? ` Limited to ${formatNumber(profitability.scanned_material_types)} of ${formatNumber(profitability.total_material_types)} material types.` : "";
       const regionLimit = profitability.region_truncated ? ` Limited to ${formatNumber(profitability.regions_scanned)} of ${formatNumber(profitability.total_regions_in_range)} regions.` : "";
+      const decisionCounts = profitability.decision_counts || {};
+      flightProfitProducts = Array.isArray(profitability.products) ? profitability.products : [];
       flightProfitSummary.innerHTML = `
         <strong>${formatNumber(profitability.profitable_products)}</strong> profitable on replacement pricing;
         <strong>${formatNumber(profitability.buildable_now_products)}</strong> buildable now.
         <br>${formatNumber(profitability.products_with_buyers)} products have nearby buyers; scanned
         ${formatNumber(profitability.scanned_products)} products and ${formatNumber(profitability.scanned_material_types)} material types.
         ${escapeHtml(productLimit + materialLimit + regionLimit)}
+        <br>${renderDecisionCounts(decisionCounts)}
         <br>${escapeHtml(profitability.pricing_note || "Profit ranking uses nearby public market orders.")}
       `;
-      flightProfitTop.innerHTML = renderProfitabilityProducts(profitability.products || []);
+      updateProfitFilterButtons();
+      renderFilteredProfitabilityProducts();
+    }
+
+    function renderDecisionCounts(counts) {
+      const labels = [
+        ["build-now", "Build"],
+        ["source-missing", "Buy Missing"],
+        ["use-stock", "Use Stock"],
+        ["price-check", "Price Check"],
+        ["watch", "Watch"],
+        ["skip", "Skip"],
+      ];
+      return labels
+        .filter(([code]) => Number(counts[code] || 0) > 0)
+        .map(([code, label]) => `${escapeHtml(label)} ${formatNumber(counts[code])}`)
+        .join(" | ") || "No decision buckets yet.";
+    }
+
+    function updateProfitFilterButtons() {
+      flightProfitFilters.querySelectorAll("button[data-profit-filter]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.profitFilter === flightProfitFilter);
+      });
+    }
+
+    function filteredProfitabilityProducts() {
+      if (flightProfitFilter === "all") return flightProfitProducts;
+      return flightProfitProducts.filter((product) => (product.decision || {}).code === flightProfitFilter);
+    }
+
+    function renderFilteredProfitabilityProducts() {
+      flightProfitTop.innerHTML = renderProfitabilityProducts(filteredProfitabilityProducts());
     }
 
     function renderProfitabilityProducts(products) {
-      if (!products.length) return "No profitability products returned yet.";
-      return products.slice(0, 10).map((product) => {
+      if (!products.length) return "No matching profitability decisions yet.";
+      return `<div class="decision-list">${products.slice(0, 12).map((product) => {
+        const decision = product.decision || {};
         const buyer = product.best_buyer
           ? `${escapeHtml(product.best_buyer.system_name)} (${formatNumber(product.best_buyer.jumps)}j)`
           : "no nearby buyer";
         const build = product.can_build_one_run
           ? "buildable now"
           : `missing ${formatNumber(product.missing_material_types)} material types`;
+        const missing = renderMissingMaterials(product.missing_materials || []);
+        const decisionClass = decisionClassName(decision.code);
         return `
-          <div>
-            <strong>${escapeHtml(product.product_name)}</strong>:
-            ${formatSignedIsk(product.replacement_profit)} replacement &middot;
-            ${formatSignedIsk(product.cash_profit)} cash &middot;
-            ${buyer} &middot; ${build} &middot; ${escapeHtml(product.confidence || "unknown")}
+          <div class="decision-row" data-decision="${escapeHtml(decision.code || "unknown")}">
+            <div class="decision-head">
+              <strong>${escapeHtml(product.product_name)}</strong>
+              <span class="pill ${decisionClass}">${escapeHtml(decision.label || "Review")}</span>
+            </div>
+            <div class="meta">${escapeHtml(decision.reason || "Review current buyer and material pricing.")}</div>
+            <div class="decision-metrics">
+              <div class="decision-metric"><span>Replacement</span><b>${formatSignedIsk(product.replacement_profit)} (${formatPercent(product.replacement_margin_percent)})</b></div>
+              <div class="decision-metric"><span>Cash</span><b>${formatSignedIsk(product.cash_profit)} (${formatPercent(product.cash_margin_percent)})</b></div>
+              <div class="decision-metric"><span>Buyer</span><b>${buyer}</b></div>
+              <div class="decision-metric"><span>Materials</span><b>${build}</b></div>
+            </div>
+            <div class="meta">${missing}</div>
           </div>
         `;
-      }).join("");
+      }).join("")}</div>`;
+    }
+
+    function renderMissingMaterials(materials) {
+      if (!materials.length) return "No missing materials for the first run.";
+      return `Missing: ${materials.slice(0, 3).map((material) => `${escapeHtml(material.name)} ${formatNumber(material.missing)}`).join(", ")}`;
+    }
+
+    function decisionClassName(code) {
+      const classes = {
+        "build-now": "decision-build",
+        "source-missing": "decision-source",
+        "use-stock": "decision-stock",
+        "price-check": "decision-price",
+        "watch": "decision-watch",
+        "skip": "decision-skip",
+      };
+      return classes[code] || "decision-watch";
     }
 
     function resetFlightIndustry(message) {
@@ -4016,6 +4200,14 @@ def _render_flight_attendant_dashboard() -> str:
 
     flightProfitScanButton.addEventListener("click", () => {
       loadFlightProfitability();
+    });
+
+    flightProfitFilters.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-profit-filter]");
+      if (!button) return;
+      flightProfitFilter = button.dataset.profitFilter || "all";
+      updateProfitFilterButtons();
+      renderFilteredProfitabilityProducts();
     });
 
     flightMaxJumps.addEventListener("change", () => {
