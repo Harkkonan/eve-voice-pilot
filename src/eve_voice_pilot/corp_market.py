@@ -39,7 +39,14 @@ DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
-DEFAULT_FLIGHT_ESI_SCOPES = ("esi-location.read_location.v1",)
+FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
+FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
+FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
+DEFAULT_FLIGHT_ESI_SCOPES = (
+    FLIGHT_LOCATION_SCOPE,
+    FLIGHT_ASSETS_SCOPE,
+    FLIGHT_BLUEPRINTS_SCOPE,
+)
 FLIGHT_SESSION_COOKIE_NAME = "corp_market_flight_session"
 DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
@@ -877,8 +884,7 @@ def sync_listing_to_discord(
 
 
 def fetch_flight_location(config: EveSsoConfig, session: FlightEsiSession) -> dict[str, Any]:
-    if "esi-location.read_location.v1" not in session.scopes:
-        raise CorpMarketError("Flight Attendant needs esi-location.read_location.v1 to read the current system.")
+    require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE,))
     base_url = config.esi_base_url.rstrip("/")
     headers = flight_esi_headers(session.access_token)
     location = get_json(
@@ -910,6 +916,187 @@ def fetch_flight_location(config: EveSsoConfig, session: FlightEsiSession) -> di
         "source": "esi-location.read_location.v1",
         "updated_at": now_iso(),
     }
+
+
+def require_flight_scopes(session: FlightEsiSession, required_scopes: Iterable[str]) -> None:
+    granted = set(session.scopes)
+    missing = [scope for scope in required_scopes if scope not in granted]
+    if missing:
+        raise CorpMarketError(f"Flight Attendant needs these ESI scopes: {', '.join(missing)}.")
+
+
+def fetch_flight_blueprints(config: EveSsoConfig, session: FlightEsiSession) -> list[dict[str, Any]]:
+    require_flight_scopes(session, (FLIGHT_BLUEPRINTS_SCOPE,))
+    base_url = config.esi_base_url.rstrip("/")
+    return get_esi_json_pages(
+        f"{base_url}/characters/{session.character_id}/blueprints/?datasource=tranquility",
+        headers=flight_esi_headers(session.access_token),
+        label="ESI character blueprints",
+    )
+
+
+def fetch_flight_assets(config: EveSsoConfig, session: FlightEsiSession) -> list[dict[str, Any]]:
+    require_flight_scopes(session, (FLIGHT_ASSETS_SCOPE,))
+    base_url = config.esi_base_url.rstrip("/")
+    return get_esi_json_pages(
+        f"{base_url}/characters/{session.character_id}/assets/?datasource=tranquility",
+        headers=flight_esi_headers(session.access_token),
+        label="ESI character assets",
+    )
+
+
+def get_esi_json_pages(url: str, *, headers: dict[str, str], label: str) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    page = 1
+    page_count = 1
+    while page <= page_count:
+        request = Request(
+            add_query_params(url, {"page": str(page)}),
+            headers={"Accept": "application/json", **headers},
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=45.0) as response:
+                raw = response.read().decode("utf-8")
+                page_count = max(1, int(response.headers.get("X-Pages") or "1"))
+        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+            raise CorpMarketError(f"{label} request failed: {exc}") from exc
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise CorpMarketError(f"{label} returned non-JSON data: {raw[:200]!r}") from exc
+        if not isinstance(payload, list):
+            raise CorpMarketError(f"{label} returned unexpected data.")
+        for item in payload:
+            if isinstance(item, dict):
+                results.append(item)
+        page += 1
+    return results
+
+
+def fetch_universe_names(config: EveSsoConfig, ids: Iterable[int]) -> dict[int, str]:
+    unique_ids = sorted({int(item) for item in ids if int(item) > 0})
+    if not unique_ids:
+        return {}
+    base_url = config.esi_base_url.rstrip("/")
+    names: dict[int, str] = {}
+    for index in range(0, len(unique_ids), 1000):
+        chunk = unique_ids[index : index + 1000]
+        request = Request(
+            f"{base_url}/universe/names/?datasource=tranquility",
+            data=json.dumps(chunk).encode("utf-8"),
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                **flight_esi_headers(),
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=30.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise CorpMarketError(f"ESI universe name lookup failed: {exc}") from exc
+        if not isinstance(payload, list):
+            raise CorpMarketError("ESI universe name lookup returned unexpected data.")
+        for item in payload:
+            if isinstance(item, dict):
+                try:
+                    item_id = int(item.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if item_id > 0 and name:
+                    names[item_id] = name
+    return names
+
+
+def build_flight_industry_payload(*, config: EveSsoConfig, session: FlightEsiSession) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_ASSETS_SCOPE, FLIGHT_BLUEPRINTS_SCOPE))
+    blueprints = fetch_flight_blueprints(config, session)
+    assets = fetch_flight_assets(config, session)
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "industry": summarize_flight_industry(config, blueprints=blueprints, assets=assets),
+    }
+
+
+def summarize_flight_industry(
+    config: EveSsoConfig,
+    *,
+    blueprints: Iterable[dict[str, Any]],
+    assets: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    blueprint_items = [item for item in blueprints if isinstance(item, dict)]
+    asset_items = [item for item in assets if isinstance(item, dict)]
+    blueprint_type_counts = count_by_type_id(blueprint_items)
+    asset_quantities = quantity_by_type_id(asset_items)
+    top_blueprints = sorted(blueprint_type_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+    top_assets = sorted(asset_quantities.items(), key=lambda item: item[1], reverse=True)[:5]
+    names = fetch_universe_names(
+        config,
+        [type_id for type_id, _count in top_blueprints] + [type_id for type_id, _quantity in top_assets],
+    )
+    original_count = sum(1 for item in blueprint_items if int(item.get("quantity") or 0) == -1)
+    copy_count = sum(1 for item in blueprint_items if int(item.get("quantity") or 0) == -2)
+    return {
+        "blueprints": {
+            "total": len(blueprint_items),
+            "unique_types": len(blueprint_type_counts),
+            "originals": original_count,
+            "copies": copy_count,
+            "top_types": [
+                {
+                    "type_id": type_id,
+                    "name": names.get(type_id) or f"Type {type_id}",
+                    "count": count,
+                }
+                for type_id, count in top_blueprints
+            ],
+        },
+        "assets": {
+            "stacks": len(asset_items),
+            "unique_types": len(asset_quantities),
+            "total_units": sum(asset_quantities.values()),
+            "locations": len({int(item.get("location_id") or 0) for item in asset_items if item.get("location_id")}),
+            "top_types": [
+                {
+                    "type_id": type_id,
+                    "name": names.get(type_id) or f"Type {type_id}",
+                    "quantity": quantity,
+                }
+                for type_id, quantity in top_assets
+            ],
+        },
+        "next_step": "Recipe cache and market orders are needed before profitability ranking.",
+    }
+
+
+def count_by_type_id(items: Iterable[dict[str, Any]]) -> dict[int, int]:
+    counts: dict[int, int] = {}
+    for item in items:
+        try:
+            type_id = int(item.get("type_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if type_id > 0:
+            counts[type_id] = counts.get(type_id, 0) + 1
+    return counts
+
+
+def quantity_by_type_id(items: Iterable[dict[str, Any]]) -> dict[int, int]:
+    quantities: dict[int, int] = {}
+    for item in items:
+        try:
+            type_id = int(item.get("type_id") or 0)
+            quantity = int(item.get("quantity") or 0)
+        except (TypeError, ValueError):
+            continue
+        if type_id > 0 and quantity > 0:
+            quantities[type_id] = quantities.get(type_id, 0) + quantity
+    return quantities
 
 
 def build_flight_status_payload(
@@ -993,6 +1180,9 @@ def build_http_server(
             if path == "/api/flight/status":
                 self._handle_flight_status()
                 return
+            if path == "/api/flight/industry":
+                self._handle_flight_industry()
+                return
             if path == "/flight/login":
                 self._handle_flight_login()
                 return
@@ -1061,6 +1251,21 @@ def build_http_server(
                 session=session,
                 callback_url=sso_config.callback_url,
             )
+            self._send_json(payload)
+
+        def _handle_flight_industry(self) -> None:
+            if not sso_config.enabled:
+                self._send_json({"ok": False, "error": "EVE SSO is not configured."}, status=503)
+                return
+            session = self._flight_session()
+            if session is None:
+                self._send_json({"ok": False, "error": "Connect ESI before loading industry analysis."}, status=401)
+                return
+            try:
+                payload = build_flight_industry_payload(config=sso_config, session=session)
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
             self._send_json(payload)
 
         def _handle_flight_login(self) -> None:
@@ -2052,16 +2257,18 @@ def _render_flight_attendant_dashboard() -> str:
               </div>
               <div class="module-stack">
                 <div class="module">
-                  <h3 class="signal">Nearby Assets</h3>
-                  <div class="meta">Future read-only ESI can show nearby owned items.</div>
+                  <h3 class="signal">Blueprint Library</h3>
+                  <div id="flight-blueprint-summary" class="meta">Connect ESI to scan owned blueprints.</div>
+                  <div id="flight-blueprint-top" class="meta"></div>
                 </div>
                 <div class="module">
-                  <h3 class="warning">Market Purser</h3>
-                  <div class="meta">Future checks can compare public market data for better nearby deals.</div>
+                  <h3 class="warning">Materials And Assets</h3>
+                  <div id="flight-asset-summary" class="meta">Connect ESI to scan owned asset stacks.</div>
+                  <div id="flight-asset-top" class="meta"></div>
                 </div>
                 <div class="module">
                   <h3 class="danger">Pilot Still Acts</h3>
-                  <div class="meta">No warps, orders, contracts, clicks, or client input are performed by this page.</div>
+                  <div id="flight-industry-note" class="meta">No warps, orders, contracts, clicks, or client input are performed by this page.</div>
                 </div>
               </div>
             </div>
@@ -2104,7 +2311,7 @@ def _render_flight_attendant_dashboard() -> str:
               </div>
             </div>
             <ul class="charter-list">
-              <li><strong>Read-only ESI:</strong> location now; assets, wallet, or market context only after reviewed scopes.</li>
+              <li><strong>Read-only ESI:</strong> location, assets, and blueprints only; market context uses public order data later.</li>
               <li><strong>No token file yet:</strong> this first ESI slice keeps the access token in server memory only.</li>
               <li><strong>Local notes:</strong> pilot-authored reminders can be stored without touching the EVE client.</li>
               <li><strong>No EVE client control:</strong> no keypresses, clicks, warps, contract creation, order placement, packet reading, OCR-driven reactions, or cache scraping.</li>
@@ -2132,6 +2339,11 @@ def _render_flight_attendant_dashboard() -> str:
     const flightLoginLink = document.querySelector("#flight-login-link");
     const flightLogoutLink = document.querySelector("#flight-logout-link");
     const flightRefreshButton = document.querySelector("#flight-refresh");
+    const flightBlueprintSummary = document.querySelector("#flight-blueprint-summary");
+    const flightBlueprintTop = document.querySelector("#flight-blueprint-top");
+    const flightAssetSummary = document.querySelector("#flight-asset-summary");
+    const flightAssetTop = document.querySelector("#flight-asset-top");
+    const flightIndustryNote = document.querySelector("#flight-industry-note");
     const notesKey = "eve-flight-attendant-notes-v1";
     const validTabs = new Set(["market", "flight"]);
     let filterType = "";
@@ -2259,6 +2471,10 @@ def _render_flight_attendant_dashboard() -> str:
       `).join("");
     }
 
+    function formatNumber(value) {
+      return Number(value || 0).toLocaleString();
+    }
+
     async function loadFlightStatus() {
       try {
         const response = await fetch("/api/flight/status");
@@ -2269,6 +2485,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightSystemName.textContent = "ESI Offline";
         flightLocationLine.textContent = "Could not load Flight Attendant status.";
         flightMessage.textContent = error.message;
+        resetFlightIndustry("Flight Attendant ESI status is offline.");
       }
     }
 
@@ -2285,6 +2502,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightPilotName.textContent = "No app key";
         flightTokenStatus.textContent = "Not configured";
         flightMessage.textContent = `Scope: ${scopeLabel} | Callback: ${data.callback_url || "not set"}`;
+        resetFlightIndustry("Configure EVE SSO before scanning industry data.");
         return;
       }
       if (!data.connected) {
@@ -2293,6 +2511,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightPilotName.textContent = "Not connected";
         flightTokenStatus.textContent = "Not active";
         flightMessage.textContent = "";
+        resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
       }
       const character = data.character || {};
@@ -2303,11 +2522,64 @@ def _render_flight_attendant_dashboard() -> str:
         flightSystemName.textContent = "ESI Error";
         flightLocationLine.textContent = data.error;
         flightMessage.textContent = "Try reconnecting ESI if the token expired.";
+        resetFlightIndustry("Resolve the ESI error before scanning industry data.");
         return;
       }
       flightSystemName.textContent = location.solar_system_name || "Unknown System";
       flightLocationLine.textContent = `Live ESI location ${location.updated_at || ""}`;
-      flightMessage.textContent = `${character.character_name || "Pilot"} connected with read-only location scope.`;
+      flightMessage.textContent = `${character.character_name || "Pilot"} connected with ${requiredScopes.length} read-only ESI scopes.`;
+      loadFlightIndustry();
+    }
+
+    function resetFlightIndustry(message) {
+      flightBlueprintSummary.textContent = message;
+      flightBlueprintTop.textContent = "";
+      flightAssetSummary.textContent = message;
+      flightAssetTop.textContent = "";
+      flightIndustryNote.textContent = "No warps, orders, contracts, clicks, or client input are performed by this page.";
+    }
+
+    async function loadFlightIndustry() {
+      flightBlueprintSummary.textContent = "Scanning owned blueprints...";
+      flightBlueprintTop.textContent = "";
+      flightAssetSummary.textContent = "Scanning owned asset stacks...";
+      flightAssetTop.textContent = "";
+      try {
+        const response = await fetch("/api/flight/industry");
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Could not load industry inventory");
+        renderFlightIndustry(data.industry || {});
+      } catch (error) {
+        flightBlueprintSummary.textContent = error.message;
+        flightAssetSummary.textContent = error.message;
+        flightIndustryNote.textContent = "Industry analysis requires a connected ESI session with blueprint and asset scopes.";
+      }
+    }
+
+    function renderFlightIndustry(industry) {
+      const blueprints = industry.blueprints || {};
+      const assets = industry.assets || {};
+      flightBlueprintSummary.innerHTML = `
+        <strong>${formatNumber(blueprints.total)}</strong> blueprints across
+        <strong>${formatNumber(blueprints.unique_types)}</strong> types.
+        <br>Originals: ${formatNumber(blueprints.originals)} &middot; Copies: ${formatNumber(blueprints.copies)}
+      `;
+      flightBlueprintTop.innerHTML = renderTopList(blueprints.top_types || [], "count");
+      flightAssetSummary.innerHTML = `
+        <strong>${formatNumber(assets.stacks)}</strong> asset stacks across
+        <strong>${formatNumber(assets.unique_types)}</strong> item types.
+        <br>Total units: ${formatNumber(assets.total_units)} &middot; Locations: ${formatNumber(assets.locations)}
+      `;
+      flightAssetTop.innerHTML = renderTopList(assets.top_types || [], "quantity");
+      flightIndustryNote.textContent = industry.next_step || "Recipe cache and market orders are needed before profitability ranking.";
+    }
+
+    function renderTopList(items, valueKey) {
+      if (!items.length) return "No top items returned yet.";
+      return items.map((item) => {
+        const value = formatNumber(item[valueKey]);
+        return `${escapeHtml(item.name)} (${value})`;
+      }).join("<br>");
     }
 
     tabButtons.forEach((button) => {

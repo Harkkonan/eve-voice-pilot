@@ -15,6 +15,7 @@ from eve_voice_pilot.corp_market import (
     FlightEsiSessionStore,
     MarketStore,
     build_discord_webhook_payload,
+    build_flight_industry_payload,
     build_flight_status_payload,
     build_mail_draft,
     clean_multiline,
@@ -204,9 +205,12 @@ def test_dashboard_includes_flight_esi_hooks():
     page = render_dashboard()
 
     assert "/api/flight/status" in page
+    assert "/api/flight/industry" in page
     assert "/flight/login" in page
     assert "id=\"flight-system-name\"" in page
     assert "id=\"flight-login-link\"" in page
+    assert "id=\"flight-blueprint-summary\"" in page
+    assert "id=\"flight-asset-summary\"" in page
 
 
 def test_flight_status_reports_missing_sso_configuration():
@@ -276,6 +280,87 @@ def test_fetch_flight_location_uses_read_only_esi_scope(monkeypatch):
     assert calls[0][0] == "https://esi.test/latest/characters/123456789/location/?datasource=tranquility"
     assert calls[0][1]["Authorization"] == "Bearer access-token"
     assert "X-Compatibility-Date" in calls[0][1]
+
+
+def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Industry Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(
+            "esi-location.read_location.v1",
+            "esi-assets.read_assets.v1",
+            "esi-characters.read_blueprints.v1",
+        ),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_blueprints",
+        lambda config, session: [
+            {"type_id": 681, "quantity": -1},
+            {"type_id": 681, "quantity": -2},
+            {"type_id": 983, "quantity": -1},
+        ],
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_assets",
+        lambda config, session: [
+            {"type_id": 34, "quantity": 5000, "location_id": 60008494},
+            {"type_id": 34, "quantity": 3000, "location_id": 60008494},
+            {"type_id": 35, "quantity": 1000, "location_id": 60003760},
+        ],
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_universe_names",
+        lambda config, ids: {681: "Hobgoblin I Blueprint", 983: "Badger Blueprint", 34: "Tritanium", 35: "Pyerite"},
+    )
+
+    payload = build_flight_industry_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+    )
+
+    assert payload["ok"] is True
+    assert payload["industry"]["blueprints"]["total"] == 3
+    assert payload["industry"]["blueprints"]["unique_types"] == 2
+    assert payload["industry"]["blueprints"]["originals"] == 2
+    assert payload["industry"]["blueprints"]["copies"] == 1
+    assert payload["industry"]["blueprints"]["top_types"][0]["name"] == "Hobgoblin I Blueprint"
+    assert payload["industry"]["assets"]["stacks"] == 3
+    assert payload["industry"]["assets"]["unique_types"] == 2
+    assert payload["industry"]["assets"]["total_units"] == 9000
+    assert payload["industry"]["assets"]["locations"] == 2
+    assert payload["industry"]["assets"]["top_types"][0]["name"] == "Tritanium"
+
+
+def test_flight_industry_payload_requires_blueprint_and_asset_scopes(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Industry Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1",),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+
+    with pytest.raises(CorpMarketError, match="esi-assets.read_assets.v1"):
+        build_flight_industry_payload(
+            config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+            session=session,
+        )
 
 
 def test_reserve_listing_marks_buyer_and_expiry(tmp_path):
