@@ -37,9 +37,12 @@ from eve_voice_pilot.corp_intel import (
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
 DEFAULT_INDUSTRY_RECIPE_CACHE_PATH = ROOT / "cache" / "eve_industry_recipes.json"
+DEFAULT_ROUTE_GRAPH_CACHE_PATH = ROOT / "cache" / "eve_route_graph.json"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
+DEFAULT_FLIGHT_MAX_JUMPS = 5
+MAX_FLIGHT_MAX_JUMPS = 25
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
@@ -270,6 +273,78 @@ class IndustryRecipeCache:
             "release_date": self.release_date,
             "generated_at": self.generated_at,
             "recipe_count": self.recipe_count,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
+class RouteSystem:
+    solar_system_id: int
+    name: str
+    region_id: int | None = None
+    constellation_id: int | None = None
+    security_status: float | None = None
+    security_class: str = ""
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "RouteSystem | None":
+        try:
+            solar_system_id = int(payload.get("solar_system_id") or payload.get("solarSystemID") or 0)
+        except (TypeError, ValueError):
+            return None
+        if solar_system_id <= 0:
+            return None
+        return cls(
+            solar_system_id=solar_system_id,
+            name=str(payload.get("name") or f"System {solar_system_id}"),
+            region_id=clean_optional_int(payload.get("region_id") or payload.get("regionID")),
+            constellation_id=clean_optional_int(payload.get("constellation_id") or payload.get("constellationID")),
+            security_status=clean_optional_float(payload.get("security_status") or payload.get("securityStatus")),
+            security_class=str(payload.get("security_class") or payload.get("securityClass") or ""),
+        )
+
+    def to_dict(self, *, jumps: int | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "solar_system_id": self.solar_system_id,
+            "name": self.name,
+            "region_id": self.region_id,
+            "constellation_id": self.constellation_id,
+            "security_status": self.security_status,
+            "security_class": self.security_class,
+        }
+        if jumps is not None:
+            payload["jumps"] = jumps
+        return payload
+
+
+@dataclass(frozen=True)
+class RouteGraphCache:
+    path: Path
+    available: bool
+    build_number: int | None = None
+    release_date: str = ""
+    generated_at: str = ""
+    systems: dict[int, RouteSystem] | None = None
+    adjacency: dict[int, tuple[int, ...]] | None = None
+    error: str = ""
+
+    @property
+    def system_count(self) -> int:
+        return len(self.systems or {})
+
+    @property
+    def edge_count(self) -> int:
+        return sum(len(targets) for targets in (self.adjacency or {}).values())
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "path": str(self.path),
+            "build_number": self.build_number,
+            "release_date": self.release_date,
+            "generated_at": self.generated_at,
+            "system_count": self.system_count,
+            "edge_count": self.edge_count,
             "error": self.error,
         }
 
@@ -1349,12 +1424,153 @@ def quantity_by_type_id(items: Iterable[dict[str, Any]]) -> dict[int, int]:
     return quantities
 
 
+def load_route_graph_cache(cache_path: Path = DEFAULT_ROUTE_GRAPH_CACHE_PATH) -> RouteGraphCache:
+    path = Path(cache_path)
+    if not path.exists():
+        return RouteGraphCache(path=path, available=False, error="Route graph cache file is missing.")
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        return RouteGraphCache(path=path, available=False, error=f"Route graph cache could not be read: {exc}")
+    if not isinstance(payload, dict):
+        return RouteGraphCache(path=path, available=False, error="Route graph cache has unexpected format.")
+
+    systems_payload = payload.get("systems")
+    adjacency_payload = payload.get("adjacency")
+    if not isinstance(systems_payload, dict) or not isinstance(adjacency_payload, dict):
+        return RouteGraphCache(path=path, available=False, error="Route graph cache is missing systems or adjacency.")
+
+    systems: dict[int, RouteSystem] = {}
+    for item in systems_payload.values():
+        if not isinstance(item, dict):
+            continue
+        system = RouteSystem.from_dict(item)
+        if system is not None:
+            systems[system.solar_system_id] = system
+    adjacency: dict[int, tuple[int, ...]] = {}
+    for key, values in adjacency_payload.items():
+        try:
+            system_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(values, list):
+            continue
+        neighbors = []
+        for value in values:
+            try:
+                neighbor_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if neighbor_id > 0:
+                neighbors.append(neighbor_id)
+        adjacency[system_id] = tuple(sorted(set(neighbors)))
+    if not systems or not adjacency:
+        return RouteGraphCache(path=path, available=False, error="Route graph cache has no usable jump data.")
+    return RouteGraphCache(
+        path=path,
+        available=True,
+        build_number=clean_optional_int(payload.get("build_number") or payload.get("buildNumber")),
+        release_date=str(payload.get("release_date") or payload.get("releaseDate") or ""),
+        generated_at=str(payload.get("generated_at") or ""),
+        systems=systems,
+        adjacency=adjacency,
+    )
+
+
+def build_nearby_systems_payload(
+    *,
+    current_solar_system_id: int,
+    max_jumps: int,
+    route_cache: RouteGraphCache | None = None,
+) -> dict[str, Any]:
+    clean_max_jumps = clamp_flight_max_jumps(max_jumps)
+    cache = route_cache or load_route_graph_cache()
+    payload: dict[str, Any] = {
+        **cache.to_public_dict(),
+        "max_jumps": clean_max_jumps,
+        "current_solar_system_id": current_solar_system_id,
+        "current_system_name": "",
+        "reachable_system_count": 0,
+        "systems": [],
+    }
+    if not cache.available:
+        return payload
+    systems = cache.systems or {}
+    adjacency = cache.adjacency or {}
+    current = systems.get(current_solar_system_id)
+    if current is None:
+        payload["available"] = False
+        payload["error"] = f"Current system {current_solar_system_id} is not in the route graph cache."
+        return payload
+    jump_distances = jump_distances_within(
+        start_system_id=current_solar_system_id,
+        max_jumps=clean_max_jumps,
+        adjacency=adjacency,
+    )
+    nearby = []
+    for system_id, jumps in sorted(jump_distances.items(), key=lambda item: (item[1], systems.get(item[0], current).name)):
+        system = systems.get(system_id)
+        if system is not None:
+            nearby.append(system.to_dict(jumps=jumps))
+    payload["current_system_name"] = current.name
+    payload["reachable_system_count"] = len(nearby)
+    payload["systems"] = nearby[:20]
+    return payload
+
+
+def jump_distances_within(
+    *,
+    start_system_id: int,
+    max_jumps: int,
+    adjacency: dict[int, tuple[int, ...]],
+) -> dict[int, int]:
+    distances = {start_system_id: 0}
+    frontier = [start_system_id]
+    while frontier:
+        system_id = frontier.pop(0)
+        next_distance = distances[system_id] + 1
+        if next_distance > max_jumps:
+            continue
+        for neighbor_id in adjacency.get(system_id, ()):
+            if neighbor_id in distances:
+                continue
+            distances[neighbor_id] = next_distance
+            frontier.append(neighbor_id)
+    return distances
+
+
+def clamp_flight_max_jumps(value: Any) -> int:
+    try:
+        jumps = int(value)
+    except (TypeError, ValueError):
+        jumps = DEFAULT_FLIGHT_MAX_JUMPS
+    return max(0, min(MAX_FLIGHT_MAX_JUMPS, jumps))
+
+
+def clean_optional_int(value: Any) -> int | None:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
+
+
+def clean_optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_flight_status_payload(
     *,
     config: EveSsoConfig,
     session: FlightEsiSession | None,
     callback_url: str,
+    max_jumps: int = DEFAULT_FLIGHT_MAX_JUMPS,
 ) -> dict[str, Any]:
+    clean_max_jumps = clamp_flight_max_jumps(max_jumps)
     payload: dict[str, Any] = {
         "ok": True,
         "sso_configured": config.enabled,
@@ -1365,6 +1581,14 @@ def build_flight_status_payload(
         "callback_url": callback_url,
         "character": session.to_public_dict() if session else None,
         "location": None,
+        "nearby_systems": {
+            "available": False,
+            "max_jumps": clean_max_jumps,
+            "current_solar_system_id": 0,
+            "reachable_system_count": 0,
+            "systems": [],
+            "error": "Connect ESI to calculate nearby systems.",
+        },
         "error": "",
         "note": "",
     }
@@ -1375,7 +1599,12 @@ def build_flight_status_payload(
         payload["note"] = "Connect ESI to show your current system."
         return payload
     try:
-        payload["location"] = fetch_flight_location(config, session)
+        location = fetch_flight_location(config, session)
+        payload["location"] = location
+        payload["nearby_systems"] = build_nearby_systems_payload(
+            current_solar_system_id=int(location.get("solar_system_id") or 0),
+            max_jumps=clean_max_jumps,
+        )
     except (CorpIntelError, CorpMarketError, ValueError) as exc:
         payload["error"] = str(exc)
     return payload
@@ -1496,10 +1725,13 @@ def build_http_server(
 
         def _handle_flight_status(self) -> None:
             session = self._flight_session()
+            query = parse_qs(urlparse(self.path).query)
+            max_jumps = clamp_flight_max_jumps((query.get("max_jumps") or [DEFAULT_FLIGHT_MAX_JUMPS])[0])
             payload = build_flight_status_payload(
                 config=sso_config,
                 session=session,
                 callback_url=sso_config.callback_url,
+                max_jumps=max_jumps,
             )
             self._send_json(payload)
 
@@ -2517,6 +2749,14 @@ def _render_flight_attendant_dashboard() -> str:
                   <div id="flight-asset-top" class="meta"></div>
                 </div>
                 <div class="module">
+                  <h3 class="signal">Nearby Systems</h3>
+                  <label>Max jumps
+                    <input id="flight-max-jumps" type="number" min="0" max="25" step="1" value="5">
+                  </label>
+                  <div id="flight-route-summary" class="meta">Connect ESI to calculate nearby systems.</div>
+                  <div id="flight-route-top" class="meta"></div>
+                </div>
+                <div class="module">
                   <h3 class="signal">Recipe Cache</h3>
                   <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
                   <div id="flight-buildability-top" class="meta"></div>
@@ -2598,10 +2838,14 @@ def _render_flight_attendant_dashboard() -> str:
     const flightBlueprintTop = document.querySelector("#flight-blueprint-top");
     const flightAssetSummary = document.querySelector("#flight-asset-summary");
     const flightAssetTop = document.querySelector("#flight-asset-top");
+    const flightMaxJumps = document.querySelector("#flight-max-jumps");
+    const flightRouteSummary = document.querySelector("#flight-route-summary");
+    const flightRouteTop = document.querySelector("#flight-route-top");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
     const notesKey = "eve-flight-attendant-notes-v1";
+    const jumpsKey = "eve-flight-attendant-max-jumps-v1";
     const validTabs = new Set(["market", "flight"]);
     let filterType = "";
     let includeClosed = false;
@@ -2732,9 +2976,23 @@ def _render_flight_attendant_dashboard() -> str:
       return Number(value || 0).toLocaleString();
     }
 
+    function readMaxJumps() {
+      const value = Number(window.localStorage.getItem(jumpsKey) || flightMaxJumps.value || 5);
+      if (!Number.isFinite(value)) return 5;
+      return Math.max(0, Math.min(25, Math.round(value)));
+    }
+
+    function writeMaxJumps(value) {
+      const jumps = Math.max(0, Math.min(25, Math.round(Number(value) || 0)));
+      flightMaxJumps.value = String(jumps);
+      window.localStorage.setItem(jumpsKey, String(jumps));
+      return jumps;
+    }
+
     async function loadFlightStatus() {
       try {
-        const response = await fetch("/api/flight/status");
+        const maxJumps = writeMaxJumps(readMaxJumps());
+        const response = await fetch(`/api/flight/status?max_jumps=${encodeURIComponent(maxJumps)}`);
         const data = await response.json();
         if (!data.ok) throw new Error(data.error || "Could not read Flight Attendant status");
         renderFlightStatus(data);
@@ -2742,6 +3000,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightSystemName.textContent = "ESI Offline";
         flightLocationLine.textContent = "Could not load Flight Attendant status.";
         flightMessage.textContent = error.message;
+        resetFlightRoute("Flight Attendant route status is offline.");
         resetFlightIndustry("Flight Attendant ESI status is offline.");
       }
     }
@@ -2759,6 +3018,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightPilotName.textContent = "No app key";
         flightTokenStatus.textContent = "Not configured";
         flightMessage.textContent = `Scope: ${scopeLabel} | Callback: ${data.callback_url || "not set"}`;
+        resetFlightRoute("Configure EVE SSO before calculating nearby systems.");
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
         return;
       }
@@ -2768,6 +3028,7 @@ def _render_flight_attendant_dashboard() -> str:
         flightPilotName.textContent = "Not connected";
         flightTokenStatus.textContent = "Not active";
         flightMessage.textContent = "";
+        resetFlightRoute("Connect ESI to calculate nearby systems.");
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
       }
@@ -2779,13 +3040,41 @@ def _render_flight_attendant_dashboard() -> str:
         flightSystemName.textContent = "ESI Error";
         flightLocationLine.textContent = data.error;
         flightMessage.textContent = "Try reconnecting ESI if the token expired.";
+        resetFlightRoute("Resolve the ESI error before calculating nearby systems.");
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
         return;
       }
       flightSystemName.textContent = location.solar_system_name || "Unknown System";
       flightLocationLine.textContent = `Live ESI location ${location.updated_at || ""}`;
       flightMessage.textContent = `${character.character_name || "Pilot"} connected with ${requiredScopes.length} read-only ESI scopes.`;
+      renderFlightRoute(data.nearby_systems || {});
       loadFlightIndustry();
+    }
+
+    function resetFlightRoute(message) {
+      flightRouteSummary.textContent = message;
+      flightRouteTop.textContent = "";
+    }
+
+    function renderFlightRoute(route) {
+      if (!route.available) {
+        resetFlightRoute(route.error || "Route graph cache missing.");
+        return;
+      }
+      const maxJumps = formatNumber(route.max_jumps);
+      flightRouteSummary.innerHTML = `
+        <strong>${formatNumber(route.reachable_system_count)}</strong> systems within
+        <strong>${maxJumps}</strong> jumps of ${escapeHtml(route.current_system_name || "current system")}.
+      `;
+      flightRouteTop.innerHTML = renderNearbySystems(route.systems || []);
+    }
+
+    function renderNearbySystems(systems) {
+      if (!systems.length) return "No nearby systems returned yet.";
+      return systems.slice(0, 8).map((system) => {
+        const security = system.security_status == null ? "" : ` &middot; ${Number(system.security_status).toFixed(1)}`;
+        return `${escapeHtml(system.name)} (${formatNumber(system.jumps)}j${security})`;
+      }).join("<br>");
     }
 
     function resetFlightIndustry(message) {
@@ -2987,12 +3276,18 @@ def _render_flight_attendant_dashboard() -> str:
       loadFlightStatus();
     });
 
+    flightMaxJumps.addEventListener("change", () => {
+      writeMaxJumps(flightMaxJumps.value);
+      loadFlightStatus();
+    });
+
     function alertDiscordSyncProblem(data) {
       if (data.discord_sync_error) {
         window.alert(`Updated locally, but Discord did not sync: ${data.discord_sync_error}`);
       }
     }
 
+    writeMaxJumps(readMaxJumps());
     showTab(initialTab());
     updateFilterButtons();
     renderNotes();

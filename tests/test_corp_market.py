@@ -17,6 +17,8 @@ from eve_voice_pilot.corp_market import (
     IndustryRecipe,
     IndustryRecipeCache,
     MarketStore,
+    RouteGraphCache,
+    RouteSystem,
     build_discord_webhook_payload,
     build_flight_industry_payload,
     build_flight_status_payload,
@@ -215,6 +217,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-blueprint-summary\"" in page
     assert "id=\"flight-asset-summary\"" in page
     assert "id=\"flight-recipe-summary\"" in page
+    assert "id=\"flight-max-jumps\"" in page
+    assert "id=\"flight-route-summary\"" in page
 
 
 def test_flight_status_reports_missing_sso_configuration():
@@ -408,6 +412,117 @@ def test_load_industry_recipe_cache_reads_compact_cache(tmp_path):
     assert cache.recipe_count == 1
     assert cache.recipes[681].product_name == "Hobgoblin I"
     assert cache.recipes[681].materials[0].name == "Tritanium"
+
+
+def test_load_route_graph_cache_reads_compact_cache(tmp_path):
+    cache_path = tmp_path / "eve_route_graph.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "schema": "eve_voice_pilot.route_graph.v1",
+                "build_number": 3374020,
+                "release_date": "2026-06-03T12:42:22Z",
+                "generated_at": "2026-06-04T00:00:00Z",
+                "systems": {
+                    "30000142": {
+                        "solar_system_id": 30000142,
+                        "name": "Jita",
+                        "region_id": 10000002,
+                        "security_status": 0.945,
+                    }
+                },
+                "adjacency": {"30000142": [30000144]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cache = corp_market.load_route_graph_cache(cache_path)
+
+    assert cache.available is True
+    assert cache.build_number == 3374020
+    assert cache.system_count == 1
+    assert cache.adjacency[30000142] == (30000144,)
+    assert cache.systems[30000142].name == "Jita"
+
+
+def test_nearby_systems_payload_uses_jump_range():
+    route_cache = RouteGraphCache(
+        path=Path("route.json"),
+        available=True,
+        build_number=3374020,
+        systems={
+            1: RouteSystem(solar_system_id=1, name="Start", security_status=0.9),
+            2: RouteSystem(solar_system_id=2, name="One", security_status=0.8),
+            3: RouteSystem(solar_system_id=3, name="Two", security_status=0.7),
+            4: RouteSystem(solar_system_id=4, name="Too Far", security_status=0.6),
+        },
+        adjacency={1: (2,), 2: (1, 3), 3: (2, 4), 4: (3,)},
+    )
+
+    nearby = corp_market.build_nearby_systems_payload(
+        current_solar_system_id=1,
+        max_jumps=2,
+        route_cache=route_cache,
+    )
+
+    assert nearby["available"] is True
+    assert nearby["current_system_name"] == "Start"
+    assert nearby["reachable_system_count"] == 3
+    assert [system["name"] for system in nearby["systems"]] == ["Start", "One", "Two"]
+    assert nearby["systems"][-1]["jumps"] == 2
+
+
+def test_flight_status_includes_jump_aware_route(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Industry Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1",),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+    route_cache = RouteGraphCache(
+        path=Path("route.json"),
+        available=True,
+        build_number=3374020,
+        systems={
+            30000142: RouteSystem(solar_system_id=30000142, name="Jita", security_status=0.9),
+            30000144: RouteSystem(solar_system_id=30000144, name="Perimeter", security_status=0.9),
+        },
+        adjacency={30000142: (30000144,), 30000144: (30000142,)},
+    )
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_location",
+        lambda config, session: {
+            "solar_system_id": 30000142,
+            "solar_system_name": "Jita",
+            "updated_at": "2026-06-04T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
+
+    payload = build_flight_status_payload(
+        config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="secret",
+            callback_url="http://127.0.0.1:8770/flight/callback",
+        ),
+        session=session,
+        callback_url="http://127.0.0.1:8770/flight/callback",
+        max_jumps=5,
+    )
+
+    assert payload["nearby_systems"]["available"] is True
+    assert payload["nearby_systems"]["max_jumps"] == 5
+    assert payload["nearby_systems"]["reachable_system_count"] == 2
+    assert payload["nearby_systems"]["systems"][1]["name"] == "Perimeter"
 
 
 def test_flight_industry_payload_requires_blueprint_and_asset_scopes(monkeypatch):

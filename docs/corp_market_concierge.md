@@ -35,6 +35,7 @@ The first version is a safe briefing surface:
 - It stores captain's notes in the browser only.
 - It can use read-only ESI location, assets, and blueprints to show the connected pilot's current system, owned blueprint summary, and material stacks.
 - It can compare owned blueprint type IDs with a local static recipe cache before market pricing is added.
+- It can use a local SDE route graph to show systems within the selected jump range of the current ESI location.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
@@ -73,21 +74,22 @@ Or directly on the command line:
 
 Do not commit SSO secrets. Keep them in your local shell, Windows environment, or another private secret store.
 
-### Local Industry Recipe Cache
+### Local Static Data Caches
 
-Flight Attendant uses ESI to learn your actual owned blueprints and materials. It uses CCP's Static Data Export for blueprint recipes. Build or refresh the local recipe cache from PowerShell:
+Flight Attendant uses ESI to learn your actual location, owned blueprints, and materials. It uses CCP's Static Data Export for blueprint recipes and jump-aware route math. Build or refresh the local static caches from PowerShell:
 
 ```powershell
 python .\scripts\update_industry_recipe_cache.py
 ```
 
-The generated recipe cache is written to ignored local data:
+The generated caches are written to ignored local data:
 
 ```text
 cache\eve_industry_recipes.json
+cache\eve_route_graph.json
 ```
 
-If the cache is missing, the Flight Attendant tab still requires ESI and will show the owned blueprint/material summary, but recipe matching and buildability previews will stay unavailable.
+If these caches are missing, the Flight Attendant tab still requires ESI and will show the data it can safely fetch, but recipe matching, buildability previews, and jump-aware nearby system coverage will stay unavailable.
 
 ## Discord Channel Posting
 

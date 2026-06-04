@@ -14,9 +14,11 @@ from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_PATH = ROOT / "cache" / "eve_industry_recipes.json"
+DEFAULT_ROUTE_OUTPUT_PATH = ROOT / "cache" / "eve_route_graph.json"
 LATEST_SDE_INFO_URL = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl"
 LATEST_JSONL_ZIP_URL = "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
-SCHEMA = "eve_voice_pilot.industry_recipes.v1"
+RECIPE_SCHEMA = "eve_voice_pilot.industry_recipes.v1"
+ROUTE_SCHEMA = "eve_voice_pilot.route_graph.v1"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,14 +33,17 @@ def main(argv: list[str] | None = None) -> int:
             sde_zip = download_latest_sde_zip(latest_info, force=args.force_download)
             source_url = LATEST_JSONL_ZIP_URL
         sde_zip = sde_zip.expanduser()
-        cache = build_recipe_cache(sde_zip=sde_zip, fallback_info=latest_info, source_url=source_url)
-        write_json(args.output.expanduser(), cache)
+        recipe_cache = build_recipe_cache(sde_zip=sde_zip, fallback_info=latest_info, source_url=source_url)
+        route_cache = build_route_graph_cache(sde_zip=sde_zip, fallback_info=latest_info, source_url=source_url)
+        write_json(args.output.expanduser(), recipe_cache)
+        write_json(args.route_output.expanduser(), route_cache)
     except (CorpRecipeCacheError, OSError, HTTPError, URLError) as exc:
-        print(f"Could not update industry recipe cache: {exc}", file=sys.stderr)
+        print(f"Could not update industry static caches: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Wrote {cache['recipe_count']} manufacturing recipes to {args.output}")
-    print(f"SDE build: {cache.get('build_number') or 'unknown'}")
+    print(f"Wrote {recipe_cache['recipe_count']} manufacturing recipes to {args.output}")
+    print(f"Wrote {route_cache['system_count']} systems and {route_cache['edge_count']} gates to {args.route_output}")
+    print(f"SDE build: {recipe_cache.get('build_number') or 'unknown'}")
     return 0
 
 
@@ -56,6 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_OUTPUT_PATH,
         help="Output recipe cache path.",
+    )
+    parser.add_argument(
+        "--route-output",
+        type=Path,
+        default=DEFAULT_ROUTE_OUTPUT_PATH,
+        help="Output route graph cache path.",
     )
     parser.add_argument(
         "--force-download",
@@ -108,7 +119,7 @@ def build_recipe_cache(*, sde_zip: Path, fallback_info: dict[str, Any], source_u
 
     sorted_recipes = {str(key): recipes[key] for key in sorted(recipes)}
     return {
-        "schema": SCHEMA,
+        "schema": RECIPE_SCHEMA,
         "source": "eve_sde_jsonl",
         "source_url": source_url,
         "build_number": clean_int(sde_info.get("buildNumber")) or None,
@@ -116,6 +127,35 @@ def build_recipe_cache(*, sde_zip: Path, fallback_info: dict[str, Any], source_u
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "recipe_count": len(sorted_recipes),
         "recipes": sorted_recipes,
+    }
+
+
+def build_route_graph_cache(*, sde_zip: Path, fallback_info: dict[str, Any], source_url: str = "") -> dict[str, Any]:
+    if not sde_zip.exists():
+        raise CorpRecipeCacheError(f"SDE zip does not exist: {sde_zip}")
+    with ZipFile(sde_zip) as archive:
+        sde_info = read_sde_info(archive) or fallback_info
+        systems = read_solar_systems(archive)
+        adjacency = read_stargate_adjacency(archive, known_system_ids=set(systems))
+
+    sorted_systems = {str(key): systems[key] for key in sorted(systems)}
+    sorted_adjacency = {
+        str(key): sorted(adjacency[key])
+        for key in sorted(adjacency)
+        if key in systems and adjacency[key]
+    }
+    edge_count = sum(len(targets) for targets in sorted_adjacency.values())
+    return {
+        "schema": ROUTE_SCHEMA,
+        "source": "eve_sde_jsonl",
+        "source_url": source_url,
+        "build_number": clean_int(sde_info.get("buildNumber")) or None,
+        "release_date": str(sde_info.get("releaseDate") or ""),
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "system_count": len(sorted_systems),
+        "edge_count": edge_count,
+        "systems": sorted_systems,
+        "adjacency": sorted_adjacency,
     }
 
 
@@ -129,6 +169,40 @@ def read_type_names(archive: ZipFile) -> dict[int, str]:
         if name:
             names[type_id] = name
     return names
+
+
+def read_solar_systems(archive: ZipFile) -> dict[int, dict[str, Any]]:
+    systems: dict[int, dict[str, Any]] = {}
+    for record in iter_jsonl_member(archive, "mapSolarSystems.jsonl"):
+        system_id = clean_int(record.get("_key"))
+        if system_id <= 0:
+            continue
+        systems[system_id] = {
+            "solar_system_id": system_id,
+            "name": english_name(record.get("name")) or f"System {system_id}",
+            "region_id": clean_int(record.get("regionID")) or None,
+            "constellation_id": clean_int(record.get("constellationID")) or None,
+            "security_status": clean_float(record.get("securityStatus")),
+            "security_class": str(record.get("securityClass") or ""),
+        }
+    return systems
+
+
+def read_stargate_adjacency(archive: ZipFile, *, known_system_ids: set[int]) -> dict[int, set[int]]:
+    adjacency: dict[int, set[int]] = {system_id: set() for system_id in known_system_ids}
+    for record in iter_jsonl_member(archive, "mapStargates.jsonl"):
+        source_system_id = clean_int(record.get("solarSystemID"))
+        destination = record.get("destination")
+        if not isinstance(destination, dict):
+            continue
+        target_system_id = clean_int(destination.get("solarSystemID"))
+        if source_system_id <= 0 or target_system_id <= 0:
+            continue
+        if source_system_id not in known_system_ids or target_system_id not in known_system_ids:
+            continue
+        adjacency.setdefault(source_system_id, set()).add(target_system_id)
+        adjacency.setdefault(target_system_id, set()).add(source_system_id)
+    return adjacency
 
 
 def read_sde_info(archive: ZipFile) -> dict[str, Any] | None:
@@ -235,6 +309,13 @@ def clean_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def clean_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
