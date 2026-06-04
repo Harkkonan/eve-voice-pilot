@@ -13,7 +13,7 @@ import sqlite3
 import sys
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 import uuid
 import webbrowser
@@ -42,6 +42,7 @@ LISTING_CATEGORIES = {
 SPACE_RE = re.compile(r"\s+")
 ISK_AMOUNT_RE = re.compile(r"^\s*(?P<number>\d+(?:\.\d+)?)\s*(?P<suffix>[kKmMbB]?)\s*$")
 DISCORD_WEBHOOK_PATH_RE = re.compile(r"^/api/(?:v\d+/)?webhooks/\d+/[^/]+/?$")
+DISCORD_SNOWFLAKE_RE = re.compile(r"^\d{5,25}$")
 FIT_HEADER_RE = re.compile(r"^\[(?P<hull>[^,\]]+),\s*(?P<name>[^\]]+)\]\s*$")
 FIT_QUANTITY_RE = re.compile(r"\sx[\d,]+\s*$", re.IGNORECASE)
 
@@ -73,6 +74,13 @@ class FitNoteSummary:
 
 
 @dataclass(frozen=True)
+class DiscordPostResult:
+    message_id: str = ""
+    channel_id: str = ""
+    thread_id: str = ""
+
+
+@dataclass(frozen=True)
 class MarketListing:
     listing_id: str
     listing_type: str
@@ -88,6 +96,10 @@ class MarketListing:
     fit_image_url: str = ""
     reserved_by: str = ""
     reserved_until: str = ""
+    discord_message_id: str = ""
+    discord_thread_id: str = ""
+    discord_synced_at: str = ""
+    discord_sync_error: str = ""
     created_at: str = ""
     updated_at: str = ""
 
@@ -123,6 +135,10 @@ class MarketListing:
             fit_image_url=str(row["fit_image_url"] or ""),
             reserved_by=str(row["reserved_by"] or ""),
             reserved_until=str(row["reserved_until"] or ""),
+            discord_message_id=str(row["discord_message_id"] or ""),
+            discord_thread_id=str(row["discord_thread_id"] or ""),
+            discord_synced_at=str(row["discord_synced_at"] or ""),
+            discord_sync_error=str(row["discord_sync_error"] or ""),
             created_at=str(row["created_at"] or ""),
             updated_at=str(row["updated_at"] or ""),
         )
@@ -148,6 +164,10 @@ class MarketListing:
             "fit_image_url": self.fit_image_url,
             "reserved_by": self.reserved_by,
             "reserved_until": self.reserved_until,
+            "discord_message_id": self.discord_message_id,
+            "discord_thread_id": self.discord_thread_id,
+            "discord_synced_at": self.discord_synced_at,
+            "discord_sync_error": self.discord_sync_error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -186,6 +206,10 @@ class MarketStore:
                     fit_image_url TEXT NOT NULL DEFAULT '',
                     reserved_by TEXT NOT NULL DEFAULT '',
                     reserved_until TEXT NOT NULL DEFAULT '',
+                    discord_message_id TEXT NOT NULL DEFAULT '',
+                    discord_thread_id TEXT NOT NULL DEFAULT '',
+                    discord_synced_at TEXT NOT NULL DEFAULT '',
+                    discord_sync_error TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -199,6 +223,22 @@ class MarketStore:
             if "fit_image_url" not in columns:
                 connection.execute(
                     "ALTER TABLE corp_market_listings ADD COLUMN fit_image_url TEXT NOT NULL DEFAULT ''"
+                )
+            if "discord_message_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE corp_market_listings ADD COLUMN discord_message_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "discord_thread_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE corp_market_listings ADD COLUMN discord_thread_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "discord_synced_at" not in columns:
+                connection.execute(
+                    "ALTER TABLE corp_market_listings ADD COLUMN discord_synced_at TEXT NOT NULL DEFAULT ''"
+                )
+            if "discord_sync_error" not in columns:
+                connection.execute(
+                    "ALTER TABLE corp_market_listings ADD COLUMN discord_sync_error TEXT NOT NULL DEFAULT ''"
                 )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_corp_market_status ON corp_market_listings(status)")
             connection.execute(
@@ -241,9 +281,11 @@ class MarketStore:
                 """
                 INSERT INTO corp_market_listings (
                     listing_id, listing_type, status, category, item_name, quantity, unit_price_isk,
-                    location, owner, notes, delivery, fit_image_url, reserved_by, reserved_until, created_at, updated_at
+                    location, owner, notes, delivery, fit_image_url, reserved_by, reserved_until,
+                    discord_message_id, discord_thread_id, discord_synced_at, discord_sync_error,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     listing.listing_id,
@@ -260,6 +302,10 @@ class MarketStore:
                     listing.fit_image_url,
                     listing.reserved_by,
                     listing.reserved_until,
+                    listing.discord_message_id,
+                    listing.discord_thread_id,
+                    listing.discord_synced_at,
+                    listing.discord_sync_error,
                     listing.created_at,
                     listing.updated_at,
                 ),
@@ -344,6 +390,36 @@ class MarketStore:
             raise CorpMarketError(f"Listing {listing_id!r} was not found.")
         return self.get_listing(listing_id)
 
+    def record_discord_sync(
+        self,
+        listing_id: str,
+        *,
+        message_id: str | None = None,
+        thread_id: str | None = None,
+        error: str = "",
+    ) -> MarketListing:
+        assignments = ["discord_synced_at = ?", "discord_sync_error = ?"]
+        params: list[Any] = [now_iso(), shorten(str(error or ""), 500)]
+        if message_id is not None:
+            assignments.append("discord_message_id = ?")
+            params.append(clean_discord_snowflake(message_id, "discord_message_id"))
+        if thread_id is not None:
+            assignments.append("discord_thread_id = ?")
+            params.append(clean_discord_snowflake(thread_id, "discord_thread_id"))
+        params.append(clean_listing_id(listing_id))
+        with self._connect() as connection:
+            result = connection.execute(
+                f"""
+                UPDATE corp_market_listings
+                SET {", ".join(assignments)}
+                WHERE listing_id = ?
+                """,
+                tuple(params),
+            )
+        if result.rowcount == 0:
+            raise CorpMarketError(f"Listing {listing_id!r} was not found.")
+        return self.get_listing(listing_id)
+
 
 def build_mail_draft(listing: MarketListing, *, actor: str = "") -> MailDraft:
     actor = clean_text(actor, "actor", max_length=80)
@@ -400,11 +476,12 @@ def build_discord_webhook_payload(
     forum_tag_map: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     url = listing_public_url(listing.listing_id, public_base_url)
-    color = 0x2E7D32 if listing.listing_type == "sell" else 0x1565C0
+    color = discord_embed_color(listing)
     title = discord_listing_title(listing)
     contact_label = "Seller" if listing.listing_type == "sell" else "Buyer"
     fit_note = parse_fit_note(listing.notes)
     fields = [
+        {"name": "Status", "value": discord_status_label(listing), "inline": True},
         {"name": "Category", "value": listing.category_label, "inline": True},
         {"name": "Quantity", "value": f"{listing.quantity:,}", "inline": True},
         {
@@ -431,8 +508,8 @@ def build_discord_webhook_payload(
         "url": url,
         "color": color,
         "fields": fields,
-        "footer": {"text": f"Offer {listing.listing_id} · manual EVE mail"},
-        "timestamp": listing.created_at,
+        "footer": {"text": f"Offer {listing.listing_id} · manual EVE mail · {listing.status}"},
+        "timestamp": listing.updated_at or listing.created_at,
     }
     if fit_note:
         embed["description"] = "Fit note detected. Open the listing for the full copy/paste block."
@@ -457,12 +534,17 @@ def build_discord_webhook_payload(
     return payload
 
 
-def post_discord_webhook(webhook_url: str, payload: dict[str, Any], *, timeout_seconds: float) -> None:
+def post_discord_webhook(
+    webhook_url: str,
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: float,
+) -> DiscordPostResult | None:
     if not webhook_url:
-        return
+        return None
     validate_discord_webhook_url(webhook_url)
     request = Request(
-        webhook_url,
+        add_query_params(webhook_url, {"wait": "true"}),
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "User-Agent": "EveVoicePilot-CorpMarket/0.1"},
         method="POST",
@@ -471,11 +553,77 @@ def post_discord_webhook(webhook_url: str, payload: dict[str, Any], *, timeout_s
         with urlopen(request, timeout=timeout_seconds) as response:
             if response.status >= 400:
                 raise CorpMarketError(f"Discord webhook returned HTTP {response.status}.")
+            return parse_discord_message_response(response.read())
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise CorpMarketError(f"Discord webhook returned HTTP {exc.code}: {detail}") from exc
     except URLError as exc:
         raise CorpMarketError(f"Discord webhook failed: {exc.reason}") from exc
+
+
+def edit_discord_webhook_message(
+    webhook_url: str,
+    message_id: str,
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: float,
+    thread_id: str = "",
+) -> DiscordPostResult | None:
+    validate_discord_webhook_url(webhook_url)
+    url = build_discord_message_edit_url(webhook_url, message_id, thread_id=thread_id)
+    request = Request(
+        url,
+        data=json.dumps(discord_message_edit_payload(payload)).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "EveVoicePilot-CorpMarket/0.1"},
+        method="PATCH",
+    )
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            if response.status >= 400:
+                raise CorpMarketError(f"Discord webhook edit returned HTTP {response.status}.")
+            return parse_discord_message_response(response.read())
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise CorpMarketError(f"Discord webhook edit returned HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise CorpMarketError(f"Discord webhook edit failed: {exc.reason}") from exc
+
+
+def build_discord_message_edit_url(webhook_url: str, message_id: str, *, thread_id: str = "") -> str:
+    validate_discord_webhook_url(webhook_url)
+    message_id = clean_discord_snowflake(message_id, "discord_message_id")
+    parsed = urlparse(webhook_url)
+    base_url = parsed._replace(path=f"{parsed.path.rstrip('/')}/messages/{message_id}", query="", fragment="").geturl()
+    if thread_id:
+        base_url = add_query_params(base_url, {"thread_id": clean_discord_snowflake(thread_id, "discord_thread_id")})
+    return base_url
+
+
+def discord_message_edit_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: payload[key] for key in ("content", "embeds", "allowed_mentions") if key in payload}
+
+
+def parse_discord_message_response(body: bytes) -> DiscordPostResult:
+    if not body.strip():
+        return DiscordPostResult()
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CorpMarketError(f"Discord returned an unreadable message response: {exc}") from exc
+    if not isinstance(payload, dict):
+        return DiscordPostResult()
+    message_id = clean_discord_snowflake(payload.get("id", ""), "discord_message_id")
+    channel_id = clean_discord_snowflake(payload.get("channel_id", ""), "discord_channel_id")
+    thread_id = clean_discord_snowflake(payload.get("thread_id", ""), "discord_thread_id")
+    return DiscordPostResult(message_id=message_id, channel_id=channel_id, thread_id=thread_id)
+
+
+def add_query_params(url: str, params: dict[str, str]) -> str:
+    parsed = urlparse(url)
+    replacements = {key: value for key, value in params.items() if value}
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key not in replacements]
+    query.extend(replacements.items())
+    return parsed._replace(query=urlencode(query), fragment="").geturl()
 
 
 def validate_discord_webhook_url(webhook_url: str) -> None:
@@ -539,7 +687,37 @@ def discord_thread_name(listing: MarketListing) -> str:
 
 
 def discord_listing_title(listing: MarketListing) -> str:
-    return f"{listing.label} {listing.item_name} x{listing.quantity:,}"
+    title = f"{listing.label} {listing.item_name} x{listing.quantity:,}"
+    if listing.status == "open":
+        return title
+    return f"{listing.status.upper()} - {title}"
+
+
+def discord_status_label(listing: MarketListing) -> str:
+    if listing.status == "open":
+        return "Open"
+    if listing.status == "reserved":
+        details = "Reserved"
+        if listing.reserved_by:
+            details += f" by {listing.reserved_by}"
+        if listing.reserved_until:
+            details += f"\nUntil {listing.reserved_until}"
+        return details
+    if listing.status == "sold":
+        return "Sold"
+    if listing.status == "cancelled":
+        return "Cancelled"
+    return listing.status.title()
+
+
+def discord_embed_color(listing: MarketListing) -> int:
+    if listing.status == "reserved":
+        return 0xF0BA57
+    if listing.status == "sold":
+        return 0x6B7280
+    if listing.status == "cancelled":
+        return 0xE36F6F
+    return 0x2E7D32 if listing.listing_type == "sell" else 0x1565C0
 
 
 def resolve_forum_tag_ids(
@@ -564,6 +742,41 @@ def resolve_forum_tag_ids(
             if tag_id and tag_id not in tag_ids:
                 tag_ids.append(tag_id)
     return tuple(tag_ids)
+
+
+def sync_listing_to_discord(
+    store: MarketStore,
+    listing: MarketListing,
+    *,
+    public_base_url: str,
+    webhook_url: str,
+    timeout_seconds: float,
+) -> tuple[MarketListing, bool, str]:
+    if not webhook_url:
+        return listing, False, ""
+    if not listing.discord_message_id:
+        return listing, False, "No Discord message ID is recorded for this listing yet."
+    try:
+        payload = build_discord_webhook_payload(listing, public_base_url=public_base_url)
+        result = edit_discord_webhook_message(
+            webhook_url,
+            listing.discord_message_id,
+            payload,
+            timeout_seconds=timeout_seconds,
+            thread_id=listing.discord_thread_id,
+        )
+        synced_message_id = result.message_id if result and result.message_id else listing.discord_message_id
+        synced_thread_id = result.thread_id if result and result.thread_id else listing.discord_thread_id
+        listing = store.record_discord_sync(
+            listing.listing_id,
+            message_id=synced_message_id,
+            thread_id=synced_thread_id,
+            error="",
+        )
+        return listing, True, ""
+    except (CorpMarketError, ValueError) as exc:
+        listing = store.record_discord_sync(listing.listing_id, error=str(exc))
+        return listing, False, str(exc)
 
 
 def build_http_server(
@@ -693,11 +906,19 @@ def build_http_server(
                 )
                 posted = False
                 if discord_webhook_url:
-                    post_discord_webhook(
+                    result = post_discord_webhook(
                         discord_webhook_url,
                         discord_payload,
                         timeout_seconds=discord_timeout_seconds,
                     )
+                    if result:
+                        thread_id = result.thread_id or (result.channel_id if discord_forum_posts else "")
+                        listing = store.record_discord_sync(
+                            listing.listing_id,
+                            message_id=result.message_id,
+                            thread_id=thread_id,
+                            error="",
+                        )
                     posted = True
             except (ValueError, CorpMarketError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -725,10 +946,24 @@ def build_http_server(
             try:
                 hours = float(payload.get("hours") or 24)
                 listing = store.reserve_listing(listing_id, reserved_by=str(payload.get("reserved_by") or ""), hours=hours)
+                listing, discord_synced, discord_sync_error = sync_listing_to_discord(
+                    store,
+                    listing,
+                    public_base_url=public_base_url,
+                    webhook_url=discord_webhook_url,
+                    timeout_seconds=discord_timeout_seconds,
+                )
             except (ValueError, CorpMarketError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
-            self._send_json({"ok": True, "offer": listing.to_dict(public_base_url=public_base_url)})
+            self._send_json(
+                {
+                    "ok": True,
+                    "discord_synced": discord_synced,
+                    "discord_sync_error": discord_sync_error,
+                    "offer": listing.to_dict(public_base_url=public_base_url),
+                }
+            )
 
         def _handle_offer_status(self, path: str) -> None:
             listing_id = path.removeprefix("/api/offers/").removesuffix("/status")
@@ -742,10 +977,24 @@ def build_http_server(
                 return
             try:
                 listing = store.set_status(listing_id, str(payload.get("status") or ""))
+                listing, discord_synced, discord_sync_error = sync_listing_to_discord(
+                    store,
+                    listing,
+                    public_base_url=public_base_url,
+                    webhook_url=discord_webhook_url,
+                    timeout_seconds=discord_timeout_seconds,
+                )
             except (ValueError, CorpMarketError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
-            self._send_json({"ok": True, "offer": listing.to_dict(public_base_url=public_base_url)})
+            self._send_json(
+                {
+                    "ok": True,
+                    "discord_synced": discord_synced,
+                    "discord_sync_error": discord_sync_error,
+                    "offer": listing.to_dict(public_base_url=public_base_url),
+                }
+            )
 
         def _read_json_body(self) -> Any:
             body = self.rfile.read(int(self.headers.get("Content-Length") or "0"))
@@ -788,6 +1037,10 @@ def build_http_server(
 
 
 def render_dashboard() -> str:
+    return _render_flight_attendant_dashboard()
+
+
+def _render_legacy_market_dashboard() -> str:
     return """
 <!doctype html>
 <html lang="en">
@@ -868,6 +1121,7 @@ def render_dashboard() -> str:
     .want { background: rgba(100, 168, 255, .16); color: var(--blue); }
     .reserved { background: rgba(240, 186, 87, .16); color: var(--amber); }
     .sold, .cancelled { background: rgba(227, 111, 111, .16); color: var(--red); }
+    .sync-warning { color: var(--amber); margin-top: 4px; }
     .actions { display: flex; gap: 8px; align-items: start; }
     .actions a, .actions button {
       min-width: 38px;
@@ -1004,7 +1258,9 @@ def render_dashboard() -> str:
         offersEl.innerHTML = `<div class="empty">No matching offers.</div>`;
         return;
       }
-      offersEl.innerHTML = offers.map((offer) => `
+      offersEl.innerHTML = offers.map((offer) => {
+        const canClose = offer.status === "open" || offer.status === "reserved";
+        return `
         <article class="offer">
           <div>
             <h3><span class="pill ${offer.listing_type}">${offer.label}</span> ${escapeHtml(offer.item_name)}</h3>
@@ -1013,13 +1269,18 @@ def render_dashboard() -> str:
             </div>
             <div class="meta">${escapeHtml(offer.category_label)} · ${escapeHtml(offer.location)} · ${escapeHtml(offer.owner)}${offer.delivery ? ` · ${escapeHtml(offer.delivery)}` : ""}</div>
             ${offer.status !== "open" ? `<div class="meta"><span class="pill ${offer.status}">${escapeHtml(offer.status)}</span>${offer.reserved_by ? ` by ${escapeHtml(offer.reserved_by)}` : ""}</div>` : ""}
+            ${offer.discord_sync_error ? `<div class="meta sync-warning">Discord sync: ${escapeHtml(offer.discord_sync_error)}</div>` : ""}
           </div>
           <div class="actions">
             <a href="${escapeHtml(offer.url)}" title="Mail draft">Mail</a>
             ${offer.status === "open" ? `<button type="button" data-reserve="${escapeHtml(offer.id)}">Reserve</button>` : ""}
+            ${offer.status === "reserved" ? `<button type="button" data-status-id="${escapeHtml(offer.id)}" data-status="open">Reopen</button>` : ""}
+            ${canClose ? `<button type="button" data-status-id="${escapeHtml(offer.id)}" data-status="sold">Sold</button>` : ""}
+            ${canClose ? `<button type="button" data-status-id="${escapeHtml(offer.id)}" data-status="cancelled">Cancel</button>` : ""}
           </div>
         </article>
-      `).join("");
+      `;
+      }).join("");
     }
 
     document.querySelector("#offer-form").addEventListener("submit", async (event) => {
@@ -1057,11 +1318,11 @@ def render_dashboard() -> str:
     });
 
     offersEl.addEventListener("click", async (event) => {
-      const button = event.target.closest("button[data-reserve]");
-      if (!button) return;
+      const reserveButton = event.target.closest("button[data-reserve]");
+      if (reserveButton) {
       const reservedBy = window.prompt("Reserve for which character?");
       if (!reservedBy) return;
-      const response = await fetch(`/api/offers/${button.dataset.reserve}/reserve`, {
+      const response = await fetch(`/api/offers/${reserveButton.dataset.reserve}/reserve`, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({reserved_by: reservedBy, hours: 24}),
@@ -1071,10 +1332,36 @@ def render_dashboard() -> str:
         window.alert(data.error || "Could not reserve offer");
         return;
       }
+      alertDiscordSyncProblem(data);
+      await loadOffers();
+      return;
+      }
+
+      const statusButton = event.target.closest("button[data-status-id]");
+      if (!statusButton) return;
+      const nextStatus = statusButton.dataset.status;
+      if (!window.confirm(`Set this listing to ${nextStatus}?`)) return;
+      const response = await fetch(`/api/offers/${statusButton.dataset.statusId}/status`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({status: nextStatus}),
+      });
+      const data = await response.json();
+      if (!data.ok) {
+        window.alert(data.error || "Could not update listing");
+        return;
+      }
+      alertDiscordSyncProblem(data);
       await loadOffers();
     });
 
-    loadOffers().catch((error) => {
+    function alertDiscordSyncProblem(data) {
+      if (data.discord_sync_error) {
+        window.alert(`Updated locally, but Discord did not sync: ${data.discord_sync_error}`);
+      }
+    }
+
+loadOffers().catch((error) => {
       offersEl.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
       statusEl.textContent = "Load failed";
     });
@@ -1446,6 +1733,15 @@ def clean_listing_id(value: Any) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", listing_id):
         raise ValueError("listing_id is invalid.")
     return listing_id
+
+
+def clean_discord_snowflake(value: Any, field: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not DISCORD_SNOWFLAKE_RE.fullmatch(text):
+        raise CorpMarketError(f"{field} must be a Discord numeric ID.")
+    return text
 
 
 def format_isk(value: float | None) -> str:

@@ -26,6 +26,19 @@ The board stores listings in ignored local SQLite data:
 profiles/corp_market.sqlite3
 ```
 
+## Flight Attendant Tab
+
+The local board now includes a `Flight Attendant` tab beside the market board.
+
+The first version is a safe briefing surface:
+
+- It stores captain's notes in the browser only.
+- It previews future read-only ESI uses such as current-system context, nearby personal assets, and route-aware market reminders.
+- It keeps disabled placeholders for ESI connection and briefing generation until scopes and storage are reviewed.
+- It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
+
+Treat future Flight Attendant work like a crew member giving advice: the tool can brief the pilot, but the pilot takes every in-game action manually.
+
 ## Discord Channel Posting
 
 The first version uses a Discord channel webhook. A new offer created from the local board can post a Discord message with a link to the offer page. The offer page has a copyable EVE mail draft.
@@ -74,7 +87,8 @@ Loopback browser requests from the host computer can always create and edit offe
 4. Add a `For sale` or `Want to buy` offer on the local board.
 5. The Discord channel receives a rich listing with a mail-draft link.
 6. A member opens the link, clicks `Copy Mail`, and sends the pasted mail manually in EVE.
-7. The seller or quartermaster marks the listing sold or cancelled from the board.
+7. The seller or quartermaster marks the listing reserved, sold, cancelled, or reopened from the board.
+8. If the listing was posted with this version or later, the concierge edits the original Discord post with the new status.
 
 ## Good Offer Habits
 
@@ -89,7 +103,9 @@ Loopback browser requests from the host computer can always create and edit offe
 
 ## Next Useful Discord Layer
 
-The webhook version is intentionally small. The next layer should add a Discord bot with slash commands that write to the same SQLite listing store:
+The webhook version is intentionally small. It can create Discord listings and sync status changes back to the original webhook post. It cannot rename existing forum threads or change forum tags after creation; that should wait for a Discord bot with channel/thread permissions.
+
+The next bot layer should add slash commands that write to the same SQLite listing store:
 
 - `/sell`
 - `/want`

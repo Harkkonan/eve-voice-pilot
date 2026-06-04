@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sqlite3
 import sys
@@ -7,12 +8,14 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import pytest
 
+import eve_voice_pilot.corp_market as corp_market
 from eve_voice_pilot.corp_market import (
     CorpMarketError,
     MarketStore,
     build_discord_webhook_payload,
     build_mail_draft,
     clean_multiline,
+    edit_discord_webhook_message,
     format_isk,
     parse_isk_amount,
     parse_fit_note,
@@ -141,6 +144,33 @@ def test_market_store_migrates_existing_database_without_category(tmp_path):
     assert listing.category == "general"
     assert listing.category_label == "General"
     assert listing.fit_image_url == ""
+    assert listing.discord_message_id == ""
+    assert listing.discord_thread_id == ""
+
+
+def test_market_store_records_discord_sync_metadata(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    listing = store.create_listing(
+        {
+            "listing_type": "sell",
+            "item_name": "Venture",
+            "quantity": 1,
+            "location": "Amarr",
+            "owner": "Seller Example",
+        }
+    )
+
+    synced = store.record_discord_sync(
+        listing.listing_id,
+        message_id="123456789012345678",
+        thread_id="223456789012345678",
+        error="",
+    )
+
+    assert synced.discord_message_id == "123456789012345678"
+    assert synced.discord_thread_id == "223456789012345678"
+    assert synced.discord_synced_at.endswith("Z")
+    assert synced.discord_sync_error == ""
 
 
 def test_reserve_listing_marks_buyer_and_expiry(tmp_path):
@@ -280,10 +310,36 @@ def test_discord_payload_contains_copy_mail_link_and_no_mentions(tmp_path):
     assert payload["allowed_mentions"] == {"parse": []}
     assert payload["content"] == f"Open the listing to copy an EVE mail draft:\nhttp://market.test/offers/{listing.listing_id}"
     assert payload["embeds"][0]["title"] == "WTS Venture x1"
-    assert payload["embeds"][0]["fields"][0] == {"name": "Category", "value": "Ships", "inline": True}
-    assert payload["embeds"][0]["fields"][2]["value"] == format_isk(1_000_000)
-    assert payload["embeds"][0]["fields"][5]["name"] == "Seller"
+    assert payload["embeds"][0]["fields"][0] == {"name": "Status", "value": "Open", "inline": True}
+    assert payload["embeds"][0]["fields"][1] == {"name": "Category", "value": "Ships", "inline": True}
+    assert payload["embeds"][0]["fields"][3]["value"] == format_isk(1_000_000)
+    assert payload["embeds"][0]["fields"][6]["name"] == "Seller"
     assert "thread_name" not in payload
+
+
+def test_discord_payload_marks_reserved_listing_status(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    listing = store.create_listing(
+        {
+            "listing_type": "sell",
+            "item_name": "Venture",
+            "category": "ships",
+            "quantity": 1,
+            "unit_price": "1m",
+            "location": "Amarr",
+            "owner": "Seller Example",
+        }
+    )
+    reserved = store.reserve_listing(listing.listing_id, reserved_by="Buyer Example", hours=6)
+
+    payload = build_discord_webhook_payload(reserved, public_base_url="http://market.test")
+    embed = payload["embeds"][0]
+
+    assert embed["title"] == "RESERVED - WTS Venture x1"
+    assert embed["color"] == 0xF0BA57
+    assert embed["fields"][0]["name"] == "Status"
+    assert "Reserved by Buyer Example" in embed["fields"][0]["value"]
+    assert "Until " in embed["fields"][0]["value"]
 
 
 def test_discord_payload_summarizes_fit_note_without_dumping_full_block(tmp_path):
@@ -380,3 +436,93 @@ def test_post_discord_webhook_rejects_channel_links_before_network():
             {"content": "test"},
             timeout_seconds=1,
         )
+
+
+class FakeDiscordResponse:
+    status = 200
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
+def test_post_discord_webhook_requests_message_response(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["timeout"] = timeout
+        return FakeDiscordResponse(
+            {
+                "id": "123456789012345678",
+                "channel_id": "223456789012345678",
+            }
+        )
+
+    monkeypatch.setattr(corp_market, "urlopen", fake_urlopen)
+
+    result = post_discord_webhook(
+        "https://discord.com/api/webhooks/123456789012345678/token",
+        {"content": "test"},
+        timeout_seconds=3,
+    )
+
+    assert captured == {
+        "url": "https://discord.com/api/webhooks/123456789012345678/token?wait=true",
+        "method": "POST",
+        "timeout": 3,
+    }
+    assert result.message_id == "123456789012345678"
+    assert result.channel_id == "223456789012345678"
+
+
+def test_edit_discord_webhook_message_patches_message_in_thread(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeDiscordResponse(
+            {
+                "id": "123456789012345678",
+                "channel_id": "223456789012345678",
+            }
+        )
+
+    monkeypatch.setattr(corp_market, "urlopen", fake_urlopen)
+
+    result = edit_discord_webhook_message(
+        "https://discord.com/api/webhooks/123456789012345678/token",
+        "123456789012345678",
+        {
+            "content": "updated",
+            "embeds": [{"title": "updated"}],
+            "allowed_mentions": {"parse": []},
+            "thread_name": "do not send on edit",
+            "applied_tags": ["999"],
+        },
+        timeout_seconds=3,
+        thread_id="223456789012345678",
+    )
+
+    assert captured["url"] == (
+        "https://discord.com/api/webhooks/123456789012345678/token/messages/"
+        "123456789012345678?thread_id=223456789012345678"
+    )
+    assert captured["method"] == "PATCH"
+    assert captured["body"] == {
+        "content": "updated",
+        "embeds": [{"title": "updated"}],
+        "allowed_mentions": {"parse": []},
+    }
+    assert result.message_id == "123456789012345678"

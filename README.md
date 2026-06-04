@@ -187,7 +187,7 @@ Always check the orders in EVE before hauling. The helper reads live EVE Workben
 
 ## Corp Market Concierge
 
-The corp market concierge is a Discord-friendly buy/sell board for corporation members. It posts offers or requests to a Discord channel through a webhook, then gives buyers and sellers a copyable EVE mail draft. It does not send EVE mail, create contracts, place orders, or automate the game client.
+The corp market concierge is a Discord-friendly buy/sell board for corporation members. It posts offers or requests to a Discord channel through a webhook, syncs listing status changes back to that Discord post, then gives buyers and sellers a copyable EVE mail draft. It does not send EVE mail, create contracts, place orders, or automate the game client.
 
 Double-click `Start-EveCorpMarket.bat` for the local board at `http://127.0.0.1:8770/`.
 
@@ -198,6 +198,8 @@ To post new offers into Discord, create a Discord channel webhook and run:
 ```
 
 If the Discord target is a forum channel, add `--discord-forum-posts` so each offer creates a forum post/thread. Optional forum tag mapping can use listing types or categories, such as `--discord-forum-tag-map "sell:WTS_TAG_ID,want:WTB_TAG_ID,ships:SHIPS_TAG_ID,pi:PI_TAG_ID"`.
+
+Reserve, sold, cancelled, and reopen changes update the original Discord webhook message for listings created with this version or later. Renaming forum threads or changing forum tags after creation will need a Discord bot later.
 
 For a shared LAN test, set the public link base that Discord members should open:
 
