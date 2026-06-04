@@ -18,6 +18,7 @@ from eve_voice_pilot.corp_market import (
     parse_fit_note,
     parse_forum_tag_map,
     post_discord_webhook,
+    render_offer_page,
 )
 
 
@@ -139,6 +140,7 @@ def test_market_store_migrates_existing_database_without_category(tmp_path):
 
     assert listing.category == "general"
     assert listing.category_label == "General"
+    assert listing.fit_image_url == ""
 
 
 def test_reserve_listing_marks_buyer_and_expiry(tmp_path):
@@ -231,14 +233,32 @@ def test_mail_draft_includes_full_fit_note_block(tmp_path):
             "location": "Jita",
             "owner": "Buyer Example",
             "notes": HAWK_FIT,
+            "fit_image_url": "https://cdn.discordapp.com/attachments/123/456/hawk.png",
         }
     )
 
     draft = build_mail_draft(listing, actor="Builder Example")
 
     assert "Fit note:\n[Hawk, Hawkaw T0 blitz dark abyss]" in draft.body
+    assert "Fit image: https://cdn.discordapp.com/attachments/123/456/hawk.png" in draft.body
     assert "Small Bay Loading Accelerator II\n\nScourge Rage Rocket x4772" in draft.body
     assert "Tranquil Dark Filament x97" in draft.body
+
+
+def test_invalid_fit_image_url_is_rejected(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+
+    with pytest.raises(ValueError, match="full http or https URL"):
+        store.create_listing(
+            {
+                "listing_type": "sell",
+                "item_name": "Hawk screenshot",
+                "quantity": 1,
+                "location": "Jita",
+                "owner": "Seller Example",
+                "fit_image_url": "not-a-url",
+            }
+        )
 
 
 def test_discord_payload_contains_copy_mail_link_and_no_mentions(tmp_path):
@@ -277,6 +297,7 @@ def test_discord_payload_summarizes_fit_note_without_dumping_full_block(tmp_path
             "location": "Jita",
             "owner": "Buyer Example",
             "notes": HAWK_FIT,
+            "fit_image_url": "https://cdn.discordapp.com/attachments/123/456/hawk.png",
         }
     )
 
@@ -284,11 +305,38 @@ def test_discord_payload_summarizes_fit_note_without_dumping_full_block(tmp_path
     embed = payload["embeds"][0]
 
     assert embed["description"] == "Fit note detected. Open the listing for the full copy/paste block."
+    assert embed["image"] == {"url": "https://cdn.discordapp.com/attachments/123/456/hawk.png"}
     fit_field = next(field for field in embed["fields"] if field["name"] == "Fit Note")
+    image_field = next(field for field in embed["fields"] if field["name"] == "Fit Image")
     assert "Hawk - Hawkaw T0 blitz dark abyss" in fit_field["value"]
     assert "13 fitted lines, 1 empty slot; 6 cargo stacks" in fit_field["value"]
     assert "Scourge Rage Rocket x4772" in fit_field["value"]
     assert "Rocket Launcher II\nRocket Launcher II" not in fit_field["value"]
+    assert image_field["value"] == "[Open screenshot](https://cdn.discordapp.com/attachments/123/456/hawk.png)"
+
+
+def test_offer_page_has_copy_fit_block_and_screenshot_link(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    listing = store.create_listing(
+        {
+            "listing_type": "want",
+            "item_name": "Hawk abyss fit",
+            "category": "ships",
+            "quantity": 1,
+            "location": "Jita",
+            "owner": "Buyer Example",
+            "notes": HAWK_FIT,
+            "fit_image_url": "https://cdn.discordapp.com/attachments/123/456/hawk.png",
+        }
+    )
+
+    page = render_offer_page(listing, build_mail_draft(listing))
+
+    assert "Fitting Block" in page
+    assert "Copy Fit" in page
+    assert "Fit Screenshot" in page
+    assert "https://cdn.discordapp.com/attachments/123/456/hawk.png" in page
+    assert "[Hawk, Hawkaw T0 blitz dark abyss]" in page
 
 
 def test_discord_payload_for_forum_channel_includes_thread_name_and_tags(tmp_path):

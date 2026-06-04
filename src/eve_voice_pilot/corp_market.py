@@ -85,6 +85,7 @@ class MarketListing:
     owner: str
     notes: str
     delivery: str
+    fit_image_url: str = ""
     reserved_by: str = ""
     reserved_until: str = ""
     created_at: str = ""
@@ -119,6 +120,7 @@ class MarketListing:
             owner=str(row["owner"] or ""),
             notes=str(row["notes"] or ""),
             delivery=str(row["delivery"] or ""),
+            fit_image_url=str(row["fit_image_url"] or ""),
             reserved_by=str(row["reserved_by"] or ""),
             reserved_until=str(row["reserved_until"] or ""),
             created_at=str(row["created_at"] or ""),
@@ -143,6 +145,7 @@ class MarketListing:
             "owner": self.owner,
             "notes": self.notes,
             "delivery": self.delivery,
+            "fit_image_url": self.fit_image_url,
             "reserved_by": self.reserved_by,
             "reserved_until": self.reserved_until,
             "created_at": self.created_at,
@@ -180,6 +183,7 @@ class MarketStore:
                     owner TEXT NOT NULL,
                     notes TEXT NOT NULL,
                     delivery TEXT NOT NULL,
+                    fit_image_url TEXT NOT NULL DEFAULT '',
                     reserved_by TEXT NOT NULL DEFAULT '',
                     reserved_until TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
@@ -191,6 +195,10 @@ class MarketStore:
             if "category" not in columns:
                 connection.execute(
                     "ALTER TABLE corp_market_listings ADD COLUMN category TEXT NOT NULL DEFAULT 'general'"
+                )
+            if "fit_image_url" not in columns:
+                connection.execute(
+                    "ALTER TABLE corp_market_listings ADD COLUMN fit_image_url TEXT NOT NULL DEFAULT ''"
                 )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_corp_market_status ON corp_market_listings(status)")
             connection.execute(
@@ -210,6 +218,7 @@ class MarketStore:
         owner = clean_text(payload.get("owner") or payload.get("seller") or payload.get("buyer"), "owner", max_length=80, required=True)
         notes = clean_multiline(payload.get("notes"), "notes", max_length=DEFAULT_MAX_NOTES_LENGTH)
         delivery = clean_text(payload.get("delivery"), "delivery", max_length=160)
+        fit_image_url = clean_optional_url(payload.get("fit_image_url") or payload.get("image_url") or payload.get("screenshot_url"), "fit_image_url")
         timestamp = now_iso()
         listing = MarketListing(
             listing_id=str(payload.get("id") or uuid.uuid4().hex[:12]),
@@ -223,6 +232,7 @@ class MarketStore:
             owner=owner,
             notes=notes,
             delivery=delivery,
+            fit_image_url=fit_image_url,
             created_at=timestamp,
             updated_at=timestamp,
         )
@@ -231,9 +241,9 @@ class MarketStore:
                 """
                 INSERT INTO corp_market_listings (
                     listing_id, listing_type, status, category, item_name, quantity, unit_price_isk,
-                    location, owner, notes, delivery, reserved_by, reserved_until, created_at, updated_at
+                    location, owner, notes, delivery, fit_image_url, reserved_by, reserved_until, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     listing.listing_id,
@@ -247,6 +257,7 @@ class MarketStore:
                     listing.owner,
                     listing.notes,
                     listing.delivery,
+                    listing.fit_image_url,
                     listing.reserved_by,
                     listing.reserved_until,
                     listing.created_at,
@@ -361,6 +372,8 @@ def build_mail_draft(listing: MarketListing, *, actor: str = "") -> MailDraft:
     ]
     if listing.delivery:
         lines.append(f"Delivery: {listing.delivery}")
+    if listing.fit_image_url:
+        lines.append(f"Fit image: {listing.fit_image_url}")
     if actor:
         lines.append(f"{actor_label}: {actor}")
     if listing.notes:
@@ -411,6 +424,8 @@ def build_discord_webhook_payload(
         fields.append({"name": "Fit Note", "value": discord_fit_summary(fit_note), "inline": False})
     if listing.delivery:
         fields.append({"name": "Delivery", "value": listing.delivery, "inline": True})
+    if listing.fit_image_url:
+        fields.append({"name": "Fit Image", "value": f"[Open screenshot]({listing.fit_image_url})", "inline": True})
     embed: dict[str, Any] = {
         "title": title,
         "url": url,
@@ -423,6 +438,8 @@ def build_discord_webhook_payload(
         embed["description"] = "Fit note detected. Open the listing for the full copy/paste block."
     elif listing.notes:
         embed["description"] = shorten(listing.notes, 700)
+    if listing.fit_image_url:
+        embed["image"] = {"url": listing.fit_image_url}
     payload: dict[str, Any] = {
         "content": f"Open the listing to copy an EVE mail draft:\n{url}",
         "embeds": [embed],
@@ -929,6 +946,9 @@ def render_dashboard() -> str:
         <label>Delivery
           <input name="delivery" autocomplete="off" placeholder="Pickup, delivery available, high-sec only">
         </label>
+        <label>Fit Image URL
+          <input name="fit_image_url" autocomplete="off" placeholder="Optional Discord/CDN screenshot URL">
+        </label>
         <label>Notes
           <textarea name="notes" placeholder="[Hawk, Fit name]\nPaste EFT fit blocks, contract details, timing, limits"></textarea>
         </label>
@@ -1067,6 +1087,30 @@ def render_dashboard() -> str:
 def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:
     listing_json = html.escape(json.dumps(listing.to_dict()), quote=True)
     draft_json = html.escape(json.dumps(draft.to_dict()), quote=True)
+    fit_note = parse_fit_note(listing.notes)
+    fit_json = html.escape(json.dumps({"fit": listing.notes if fit_note else ""}), quote=True)
+    fit_section = ""
+    if fit_note:
+        fit_section = f"""
+    <section>
+      <h2>Fitting Block</h2>
+      <div class="meta">Copy this block into EVE's fitting import/simulator workflow.</div>
+      <textarea id="fit-block" spellcheck="false">{escape_html(listing.notes)}</textarea>
+      <div class="actions">
+        <button id="copy-fit" type="button">Copy Fit</button>
+      </div>
+      <div id="fit-copy-status" class="copied"></div>
+    </section>
+"""
+    image_section = ""
+    if listing.fit_image_url:
+        image_section = f"""
+    <section>
+      <h2>Fit Screenshot</h2>
+      <a href="{escape_html(listing.fit_image_url)}" target="_blank" rel="noreferrer">Open screenshot</a>
+      <img class="fit-image" src="{escape_html(listing.fit_image_url)}" alt="Fit screenshot">
+    </section>
+"""
     return f"""
 <!doctype html>
 <html lang="en">
@@ -1096,6 +1140,7 @@ def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:
     }}
     main {{ width: min(860px, calc(100vw - 32px)); margin: 0 auto; padding: 28px 0; }}
     h1 {{ margin: 0 0 8px; font-size: 28px; letter-spacing: 0; }}
+    h2 {{ margin: 0 0 10px; font-size: 18px; letter-spacing: 0; }}
     .meta {{ color: var(--muted); margin-bottom: 18px; }}
     section {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-top: 14px; }}
     dl {{ display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px; margin: 0; }}
@@ -1129,6 +1174,7 @@ def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:
     }}
     .actions {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }}
     .copied {{ color: var(--green); min-height: 22px; margin-top: 8px; }}
+    .fit-image {{ display: block; max-width: 100%; margin-top: 12px; border: 1px solid var(--line); border-radius: 6px; }}
     @media (max-width: 620px) {{
       dl {{ grid-template-columns: 1fr; }}
       dt {{ margin-top: 8px; }}
@@ -1136,7 +1182,7 @@ def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:
   </style>
 </head>
 <body>
-  <main data-listing="{listing_json}" data-draft="{draft_json}">
+  <main data-listing="{listing_json}" data-draft="{draft_json}" data-fit="{fit_json}">
     <h1>{escape_html(listing.label)} {escape_html(listing.item_name)}</h1>
     <div class="meta">{escape_html(listing.location)} · {escape_html(listing.owner)} · {escape_html(listing.status)}</div>
     <section>
@@ -1146,10 +1192,14 @@ def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:
         <dt>Unit price</dt><dd>{escape_html(format_isk(listing.unit_price_isk) if listing.unit_price_isk is not None else "Quote")}</dd>
         <dt>Total</dt><dd>{escape_html(format_isk(listing.total_price_isk) if listing.total_price_isk is not None else "Quote")}</dd>
         <dt>Delivery</dt><dd>{escape_html(listing.delivery or "Not specified")}</dd>
+        <dt>Fit image</dt><dd>{('<a href="' + escape_html(listing.fit_image_url) + '" target="_blank" rel="noreferrer">Open screenshot</a>') if listing.fit_image_url else 'Not provided'}</dd>
         <dt>Offer ID</dt><dd>{escape_html(listing.listing_id)}</dd>
       </dl>
     </section>
+{image_section}
+{fit_section}
     <section>
+      <h2>EVE Mail Draft</h2>
       <textarea id="mail-draft" spellcheck="false">{escape_html(draft.to_dict()["combined"])}</textarea>
       <div class="actions">
         <button id="copy-mail" type="button">Copy Mail</button>
@@ -1160,6 +1210,7 @@ def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:
   </main>
   <script>
     const draft = JSON.parse(document.querySelector("main").dataset.draft);
+    const fitData = JSON.parse(document.querySelector("main").dataset.fit);
     const textarea = document.querySelector("#mail-draft");
     const status = document.querySelector("#copy-status");
     document.querySelector("#copy-mail").addEventListener("click", async () => {{
@@ -1174,6 +1225,22 @@ def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:
         status.textContent = "Selected and copied if your browser allowed it.";
       }}
     }});
+    const copyFitButton = document.querySelector("#copy-fit");
+    if (copyFitButton && fitData.fit) {{
+      const fitTextarea = document.querySelector("#fit-block");
+      const fitStatus = document.querySelector("#fit-copy-status");
+      copyFitButton.addEventListener("click", async () => {{
+        fitTextarea.focus();
+        fitTextarea.select();
+        try {{
+          await navigator.clipboard.writeText(fitData.fit);
+          fitStatus.textContent = "Fit copied.";
+        }} catch (error) {{
+          document.execCommand("copy");
+          fitStatus.textContent = "Selected and copied if your browser allowed it.";
+        }}
+      }});
+    }}
   </script>
 </body>
 </html>
@@ -1349,6 +1416,18 @@ def clean_optional_isk(value: Any) -> float | None:
     if amount < 0:
         raise ValueError("unit_price_isk cannot be negative.")
     return amount
+
+
+def clean_optional_url(value: Any, field: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{field} must be a full http or https URL.")
+    if len(text) > 1000:
+        raise ValueError(f"{field} must be 1000 characters or less.")
+    return text
 
 
 def parse_isk_amount(value: Any) -> float:
