@@ -22,7 +22,7 @@ import webbrowser
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
 DEFAULT_PORT = 8770
-DEFAULT_MAX_NOTES_LENGTH = 1200
+DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
 DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
@@ -42,6 +42,8 @@ LISTING_CATEGORIES = {
 SPACE_RE = re.compile(r"\s+")
 ISK_AMOUNT_RE = re.compile(r"^\s*(?P<number>\d+(?:\.\d+)?)\s*(?P<suffix>[kKmMbB]?)\s*$")
 DISCORD_WEBHOOK_PATH_RE = re.compile(r"^/api/(?:v\d+/)?webhooks/\d+/[^/]+/?$")
+FIT_HEADER_RE = re.compile(r"^\[(?P<hull>[^,\]]+),\s*(?P<name>[^\]]+)\]\s*$")
+FIT_QUANTITY_RE = re.compile(r"\sx[\d,]+\s*$", re.IGNORECASE)
 
 
 class CorpMarketError(RuntimeError):
@@ -55,6 +57,19 @@ class MailDraft:
 
     def to_dict(self) -> dict[str, str]:
         return {"subject": self.subject, "body": self.body, "combined": f"Subject: {self.subject}\n\n{self.body}"}
+
+
+@dataclass(frozen=True)
+class FitNoteSummary:
+    hull: str
+    fit_name: str
+    fitted_lines: tuple[str, ...]
+    cargo_lines: tuple[str, ...]
+    empty_slots: int
+
+    @property
+    def display_name(self) -> str:
+        return f"{self.hull} - {self.fit_name}"
 
 
 @dataclass(frozen=True)
@@ -348,6 +363,9 @@ def build_mail_draft(listing: MarketListing, *, actor: str = "") -> MailDraft:
         lines.append(f"Delivery: {listing.delivery}")
     if actor:
         lines.append(f"{actor_label}: {actor}")
+    if listing.notes:
+        fit_note = parse_fit_note(listing.notes)
+        lines.extend(["", "Fit note:" if fit_note else "Notes:", listing.notes])
     lines.extend(
         [
             f"Offer ID: {listing.listing_id}",
@@ -372,6 +390,7 @@ def build_discord_webhook_payload(
     color = 0x2E7D32 if listing.listing_type == "sell" else 0x1565C0
     title = discord_listing_title(listing)
     contact_label = "Seller" if listing.listing_type == "sell" else "Buyer"
+    fit_note = parse_fit_note(listing.notes)
     fields = [
         {"name": "Category", "value": listing.category_label, "inline": True},
         {"name": "Quantity", "value": f"{listing.quantity:,}", "inline": True},
@@ -388,6 +407,8 @@ def build_discord_webhook_payload(
         {"name": "Location", "value": listing.location or "Not specified", "inline": False},
         {"name": contact_label, "value": listing.owner, "inline": True},
     ]
+    if fit_note:
+        fields.append({"name": "Fit Note", "value": discord_fit_summary(fit_note), "inline": False})
     if listing.delivery:
         fields.append({"name": "Delivery", "value": listing.delivery, "inline": True})
     embed: dict[str, Any] = {
@@ -398,7 +419,9 @@ def build_discord_webhook_payload(
         "footer": {"text": f"Offer {listing.listing_id} · manual EVE mail"},
         "timestamp": listing.created_at,
     }
-    if listing.notes:
+    if fit_note:
+        embed["description"] = "Fit note detected. Open the listing for the full copy/paste block."
+    elif listing.notes:
         embed["description"] = shorten(listing.notes, 700)
     payload: dict[str, Any] = {
         "content": f"Open the listing to copy an EVE mail draft:\n{url}",
@@ -447,6 +470,47 @@ def validate_discord_webhook_url(webhook_url: str) -> None:
             "Discord webhook URL looks wrong. Copy it from Channel Settings > Integrations > Webhooks > Copy "
             "Webhook URL; do not use the Discord channel or forum post link."
         )
+
+
+def parse_fit_note(notes: str) -> FitNoteSummary | None:
+    lines = [line.strip() for line in notes.splitlines()]
+    first_line_index = next((index for index, line in enumerate(lines) if line), None)
+    if first_line_index is None:
+        return None
+    header = FIT_HEADER_RE.match(lines[first_line_index])
+    if not header:
+        return None
+    fitted_lines: list[str] = []
+    cargo_lines: list[str] = []
+    empty_slots = 0
+    for line in lines[first_line_index + 1 :]:
+        if not line:
+            continue
+        if FIT_QUANTITY_RE.search(line):
+            cargo_lines.append(line)
+            continue
+        if line.lower().startswith("[empty "):
+            empty_slots += 1
+            continue
+        fitted_lines.append(line)
+    return FitNoteSummary(
+        hull=header.group("hull").strip(),
+        fit_name=header.group("name").strip(),
+        fitted_lines=tuple(fitted_lines),
+        cargo_lines=tuple(cargo_lines),
+        empty_slots=empty_slots,
+    )
+
+
+def discord_fit_summary(fit_note: FitNoteSummary) -> str:
+    slot_text = f"{len(fit_note.fitted_lines)} fitted lines"
+    if fit_note.empty_slots:
+        slot_text += f", {fit_note.empty_slots} empty slot{'s' if fit_note.empty_slots != 1 else ''}"
+    cargo_text = f"{len(fit_note.cargo_lines)} cargo stack{'s' if len(fit_note.cargo_lines) != 1 else ''}"
+    lines = [fit_note.display_name, f"{slot_text}; {cargo_text}"]
+    if fit_note.cargo_lines:
+        lines.append("Cargo: " + shorten("; ".join(fit_note.cargo_lines[:4]), 220))
+    return shorten("\n".join(lines), 1000)
 
 
 def discord_thread_name(listing: MarketListing) -> str:
@@ -757,7 +821,7 @@ def render_dashboard() -> str:
       color: var(--text);
       padding: 9px 10px;
     }
-    textarea { min-height: 88px; resize: vertical; }
+    textarea { min-height: 150px; resize: vertical; }
     button {
       border: 0;
       background: var(--blue);
@@ -866,7 +930,7 @@ def render_dashboard() -> str:
           <input name="delivery" autocomplete="off" placeholder="Pickup, delivery available, high-sec only">
         </label>
         <label>Notes
-          <textarea name="notes" placeholder="Fit notes, contract details, timing, limits"></textarea>
+          <textarea name="notes" placeholder="[Hawk, Fit name]\nPaste EFT fit blocks, contract details, timing, limits"></textarea>
         </label>
         <button type="submit">Post Offer</button>
         <div id="form-error" class="error" hidden></div>
@@ -1241,8 +1305,21 @@ def clean_text(value: Any, field: str, *, max_length: int, required: bool = Fals
 
 
 def clean_multiline(value: Any, field: str, *, max_length: int) -> str:
-    lines = [SPACE_RE.sub(" ", line).strip() for line in str(value or "").replace("\r\n", "\n").split("\n")]
-    text = "\n".join(line for line in lines if line)
+    raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    lines = [SPACE_RE.sub(" ", line).strip() for line in raw.split("\n")]
+    cleaned: list[str] = []
+    previous_blank = False
+    for line in lines:
+        if not line:
+            if cleaned and not previous_blank:
+                cleaned.append("")
+            previous_blank = True
+            continue
+        cleaned.append(line)
+        previous_blank = False
+    while cleaned and not cleaned[-1]:
+        cleaned.pop()
+    text = "\n".join(cleaned)
     if len(text) > max_length:
         raise ValueError(f"{field} must be {max_length} characters or less.")
     return text

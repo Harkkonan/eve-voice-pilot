@@ -81,6 +81,7 @@ Loopback browser requests from the host computer can always create and edit offe
 - Use the EVE character name that should receive mail.
 - Pick a category such as Ships, Modules, PI, Ore, Minerals, or Hauling so Discord forum posts are easier to scan.
 - Put the station, structure, or system in `Location`.
+- Paste EVE/EFT fit blocks directly into `Notes`. Blocks that start with `[Ship, Fit Name]` are detected as fit notes, summarized in Discord, and preserved in the generated EVE mail draft.
 - Use normal EVE shorthand in `Unit Price`, such as `750k`, `12.5m`, or `1.2b`.
 - Use `Delivery` for pickup-only, delivery-available, high-sec-only, or blue-space notes.
 - Keep Discord links private to trusted corp spaces until EVE SSO member gating is added.

@@ -12,11 +12,41 @@ from eve_voice_pilot.corp_market import (
     MarketStore,
     build_discord_webhook_payload,
     build_mail_draft,
+    clean_multiline,
     format_isk,
     parse_isk_amount,
+    parse_fit_note,
     parse_forum_tag_map,
     post_discord_webhook,
 )
+
+
+HAWK_FIT = """[Hawk, Hawkaw T0 blitz dark abyss]
+Ballistic Control System II
+Ballistic Control System II
+
+1MN Afterburner II
+Small Shield Booster II
+Federation Navy Stasis Webifier
+Cap Recharger II
+Republic Fleet Small Cap Battery
+
+Rocket Launcher II
+Rocket Launcher II
+[Empty High slot]
+Rocket Launcher II
+Rocket Launcher II
+
+Small EM Shield Reinforcer II
+Small Bay Loading Accelerator II
+
+
+Scourge Rage Rocket x4772
+Tranquil Gamma Filament x3
+Calm Gamma Filament x1
+Tranquil Electrical Filament x3
+Tranquil Dark Filament x97
+Tranquil Firestorm Filament x3"""
 
 
 def test_parse_isk_amount_accepts_eve_shorthand():
@@ -24,6 +54,27 @@ def test_parse_isk_amount_accepts_eve_shorthand():
     assert parse_isk_amount("12.5m") == 12_500_000
     assert parse_isk_amount("1.2b") == 1_200_000_000
     assert parse_isk_amount("1,250") == 1250
+
+
+def test_clean_multiline_preserves_fit_block_sections():
+    cleaned = clean_multiline(f" \n{HAWK_FIT}\n\n", "notes", max_length=5000)
+
+    assert cleaned.startswith("[Hawk, Hawkaw T0 blitz dark abyss]")
+    assert "Ballistic Control System II\n\n1MN Afterburner II" in cleaned
+    assert "Small Bay Loading Accelerator II\n\nScourge Rage Rocket x4772" in cleaned
+    assert not cleaned.endswith("\n")
+
+
+def test_parse_fit_note_reads_eft_clipboard_format():
+    fit_note = parse_fit_note(HAWK_FIT)
+
+    assert fit_note is not None
+    assert fit_note.hull == "Hawk"
+    assert fit_note.fit_name == "Hawkaw T0 blitz dark abyss"
+    assert len(fit_note.fitted_lines) == 13
+    assert fit_note.empty_slots == 1
+    assert fit_note.cargo_lines[0] == "Scourge Rage Rocket x4772"
+    assert fit_note.cargo_lines[-1] == "Tranquil Firestorm Filament x3"
 
 
 def test_market_store_creates_and_lists_offer(tmp_path):
@@ -169,6 +220,27 @@ def test_mail_draft_for_want_listing_is_fulfillment_offer(tmp_path):
     assert "Seller: Seller Example" in draft.body
 
 
+def test_mail_draft_includes_full_fit_note_block(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    listing = store.create_listing(
+        {
+            "listing_type": "want",
+            "item_name": "Hawk abyss fit",
+            "category": "ships",
+            "quantity": 1,
+            "location": "Jita",
+            "owner": "Buyer Example",
+            "notes": HAWK_FIT,
+        }
+    )
+
+    draft = build_mail_draft(listing, actor="Builder Example")
+
+    assert "Fit note:\n[Hawk, Hawkaw T0 blitz dark abyss]" in draft.body
+    assert "Small Bay Loading Accelerator II\n\nScourge Rage Rocket x4772" in draft.body
+    assert "Tranquil Dark Filament x97" in draft.body
+
+
 def test_discord_payload_contains_copy_mail_link_and_no_mentions(tmp_path):
     store = MarketStore(tmp_path / "market.sqlite3")
     listing = store.create_listing(
@@ -192,6 +264,31 @@ def test_discord_payload_contains_copy_mail_link_and_no_mentions(tmp_path):
     assert payload["embeds"][0]["fields"][2]["value"] == format_isk(1_000_000)
     assert payload["embeds"][0]["fields"][5]["name"] == "Seller"
     assert "thread_name" not in payload
+
+
+def test_discord_payload_summarizes_fit_note_without_dumping_full_block(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    listing = store.create_listing(
+        {
+            "listing_type": "want",
+            "item_name": "Hawk abyss fit",
+            "category": "ships",
+            "quantity": 1,
+            "location": "Jita",
+            "owner": "Buyer Example",
+            "notes": HAWK_FIT,
+        }
+    )
+
+    payload = build_discord_webhook_payload(listing, public_base_url="http://market.test")
+    embed = payload["embeds"][0]
+
+    assert embed["description"] == "Fit note detected. Open the listing for the full copy/paste block."
+    fit_field = next(field for field in embed["fields"] if field["name"] == "Fit Note")
+    assert "Hawk - Hawkaw T0 blitz dark abyss" in fit_field["value"]
+    assert "13 fitted lines, 1 empty slot; 6 cargo stacks" in fit_field["value"]
+    assert "Scourge Rage Rocket x4772" in fit_field["value"]
+    assert "Rocket Launcher II\nRocket Launcher II" not in fit_field["value"]
 
 
 def test_discord_payload_for_forum_channel_includes_thread_name_and_tags(tmp_path):
