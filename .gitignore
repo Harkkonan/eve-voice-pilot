@@ -17,4 +17,6 @@ profiles/corp_intel_events.sqlite3
 profiles/corp_intel_events.sqlite3-*
 profiles/corp_intel_pilots.sqlite3
 profiles/corp_intel_pilots.sqlite3-*
+profiles/corp_market.sqlite3
+profiles/corp_market.sqlite3-*
 profiles/chatlog_knowledge_link_review.md

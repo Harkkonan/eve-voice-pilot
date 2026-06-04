@@ -184,3 +184,23 @@ Example hub loop with an 8m ISK budget and 11,000 m3 cargo:
 ```
 
 Always check the orders in EVE before hauling. The helper reads live EVE Workbench market data, but buy and sell orders can fill or move between the suggestion and your undock.
+
+## Corp Market Concierge
+
+The corp market concierge is a Discord-friendly buy/sell board for corporation members. It posts offers or requests to a Discord channel through a webhook, then gives buyers and sellers a copyable EVE mail draft. It does not send EVE mail, create contracts, place orders, or automate the game client.
+
+Double-click `Start-EveCorpMarket.bat` for the local board at `http://127.0.0.1:8770/`.
+
+To post new offers into Discord, create a Discord channel webhook and run:
+
+```powershell
+.\scripts\run_corp_market.ps1 serve --discord-webhook-url "https://discord.com/api/webhooks/..."
+```
+
+For a shared LAN test, set the public link base that Discord members should open:
+
+```powershell
+.\scripts\run_corp_market.ps1 serve --host 0.0.0.0 --public-base-url "http://HOST-LAN-IP:8770" --discord-webhook-url "https://discord.com/api/webhooks/..."
+```
+
+Listings are stored in ignored local SQLite data at `profiles/corp_market.sqlite3`. More detail is in `docs/corp_market_concierge.md`.
