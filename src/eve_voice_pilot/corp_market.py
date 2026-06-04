@@ -3231,22 +3231,50 @@ def _render_flight_attendant_dashboard() -> str:
     .module-stack { display: grid; gap: 10px; }
     .module { border: 1px solid var(--line); background: rgba(17, 24, 25, .78); border-radius: 7px; padding: 11px; }
     .module h3 { margin-bottom: 5px; }
-    .decision-filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 9px 0; }
-    .decision-filters button { padding: 6px 8px; font-size: 12px; }
+    .profit-panel {
+      grid-column: 1 / -1;
+      min-height: 440px;
+      border-color: rgba(224, 168, 74, .48);
+      background:
+        linear-gradient(135deg, rgba(224, 168, 74, .1), rgba(97, 199, 217, .07)),
+        rgba(17, 24, 25, .96);
+    }
+    .profit-panel .panel-header { align-items: center; }
+    .profit-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .profit-title h2 { margin: 0; font-size: 22px; }
+    .profit-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+    .profit-actions button { min-height: 44px; padding: 10px 16px; font-size: 15px; }
+    .profit-summary {
+      border: 1px solid rgba(63, 85, 80, .76);
+      background: rgba(8, 13, 15, .42);
+      border-radius: 7px;
+      padding: 12px;
+      color: var(--muted);
+      min-width: min(100%, 560px);
+    }
+    .profit-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 9px; }
+    .profit-stat { border: 1px solid rgba(63, 85, 80, .68); background: rgba(17, 24, 25, .7); border-radius: 6px; padding: 8px; min-height: 58px; }
+    .profit-stat span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    .profit-stat b { display: block; color: var(--text); font-size: 18px; line-height: 1.2; margin-top: 2px; }
+    .decision-filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 14px; }
+    .decision-filters button { padding: 8px 10px; font-size: 13px; min-height: 36px; }
     .decision-filters button.active { color: var(--ink); background: var(--amber); border-color: var(--amber); }
-    .decision-list { display: grid; gap: 8px; margin-top: 9px; }
+    .decision-output { min-height: 260px; }
+    .decision-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 11px; margin-top: 9px; align-items: stretch; }
     .decision-row {
       border: 1px solid rgba(63, 85, 80, .82);
-      background: rgba(8, 13, 15, .44);
-      border-radius: 6px;
-      padding: 9px;
+      background: linear-gradient(180deg, rgba(24, 35, 35, .78), rgba(8, 13, 15, .68));
+      border-radius: 7px;
+      padding: 12px;
     }
     .decision-head { display: flex; align-items: start; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
-    .decision-head strong { overflow-wrap: anywhere; }
-    .decision-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 7px 0; }
-    .decision-metric { border: 1px solid rgba(63, 85, 80, .58); border-radius: 6px; padding: 6px; background: rgba(17, 24, 25, .62); }
-    .decision-metric span { display: block; color: var(--muted); font-size: 11px; }
-    .decision-metric b { display: block; color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+    .decision-head strong { overflow-wrap: anywhere; font-size: 16px; line-height: 1.25; }
+    .decision-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 9px 0; }
+    .decision-metric { border: 1px solid rgba(63, 85, 80, .58); border-radius: 6px; padding: 8px; background: rgba(17, 24, 25, .62); min-height: 56px; }
+    .decision-metric span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+    .decision-metric b { display: block; color: var(--text); font-size: 13px; overflow-wrap: anywhere; margin-top: 2px; }
+    .decision-empty { border: 1px dashed rgba(63, 85, 80, .85); border-radius: 7px; padding: 24px; color: var(--muted); text-align: center; background: rgba(8, 13, 15, .34); }
+    .decision-counts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .decision-build { background: rgba(100, 196, 125, .16); color: var(--green); }
     .decision-source, .decision-stock { background: rgba(97, 199, 217, .16); color: var(--cyan); }
     .decision-price, .decision-watch { background: rgba(224, 168, 74, .16); color: var(--amber); }
@@ -3283,6 +3311,7 @@ def _render_flight_attendant_dashboard() -> str:
     @media (max-width: 1040px) {
       .market-grid, .flight-grid, .briefing { grid-template-columns: 1fr; }
       .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .profit-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
       .shell { width: auto; margin: 0 10px; }
@@ -3294,8 +3323,10 @@ def _render_flight_attendant_dashboard() -> str:
       .panel-header .pill { margin-top: 8px; }
       .panel-header .meta { max-width: 100%; }
       h1 { font-size: 24px; }
-      .row, .offer-grid, .ops-strip { grid-template-columns: 1fr; }
+      .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics { grid-template-columns: 1fr; }
       .offer, .note-card { grid-template-columns: 1fr; }
+      .profit-panel { min-height: 360px; }
+      .profit-actions { display: grid; grid-template-columns: 1fr; }
       .actions { justify-content: stretch; max-width: none; }
       .actions a, .actions button { flex: 1; }
     }
@@ -3454,21 +3485,6 @@ def _render_flight_attendant_dashboard() -> str:
                   <div id="flight-buyer-top" class="meta"></div>
                 </div>
                 <div class="module">
-                  <h3 class="warning">Profitability Ranking</h3>
-                  <button id="flight-profit-scan" class="ghost" type="button">Rank Profit</button>
-                  <div id="flight-profit-summary" class="meta">Connect ESI to rank owned blueprint profitability.</div>
-                  <div id="flight-profit-filters" class="decision-filters" role="group" aria-label="Profitability decision filters">
-                    <button class="secondary active" type="button" data-profit-filter="all">All</button>
-                    <button class="secondary" type="button" data-profit-filter="build-now">Build</button>
-                    <button class="secondary" type="button" data-profit-filter="source-missing">Buy Missing</button>
-                    <button class="secondary" type="button" data-profit-filter="use-stock">Use Stock</button>
-                    <button class="secondary" type="button" data-profit-filter="price-check">Price Check</button>
-                    <button class="secondary" type="button" data-profit-filter="watch">Watch</button>
-                    <button class="secondary" type="button" data-profit-filter="skip">Skip</button>
-                  </div>
-                  <div id="flight-profit-top" class="meta"></div>
-                </div>
-                <div class="module">
                   <h3 class="signal">Recipe Cache</h3>
                   <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
                   <div id="flight-buildability-top" class="meta"></div>
@@ -3508,6 +3524,32 @@ def _render_flight_attendant_dashboard() -> str:
               <button type="submit">Save Local Note</button>
             </form>
             <div id="flight-notes" class="note-list"></div>
+          </section>
+
+          <section class="panel profit-panel" aria-labelledby="flight-profit-title">
+            <div class="panel-header">
+              <div>
+                <div class="profit-title">
+                  <h2 id="flight-profit-title">Profitability Ranking</h2>
+                  <span class="pill reserved">Decision Board</span>
+                </div>
+                <div class="meta">Owned blueprints, owned materials, nearby buyers, and nearby material pricing.</div>
+              </div>
+            </div>
+            <div class="profit-actions">
+              <button id="flight-profit-scan" class="ghost" type="button">Rank Profit</button>
+              <div id="flight-profit-summary" class="profit-summary">Connect ESI to rank owned blueprint profitability.</div>
+            </div>
+            <div id="flight-profit-filters" class="decision-filters" role="group" aria-label="Profitability decision filters">
+              <button class="secondary active" type="button" data-profit-filter="all">All</button>
+              <button class="secondary" type="button" data-profit-filter="build-now">Build</button>
+              <button class="secondary" type="button" data-profit-filter="source-missing">Buy Missing</button>
+              <button class="secondary" type="button" data-profit-filter="use-stock">Use Stock</button>
+              <button class="secondary" type="button" data-profit-filter="price-check">Price Check</button>
+              <button class="secondary" type="button" data-profit-filter="watch">Watch</button>
+              <button class="secondary" type="button" data-profit-filter="skip">Skip</button>
+            </div>
+            <div id="flight-profit-top" class="decision-output"></div>
           </section>
 
           <section class="panel">
@@ -3904,13 +3946,18 @@ def _render_flight_attendant_dashboard() -> str:
       const decisionCounts = profitability.decision_counts || {};
       flightProfitProducts = Array.isArray(profitability.products) ? profitability.products : [];
       flightProfitSummary.innerHTML = `
-        <strong>${formatNumber(profitability.profitable_products)}</strong> profitable on replacement pricing;
-        <strong>${formatNumber(profitability.buildable_now_products)}</strong> buildable now.
-        <br>${formatNumber(profitability.products_with_buyers)} products have nearby buyers; scanned
-        ${formatNumber(profitability.scanned_products)} products and ${formatNumber(profitability.scanned_material_types)} material types.
-        ${escapeHtml(productLimit + materialLimit + regionLimit)}
-        <br>${renderDecisionCounts(decisionCounts)}
-        <br>${escapeHtml(profitability.pricing_note || "Profit ranking uses nearby public market orders.")}
+        <div class="profit-stats">
+          <div class="profit-stat"><span>Profitable</span><b>${formatNumber(profitability.profitable_products)}</b></div>
+          <div class="profit-stat"><span>Buildable</span><b>${formatNumber(profitability.buildable_now_products)}</b></div>
+          <div class="profit-stat"><span>Buyers</span><b>${formatNumber(profitability.products_with_buyers)}</b></div>
+          <div class="profit-stat"><span>Scanned</span><b>${formatNumber(profitability.scanned_products)}</b></div>
+        </div>
+        <div class="meta">
+          ${formatNumber(profitability.scanned_products)} products and ${formatNumber(profitability.scanned_material_types)} material types.
+          ${escapeHtml(productLimit + materialLimit + regionLimit)}
+        </div>
+        ${renderDecisionCounts(decisionCounts)}
+        <div class="meta">${escapeHtml(profitability.pricing_note || "Profit ranking uses nearby public market orders.")}</div>
       `;
       updateProfitFilterButtons();
       renderFilteredProfitabilityProducts();
@@ -3925,10 +3972,11 @@ def _render_flight_attendant_dashboard() -> str:
         ["watch", "Watch"],
         ["skip", "Skip"],
       ];
-      return labels
+      const badges = labels
         .filter(([code]) => Number(counts[code] || 0) > 0)
-        .map(([code, label]) => `${escapeHtml(label)} ${formatNumber(counts[code])}`)
-        .join(" | ") || "No decision buckets yet.";
+        .map(([code, label]) => `<span class="pill ${decisionClassName(code)}">${escapeHtml(label)} ${formatNumber(counts[code])}</span>`)
+        .join("");
+      return `<div class="decision-counts">${badges || '<span class="meta">No decision buckets yet.</span>'}</div>`;
     }
 
     function updateProfitFilterButtons() {
@@ -3947,7 +3995,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
 
     function renderProfitabilityProducts(products) {
-      if (!products.length) return "No matching profitability decisions yet.";
+      if (!products.length) return `<div class="decision-empty">No matching profitability decisions yet.</div>`;
       return `<div class="decision-list">${products.slice(0, 12).map((product) => {
         const decision = product.decision || {};
         const buyer = product.best_buyer

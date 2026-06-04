@@ -228,6 +228,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-profit-scan\"" in page
     assert "id=\"flight-profit-summary\"" in page
     assert "id=\"flight-profit-filters\"" in page
+    assert "class=\"panel profit-panel\"" in page
+    assert "id=\"flight-profit-top\" class=\"decision-output\"" in page
     assert "data-profit-filter=\"build-now\"" in page
     assert "data-profit-filter=\"source-missing\"" in page
     assert "data-profit-filter=\"price-check\"" in page
