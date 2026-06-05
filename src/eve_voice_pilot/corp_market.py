@@ -3313,8 +3313,11 @@ def build_http_server(
             except CorpMarketError as exc:
                 emit("scan_error", {"ok": False, "error": str(exc)})
                 return
-            emit("result", payload)
-            emit("done", {"ok": True, "generated_at": now_iso()})
+            try:
+                emit("result", payload)
+                emit("done", {"ok": True, "generated_at": now_iso()})
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
         def _handle_flight_login(self) -> None:
             if not sso_config.enabled:
@@ -5345,6 +5348,7 @@ def _render_flight_attendant_dashboard() -> str:
         const payload = parseHaulProgressEvent(event);
         haulScanFinished = true;
         closeHaulEventSource();
+        appendHaulProgress("Stopped", {message: payload.error || "Route scan failed."});
         haulRouteSummary.textContent = payload.error || "Route scan failed.";
         haulOpportunitySummary.textContent = "Route scan failed.";
         haulOpportunityTop.textContent = "";
@@ -5361,6 +5365,7 @@ def _render_flight_attendant_dashboard() -> str:
       haulEventSource.onerror = () => {
         if (haulScanFinished) return;
         closeHaulEventSource();
+        appendHaulProgress("Stopped", {message: "Route scan connection closed before results arrived."});
         haulRouteSummary.textContent = "Route scan connection closed before results arrived.";
         haulOpportunitySummary.textContent = "Route scan failed.";
         haulOpportunityTop.textContent = "";
