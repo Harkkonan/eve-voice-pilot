@@ -243,6 +243,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Prefer safer" in page
     assert "id=\"haul-avoid-pod-kills\"" in page
     assert "Avoid recent pod kills" in page
+    assert "Warning: if no route can avoid recent pod kills, the scan falls back to the shortest route." in page
     assert "id=\"haul-min-margin\"" in page
     assert "id=\"haul-min-margin-value\"" in page
     assert "id=\"haul-progress-log\"" in page

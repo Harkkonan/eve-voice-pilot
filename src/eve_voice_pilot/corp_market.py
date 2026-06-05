@@ -4416,8 +4416,10 @@ def _render_flight_attendant_dashboard() -> str:
       border-color: rgba(97, 199, 217, .72);
     }
     input[type="checkbox"] { width: auto; accent-color: var(--cyan); }
-    .checkline { display: flex; align-items: center; gap: 10px; min-height: 42px; }
+    .checkline { display: flex; align-items: flex-start; gap: 10px; min-height: 42px; }
+    .checkline input { margin-top: 3px; }
     .checkline span { color: var(--muted); }
+    .checkline small { display: block; color: var(--amber); font-size: 12px; line-height: 1.35; margin-top: 3px; }
     textarea { min-height: 150px; resize: vertical; }
     button {
       border: 0;
@@ -4992,7 +4994,10 @@ def _render_flight_attendant_dashboard() -> str:
                 </label>
                 <label class="checkline">
                   <input id="haul-avoid-pod-kills" name="avoid_recent_pod_kills" type="checkbox">
-                  <span>Avoid recent pod kills</span>
+                  <span>
+                    Avoid recent pod kills
+                    <small>Warning: if no route can avoid recent pod kills, the scan falls back to the shortest route.</small>
+                  </span>
                 </label>
               </div>
               <div class="row">
