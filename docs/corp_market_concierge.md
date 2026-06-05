@@ -39,6 +39,7 @@ The first version is a safe briefing surface:
 - It can scan public ESI buy orders for products made by owned blueprints and filter those buyer orders to the selected jump range.
 - It includes a `Hauler Routes` tab that compares cheap public material sell orders on or near a selected route with higher public buy orders in the destination system.
 - It includes a `Market Acquisition Planner` tab that compares public buy/sell orders with public market history before suggesting public buy-order ceilings, first-order size, and collection range.
+- It includes an `Ore Reprocessing` tab that uses ESI location, skills, standings, and implants plus local SDE ore data to estimate mineral output from a typed ore amount.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
@@ -61,6 +62,9 @@ esi-assets.read_assets.v1
 esi-characters.read_blueprints.v1
 esi-skills.read_skills.v1
 esi-characters.read_standings.v1
+esi-clones.read_implants.v1
+esi-universe.read_structures.v1
+esi-wallet.read_character_wallet.v1
 ```
 
 Start the market board with your SSO app credentials, either through environment variables:
@@ -117,7 +121,7 @@ $env:CORP_MARKET_ADMIN_TOKEN = "change-this-token"
 
 ### Local Static Data Caches
 
-Flight Attendant uses ESI to learn your actual location, owned blueprints, and materials. It uses CCP's Static Data Export for blueprint recipes and jump-aware route math. Build or refresh the local static caches from PowerShell:
+Flight Attendant uses ESI to learn your actual location, owned blueprints, materials, reprocessing skills, standings, and implants. It uses CCP's Static Data Export for blueprint recipes, jump-aware route math, ore portions, mineral outputs, and NPC station reprocessing values. Build or refresh the local static caches from PowerShell:
 
 ```powershell
 python .\scripts\update_industry_recipe_cache.py
@@ -128,9 +132,24 @@ The generated caches are written to ignored local data:
 ```text
 cache\eve_industry_recipes.json
 cache\eve_route_graph.json
+cache\eve_reprocessing.json
 ```
 
-If these caches are missing, the Flight Attendant tab still requires ESI and will show the data it can safely fetch, but recipe matching, buildability previews, and jump-aware nearby system coverage will stay unavailable. Refresh the cache after updates that add static fields such as `volume_m3`, `max_production_limit`, required skills, or job time.
+If these caches are missing, the Flight Attendant tab still requires ESI and will show the data it can safely fetch, but recipe matching, buildability previews, jump-aware nearby system coverage, and ore reprocessing estimates will stay unavailable. Refresh the cache after updates that add static fields such as `volume_m3`, `max_production_limit`, required skills, job time, ore portions, or station reprocessing values.
+
+### Ore Reprocessing Calculator
+
+The `Ore Reprocessing` tab estimates mineral output from an ore type and ore-unit amount. It can automatically use:
+
+- current system, station, or structure from ESI location;
+- Reprocessing, Reprocessing Efficiency, and ore-processing skill levels from ESI skills;
+- NPC corporation or faction standing from ESI standings for NPC station tax reduction;
+- known Zainou Beancounter reprocessing implants from ESI implants;
+- ore portion size, material outputs, and NPC station base yield/tax from the local SDE cache.
+
+For NPC stations, the calculator applies the station's SDE reprocessing efficiency and station take, then reduces station take by the connected pilot's ESI standing where possible. For Upwell structures, ESI can resolve the current structure name/owner if the pilot has access, but it does not expose the active reprocessing rig, facility tax, service settings, or structure bonus. Use the manual override fields for those structure values.
+
+This tab is advisory only. It never starts a reprocessing job, moves items, presses keys, places orders, or writes to the EVE client.
 
 ### Buyer Order Scanner
 

@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
 DEFAULT_INDUSTRY_RECIPE_CACHE_PATH = ROOT / "cache" / "eve_industry_recipes.json"
 DEFAULT_ROUTE_GRAPH_CACHE_PATH = ROOT / "cache" / "eve_route_graph.json"
+DEFAULT_REPROCESSING_CACHE_PATH = ROOT / "cache" / "eve_reprocessing.json"
 DEFAULT_STATIC_DATA_ZIP_PATH = ROOT / "cache" / "eve-online-static-data-3374020-jsonl.zip"
 STATIC_ASSET_ROOT = ROOT / "src" / "eve_voice_pilot" / "static"
 DEFAULT_PORT = 8770
@@ -92,6 +93,8 @@ FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
 FLIGHT_SKILLS_SCOPE = "esi-skills.read_skills.v1"
 FLIGHT_STANDINGS_SCOPE = "esi-characters.read_standings.v1"
+FLIGHT_IMPLANTS_SCOPE = "esi-clones.read_implants.v1"
+FLIGHT_STRUCTURES_SCOPE = "esi-universe.read_structures.v1"
 FLIGHT_WALLET_SCOPE = "esi-wallet.read_character_wallet.v1"
 DEFAULT_FLIGHT_ESI_SCOPES = (
     FLIGHT_LOCATION_SCOPE,
@@ -99,9 +102,23 @@ DEFAULT_FLIGHT_ESI_SCOPES = (
     FLIGHT_BLUEPRINTS_SCOPE,
     FLIGHT_SKILLS_SCOPE,
     FLIGHT_STANDINGS_SCOPE,
+    FLIGHT_IMPLANTS_SCOPE,
+    FLIGHT_STRUCTURES_SCOPE,
     FLIGHT_WALLET_SCOPE,
 )
 ACCOUNTING_SKILL_TYPE_ID = 16622
+REPROCESSING_SKILL_TYPE_ID = 3385
+REPROCESSING_EFFICIENCY_SKILL_TYPE_ID = 3389
+REPROCESSING_IMPLANT_BONUSES = {
+    27175: 1.0,  # Zainou 'Beancounter' Reprocessing RX-801
+    27169: 2.0,  # Zainou 'Beancounter' Reprocessing RX-802
+    27174: 4.0,  # Zainou 'Beancounter' Reprocessing RX-804
+}
+DEFAULT_REPROCESSING_FACILITY_YIELD_PERCENT = 50.0
+MAX_REPROCESSING_ORE_UNITS = 1_000_000_000_000
+MAX_REPROCESSING_FACILITY_YIELD_PERCENT = 100.0
+MAX_REPROCESSING_BONUS_PERCENT = 100.0
+MAX_REPROCESSING_TAX_PERCENT = 100.0
 BASE_SALES_TAX_RATE = 0.075
 ACCOUNTING_SALES_TAX_REDUCTION_PER_LEVEL = 0.11
 TRADE_PNL_MARKET_FEE_REF_TYPES = frozenset(
@@ -339,6 +356,8 @@ SYSTEM_KILLS_CACHE_LOCK = threading.Lock()
 SYSTEM_KILLS_CACHE: dict[str, tuple[float, tuple[int, ...]]] = {}
 STATIC_MARKET_DATA_LOCK = threading.Lock()
 STATIC_MARKET_DATA_CACHE: dict[tuple[str, float, int], "StaticMarketData"] = {}
+REPROCESSING_CACHE_LOCK = threading.Lock()
+REPROCESSING_CACHE_CACHE: dict[tuple[str, float, int], "ReprocessingCache"] = {}
 MARKET_GROUP_DETAIL_CACHE_LOCK = threading.Lock()
 MARKET_GROUP_DETAIL_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
 MARKET_TYPE_DETAIL_CACHE_LOCK = threading.Lock()
@@ -620,6 +639,181 @@ class IndustryRecipeCache:
             "release_date": self.release_date,
             "generated_at": self.generated_at,
             "recipe_count": self.recipe_count,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
+class ReprocessingMaterial:
+    type_id: int
+    name: str
+    quantity: int
+    volume_m3: float | None = None
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ReprocessingMaterial | None":
+        try:
+            type_id = int(payload.get("type_id") or payload.get("typeID") or 0)
+            quantity = int(payload.get("quantity") or 0)
+        except (TypeError, ValueError):
+            return None
+        if type_id <= 0 or quantity <= 0:
+            return None
+        volume_m3 = clean_optional_float(payload.get("volume_m3") or payload.get("volume"))
+        if volume_m3 is not None and volume_m3 <= 0:
+            volume_m3 = None
+        name = str(payload.get("name") or "").strip()
+        return cls(type_id=type_id, name=name or f"Type {type_id}", quantity=quantity, volume_m3=volume_m3)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"type_id": self.type_id, "name": self.name, "quantity": self.quantity}
+        if self.volume_m3 is not None:
+            payload["volume_m3"] = self.volume_m3
+        return payload
+
+
+@dataclass(frozen=True)
+class ReprocessingOre:
+    type_id: int
+    name: str
+    group_id: int
+    group_name: str
+    portion_size: int
+    specialization_skill_type_id: int
+    specialization_skill_name: str
+    materials: tuple[ReprocessingMaterial, ...]
+    market_group_id: int | None = None
+    volume_m3: float | None = None
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ReprocessingOre | None":
+        try:
+            type_id = int(payload.get("type_id") or payload.get("typeID") or 0)
+            group_id = int(payload.get("group_id") or payload.get("groupID") or 0)
+            portion_size = int(payload.get("portion_size") or payload.get("portionSize") or 0)
+            skill_type_id = int(
+                payload.get("specialization_skill_type_id") or payload.get("specializationSkillTypeID") or 0
+            )
+        except (TypeError, ValueError):
+            return None
+        materials = tuple(
+            material
+            for item in payload.get("materials", [])
+            if isinstance(item, dict)
+            for material in [ReprocessingMaterial.from_dict(item)]
+            if material is not None
+        )
+        if type_id <= 0 or group_id <= 0 or portion_size <= 0 or skill_type_id <= 0 or not materials:
+            return None
+        volume_m3 = clean_optional_float(payload.get("volume_m3") or payload.get("volume"))
+        if volume_m3 is not None and volume_m3 <= 0:
+            volume_m3 = None
+        return cls(
+            type_id=type_id,
+            name=str(payload.get("name") or "").strip() or f"Ore {type_id}",
+            group_id=group_id,
+            group_name=str(payload.get("group_name") or payload.get("groupName") or "").strip()
+            or f"Group {group_id}",
+            market_group_id=clean_optional_int(payload.get("market_group_id") or payload.get("marketGroupID")),
+            portion_size=portion_size,
+            volume_m3=volume_m3,
+            specialization_skill_type_id=skill_type_id,
+            specialization_skill_name=str(
+                payload.get("specialization_skill_name") or payload.get("specializationSkillName") or ""
+            ).strip()
+            or f"Skill {skill_type_id}",
+            materials=materials,
+        )
+
+    def to_option_dict(self) -> dict[str, Any]:
+        return {
+            "type_id": self.type_id,
+            "name": self.name,
+            "group_name": self.group_name,
+            "portion_size": self.portion_size,
+            "volume_m3": self.volume_m3,
+            "specialization_skill_type_id": self.specialization_skill_type_id,
+            "specialization_skill_name": self.specialization_skill_name,
+        }
+
+
+@dataclass(frozen=True)
+class ReprocessingStation:
+    station_id: int
+    owner_id: int | None = None
+    owner_name: str = ""
+    owner_faction_id: int | None = None
+    solar_system_id: int | None = None
+    type_id: int | None = None
+    reprocessing_efficiency: float | None = None
+    reprocessing_tax_rate: float | None = None
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ReprocessingStation | None":
+        try:
+            station_id = int(payload.get("station_id") or payload.get("stationID") or 0)
+        except (TypeError, ValueError):
+            return None
+        if station_id <= 0:
+            return None
+        reprocessing_efficiency = payload.get("reprocessing_efficiency")
+        if reprocessing_efficiency is None:
+            reprocessing_efficiency = payload.get("reprocessingEfficiency")
+        reprocessing_tax_rate = payload.get("reprocessing_tax_rate")
+        if reprocessing_tax_rate is None:
+            reprocessing_tax_rate = payload.get("reprocessingStationsTake")
+        return cls(
+            station_id=station_id,
+            owner_id=clean_optional_int(payload.get("owner_id") or payload.get("ownerID")),
+            owner_name=str(payload.get("owner_name") or payload.get("ownerName") or ""),
+            owner_faction_id=clean_optional_int(payload.get("owner_faction_id") or payload.get("ownerFactionID")),
+            solar_system_id=clean_optional_int(payload.get("solar_system_id") or payload.get("solarSystemID")),
+            type_id=clean_optional_int(payload.get("type_id") or payload.get("typeID")),
+            reprocessing_efficiency=clean_optional_float(reprocessing_efficiency),
+            reprocessing_tax_rate=clean_optional_float(reprocessing_tax_rate),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "station_id": self.station_id,
+            "owner_id": self.owner_id,
+            "owner_name": self.owner_name,
+            "owner_faction_id": self.owner_faction_id,
+            "solar_system_id": self.solar_system_id,
+            "type_id": self.type_id,
+            "reprocessing_efficiency": self.reprocessing_efficiency,
+            "reprocessing_tax_rate": self.reprocessing_tax_rate,
+        }
+
+
+@dataclass(frozen=True)
+class ReprocessingCache:
+    path: Path
+    available: bool
+    build_number: int | None = None
+    release_date: str = ""
+    generated_at: str = ""
+    ores: dict[int, ReprocessingOre] | None = None
+    stations: dict[int, ReprocessingStation] | None = None
+    error: str = ""
+
+    @property
+    def ore_count(self) -> int:
+        return len(self.ores or {})
+
+    @property
+    def station_count(self) -> int:
+        return len(self.stations or {})
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "path": str(self.path),
+            "build_number": self.build_number,
+            "release_date": self.release_date,
+            "generated_at": self.generated_at,
+            "ore_count": self.ore_count,
+            "station_count": self.station_count,
             "error": self.error,
         }
 
@@ -1478,6 +1672,69 @@ def fetch_flight_skills(config: EveSsoConfig, session: FlightEsiSession) -> dict
     return payload
 
 
+def fetch_flight_standings(config: EveSsoConfig, session: FlightEsiSession) -> list[dict[str, Any]]:
+    require_flight_scopes(session, (FLIGHT_STANDINGS_SCOPE,))
+    base_url = config.esi_base_url.rstrip("/")
+    payload = get_json(
+        f"{base_url}/characters/{session.character_id}/standings/?datasource=tranquility",
+        timeout_seconds=30.0,
+        headers=flight_esi_headers(session.access_token),
+    )
+    if not isinstance(payload, list):
+        raise CorpMarketError("ESI standings endpoint returned unexpected data.")
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def fetch_flight_implants(config: EveSsoConfig, session: FlightEsiSession) -> list[int]:
+    require_flight_scopes(session, (FLIGHT_IMPLANTS_SCOPE,))
+    base_url = config.esi_base_url.rstrip("/")
+    payload = get_json(
+        f"{base_url}/characters/{session.character_id}/implants/?datasource=tranquility",
+        timeout_seconds=30.0,
+        headers=flight_esi_headers(session.access_token),
+    )
+    if not isinstance(payload, list):
+        raise CorpMarketError("ESI implants endpoint returned unexpected data.")
+    implant_ids: list[int] = []
+    for item in payload:
+        try:
+            type_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if type_id > 0:
+            implant_ids.append(type_id)
+    return implant_ids
+
+
+def fetch_universe_structure(config: EveSsoConfig, session: FlightEsiSession, structure_id: int) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_STRUCTURES_SCOPE,))
+    if structure_id <= 0:
+        raise CorpMarketError("Structure id is required.")
+    base_url = config.esi_base_url.rstrip("/")
+    payload = get_json(
+        f"{base_url}/universe/structures/{structure_id}/?datasource=tranquility",
+        timeout_seconds=30.0,
+        headers=flight_esi_headers(session.access_token),
+    )
+    if not isinstance(payload, dict):
+        raise CorpMarketError("ESI structure endpoint returned unexpected data.")
+    return payload
+
+
+def fetch_universe_station(config: EveSsoConfig, station_id: int) -> dict[str, Any]:
+    if station_id <= 0:
+        raise CorpMarketError("Station id is required.")
+    base_url = config.esi_base_url.rstrip("/")
+    payload = get_json(
+        f"{base_url}/universe/stations/{station_id}/?datasource=tranquility",
+        timeout_seconds=30.0,
+        headers=flight_esi_headers(),
+    )
+    if not isinstance(payload, dict):
+        raise CorpMarketError("ESI station endpoint returned unexpected data.")
+    return payload
+
+
 def localized_name(payload: Any, fallback: str = "") -> str:
     if isinstance(payload, dict):
         return str(payload.get("en") or payload.get("en-us") or next(iter(payload.values()), fallback) or fallback)
@@ -2179,6 +2436,68 @@ def load_industry_recipe_cache(cache_path: Path = DEFAULT_INDUSTRY_RECIPE_CACHE_
         generated_at=str(payload.get("generated_at") or ""),
         recipes=recipes,
     )
+
+
+def load_reprocessing_cache(cache_path: Path = DEFAULT_REPROCESSING_CACHE_PATH) -> ReprocessingCache:
+    path = Path(cache_path)
+    if not path.exists():
+        return ReprocessingCache(path=path, available=False, error="Reprocessing cache file is missing.")
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        return ReprocessingCache(path=path, available=False, error=f"Reprocessing cache could not be read: {exc}")
+    cache_key = (str(path.resolve()), stat.st_mtime, stat.st_size)
+    with REPROCESSING_CACHE_LOCK:
+        cached = REPROCESSING_CACHE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        return ReprocessingCache(path=path, available=False, error=f"Reprocessing cache could not be read: {exc}")
+    if not isinstance(payload, dict):
+        return ReprocessingCache(path=path, available=False, error="Reprocessing cache has unexpected format.")
+
+    ores_payload = payload.get("ores")
+    if not isinstance(ores_payload, dict):
+        return ReprocessingCache(path=path, available=False, error="Reprocessing cache is missing ores.")
+    ores: dict[int, ReprocessingOre] = {}
+    for item in ores_payload.values():
+        if not isinstance(item, dict):
+            continue
+        ore = ReprocessingOre.from_dict(item)
+        if ore is not None:
+            ores[ore.type_id] = ore
+    if not ores:
+        return ReprocessingCache(path=path, available=False, error="Reprocessing cache has no usable ore records.")
+
+    stations: dict[int, ReprocessingStation] = {}
+    stations_payload = payload.get("stations")
+    if isinstance(stations_payload, dict):
+        for item in stations_payload.values():
+            if not isinstance(item, dict):
+                continue
+            station = ReprocessingStation.from_dict(item)
+            if station is not None:
+                stations[station.station_id] = station
+    try:
+        build_number = int(payload.get("build_number") or payload.get("buildNumber") or 0) or None
+    except (TypeError, ValueError):
+        build_number = None
+    cache = ReprocessingCache(
+        path=path,
+        available=True,
+        build_number=build_number,
+        release_date=str(payload.get("release_date") or payload.get("releaseDate") or ""),
+        generated_at=str(payload.get("generated_at") or ""),
+        ores=ores,
+        stations=stations,
+    )
+    with REPROCESSING_CACHE_LOCK:
+        REPROCESSING_CACHE_CACHE.clear()
+        REPROCESSING_CACHE_CACHE[cache_key] = cache
+    return cache
 
 
 def build_recipe_buildability(
@@ -4810,6 +5129,384 @@ def build_sales_tax_profile(skills_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_flight_reprocessing_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    ore_type_id: int,
+    quantity: int,
+    facility_yield_percent: float | None = None,
+    station_tax_percent: float | None = None,
+    implant_bonus_percent: float | None = None,
+    structure_bonus_percent: float = 0.0,
+) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE, FLIGHT_STANDINGS_SCOPE))
+    cache = load_reprocessing_cache()
+    if not cache.available or not cache.ores:
+        raise CorpMarketError(cache.error or "Reprocessing cache is not available.")
+    ore = cache.ores.get(int(ore_type_id))
+    if ore is None:
+        raise CorpMarketError("Choose an ore type from the reprocessing cache.")
+
+    clean_quantity = clean_reprocessing_quantity(quantity)
+    skills = fetch_flight_skills(config, session)
+    standings = fetch_flight_standings(config, session)
+    location = fetch_flight_location(config, session)
+    implant_profile = build_reprocessing_implant_profile(
+        config,
+        session,
+        implant_bonus_percent=implant_bonus_percent,
+    )
+    location_profile = build_reprocessing_location_profile(
+        config,
+        session,
+        cache=cache,
+        location=location,
+        standings=standings,
+        facility_yield_percent=facility_yield_percent,
+        station_tax_percent=station_tax_percent,
+    )
+    skill_profile = build_reprocessing_skill_profile(skills, ore)
+    clean_structure_bonus_percent = clamp_reprocessing_percent(
+        structure_bonus_percent,
+        "structure bonus percent",
+        maximum=MAX_REPROCESSING_BONUS_PERCENT,
+    )
+
+    facility_yield_rate = location_profile["facility_yield_percent"] / 100.0
+    raw_yield_rate = (
+        facility_yield_rate
+        * (1.0 + 0.03 * skill_profile["reprocessing_level"])
+        * (1.0 + 0.02 * skill_profile["reprocessing_efficiency_level"])
+        * (1.0 + 0.02 * skill_profile["specialization_level"])
+        * (1.0 + implant_profile["bonus_percent"] / 100.0)
+        * (1.0 + clean_structure_bonus_percent / 100.0)
+    )
+    gross_yield_rate = min(max(raw_yield_rate, 0.0), 1.0)
+    tax_rate = max(0.0, min(1.0, location_profile["station_tax_percent"] / 100.0))
+    net_yield_rate = gross_yield_rate * (1.0 - tax_rate)
+    portions = clean_quantity // ore.portion_size
+    leftover_units = clean_quantity % ore.portion_size
+    output_materials = []
+    for material in ore.materials:
+        base_quantity = material.quantity * portions
+        gross_quantity = int(base_quantity * gross_yield_rate)
+        net_quantity = int(base_quantity * net_yield_rate)
+        output_materials.append(
+            {
+                "type_id": material.type_id,
+                "name": material.name,
+                "base_quantity": base_quantity,
+                "gross_quantity": gross_quantity,
+                "station_tax_quantity": max(0, gross_quantity - net_quantity),
+                "net_quantity": net_quantity,
+                "volume_m3": material.volume_m3,
+            }
+        )
+
+    notes = [
+        "Uses ESI location, skills, standings, and implants when the connected session has those scopes.",
+        "Uses CCP static data for ore portions, material outputs, and NPC station reprocessing values.",
+    ]
+    notes.extend(location_profile.get("notes", []))
+    notes.extend(implant_profile.get("notes", []))
+    if raw_yield_rate > 1.0:
+        notes.append("Calculated yield exceeded 100%, so output was capped at 100%.")
+    if leftover_units:
+        notes.append(f"{leftover_units:,} ore unit(s) are below the full reprocessing portion and stay unprocessed.")
+
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "location": location,
+        "cache": cache.to_public_dict(),
+        "ore": {
+            "type_id": ore.type_id,
+            "name": ore.name,
+            "group_id": ore.group_id,
+            "group_name": ore.group_name,
+            "portion_size": ore.portion_size,
+            "volume_m3": ore.volume_m3,
+            "specialization_skill_type_id": ore.specialization_skill_type_id,
+            "specialization_skill_name": ore.specialization_skill_name,
+        },
+        "input": {
+            "quantity": clean_quantity,
+            "portion_size": ore.portion_size,
+            "portions": portions,
+            "leftover_units": leftover_units,
+        },
+        "skills": skill_profile,
+        "implant": implant_profile,
+        "facility": {
+            **location_profile,
+            "structure_bonus_percent": clean_structure_bonus_percent,
+        },
+        "yield": {
+            "raw_yield_rate": raw_yield_rate,
+            "gross_yield_rate": gross_yield_rate,
+            "gross_yield_percent": gross_yield_rate * 100.0,
+            "station_tax_rate": tax_rate,
+            "station_tax_percent": tax_rate * 100.0,
+            "net_yield_rate": net_yield_rate,
+            "net_yield_percent": net_yield_rate * 100.0,
+            "capped": raw_yield_rate > gross_yield_rate,
+        },
+        "materials": output_materials,
+        "notes": notes,
+    }
+
+
+def build_reprocessing_skill_profile(skills_payload: dict[str, Any], ore: ReprocessingOre) -> dict[str, Any]:
+    reprocessing_level = skill_level_from_esi(skills_payload, REPROCESSING_SKILL_TYPE_ID)
+    efficiency_level = skill_level_from_esi(skills_payload, REPROCESSING_EFFICIENCY_SKILL_TYPE_ID)
+    specialization_level = skill_level_from_esi(skills_payload, ore.specialization_skill_type_id)
+    return {
+        "reprocessing_skill_type_id": REPROCESSING_SKILL_TYPE_ID,
+        "reprocessing_level": reprocessing_level,
+        "reprocessing_multiplier": 1.0 + 0.03 * reprocessing_level,
+        "reprocessing_efficiency_skill_type_id": REPROCESSING_EFFICIENCY_SKILL_TYPE_ID,
+        "reprocessing_efficiency_level": efficiency_level,
+        "reprocessing_efficiency_multiplier": 1.0 + 0.02 * efficiency_level,
+        "specialization_skill_type_id": ore.specialization_skill_type_id,
+        "specialization_skill_name": ore.specialization_skill_name,
+        "specialization_level": specialization_level,
+        "specialization_multiplier": 1.0 + 0.02 * specialization_level,
+        "source": FLIGHT_SKILLS_SCOPE,
+    }
+
+
+def build_reprocessing_implant_profile(
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    *,
+    implant_bonus_percent: float | None,
+) -> dict[str, Any]:
+    if implant_bonus_percent is not None:
+        bonus = clamp_reprocessing_percent(
+            implant_bonus_percent,
+            "implant bonus percent",
+            maximum=MAX_REPROCESSING_BONUS_PERCENT,
+        )
+        return {
+            "source": "manual-override",
+            "implant_type_id": None,
+            "bonus_percent": bonus,
+            "notes": ["Implant bonus was supplied as a manual override."],
+        }
+    if FLIGHT_IMPLANTS_SCOPE not in session.scopes:
+        return {
+            "source": "not-scoped",
+            "implant_type_id": None,
+            "bonus_percent": 0.0,
+            "notes": [f"Reconnect ESI with {FLIGHT_IMPLANTS_SCOPE} to read a reprocessing implant automatically."],
+        }
+    implants = fetch_flight_implants(config, session)
+    best_implant_id = None
+    best_bonus = 0.0
+    for implant_id in implants:
+        bonus = REPROCESSING_IMPLANT_BONUSES.get(implant_id, 0.0)
+        if bonus > best_bonus:
+            best_bonus = bonus
+            best_implant_id = implant_id
+    return {
+        "source": FLIGHT_IMPLANTS_SCOPE,
+        "implant_type_id": best_implant_id,
+        "bonus_percent": best_bonus,
+        "notes": [] if best_implant_id else ["No known reprocessing implant was returned by ESI."],
+    }
+
+
+def build_reprocessing_location_profile(
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    *,
+    cache: ReprocessingCache,
+    location: dict[str, Any],
+    standings: Iterable[dict[str, Any]],
+    facility_yield_percent: float | None,
+    station_tax_percent: float | None,
+) -> dict[str, Any]:
+    notes: list[str] = []
+    station_id = clean_optional_int(location.get("station_id"))
+    structure_id = clean_optional_int(location.get("structure_id"))
+    station = (cache.stations or {}).get(station_id or 0)
+    station_detail: dict[str, Any] = {}
+    structure_detail: dict[str, Any] = {}
+    owner_id = station.owner_id if station else None
+    owner_name = station.owner_name if station else ""
+    location_name = ""
+    location_kind = "space"
+    source = "default"
+    base_yield_percent = DEFAULT_REPROCESSING_FACILITY_YIELD_PERCENT
+    base_station_tax_rate = 0.0
+    standing_value = None
+    standing_source = ""
+
+    if station_id:
+        location_kind = "npc-station"
+        source = "sde-npc-station"
+        try:
+            station_detail = fetch_universe_station(config, station_id)
+        except CorpMarketError as exc:
+            notes.append(f"Could not read ESI station name/details: {exc}")
+        location_name = str(station_detail.get("name") or f"Station {station_id}")
+        if owner_id is None:
+            owner_id = clean_optional_int(station_detail.get("owner") or station_detail.get("owner_id"))
+        if station and station.reprocessing_efficiency is not None:
+            base_yield_percent = station.reprocessing_efficiency * 100.0
+        else:
+            notes.append("NPC station reprocessing efficiency was not found in the static cache; using 50%.")
+        if station and station.reprocessing_tax_rate is not None:
+            base_station_tax_rate = station.reprocessing_tax_rate
+        if not owner_name and owner_id:
+            try:
+                owner_name = fetch_universe_names(config, [owner_id]).get(owner_id, "")
+            except CorpMarketError:
+                owner_name = ""
+        standing_value, standing_source = reprocessing_station_standing(standings, station=station, owner_id=owner_id)
+    elif structure_id:
+        location_kind = "structure"
+        source = "structure-default"
+        location_name = f"Structure {structure_id}"
+        if FLIGHT_STRUCTURES_SCOPE in session.scopes:
+            try:
+                structure_detail = fetch_universe_structure(config, session, structure_id)
+                location_name = str(structure_detail.get("name") or location_name)
+                owner_id = clean_optional_int(structure_detail.get("owner_id"))
+                if owner_id:
+                    owner_name = fetch_universe_names(config, [owner_id]).get(owner_id, "")
+            except CorpMarketError as exc:
+                notes.append(f"Could not resolve ESI structure details: {exc}")
+        else:
+            notes.append(f"Reconnect ESI with {FLIGHT_STRUCTURES_SCOPE} to resolve the current Upwell structure name/owner.")
+        notes.append("ESI does not expose this structure's reprocessing rigs, facility tax, or service settings here.")
+    else:
+        notes.append("ESI location did not report a station or structure; using default facility assumptions.")
+
+    if facility_yield_percent is not None:
+        base_yield_percent = clamp_reprocessing_percent(
+            facility_yield_percent,
+            "facility yield percent",
+            maximum=MAX_REPROCESSING_FACILITY_YIELD_PERCENT,
+        )
+        source = "manual-facility-yield"
+        notes.append("Facility yield was supplied as a manual override.")
+    else:
+        base_yield_percent = clamp_reprocessing_percent(
+            base_yield_percent,
+            "facility yield percent",
+            maximum=MAX_REPROCESSING_FACILITY_YIELD_PERCENT,
+        )
+
+    if station_tax_percent is not None:
+        tax_percent = clamp_reprocessing_percent(
+            station_tax_percent,
+            "station tax percent",
+            maximum=MAX_REPROCESSING_TAX_PERCENT,
+        )
+        tax_source = "manual-override"
+        notes.append("Station tax was supplied as a manual override.")
+    elif location_kind == "npc-station":
+        tax_rate = npc_reprocessing_station_tax_rate(base_station_tax_rate, standing_value)
+        tax_percent = tax_rate * 100.0
+        tax_source = "esi-standings-and-sde-station-take"
+    else:
+        tax_percent = 0.0
+        tax_source = "default-no-tax"
+
+    return {
+        "location_kind": location_kind,
+        "location_id": station_id or structure_id,
+        "location_name": location_name,
+        "source": source,
+        "facility_yield_percent": base_yield_percent,
+        "station_tax_percent": tax_percent,
+        "station_tax_source": tax_source,
+        "base_station_tax_percent": base_station_tax_rate * 100.0,
+        "owner_id": owner_id,
+        "owner_name": owner_name,
+        "standing": standing_value,
+        "standing_source": standing_source,
+        "station": station.to_dict() if station else None,
+        "structure": {
+            "name": structure_detail.get("name"),
+            "owner_id": structure_detail.get("owner_id"),
+            "solar_system_id": structure_detail.get("solar_system_id"),
+            "type_id": structure_detail.get("type_id"),
+        }
+        if structure_detail
+        else None,
+        "notes": notes,
+    }
+
+
+def reprocessing_station_standing(
+    standings: Iterable[dict[str, Any]],
+    *,
+    station: ReprocessingStation | None,
+    owner_id: int | None,
+) -> tuple[float | None, str]:
+    owner_id = owner_id or (station.owner_id if station else None)
+    if owner_id:
+        corporation_standing = standing_for_entity(standings, from_id=owner_id, from_type="corporation")
+        if corporation_standing is not None:
+            return corporation_standing, "owner-corporation"
+    if station and station.owner_faction_id:
+        faction_standing = standing_for_entity(standings, from_id=station.owner_faction_id, from_type="faction")
+        if faction_standing is not None:
+            return faction_standing, "owner-faction"
+    return None, ""
+
+
+def standing_for_entity(standings: Iterable[dict[str, Any]], *, from_id: int, from_type: str) -> float | None:
+    for item in standings:
+        if not isinstance(item, dict):
+            continue
+        if clean_optional_int(item.get("from_id")) != int(from_id):
+            continue
+        if str(item.get("from_type") or "").casefold() != from_type.casefold():
+            continue
+        standing = clean_optional_float(item.get("standing"))
+        if standing is not None:
+            return standing
+    return None
+
+
+def npc_reprocessing_station_tax_rate(base_tax_rate: float, standing: float | None) -> float:
+    clean_base = max(0.0, min(1.0, float(base_tax_rate or 0.0)))
+    if standing is None:
+        return clean_base
+    return max(0.0, min(1.0, clean_base - (0.0075 * float(standing))))
+
+
+def clean_reprocessing_quantity(value: Any) -> int:
+    try:
+        quantity = int(str(value).replace(",", "").strip())
+    except (TypeError, ValueError) as exc:
+        raise CorpMarketError("Ore quantity must be a whole number.") from exc
+    if quantity <= 0:
+        raise CorpMarketError("Ore quantity must be greater than zero.")
+    return min(quantity, MAX_REPROCESSING_ORE_UNITS)
+
+
+def parse_optional_reprocessing_percent(value: Any, field: str, *, maximum: float) -> float | None:
+    if value is None or str(value).strip() == "":
+        return None
+    return clamp_reprocessing_percent(value, field, maximum=maximum)
+
+
+def clamp_reprocessing_percent(value: Any, field: str, *, maximum: float) -> float:
+    try:
+        percent = float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError) as exc:
+        raise CorpMarketError(f"{field} must be a number.") from exc
+    if percent < 0:
+        raise CorpMarketError(f"{field} cannot be negative.")
+    return min(percent, float(maximum))
+
+
 def flight_session_has_member_access(config: EveSsoConfig, session: FlightEsiSession | None) -> bool:
     if session is None:
         return False
@@ -4974,6 +5671,7 @@ def build_flight_hosting_diagnostics(
 ) -> dict[str, Any]:
     recipe_cache = load_industry_recipe_cache()
     route_cache = load_route_graph_cache()
+    reprocessing_cache = load_reprocessing_cache()
     checks = [
         {
             "name": "HTTPS public URL",
@@ -5004,6 +5702,11 @@ def build_flight_hosting_diagnostics(
             "name": "Route graph cache",
             "ok": route_cache.available,
             "detail": route_cache.error or "Jump-aware route graph cache is ready.",
+        },
+        {
+            "name": "Reprocessing cache",
+            "ok": reprocessing_cache.available,
+            "detail": reprocessing_cache.error or "Ore reprocessing cache is ready.",
         },
     ]
     return {
@@ -5039,6 +5742,7 @@ def build_flight_hosting_diagnostics(
         "static_caches": {
             "recipe_cache_available": recipe_cache.available,
             "route_graph_available": route_cache.available,
+            "reprocessing_cache_available": reprocessing_cache.available,
         },
         "checks": checks,
         "notes": [
@@ -5137,6 +5841,9 @@ def build_http_server(
                 return
             if path == "/api/flight/acquisition":
                 self._handle_flight_acquisition()
+                return
+            if path == "/api/flight/reprocessing":
+                self._handle_flight_reprocessing()
                 return
             if path == "/flight/login":
                 self._handle_flight_login()
@@ -5413,6 +6120,49 @@ def build_http_server(
                     route_preference=route_preference,
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
+                )
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
+        def _handle_flight_reprocessing(self) -> None:
+            session = self._require_flight_session("calculating ore reprocessing")
+            if session is None:
+                return
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                ore_type_id = clean_positive_int(first_query_value(query, "ore_type_id"), "ore_type_id")
+                quantity = clean_reprocessing_quantity(first_query_value(query, "quantity"))
+                facility_yield = parse_optional_reprocessing_percent(
+                    first_query_value(query, "facility_yield_percent"),
+                    "facility yield percent",
+                    maximum=MAX_REPROCESSING_FACILITY_YIELD_PERCENT,
+                )
+                station_tax = parse_optional_reprocessing_percent(
+                    first_query_value(query, "station_tax_percent"),
+                    "station tax percent",
+                    maximum=MAX_REPROCESSING_TAX_PERCENT,
+                )
+                implant_bonus = parse_optional_reprocessing_percent(
+                    first_query_value(query, "implant_bonus_percent"),
+                    "implant bonus percent",
+                    maximum=MAX_REPROCESSING_BONUS_PERCENT,
+                )
+                structure_bonus = clamp_reprocessing_percent(
+                    first_query_value(query, "structure_bonus_percent") or 0,
+                    "structure bonus percent",
+                    maximum=MAX_REPROCESSING_BONUS_PERCENT,
+                )
+                payload = build_flight_reprocessing_payload(
+                    config=sso_config,
+                    session=session,
+                    ore_type_id=ore_type_id,
+                    quantity=quantity,
+                    facility_yield_percent=facility_yield,
+                    station_tax_percent=station_tax,
+                    implant_bonus_percent=implant_bonus,
+                    structure_bonus_percent=structure_bonus,
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -6080,6 +6830,18 @@ loadOffers().catch((error) => {
 """
 
 
+def render_reprocessing_ore_options() -> str:
+    cache = load_reprocessing_cache()
+    if not cache.available or not cache.ores:
+        return '<option value="">Run scripts\\update_industry_recipe_cache.py first</option>'
+    ores = sorted(cache.ores.values(), key=lambda ore: (ore.group_name.casefold(), ore.name.casefold(), ore.type_id))
+    options = []
+    for ore in ores:
+        label = f"{ore.group_name} - {ore.name} (portion {ore.portion_size:,})"
+        options.append(f'                    <option value="{ore.type_id}">{html.escape(label)}</option>')
+    return "\n".join(options)
+
+
 def _render_flight_attendant_dashboard() -> str:
     category_options = "\n".join(
         f'                    <option value="{html.escape(key)}">{html.escape(label)}</option>'
@@ -6104,6 +6866,7 @@ def _render_flight_attendant_dashboard() -> str:
                   </details>"""
         for root_id, root_name in HAUL_MARKET_GROUP_ROOTS
     )
+    reprocessing_ore_options = render_reprocessing_ore_options()
     markup = """
 <!doctype html>
 <html lang="en">
@@ -6220,14 +6983,16 @@ def _render_flight_attendant_dashboard() -> str:
       min-width: 0;
     }
     body[data-active-tab="hauling"] #tab-hauling .panel,
-    body[data-active-tab="acquisition"] #tab-acquisition .panel {
+    body[data-active-tab="acquisition"] #tab-acquisition .panel,
+    body[data-active-tab="reprocessing"] #tab-reprocessing .panel {
       background: linear-gradient(180deg, rgba(11, 18, 20, .8), rgba(7, 11, 13, .72));
       border-color: rgba(97, 199, 217, .34);
       box-shadow: 0 22px 58px rgba(0, 0, 0, .34);
       backdrop-filter: blur(3px);
     }
     body[data-active-tab="hauling"] #tab-hauling .panel:first-child,
-    body[data-active-tab="acquisition"] #tab-acquisition .panel:first-child {
+    body[data-active-tab="acquisition"] #tab-acquisition .panel:first-child,
+    body[data-active-tab="reprocessing"] #tab-reprocessing .panel:first-child {
       background: linear-gradient(180deg, rgba(11, 18, 20, .84), rgba(7, 11, 13, .78));
     }
     body[data-active-tab="hauling"] #tab-hauling input,
@@ -6235,7 +7000,10 @@ def _render_flight_attendant_dashboard() -> str:
     body[data-active-tab="hauling"] #tab-hauling textarea,
     body[data-active-tab="acquisition"] #tab-acquisition input,
     body[data-active-tab="acquisition"] #tab-acquisition select,
-    body[data-active-tab="acquisition"] #tab-acquisition textarea {
+    body[data-active-tab="acquisition"] #tab-acquisition textarea,
+    body[data-active-tab="reprocessing"] #tab-reprocessing input,
+    body[data-active-tab="reprocessing"] #tab-reprocessing select,
+    body[data-active-tab="reprocessing"] #tab-reprocessing textarea {
       background: rgba(5, 9, 11, .84);
     }
     body[data-active-tab="flight"] #tab-flight .panel {
@@ -6714,6 +7482,7 @@ def _render_flight_attendant_dashboard() -> str:
       <button type="button" data-tab-target="flight" aria-selected="false">Flight Attendant</button>
       <button type="button" data-tab-target="hauling" aria-selected="false">Hauler Routes</button>
       <button type="button" data-tab-target="acquisition" aria-selected="false">Acquisition Planner</button>
+      <button type="button" data-tab-target="reprocessing" aria-selected="false">Reprocessing</button>
     </nav>
 
     <main>
@@ -7183,6 +7952,94 @@ def _render_flight_attendant_dashboard() -> str:
           </section>
         </div>
       </section>
+
+      <section id="tab-reprocessing" class="tab-panel" data-tab-panel="reprocessing" hidden>
+        <div class="flight-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Ore Reprocessing Calculator</h2>
+                <div class="meta">ESI-backed character skills, standings, implants, and location with SDE ore output tables.</div>
+              </div>
+              <span class="pill reserved">Advisory Only</span>
+            </div>
+            <form id="reprocessing-form" class="note-form">
+              <div class="row">
+                <label>Ore
+                  <select id="reprocess-ore" name="ore_type_id">
+@@REPROCESSING_ORE_OPTIONS@@
+                  </select>
+                </label>
+                <label>Ore units
+                  <input id="reprocess-quantity" name="quantity" type="number" min="1" step="1" inputmode="numeric" value="100">
+                  <small class="input-note">Only full ore portions reprocess; leftovers are shown in the result.</small>
+                </label>
+              </div>
+              <div class="row">
+                <label>Facility yield override
+                  <input id="reprocess-facility-yield" name="facility_yield_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto or 50">
+                  <small class="input-note">Leave blank to use NPC station SDE data or a safe 50% default.</small>
+                </label>
+                <label>Station tax override
+                  <input id="reprocess-station-tax" name="station_tax_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto">
+                  <small class="input-note">Leave blank to estimate NPC tax from ESI standings and station owner.</small>
+                </label>
+              </div>
+              <div class="row">
+                <label>Implant override
+                  <input id="reprocess-implant-bonus" name="implant_bonus_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto">
+                  <small class="input-note">Leave blank to read known RX-801, RX-802, or RX-804 implants from ESI.</small>
+                </label>
+                <label>Structure bonus override
+                  <input id="reprocess-structure-bonus" name="structure_bonus_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="0">
+                  <small class="input-note">Use this for Upwell rigs/security/structure bonuses ESI cannot expose here.</small>
+                </label>
+              </div>
+              <button id="reprocess-calculate" class="ghost" type="submit">Calculate Reprocessing</button>
+            </form>
+            <details class="output-details" open>
+              <summary>Calculation Summary</summary>
+              <div class="output-details-body">
+                <div id="reprocess-summary" class="profit-summary">Connect ESI, choose ore, and enter the amount to calculate.</div>
+                <div id="reprocess-location" class="meta"></div>
+              </div>
+            </details>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>What ESI Knows</h2>
+                <div class="meta">The calculator uses only official API/static data plus local overrides.</div>
+              </div>
+            </div>
+            <ul class="charter-list">
+              <li><strong>Automatic:</strong> current system/station, trained skill levels, standings, known reprocessing implants, and NPC station base yield/tax.</li>
+              <li><strong>Manual:</strong> Upwell rig, service, security, and owner tax settings when ESI does not expose them.</li>
+              <li><strong>Static data:</strong> ore portions and mineral outputs come from CCP's SDE cache.</li>
+              <li><strong>No client control:</strong> this page never starts a reprocess job or touches the EVE client.</li>
+            </ul>
+          </section>
+
+          <section class="panel profit-panel" aria-labelledby="reprocess-results-title">
+            <div class="panel-header">
+              <div>
+                <div class="profit-title">
+                  <h2 id="reprocess-results-title">Mineral Output</h2>
+                  <span class="pill reserved">Net After Tax</span>
+                </div>
+                <div class="meta">Gross output, estimated station take, and final material stacks.</div>
+              </div>
+            </div>
+            <details class="output-details" open>
+              <summary>Output Materials</summary>
+              <div class="output-details-body">
+                <div id="reprocess-results" class="decision-output"></div>
+              </div>
+            </details>
+          </section>
+        </div>
+      </section>
     </main>
   </div>
   <script>
@@ -7253,6 +8110,17 @@ def _render_flight_attendant_dashboard() -> str:
     const acqSummary = document.querySelector("#acq-summary");
     const acqRoute = document.querySelector("#acq-route");
     const acqResults = document.querySelector("#acq-results");
+    const reprocessingForm = document.querySelector("#reprocessing-form");
+    const reprocessOre = document.querySelector("#reprocess-ore");
+    const reprocessQuantity = document.querySelector("#reprocess-quantity");
+    const reprocessFacilityYield = document.querySelector("#reprocess-facility-yield");
+    const reprocessStationTax = document.querySelector("#reprocess-station-tax");
+    const reprocessImplantBonus = document.querySelector("#reprocess-implant-bonus");
+    const reprocessStructureBonus = document.querySelector("#reprocess-structure-bonus");
+    const reprocessCalculateButton = document.querySelector("#reprocess-calculate");
+    const reprocessSummary = document.querySelector("#reprocess-summary");
+    const reprocessLocation = document.querySelector("#reprocess-location");
+    const reprocessResults = document.querySelector("#reprocess-results");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
@@ -7276,7 +8144,13 @@ def _render_flight_attendant_dashboard() -> str:
     const acqMinMarginKey = "eve-flight-acq-min-margin-v1";
     const acqCommonMaterialsKey = "eve-flight-acq-common-materials-v1";
     const acqMarketGroupIdsKey = "eve-flight-acq-market-group-ids-v1";
-    const validTabs = new Set(["market", "flight", "hauling", "acquisition"]);
+    const reprocessOreKey = "eve-flight-reprocess-ore-type-v1";
+    const reprocessQuantityKey = "eve-flight-reprocess-quantity-v1";
+    const reprocessFacilityYieldKey = "eve-flight-reprocess-facility-yield-v1";
+    const reprocessStationTaxKey = "eve-flight-reprocess-station-tax-v1";
+    const reprocessImplantBonusKey = "eve-flight-reprocess-implant-bonus-v1";
+    const reprocessStructureBonusKey = "eve-flight-reprocess-structure-bonus-v1";
+    const validTabs = new Set(["market", "flight", "hauling", "acquisition", "reprocessing"]);
     let filterType = "";
     let includeClosed = false;
     let flightProfitFilter = "all";
@@ -7766,6 +8640,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightProfitability("Flight Attendant profitability ranking is offline.");
         resetFlightHauling("Flight Attendant hauler route scanner is offline.");
         resetMarketAcquisition("Market acquisition planner is offline.");
+        resetReprocessing("Ore reprocessing calculator is offline.");
         resetFlightIndustry("Flight Attendant ESI status is offline.");
       }
     }
@@ -7789,6 +8664,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightProfitability("Configure EVE SSO before ranking profitability.");
         resetFlightHauling("Configure EVE SSO before scanning hauler routes.");
         resetMarketAcquisition("Configure EVE SSO before planning market acquisitions.");
+        resetReprocessing("Configure EVE SSO before calculating ore reprocessing.");
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
         return;
       }
@@ -7803,6 +8679,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightProfitability("Connect ESI to rank owned blueprint profitability.");
         resetFlightHauling("Connect ESI to scan route hauling opportunities.");
         resetMarketAcquisition("Connect ESI to plan public buy orders.");
+        resetReprocessing("Connect ESI to calculate ore reprocessing.");
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
       }
@@ -7820,6 +8697,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightProfitability("Use an allowlisted EVE character before ranking profitability.");
         resetFlightHauling("Use an allowlisted EVE character before scanning hauler routes.");
         resetMarketAcquisition("Use an allowlisted EVE character before planning market acquisitions.");
+        resetReprocessing("Use an allowlisted EVE character before calculating ore reprocessing.");
         resetFlightIndustry("Use an allowlisted EVE character before scanning industry data.");
         return;
       }
@@ -7832,6 +8710,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightProfitability("Resolve the ESI error before ranking profitability.");
         resetFlightHauling("Resolve the ESI error before scanning hauler routes.");
         resetMarketAcquisition("Resolve the ESI error before planning market acquisitions.");
+        resetReprocessing("Resolve the ESI error before calculating ore reprocessing.");
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
         return;
       }
@@ -7850,6 +8729,8 @@ def _render_flight_attendant_dashboard() -> str:
       resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(haulSettings)} to ${haulSettings.destination}.`);
       const acqSettings = readAcquisitionSettings();
       resetMarketAcquisition(`Ready to plan buy orders from ${acquisitionStartLabel(acqSettings)} toward ${acqSettings.destination}.`);
+      const reprocessSettings = readReprocessingSettings();
+      resetReprocessing(`Ready to calculate ${formatNumber(reprocessSettings.quantity)} ore units.`);
       loadFlightIndustry();
     }
 
@@ -8555,6 +9436,164 @@ def _render_flight_attendant_dashboard() -> str:
       return `${days}d; ${volume}/day; ${orderCount} orders/day; median ${median}`;
     }
 
+    function clampReprocessQuantity(value) {
+      const quantity = Number(value);
+      if (!Number.isFinite(quantity)) return 100;
+      return Math.max(1, Math.min(1000000000000, Math.floor(quantity)));
+    }
+
+    function readOptionalPercentInput(input) {
+      const text = String(input.value || "").trim();
+      if (!text) return "";
+      const percent = Number(text);
+      if (!Number.isFinite(percent)) return "";
+      return String(Math.max(0, Math.min(100, percent)));
+    }
+
+    function readReprocessingSettings() {
+      return {
+        oreTypeId: String(window.localStorage.getItem(reprocessOreKey) || reprocessOre.value || "").trim(),
+        quantity: clampReprocessQuantity(window.localStorage.getItem(reprocessQuantityKey) || reprocessQuantity.value || 100),
+        facilityYieldPercent: String(window.localStorage.getItem(reprocessFacilityYieldKey) || reprocessFacilityYield.value || "").trim(),
+        stationTaxPercent: String(window.localStorage.getItem(reprocessStationTaxKey) || reprocessStationTax.value || "").trim(),
+        implantBonusPercent: String(window.localStorage.getItem(reprocessImplantBonusKey) || reprocessImplantBonus.value || "").trim(),
+        structureBonusPercent: String(window.localStorage.getItem(reprocessStructureBonusKey) || reprocessStructureBonus.value || "0").trim() || "0",
+      };
+    }
+
+    function writeReprocessingSettings(settings) {
+      const availableOreValues = Array.from(reprocessOre.options).map((option) => option.value).filter(Boolean);
+      const oreTypeId = availableOreValues.includes(String(settings.oreTypeId || ""))
+        ? String(settings.oreTypeId || "")
+        : String(reprocessOre.value || availableOreValues[0] || "");
+      const quantity = clampReprocessQuantity(settings.quantity);
+      const facilityYieldPercent = String(settings.facilityYieldPercent || "").trim();
+      const stationTaxPercent = String(settings.stationTaxPercent || "").trim();
+      const implantBonusPercent = String(settings.implantBonusPercent || "").trim();
+      const structureBonusPercent = String(settings.structureBonusPercent || "0").trim() || "0";
+      reprocessOre.value = oreTypeId;
+      reprocessQuantity.value = String(quantity);
+      reprocessFacilityYield.value = facilityYieldPercent;
+      reprocessStationTax.value = stationTaxPercent;
+      reprocessImplantBonus.value = implantBonusPercent;
+      reprocessStructureBonus.value = structureBonusPercent;
+      window.localStorage.setItem(reprocessOreKey, oreTypeId);
+      window.localStorage.setItem(reprocessQuantityKey, String(quantity));
+      window.localStorage.setItem(reprocessFacilityYieldKey, facilityYieldPercent);
+      window.localStorage.setItem(reprocessStationTaxKey, stationTaxPercent);
+      window.localStorage.setItem(reprocessImplantBonusKey, implantBonusPercent);
+      window.localStorage.setItem(reprocessStructureBonusKey, structureBonusPercent);
+      return {
+        oreTypeId,
+        quantity,
+        facilityYieldPercent,
+        stationTaxPercent,
+        implantBonusPercent,
+        structureBonusPercent,
+      };
+    }
+
+    function resetReprocessing(message) {
+      reprocessSummary.textContent = message;
+      reprocessLocation.textContent = "";
+      reprocessResults.textContent = "";
+      reprocessCalculateButton.disabled = false;
+    }
+
+    async function loadReprocessingCalculation() {
+      const settings = writeReprocessingSettings({
+        oreTypeId: reprocessOre.value,
+        quantity: reprocessQuantity.value,
+        facilityYieldPercent: readOptionalPercentInput(reprocessFacilityYield),
+        stationTaxPercent: readOptionalPercentInput(reprocessStationTax),
+        implantBonusPercent: readOptionalPercentInput(reprocessImplantBonus),
+        structureBonusPercent: readOptionalPercentInput(reprocessStructureBonus) || "0",
+      });
+      if (!settings.oreTypeId) {
+        resetReprocessing("Reprocessing cache is missing ore options. Run the cache refresh first.");
+        return;
+      }
+      reprocessCalculateButton.disabled = true;
+      reprocessSummary.textContent = `Calculating ${formatNumber(settings.quantity)} ore units...`;
+      reprocessLocation.textContent = "";
+      reprocessResults.innerHTML = `<div class="decision-empty">Mineral output will appear here when the calculation finishes.</div>`;
+      const params = new URLSearchParams({
+        ore_type_id: settings.oreTypeId,
+        quantity: String(settings.quantity),
+        structure_bonus_percent: settings.structureBonusPercent || "0",
+      });
+      if (settings.facilityYieldPercent) params.set("facility_yield_percent", settings.facilityYieldPercent);
+      if (settings.stationTaxPercent) params.set("station_tax_percent", settings.stationTaxPercent);
+      if (settings.implantBonusPercent) params.set("implant_bonus_percent", settings.implantBonusPercent);
+      try {
+        const response = await fetch(`/api/flight/reprocessing?${params}`);
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Could not calculate ore reprocessing");
+        renderReprocessingCalculation(data);
+      } catch (error) {
+        reprocessSummary.textContent = error.message;
+        reprocessLocation.textContent = "";
+        reprocessResults.textContent = "";
+      } finally {
+        reprocessCalculateButton.disabled = false;
+      }
+    }
+
+    function renderReprocessingCalculation(data) {
+      const ore = data.ore || {};
+      const input = data.input || {};
+      const skills = data.skills || {};
+      const facility = data.facility || {};
+      const implant = data.implant || {};
+      const yieldData = data.yield || {};
+      const cache = data.cache || {};
+      const notes = Array.isArray(data.notes) ? data.notes : [];
+      reprocessSummary.innerHTML = `
+        <div class="profit-stats">
+          <div class="profit-stat"><span>Net Yield</span><b>${formatPercent(yieldData.net_yield_percent)}</b></div>
+          <div class="profit-stat"><span>Gross Yield</span><b>${formatPercent(yieldData.gross_yield_percent)}</b></div>
+          <div class="profit-stat"><span>Station Tax</span><b>${formatPercent(yieldData.station_tax_percent)}</b></div>
+          <div class="profit-stat"><span>Portions</span><b>${formatNumber(input.portions)}</b></div>
+        </div>
+        <div class="meta">${escapeHtml(ore.name || "Ore")} x${formatNumber(input.quantity)}; portion ${formatNumber(input.portion_size)}; leftovers ${formatNumber(input.leftover_units)}.</div>
+        <div class="meta">Skills: Reprocessing ${formatNumber(skills.reprocessing_level)}, Reprocessing Efficiency ${formatNumber(skills.reprocessing_efficiency_level)}, ${escapeHtml(skills.specialization_skill_name || "specialization")} ${formatNumber(skills.specialization_level)}.</div>
+        <div class="meta">Implant bonus ${formatNumber(implant.bonus_percent)}% from ${escapeHtml(implant.source || "unknown")}; facility ${formatNumber(facility.facility_yield_percent)}% from ${escapeHtml(facility.source || "unknown")}.</div>
+      `;
+      const owner = facility.owner_name || (facility.owner_id ? `Owner ${facility.owner_id}` : "unknown owner");
+      reprocessLocation.innerHTML = `
+        Location: <strong>${escapeHtml(facility.location_name || "current location")}</strong>
+        (${escapeHtml(facility.location_kind || "unknown")}); owner ${escapeHtml(owner)}; standing
+        ${facility.standing == null ? "unknown" : Number(facility.standing).toFixed(2)}
+        ${facility.standing_source ? `(${escapeHtml(facility.standing_source)})` : ""}.
+        <br>Static reprocessing cache: ${cache.available ? `build ${escapeHtml(cache.build_number || "unknown")}` : escapeHtml(cache.error || "missing")}.
+      `;
+      reprocessResults.innerHTML = renderReprocessingMaterials(data.materials || [], notes);
+    }
+
+    function renderReprocessingMaterials(materials, notes) {
+      const noteBlock = notes.length
+        ? `<div class="meta">${notes.slice(0, 5).map((note) => escapeHtml(note)).join("<br>")}</div>`
+        : "";
+      if (!materials.length) {
+        return `${noteBlock}<div class="decision-empty">No output materials were calculated.</div>`;
+      }
+      const rows = materials.map((material) => `
+        <div class="decision-row">
+          <div class="decision-head">
+            <strong>${escapeHtml(material.name)}</strong>
+            <span class="pill decision-build">${formatNumber(material.net_quantity)}</span>
+          </div>
+          <div class="decision-metrics">
+            <div class="decision-metric"><span>Base 100%</span><b>${formatNumber(material.base_quantity)}</b></div>
+            <div class="decision-metric"><span>Gross</span><b>${formatNumber(material.gross_quantity)}</b></div>
+            <div class="decision-metric"><span>Station Take</span><b>${formatNumber(material.station_tax_quantity)}</b></div>
+            <div class="decision-metric"><span>Net</span><b>${formatNumber(material.net_quantity)}</b></div>
+          </div>
+        </div>
+      `).join("");
+      return `${noteBlock}<div class="decision-list">${rows}</div>`;
+    }
+
     function resetFlightIndustry(message) {
       flightBlueprintSummary.textContent = message;
       flightBlueprintTop.textContent = "";
@@ -8935,6 +9974,29 @@ def _render_flight_attendant_dashboard() -> str:
       updateAcquisitionScopeAndReset();
     });
 
+    function updateReprocessingAndReset() {
+      const settings = writeReprocessingSettings({
+        oreTypeId: reprocessOre.value,
+        quantity: reprocessQuantity.value,
+        facilityYieldPercent: readOptionalPercentInput(reprocessFacilityYield),
+        stationTaxPercent: readOptionalPercentInput(reprocessStationTax),
+        implantBonusPercent: readOptionalPercentInput(reprocessImplantBonus),
+        structureBonusPercent: readOptionalPercentInput(reprocessStructureBonus) || "0",
+      });
+      resetReprocessing(`Ready to calculate ${formatNumber(settings.quantity)} ore units.`);
+    }
+
+    reprocessingForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadReprocessingCalculation();
+    });
+    reprocessOre.addEventListener("change", updateReprocessingAndReset);
+    reprocessQuantity.addEventListener("change", updateReprocessingAndReset);
+    reprocessFacilityYield.addEventListener("change", updateReprocessingAndReset);
+    reprocessStationTax.addEventListener("change", updateReprocessingAndReset);
+    reprocessImplantBonus.addEventListener("change", updateReprocessingAndReset);
+    reprocessStructureBonus.addEventListener("change", updateReprocessingAndReset);
+
     flightProfitFilters.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-profit-filter]");
       if (!button) return;
@@ -8959,6 +10021,7 @@ def _render_flight_attendant_dashboard() -> str:
     writeMaxJumps(readMaxJumps());
     writeHaulSettings(readHaulSettings());
     writeAcquisitionSettings(readAcquisitionSettings());
+    writeReprocessingSettings(readReprocessingSettings());
     showTab(initialTab());
     updateFilterButtons();
     renderNotes();
@@ -8974,6 +10037,9 @@ def _render_flight_attendant_dashboard() -> str:
     return markup.replace("@@CATEGORY_OPTIONS@@", category_options).replace(
         "@@HAUL_MARKET_GROUP_OPTIONS@@",
         haul_market_group_options,
+    ).replace(
+        "@@REPROCESSING_ORE_OPTIONS@@",
+        reprocessing_ore_options,
     )
 
 

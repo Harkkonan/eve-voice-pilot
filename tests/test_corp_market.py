@@ -18,9 +18,14 @@ from eve_voice_pilot.corp_market import (
     IndustryRecipeCache,
     IndustrySkill,
     MarketStore,
+    ReprocessingCache,
+    ReprocessingMaterial,
+    ReprocessingOre,
+    ReprocessingStation,
     RouteGraphCache,
     RouteSystem,
     build_discord_webhook_payload,
+    build_flight_reprocessing_payload,
     build_flight_buyers_payload,
     build_flight_acquisition_payload,
     build_flight_hauling_payload,
@@ -33,6 +38,7 @@ from eve_voice_pilot.corp_market import (
     fetch_flight_skills,
     fetch_flight_location,
     format_isk,
+    load_reprocessing_cache,
     parse_isk_amount,
     parse_fit_note,
     parse_forum_tag_map,
@@ -866,6 +872,168 @@ def test_load_route_graph_cache_reads_compact_cache(tmp_path):
     assert cache.system_count == 1
     assert cache.adjacency[30000142] == (30000144,)
     assert cache.systems[30000142].name == "Jita"
+
+
+def test_load_reprocessing_cache_reads_ore_and_station_data(tmp_path):
+    cache_path = tmp_path / "eve_reprocessing.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "schema": "eve_voice_pilot.reprocessing.v1",
+                "build_number": 3374020,
+                "release_date": "2026-06-03T12:42:22Z",
+                "generated_at": "2026-06-04T00:00:00Z",
+                "ores": {
+                    "1230": {
+                        "type_id": 1230,
+                        "name": "Veldspar",
+                        "group_id": 462,
+                        "group_name": "Veldspar",
+                        "portion_size": 100,
+                        "volume_m3": 0.1,
+                        "specialization_skill_type_id": 60377,
+                        "specialization_skill_name": "Simple Ore Processing",
+                        "materials": [
+                            {"type_id": 34, "name": "Tritanium", "quantity": 400, "volume_m3": 0.01}
+                        ],
+                    }
+                },
+                "stations": {
+                    "60000004": {
+                        "station_id": 60000004,
+                        "owner_id": 1000002,
+                        "owner_name": "CBD Corporation",
+                        "owner_faction_id": 500001,
+                        "solar_system_id": 30002780,
+                        "reprocessing_efficiency": 0.5,
+                        "reprocessing_tax_rate": 0.05,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cache = load_reprocessing_cache(cache_path)
+
+    assert cache.available is True
+    assert cache.build_number == 3374020
+    assert cache.ore_count == 1
+    assert cache.station_count == 1
+    assert cache.ores[1230].name == "Veldspar"
+    assert cache.ores[1230].materials[0].name == "Tritanium"
+    assert cache.stations[60000004].reprocessing_efficiency == 0.5
+
+
+def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(monkeypatch, tmp_path):
+    cache = ReprocessingCache(
+        path=tmp_path / "eve_reprocessing.json",
+        available=True,
+        build_number=3374020,
+        ores={
+            1230: ReprocessingOre(
+                type_id=1230,
+                name="Veldspar",
+                group_id=462,
+                group_name="Veldspar",
+                portion_size=100,
+                volume_m3=0.1,
+                specialization_skill_type_id=60377,
+                specialization_skill_name="Simple Ore Processing",
+                materials=(
+                    ReprocessingMaterial(type_id=34, name="Tritanium", quantity=400, volume_m3=0.01),
+                ),
+            )
+        },
+        stations={
+            60000004: ReprocessingStation(
+                station_id=60000004,
+                owner_id=1000002,
+                owner_name="CBD Corporation",
+                owner_faction_id=500001,
+                solar_system_id=30002780,
+                reprocessing_efficiency=0.5,
+                reprocessing_tax_rate=0.05,
+            )
+        },
+    )
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Industry Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(
+            "esi-location.read_location.v1",
+            "esi-skills.read_skills.v1",
+            "esi-characters.read_standings.v1",
+            "esi-clones.read_implants.v1",
+        ),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+    )
+    monkeypatch.setattr(corp_market, "load_reprocessing_cache", lambda: cache)
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_skills",
+        lambda config, session: {
+            "skills": [
+                {"skill_id": corp_market.REPROCESSING_SKILL_TYPE_ID, "active_skill_level": 5},
+                {"skill_id": corp_market.REPROCESSING_EFFICIENCY_SKILL_TYPE_ID, "active_skill_level": 4},
+                {"skill_id": 60377, "active_skill_level": 3},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_standings",
+        lambda config, session: [{"from_id": 1000002, "from_type": "corporation", "standing": 4.0}],
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_location",
+        lambda config, session: {
+            "solar_system_id": 30002780,
+            "solar_system_name": "Airaken",
+            "station_id": 60000004,
+            "structure_id": None,
+            "updated_at": "2026-06-05T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(corp_market, "fetch_flight_implants", lambda config, session: [27174])
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_universe_station",
+        lambda config, station_id: {"name": "Airaken VI - Moon 1 - CBD Corporation Storage", "owner": 1000002},
+    )
+
+    payload = build_flight_reprocessing_payload(
+        config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://market.test/flight/callback",
+        ),
+        session=session,
+        ore_type_id=1230,
+        quantity=1000,
+    )
+
+    assert payload["ore"]["name"] == "Veldspar"
+    assert payload["input"]["portions"] == 10
+    assert payload["skills"]["reprocessing_level"] == 5
+    assert payload["skills"]["reprocessing_efficiency_level"] == 4
+    assert payload["skills"]["specialization_level"] == 3
+    assert payload["implant"]["bonus_percent"] == 4.0
+    assert payload["facility"]["facility_yield_percent"] == 50.0
+    assert payload["facility"]["station_tax_percent"] == pytest.approx(2.0)
+    assert payload["yield"]["gross_yield_percent"] == pytest.approx(68.45904)
+    assert payload["yield"]["net_yield_percent"] == pytest.approx(67.0898592)
+    assert payload["materials"][0]["base_quantity"] == 4000
+    assert payload["materials"][0]["gross_quantity"] == 2738
+    assert payload["materials"][0]["station_tax_quantity"] == 55
+    assert payload["materials"][0]["net_quantity"] == 2683
 
 
 def test_nearby_systems_payload_uses_jump_range():

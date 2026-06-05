@@ -7,6 +7,8 @@ Authoritative source:
 - EVE Developer License Agreement: https://developers.eveonline.com/license-agreement
 - EVE developer license docs: https://developers.eveonline.com/docs/resources/license/
 - EVE SSO docs: https://developers.eveonline.com/docs/services/sso/
+- ESI API explorer: https://developers.eveonline.com/api-explorer
+- ESI Swagger spec: https://esi.evetech.net/latest/swagger.json
 
 This file is a project review aid, not legal advice and not a substitute for the live agreement. Re-open the official source before each meaningful release, public hosting change, monetization change, or new ESI/SSO capability.
 
@@ -71,3 +73,4 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - 2026-06-03: Created project review doc from the official EVE Developer License Agreement and EVE developer docs. Current corp intel board design remains read-only, opt-in, non-commercial, and SSO/ESI based.
 - 2026-06-05: Re-opened the official EVE Developer License Agreement, EVE SSO docs, ESI rate-limit docs, and EVE third-party policy page for Flight Attendant public-hosting hardening. The implementation remains member-gated, non-commercial, read-only/advisory, and manual for all in-game actions.
 - 2026-06-05: Re-opened the official EVE Developer License Agreement, EVE ESI overview/best-practices docs, and EVE third-party policy page before adding public market-history-backed acquisition planning. The planner uses public market orders/history, adds no new SSO scope, caches ESI responses, and remains advisory/manual only.
+- 2026-06-05: Re-opened the official EVE Developer License Agreement, developer license docs, and ESI Swagger/API docs before adding the ore reprocessing calculator. The feature adds read-only implant and structure-info scopes, keeps tokens in server memory only, uses SDE cache data for ore/station constants, and remains advisory/manual only.

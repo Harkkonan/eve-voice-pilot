@@ -15,10 +15,67 @@ from zipfile import ZipFile
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_PATH = ROOT / "cache" / "eve_industry_recipes.json"
 DEFAULT_ROUTE_OUTPUT_PATH = ROOT / "cache" / "eve_route_graph.json"
+DEFAULT_REPROCESSING_OUTPUT_PATH = ROOT / "cache" / "eve_reprocessing.json"
 LATEST_SDE_INFO_URL = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl"
 LATEST_JSONL_ZIP_URL = "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
 RECIPE_SCHEMA = "eve_voice_pilot.industry_recipes.v1"
 ROUTE_SCHEMA = "eve_voice_pilot.route_graph.v1"
+REPROCESSING_SCHEMA = "eve_voice_pilot.reprocessing.v1"
+
+REPROCESSING_SKILL_TYPES = {
+    "Abyssal Ore Processing": 60381,
+    "Coherent Ore Processing": 60378,
+    "Common Moon Ore Processing": 46153,
+    "Complex Ore Processing": 60380,
+    "Erratic Ore Processing": 90040,
+    "Exceptional Moon Ore Processing": 46156,
+    "Ice Processing": 18025,
+    "Mercoxit Ore Processing": 12189,
+    "Rare Moon Ore Processing": 46155,
+    "Simple Ore Processing": 60377,
+    "Ubiquitous Moon Ore Processing": 46152,
+    "Uncommon Moon Ore Processing": 46154,
+    "Variegated Ore Processing": 60379,
+}
+
+ORE_GROUP_PROCESSING_SKILLS = {
+    450: "Complex Ore Processing",  # Arkonor
+    451: "Complex Ore Processing",  # Bistot
+    452: "Variegated Ore Processing",  # Crokite
+    453: "Variegated Ore Processing",  # Dark Ochre
+    454: "Coherent Ore Processing",  # Hedbergite
+    455: "Coherent Ore Processing",  # Hemorphite
+    456: "Coherent Ore Processing",  # Jaspet
+    457: "Coherent Ore Processing",  # Kernite
+    458: "Simple Ore Processing",  # Plagioclase
+    459: "Simple Ore Processing",  # Pyroxeres
+    460: "Simple Ore Processing",  # Scordite
+    461: "Complex Ore Processing",  # Spodumain
+    462: "Simple Ore Processing",  # Veldspar
+    465: "Ice Processing",
+    467: "Variegated Ore Processing",  # Gneiss
+    468: "Mercoxit Ore Processing",
+    469: "Coherent Ore Processing",  # Omber
+    903: "Ice Processing",  # Ancient compressed ice
+    1884: "Ubiquitous Moon Ore Processing",
+    1920: "Common Moon Ore Processing",
+    1921: "Uncommon Moon Ore Processing",
+    1922: "Rare Moon Ore Processing",
+    1923: "Exceptional Moon Ore Processing",
+    4029: "Abyssal Ore Processing",  # Talassonite
+    4030: "Abyssal Ore Processing",  # Rakovene
+    4031: "Abyssal Ore Processing",  # Bezdnacine
+    4513: "Simple Ore Processing",  # Mordunium
+    4514: "Coherent Ore Processing",  # Ytirium
+    4515: "Complex Ore Processing",  # Eifyrium
+    4516: "Complex Ore Processing",  # Ducinium
+    4755: "Variegated Ore Processing",  # Kylixium
+    4756: "Coherent Ore Processing",  # Nocxite
+    4757: "Complex Ore Processing",  # Ueganite
+    4758: "Complex Ore Processing",  # Hezorime
+    4759: "Coherent Ore Processing",  # Griemeer
+    4915: "Erratic Ore Processing",  # Prismaticite
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,14 +92,17 @@ def main(argv: list[str] | None = None) -> int:
         sde_zip = sde_zip.expanduser()
         recipe_cache = build_recipe_cache(sde_zip=sde_zip, fallback_info=latest_info, source_url=source_url)
         route_cache = build_route_graph_cache(sde_zip=sde_zip, fallback_info=latest_info, source_url=source_url)
+        reprocessing_cache = build_reprocessing_cache(sde_zip=sde_zip, fallback_info=latest_info, source_url=source_url)
         write_json(args.output.expanduser(), recipe_cache)
         write_json(args.route_output.expanduser(), route_cache)
+        write_json(args.reprocessing_output.expanduser(), reprocessing_cache)
     except (CorpRecipeCacheError, OSError, HTTPError, URLError) as exc:
         print(f"Could not update industry static caches: {exc}", file=sys.stderr)
         return 1
 
     print(f"Wrote {recipe_cache['recipe_count']} manufacturing recipes to {args.output}")
     print(f"Wrote {route_cache['system_count']} systems and {route_cache['edge_count']} gates to {args.route_output}")
+    print(f"Wrote {reprocessing_cache['ore_count']} reprocessable ore types to {args.reprocessing_output}")
     print(f"SDE build: {recipe_cache.get('build_number') or 'unknown'}")
     return 0
 
@@ -67,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_ROUTE_OUTPUT_PATH,
         help="Output route graph cache path.",
+    )
+    parser.add_argument(
+        "--reprocessing-output",
+        type=Path,
+        default=DEFAULT_REPROCESSING_OUTPUT_PATH,
+        help="Output ore reprocessing cache path.",
     )
     parser.add_argument(
         "--force-download",
@@ -159,6 +225,33 @@ def build_route_graph_cache(*, sde_zip: Path, fallback_info: dict[str, Any], sou
     }
 
 
+def build_reprocessing_cache(*, sde_zip: Path, fallback_info: dict[str, Any], source_url: str = "") -> dict[str, Any]:
+    if not sde_zip.exists():
+        raise CorpRecipeCacheError(f"SDE zip does not exist: {sde_zip}")
+    with ZipFile(sde_zip) as archive:
+        type_metadata = read_type_metadata(archive)
+        group_metadata = read_group_metadata(archive)
+        corporation_metadata = read_npc_corporation_metadata(archive)
+        sde_info = read_sde_info(archive) or fallback_info
+        ores = read_reprocessing_ores(archive, type_metadata, group_metadata)
+        stations = read_reprocessing_stations(archive, corporation_metadata)
+
+    sorted_ores = {str(key): ores[key] for key in sorted(ores)}
+    sorted_stations = {str(key): stations[key] for key in sorted(stations)}
+    return {
+        "schema": REPROCESSING_SCHEMA,
+        "source": "eve_sde_jsonl",
+        "source_url": source_url,
+        "build_number": clean_int(sde_info.get("buildNumber")) or None,
+        "release_date": str(sde_info.get("releaseDate") or ""),
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "ore_count": len(sorted_ores),
+        "station_count": len(sorted_stations),
+        "ores": sorted_ores,
+        "stations": sorted_stations,
+    }
+
+
 def read_type_metadata(archive: ZipFile) -> dict[int, dict[str, Any]]:
     metadata: dict[int, dict[str, Any]] = {}
     for record in iter_jsonl_member(archive, "types.jsonl"):
@@ -169,6 +262,38 @@ def read_type_metadata(archive: ZipFile) -> dict[int, dict[str, Any]]:
         metadata[type_id] = {
             "name": name or f"Type {type_id}",
             "volume_m3": clean_float(record.get("volume")),
+            "group_id": clean_int(record.get("groupID")),
+            "market_group_id": clean_int(record.get("marketGroupID")) or None,
+            "portion_size": clean_int(record.get("portionSize")),
+            "published": bool(record.get("published")),
+        }
+    return metadata
+
+
+def read_group_metadata(archive: ZipFile) -> dict[int, dict[str, Any]]:
+    metadata: dict[int, dict[str, Any]] = {}
+    for record in iter_jsonl_member(archive, "groups.jsonl"):
+        group_id = clean_int(record.get("_key"))
+        if group_id <= 0:
+            continue
+        metadata[group_id] = {
+            "group_id": group_id,
+            "name": english_name(record.get("name")) or f"Group {group_id}",
+            "category_id": clean_int(record.get("categoryID")),
+        }
+    return metadata
+
+
+def read_npc_corporation_metadata(archive: ZipFile) -> dict[int, dict[str, Any]]:
+    metadata: dict[int, dict[str, Any]] = {}
+    for record in iter_jsonl_member(archive, "npcCorporations.jsonl"):
+        corporation_id = clean_int(record.get("_key"))
+        if corporation_id <= 0:
+            continue
+        metadata[corporation_id] = {
+            "corporation_id": corporation_id,
+            "name": english_name(record.get("name")) or f"Corporation {corporation_id}",
+            "faction_id": clean_int(record.get("factionID")) or None,
         }
     return metadata
 
@@ -288,6 +413,78 @@ def read_manufacturing_recipes(archive: ZipFile, type_metadata: dict[int, dict[s
             "skills": skills,
         }
     return recipes
+
+
+def read_reprocessing_ores(
+    archive: ZipFile,
+    type_metadata: dict[int, dict[str, Any]],
+    group_metadata: dict[int, dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    ores: dict[int, dict[str, Any]] = {}
+    for record in iter_jsonl_member(archive, "typeMaterials.jsonl"):
+        type_id = clean_int(record.get("typeID") or record.get("_key"))
+        metadata = type_metadata.get(type_id) or {}
+        group_id = clean_int(metadata.get("group_id"))
+        skill_name = ORE_GROUP_PROCESSING_SKILLS.get(group_id)
+        if type_id <= 0 or not skill_name or not metadata.get("published"):
+            continue
+        material_records = list(clean_records(record.get("materials")))
+        materials = []
+        for material in material_records:
+            material_type_id = clean_int(material.get("materialTypeID") or material.get("typeID") or material.get("type_id"))
+            quantity = clean_int(material.get("quantity"))
+            if material_type_id <= 0 or quantity <= 0:
+                continue
+            material_payload = {
+                "type_id": material_type_id,
+                "name": type_name(type_metadata, material_type_id),
+                "quantity": quantity,
+            }
+            volume_m3 = type_volume(type_metadata, material_type_id)
+            if volume_m3 is not None:
+                material_payload["volume_m3"] = volume_m3
+            materials.append(material_payload)
+        portion_size = clean_int(metadata.get("portion_size"))
+        if not materials or portion_size <= 0:
+            continue
+        group = group_metadata.get(group_id) or {}
+        ores[type_id] = {
+            "type_id": type_id,
+            "name": type_name(type_metadata, type_id),
+            "group_id": group_id,
+            "group_name": str(group.get("name") or f"Group {group_id}"),
+            "market_group_id": metadata.get("market_group_id"),
+            "portion_size": portion_size,
+            "volume_m3": type_volume(type_metadata, type_id),
+            "specialization_skill_type_id": REPROCESSING_SKILL_TYPES[skill_name],
+            "specialization_skill_name": skill_name,
+            "materials": materials,
+        }
+    return ores
+
+
+def read_reprocessing_stations(
+    archive: ZipFile,
+    corporation_metadata: dict[int, dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    stations: dict[int, dict[str, Any]] = {}
+    for record in iter_jsonl_member(archive, "npcStations.jsonl"):
+        station_id = clean_int(record.get("_key") or record.get("stationID"))
+        if station_id <= 0:
+            continue
+        owner_id = clean_int(record.get("ownerID"))
+        owner = corporation_metadata.get(owner_id) or {}
+        stations[station_id] = {
+            "station_id": station_id,
+            "owner_id": owner_id or None,
+            "owner_name": str(owner.get("name") or ""),
+            "owner_faction_id": owner.get("faction_id"),
+            "solar_system_id": clean_int(record.get("solarSystemID")) or None,
+            "type_id": clean_int(record.get("typeID")) or None,
+            "reprocessing_efficiency": clean_float(record.get("reprocessingEfficiency")),
+            "reprocessing_tax_rate": clean_float(record.get("reprocessingStationsTake")),
+        }
+    return stations
 
 
 def type_name(type_metadata: dict[int, dict[str, Any]], type_id: int, *, fallback_prefix: str = "Type") -> str:
