@@ -1443,6 +1443,24 @@ def test_build_flight_reprocessing_locations_payload_filters_and_ranks_standing_
                 reprocessing_efficiency=0.5,
                 reprocessing_tax_rate=0.05,
             ),
+            60000016: ReprocessingStation(
+                station_id=60000016,
+                owner_id=1000006,
+                owner_name="Low Fee Corp",
+                owner_faction_id=500004,
+                solar_system_id=30002783,
+                reprocessing_efficiency=0.45,
+                reprocessing_tax_rate=0.01,
+            ),
+            60000019: ReprocessingStation(
+                station_id=60000019,
+                owner_id=1000007,
+                owner_name="High Standing Corp",
+                owner_faction_id=500005,
+                solar_system_id=30002784,
+                reprocessing_efficiency=0.4,
+                reprocessing_tax_rate=0.05,
+            ),
         },
     )
     route_cache = RouteGraphCache(
@@ -1471,6 +1489,18 @@ def test_build_flight_reprocessing_locations_payload_filters_and_ranks_standing_
             30002782: RouteSystem(
                 solar_system_id=30002782,
                 name="Boundary",
+                region_id=200,
+                security_status=0.6,
+            ),
+            30002783: RouteSystem(
+                solar_system_id=30002783,
+                name="Lowfee",
+                region_id=200,
+                security_status=0.6,
+            ),
+            30002784: RouteSystem(
+                solar_system_id=30002784,
+                name="Highstand",
                 region_id=200,
                 security_status=0.6,
             ),
@@ -1514,6 +1544,8 @@ def test_build_flight_reprocessing_locations_payload_filters_and_ranks_standing_
             {"from_id": 1000002, "from_type": "corporation", "standing": 0.0},
             {"from_id": 1000003, "from_type": "corporation", "standing": 5.0},
             {"from_id": 1000005, "from_type": "corporation", "standing": 1.5},
+            {"from_id": 1000006, "from_type": "corporation", "standing": 2.0},
+            {"from_id": 1000007, "from_type": "corporation", "standing": 8.0},
         ],
     )
     monkeypatch.setattr(
@@ -1546,13 +1578,48 @@ def test_build_flight_reprocessing_locations_payload_filters_and_ranks_standing_
 
     assert payload["current_location"]["location_id"] == 60000004
     assert payload["minimum_standing"] == 1.5
-    assert payload["station_count"] == 1
-    assert payload["total_matching_stations"] == 1
-    assert [station["station_id"] for station in payload["stations"]] == [60000007]
+    assert payload["sort_mode"] == "net_yield"
+    assert payload["sort_label"] == "best net yield"
+    assert payload["station_count"] == 3
+    assert payload["total_matching_stations"] == 3
+    assert [station["station_id"] for station in payload["stations"]] == [60000007, 60000016, 60000019]
     assert {station["station_id"] for station in payload["stations"]}.isdisjoint({60000004, 60000010, 60000013})
     assert payload["stations"][0]["solar_system_name"] == "Inaro"
+    assert payload["stations"][0]["processing_fee_percent"] == pytest.approx(1.25)
     assert "standing 5.00" in payload["stations"][0]["label"]
-    assert "tax 1.25%" in payload["stations"][0]["label"]
+    assert "processing fee 1.25%" in payload["stations"][0]["label"]
+
+    fee_payload = build_flight_reprocessing_locations_payload(
+        config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://market.test/flight/callback",
+        ),
+        session=session,
+        ore_type_id=1230,
+        sort_mode="processing_fee",
+    )
+
+    assert fee_payload["sort_mode"] == "processing_fee"
+    assert fee_payload["sort_label"] == "lowest processing fee"
+    assert fee_payload["stations"][0]["station_id"] == 60000019
+    assert fee_payload["stations"][0]["processing_fee_percent"] == pytest.approx(0.0)
+
+    standing_payload = build_flight_reprocessing_locations_payload(
+        config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://market.test/flight/callback",
+        ),
+        session=session,
+        ore_type_id=1230,
+        sort_mode="standing",
+    )
+
+    assert standing_payload["sort_mode"] == "standing"
+    assert standing_payload["sort_label"] == "highest standing"
+    assert standing_payload["stations"][0]["station_id"] == 60000019
+    assert standing_payload["stations"][0]["standing"] == pytest.approx(8.0)
 
 
 def test_nearby_systems_payload_uses_jump_range():

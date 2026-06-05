@@ -123,6 +123,8 @@ MAX_REPROCESSING_BONUS_PERCENT = 100.0
 MAX_REPROCESSING_TAX_PERCENT = 100.0
 MAX_REPROCESSING_STATION_OPTIONS = 200
 MIN_REPROCESSING_STATION_STANDING = 1.5
+DEFAULT_REPROCESSING_STATION_SORT = "net_yield"
+REPROCESSING_STATION_SORT_MODES = frozenset({"net_yield", "processing_fee", "standing"})
 BASE_SALES_TAX_RATE = 0.075
 ACCOUNTING_SALES_TAX_REDUCTION_PER_LEVEL = 0.11
 TRADE_PNL_MARKET_FEE_REF_TYPES = frozenset(
@@ -6014,6 +6016,7 @@ def build_flight_reprocessing_locations_payload(
     config: EveSsoConfig,
     session: FlightEsiSession,
     ore_type_id: int,
+    sort_mode: str = DEFAULT_REPROCESSING_STATION_SORT,
     implant_bonus_percent: float | None = None,
     structure_bonus_percent: float = 0.0,
 ) -> dict[str, Any]:
@@ -6038,6 +6041,7 @@ def build_flight_reprocessing_locations_payload(
         "structure bonus percent",
         maximum=MAX_REPROCESSING_BONUS_PERCENT,
     )
+    clean_sort_mode = normalize_reprocessing_station_sort(sort_mode)
     current_location = build_reprocessing_location_profile(
         config,
         session,
@@ -6055,6 +6059,7 @@ def build_flight_reprocessing_locations_payload(
         skill_profile=skill_profile,
         implant_profile=implant_profile,
         structure_bonus_percent=clean_structure_bonus_percent,
+        sort_mode=clean_sort_mode,
     )
     return {
         "ok": True,
@@ -6076,9 +6081,11 @@ def build_flight_reprocessing_locations_payload(
         "truncated": total_matching > len(station_options),
         "limit": MAX_REPROCESSING_STATION_OPTIONS,
         "minimum_standing": MIN_REPROCESSING_STATION_STANDING,
+        "sort_mode": clean_sort_mode,
+        "sort_label": reprocessing_station_sort_label(clean_sort_mode),
         "notes": [
             "Station options are NPC stations from the local SDE cache whose owner corporation or faction standing is greater than 1.5.",
-            "Options are ranked by estimated net reprocessing yield after standings-adjusted station tax.",
+            "Options include standings-adjusted processing fees and can be sorted by net yield, processing fee, or standing.",
         ],
     }
 
@@ -6091,8 +6098,10 @@ def build_reprocessing_station_options(
     skill_profile: dict[str, Any],
     implant_profile: dict[str, Any],
     structure_bonus_percent: float,
+    sort_mode: str = DEFAULT_REPROCESSING_STATION_SORT,
 ) -> tuple[list[dict[str, Any]], int]:
     systems = route_cache.systems or {} if route_cache.available else {}
+    clean_sort_mode = normalize_reprocessing_station_sort(sort_mode)
     options = []
     for station in (cache.stations or {}).values():
         standing_value, standing_source = reprocessing_station_standing(
@@ -6134,6 +6143,7 @@ def build_reprocessing_station_options(
                 "facility_yield_percent": base_yield_percent,
                 "base_station_tax_percent": base_station_tax_rate * 100.0,
                 "station_tax_percent": station_tax_rate * 100.0,
+                "processing_fee_percent": station_tax_rate * 100.0,
                 "standing": standing_value,
                 "standing_source": standing_source,
                 "gross_yield_percent": rates["gross_yield_percent"],
@@ -6141,16 +6151,61 @@ def build_reprocessing_station_options(
                 "capped": rates["capped"],
             }
         )
-    options.sort(
-        key=lambda item: (
-            -float(item["net_yield_percent"]),
-            float(item["station_tax_percent"]),
-            str(item.get("solar_system_name") or ""),
-            str(item.get("owner_name") or ""),
-            int(item["station_id"]),
-        )
-    )
+    options.sort(key=lambda item: reprocessing_station_sort_key(item, clean_sort_mode))
     return options[:MAX_REPROCESSING_STATION_OPTIONS], len(options)
+
+
+def normalize_reprocessing_station_sort(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    aliases = {
+        "net": "net_yield",
+        "yield": "net_yield",
+        "best_yield": "net_yield",
+        "fee": "processing_fee",
+        "fees": "processing_fee",
+        "tax": "processing_fee",
+        "station_tax": "processing_fee",
+        "processing_fees": "processing_fee",
+        "highest_standing": "standing",
+    }
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in REPROCESSING_STATION_SORT_MODES else DEFAULT_REPROCESSING_STATION_SORT
+
+
+def reprocessing_station_sort_label(sort_mode: str) -> str:
+    return {
+        "processing_fee": "lowest processing fee",
+        "standing": "highest standing",
+        "net_yield": "best net yield",
+    }.get(normalize_reprocessing_station_sort(sort_mode), "best net yield")
+
+
+def reprocessing_station_sort_key(item: dict[str, Any], sort_mode: str) -> tuple[Any, ...]:
+    common = (
+        str(item.get("solar_system_name") or ""),
+        str(item.get("owner_name") or ""),
+        int(item["station_id"]),
+    )
+    if sort_mode == "processing_fee":
+        return (
+            float(item["processing_fee_percent"]),
+            -float(item["standing"]),
+            -float(item["net_yield_percent"]),
+            *common,
+        )
+    if sort_mode == "standing":
+        return (
+            -float(item["standing"]),
+            float(item["processing_fee_percent"]),
+            -float(item["net_yield_percent"]),
+            *common,
+        )
+    return (
+        -float(item["net_yield_percent"]),
+        float(item["processing_fee_percent"]),
+        -float(item["standing"]),
+        *common,
+    )
 
 
 def reprocessing_station_option_label(
@@ -6165,7 +6220,7 @@ def reprocessing_station_option_label(
     system = solar_system_name or f"System {station.solar_system_id or 'unknown'}"
     return (
         f"{net_yield_percent:.2f}% net - {system} - {owner} "
-        f"(standing {standing:.2f}, tax {station_tax_percent:.2f}%, station {station.station_id})"
+        f"(standing {standing:.2f}, processing fee {station_tax_percent:.2f}%, station {station.station_id})"
     )
 
 
@@ -7298,6 +7353,11 @@ def build_http_server(
             query = parse_qs(urlparse(self.path).query)
             try:
                 ore_type_id = clean_positive_int(first_query_value(query, "ore_type_id"), "ore_type_id")
+                sort_mode = normalize_reprocessing_station_sort(
+                    first_query_value(query, "sort_mode")
+                    or first_query_value(query, "sort")
+                    or DEFAULT_REPROCESSING_STATION_SORT
+                )
                 implant_bonus = parse_optional_reprocessing_percent(
                     first_query_value(query, "implant_bonus_percent"),
                     "implant bonus percent",
@@ -7312,6 +7372,7 @@ def build_http_server(
                     config=sso_config,
                     session=session,
                     ore_type_id=ore_type_id,
+                    sort_mode=sort_mode,
                     implant_bonus_percent=implant_bonus,
                     structure_bonus_percent=structure_bonus,
                 )
@@ -9310,7 +9371,15 @@ def _render_flight_attendant_dashboard() -> str:
                 </label>
                 <label>Station list
                   <button id="reprocess-refresh-locations" class="secondary" type="button">Refresh Locations</button>
-                  <small class="input-note">NPC stations above 1.5 standing are ranked by estimated net yield after standings tax.</small>
+                  <small class="input-note">NPC stations above 1.5 standing include the standings-adjusted processing fee.</small>
+                </label>
+                <label>Sort locations
+                  <select id="reprocess-station-sort" name="station_sort">
+                    <option value="net_yield">Best net yield</option>
+                    <option value="processing_fee">Lowest processing fee</option>
+                    <option value="standing">Highest standing</option>
+                  </select>
+                  <small class="input-note">Changes the order of the reprocessing location dropdown.</small>
                 </label>
               </div>
               <details class="output-details">
@@ -9321,9 +9390,9 @@ def _render_flight_attendant_dashboard() -> str:
                       <input id="reprocess-facility-yield" name="facility_yield_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto or selected station">
                       <small class="input-note">Leave blank to use the selected/current station value.</small>
                     </label>
-                    <label>Station tax override
+                    <label>Processing fee override
                       <input id="reprocess-station-tax" name="station_tax_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto">
-                      <small class="input-note">Leave blank to estimate NPC tax from ESI standings and station owner.</small>
+                      <small class="input-note">Leave blank to estimate the NPC processing fee from ESI standings and station owner.</small>
                     </label>
                   </div>
                   <div class="row">
@@ -9469,6 +9538,7 @@ def _render_flight_attendant_dashboard() -> str:
     const reprocessStationSelect = document.querySelector("#reprocess-station-select");
     const reprocessLocationStatus = document.querySelector("#reprocess-location-status");
     const reprocessRefreshLocations = document.querySelector("#reprocess-refresh-locations");
+    const reprocessStationSort = document.querySelector("#reprocess-station-sort");
     const reprocessFacilityYield = document.querySelector("#reprocess-facility-yield");
     const reprocessStationTax = document.querySelector("#reprocess-station-tax");
     const reprocessImplantBonus = document.querySelector("#reprocess-implant-bonus");
@@ -9507,6 +9577,7 @@ def _render_flight_attendant_dashboard() -> str:
     const reprocessOreKey = "eve-flight-reprocess-ore-type-v1";
     const reprocessQuantityKey = "eve-flight-reprocess-quantity-v1";
     const reprocessLocationKey = "eve-flight-reprocess-location-v1";
+    const reprocessStationSortKey = "eve-flight-reprocess-station-sort-v1";
     const reprocessFacilityYieldKey = "eve-flight-reprocess-facility-yield-v1";
     const reprocessStationTaxKey = "eve-flight-reprocess-station-tax-v1";
     const reprocessImplantBonusKey = "eve-flight-reprocess-implant-bonus-v1";
@@ -11191,11 +11262,24 @@ def _render_flight_attendant_dashboard() -> str:
       return String(Math.max(0, Math.min(100, percent)));
     }
 
+    function normalizeReprocessingStationSort(value) {
+      const clean = String(value || "").trim();
+      return ["net_yield", "processing_fee", "standing"].includes(clean) ? clean : "net_yield";
+    }
+
+    function reprocessingStationSortLabel(value) {
+      const sort = normalizeReprocessingStationSort(value);
+      if (sort === "processing_fee") return "lowest processing fee";
+      if (sort === "standing") return "highest standing";
+      return "best net yield";
+    }
+
     function readReprocessingSettings() {
       return {
         oreTypeId: String(window.localStorage.getItem(reprocessOreKey) || reprocessOre.value || "").trim(),
         quantity: clampReprocessQuantity(window.localStorage.getItem(reprocessQuantityKey) || reprocessQuantity.value || 100),
         locationId: String(window.localStorage.getItem(reprocessLocationKey) || reprocessStationSelect.value || "current").trim() || "current",
+        stationSort: normalizeReprocessingStationSort(window.localStorage.getItem(reprocessStationSortKey) || reprocessStationSort.value),
         facilityYieldPercent: String(window.localStorage.getItem(reprocessFacilityYieldKey) || reprocessFacilityYield.value || "").trim(),
         stationTaxPercent: String(window.localStorage.getItem(reprocessStationTaxKey) || reprocessStationTax.value || "").trim(),
         implantBonusPercent: String(window.localStorage.getItem(reprocessImplantBonusKey) || reprocessImplantBonus.value || "").trim(),
@@ -11214,6 +11298,7 @@ def _render_flight_attendant_dashboard() -> str:
       const locationId = availableLocationValues.includes(requestedLocationId)
         ? requestedLocationId
         : (requestedLocationId !== "current" && availableLocationValues.length <= 1 ? requestedLocationId : "current");
+      const stationSort = normalizeReprocessingStationSort(settings.stationSort || reprocessStationSort.value);
       const facilityYieldPercent = String(settings.facilityYieldPercent || "").trim();
       const stationTaxPercent = String(settings.stationTaxPercent || "").trim();
       const implantBonusPercent = String(settings.implantBonusPercent || "").trim();
@@ -11221,6 +11306,7 @@ def _render_flight_attendant_dashboard() -> str:
       reprocessOre.value = oreTypeId;
       reprocessQuantity.value = String(quantity);
       reprocessStationSelect.value = availableLocationValues.includes(locationId) ? locationId : "current";
+      reprocessStationSort.value = stationSort;
       reprocessFacilityYield.value = facilityYieldPercent;
       reprocessStationTax.value = stationTaxPercent;
       reprocessImplantBonus.value = implantBonusPercent;
@@ -11228,6 +11314,7 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(reprocessOreKey, oreTypeId);
       window.localStorage.setItem(reprocessQuantityKey, String(quantity));
       window.localStorage.setItem(reprocessLocationKey, locationId);
+      window.localStorage.setItem(reprocessStationSortKey, stationSort);
       window.localStorage.setItem(reprocessFacilityYieldKey, facilityYieldPercent);
       window.localStorage.setItem(reprocessStationTaxKey, stationTaxPercent);
       window.localStorage.setItem(reprocessImplantBonusKey, implantBonusPercent);
@@ -11236,6 +11323,7 @@ def _render_flight_attendant_dashboard() -> str:
         oreTypeId,
         quantity,
         locationId,
+        stationSort,
         facilityYieldPercent,
         stationTaxPercent,
         implantBonusPercent,
@@ -11265,6 +11353,7 @@ def _render_flight_attendant_dashboard() -> str:
         oreTypeId: reprocessOre.value,
         quantity: reprocessQuantity.value,
         locationId: String(window.localStorage.getItem(reprocessLocationKey) || reprocessStationSelect.value || "current"),
+        stationSort: reprocessStationSort.value,
         facilityYieldPercent: readOptionalPercentInput(reprocessFacilityYield),
         stationTaxPercent: readOptionalPercentInput(reprocessStationTax),
         implantBonusPercent: readOptionalPercentInput(reprocessImplantBonus),
@@ -11278,6 +11367,7 @@ def _render_flight_attendant_dashboard() -> str:
       reprocessLocationStatus.textContent = "Loading stations over 1.5 standing from ESI standings and local SDE data...";
       const params = new URLSearchParams({
         ore_type_id: settings.oreTypeId,
+        sort_mode: settings.stationSort,
         structure_bonus_percent: settings.structureBonusPercent || "0",
       });
       if (settings.implantBonusPercent) params.set("implant_bonus_percent", settings.implantBonusPercent);
@@ -11315,12 +11405,13 @@ def _render_flight_attendant_dashboard() -> str:
         : "current";
       window.localStorage.setItem(reprocessLocationKey, reprocessStationSelect.value);
       const total = Number(data.total_matching_stations || stations.length || 0);
+      const sortLabel = data.sort_label || reprocessingStationSortLabel(data.sort_mode || reprocessStationSort.value);
       if (!stations.length) {
         reprocessLocationStatus.textContent = "No NPC reprocessing stations matched standings over 1.5.";
       } else if (data.truncated) {
-        reprocessLocationStatus.textContent = `Showing top ${formatNumber(stations.length)} of ${formatNumber(total)} NPC stations over 1.5 standing.`;
+        reprocessLocationStatus.textContent = `Showing top ${formatNumber(stations.length)} of ${formatNumber(total)} NPC stations over 1.5 standing, sorted by ${sortLabel}.`;
       } else {
-        reprocessLocationStatus.textContent = `Loaded ${formatNumber(stations.length)} NPC stations over 1.5 standing, ranked by net yield.`;
+        reprocessLocationStatus.textContent = `Loaded ${formatNumber(stations.length)} NPC stations over 1.5 standing, sorted by ${sortLabel}.`;
       }
     }
 
@@ -11329,6 +11420,7 @@ def _render_flight_attendant_dashboard() -> str:
         oreTypeId: reprocessOre.value,
         quantity: reprocessQuantity.value,
         locationId: String(window.localStorage.getItem(reprocessLocationKey) || reprocessStationSelect.value || "current"),
+        stationSort: reprocessStationSort.value,
         facilityYieldPercent: readOptionalPercentInput(reprocessFacilityYield),
         stationTaxPercent: readOptionalPercentInput(reprocessStationTax),
         implantBonusPercent: readOptionalPercentInput(reprocessImplantBonus),
@@ -11384,10 +11476,11 @@ def _render_flight_attendant_dashboard() -> str:
           <div class="profit-stat"><span>Processed Jita</span><b>${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)}</b></div>
           <div class="profit-stat"><span>Ore Jita</span><b>${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)}</b></div>
           <div class="profit-stat"><span>Jita Delta</span><b>${renderReprocessingJitaDelta(valuation)}</b></div>
+          <div class="profit-stat"><span>Processing Fee</span><b>${formatPercent(yieldData.station_tax_percent)}</b></div>
         </div>
         <div class="meta">${escapeHtml(ore.name || "Ore")} x${formatNumber(input.quantity)}; portion ${formatNumber(input.portion_size)}; leftovers ${formatNumber(input.leftover_units)}.</div>
         <div class="meta">Skills: Reprocessing ${formatNumber(skills.reprocessing_level)}, Reprocessing Efficiency ${formatNumber(skills.reprocessing_efficiency_level)}, ${escapeHtml(skills.specialization_skill_name || "specialization")} ${formatNumber(skills.specialization_level)}.</div>
-        <div class="meta">Implant bonus ${formatNumber(implant.bonus_percent)}% from ${escapeHtml(implant.source || "unknown")}; facility ${formatNumber(facility.facility_yield_percent)}% from ${escapeHtml(facility.source || "unknown")}.</div>
+        <div class="meta">Implant bonus ${formatNumber(implant.bonus_percent)}% from ${escapeHtml(implant.source || "unknown")}; facility ${formatNumber(facility.facility_yield_percent)}% from ${escapeHtml(facility.source || "unknown")}; processing fee ${formatPercent(yieldData.station_tax_percent)}.</div>
         <div class="meta">Jita pricing uses public buy orders in ${escapeHtml((valuation.system || {}).name || "Jita")}; ${renderReprocessingJitaCoverage(valuation)}.</div>
       `;
       const owner = facility.owner_name || (facility.owner_id ? `Owner ${facility.owner_id}` : "unknown owner");
@@ -11396,6 +11489,7 @@ def _render_flight_attendant_dashboard() -> str:
         (${escapeHtml(facility.location_kind || "unknown")}); owner ${escapeHtml(owner)}; standing
         ${facility.standing == null ? "unknown" : Number(facility.standing).toFixed(2)}
         ${facility.standing_source ? `(${escapeHtml(facility.standing_source)})` : ""}.
+        <br>Processing fee: <strong>${formatPercent(yieldData.station_tax_percent)}</strong> from ${escapeHtml(facility.station_tax_source || "unknown")}.
         <br>Static reprocessing cache: ${cache.available ? `build ${escapeHtml(cache.build_number || "unknown")}` : escapeHtml(cache.error || "missing")}.
       `;
       reprocessResults.innerHTML = renderReprocessingMaterials(data.materials || [], notes.concat(valuationNotes));
@@ -11445,7 +11539,7 @@ def _render_flight_attendant_dashboard() -> str:
           <div class="decision-metrics">
             <div class="decision-metric"><span>Base 100%</span><b>${formatNumber(material.base_quantity)}</b></div>
             <div class="decision-metric"><span>Gross</span><b>${formatNumber(material.gross_quantity)}</b></div>
-            <div class="decision-metric"><span>Station Take</span><b>${formatNumber(material.station_tax_quantity)}</b></div>
+            <div class="decision-metric"><span>Processing Fee</span><b>${formatNumber(material.station_tax_quantity)}</b></div>
             <div class="decision-metric"><span>Net</span><b>${formatNumber(material.net_quantity)}</b></div>
             <div class="decision-metric"><span>Jita Buy Value</span><b>${renderReprocessingJitaValue(material.jita_value, null)}</b><small>${renderReprocessingMaterialJitaDepth(material)}</small></div>
           </div>
@@ -11865,6 +11959,7 @@ def _render_flight_attendant_dashboard() -> str:
         oreTypeId: reprocessOre.value,
         quantity: reprocessQuantity.value,
         locationId: reprocessStationSelect.value,
+        stationSort: reprocessStationSort.value,
         facilityYieldPercent: readOptionalPercentInput(reprocessFacilityYield),
         stationTaxPercent: readOptionalPercentInput(reprocessStationTax),
         implantBonusPercent: readOptionalPercentInput(reprocessImplantBonus),
@@ -11885,6 +11980,7 @@ def _render_flight_attendant_dashboard() -> str:
     reprocessOre.addEventListener("change", updateReprocessingStationsAndReset);
     reprocessQuantity.addEventListener("change", updateReprocessingAndReset);
     reprocessStationSelect.addEventListener("change", updateReprocessingAndReset);
+    reprocessStationSort.addEventListener("change", updateReprocessingStationsAndReset);
     reprocessRefreshLocations.addEventListener("click", loadReprocessingLocations);
     reprocessFacilityYield.addEventListener("change", updateReprocessingAndReset);
     reprocessStationTax.addEventListener("change", updateReprocessingAndReset);
