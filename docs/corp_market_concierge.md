@@ -41,6 +41,7 @@ The first version is a safe briefing surface:
 - It includes a `Market Acquisition Planner` tab that compares public buy/sell orders with public market history before suggesting public buy-order ceilings, first-order size, and collection range.
 - It includes a `Trade P&L` tab that reads recent wallet transactions and wallet journal fee rows to match visible buys and sells into item-level profit, loss, open stock, unmatched sells, and optional matched transaction rows. The tab can narrow history from 1 hour to 30 days and can exclude selected items from the considered income total while still showing their real result.
 - It includes an `Ore Reprocessing` tab that uses ESI location, skills, standings, and implants plus local SDE ore data to estimate mineral output from a typed ore amount.
+- It is gaining a `Planetary Industry` planner for comparing PI schematics, market prices, and customs transfer costs before a pilot moves goods manually.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
@@ -69,6 +70,8 @@ esi-wallet.read_character_wallet.v1
 ```
 
 The wallet scope is used by `Trade P&L` for recent market transactions and related market fee rows. The server still keeps the access token in memory only, and the tab does not place, edit, cancel, or update any market orders. Trade P&L exclusions change only the local considered income summary; excluded rows remain visible with their actual profit or loss.
+
+The first Planetary Industry planner slice does not need a new ESI scope because it uses public market data, static SDE schematics, and manual tax settings. Add `esi-planets.manage_planets.v1` only for a later signed-in colony import mode, and label ESI colony data as potentially stale because EVE only refreshes colony layout information after the pilot views the colony in the client. Add `esi-planets.read_customs_offices.v1` only for a later corporation customs-office mode; that endpoint requires Director role and should not be part of the normal member flow.
 
 Start the market board with your SSO app credentials, either through environment variables:
 
@@ -136,9 +139,45 @@ The generated caches are written to ignored local data:
 cache\eve_industry_recipes.json
 cache\eve_route_graph.json
 cache\eve_reprocessing.json
+cache\eve_planetary_industry.json
 ```
 
-If these caches are missing, the Flight Attendant tab still requires ESI and will show the data it can safely fetch, but recipe matching, buildability previews, jump-aware nearby system coverage, and ore reprocessing estimates will stay unavailable. Refresh the cache after updates that add static fields such as `volume_m3`, `max_production_limit`, required skills, job time, ore portions, or station reprocessing values.
+If these caches are missing, the Flight Attendant tab still requires ESI and will show the data it can safely fetch, but recipe matching, buildability previews, jump-aware nearby system coverage, ore reprocessing estimates, and planetary schematic planning will stay unavailable. Refresh the cache after updates that add static fields such as `volume_m3`, `max_production_limit`, required skills, job time, ore portions, station reprocessing values, PI schematic inputs and outputs, PI commodity tiers, or customs-tax base values.
+
+### Planetary Industry Planner
+
+Planetary Industry support is being added one safe layer at a time. The static cache and planner module can already model PI schematics from the SDE and rank them against market prices and tax assumptions; the site tab will wire that planner into the Flight Attendant UI in a later slice.
+
+The planner should support these modes:
+
+- manual public-data mode: choose a hub, output tier, and tax settings, then compare PI schematics using public market orders and SDE schematic data;
+- factory-planet mode: treat all inputs as bought/imported and all outputs as exported/sold;
+- extraction or hybrid mode later: use selected self-supplied inputs as zero-cash purchases while still showing their opportunity value;
+- signed-in colony mode later: read colonies with `esi-planets.manage_planets.v1`, while warning that ESI colony layout data may be stale until the pilot opens the colony in EVE.
+
+Profit math must always show customs movement cost, not hide it inside a generic fee. Use this shape:
+
+```text
+net profit = output sale value - input value - import customs cost - export customs cost - sales tax - optional broker fee
+```
+
+The customs rows are intentionally separate:
+
+- `Import from customs`: input quantity times the PI tier import base and the effective import rate.
+- `Export to customs`: output quantity times the PI tier export base and the effective export rate.
+- `Customs transfer cost`: import plus export, shown beside net profit.
+
+The current static cache records the normal PI taxable base values used for customs estimates:
+
+```text
+P0: 5 ISK
+P1: 400 ISK
+P2: 7,200 ISK
+P3: 60,000 ISK
+P4: 1,200,000 ISK
+```
+
+The first site tab should stay advisory only. It should not create colonies, move goods, open customs offices, place market orders, send mail, or automate any EVE client action. The useful decision is practical and manual: which PI chain looks worth setting up or feeding after customs, market tax, and hauling reality are visible.
 
 ### Ore Reprocessing Calculator
 
