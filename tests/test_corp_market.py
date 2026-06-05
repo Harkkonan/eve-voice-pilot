@@ -27,6 +27,7 @@ from eve_voice_pilot.corp_market import (
     RouteSystem,
     analyze_trade_pnl_transactions,
     build_discord_webhook_payload,
+    build_flight_planetary_payload,
     build_flight_reprocessing_locations_payload,
     build_flight_reprocessing_payload,
     build_flight_buyers_payload,
@@ -50,6 +51,7 @@ from eve_voice_pilot.corp_market import (
     render_dashboard,
     render_offer_page,
 )
+from eve_voice_pilot.planetary_industry import PlanetaryIndustryCache, PlanetaryItem, PlanetarySchematic
 
 
 HAWK_FIT = """[Hawk, Hawkaw T0 blitz dark abyss]
@@ -234,6 +236,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/hauling/progress" in page
     assert "/api/flight/acquisition" in page
     assert "/api/flight/trade-pnl" in page
+    assert "/api/flight/planetary" in page
     assert "/flight/login" in page
     assert "id=\"flight-system-name\"" in page
     assert "id=\"flight-login-link\"" in page
@@ -291,6 +294,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "writeAcquisitionSettings" in page
     assert "renderAcquisitionOpportunities" in page
     assert "data-tab-target=\"trade-pnl\"" in page
+    assert "data-tab-target=\"planetary\"" in page
     assert "id=\"trade-pnl-form\"" in page
     assert "id=\"trade-pnl-window-hours\"" in page
     assert "id=\"trade-pnl-lens\"" in page
@@ -302,6 +306,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "renderTradePnlMatches" in page
     assert "renderTradePnlItems" in page
     assert page.count("id=\"tab-trade-pnl\"") == 1
+    assert page.count("id=\"tab-planetary\"") == 1
+    assert "id=\"planetary-form\"" in page
+    assert "id=\"planetary-results\" class=\"decision-output\"" in page
+    assert "Customs Transfer" in page
+    assert "renderPlanetaryOpportunities" in page
     assert page.count("id=\"tab-reprocessing\"") == 1
     assert "https://images.evetech.net/types/" in page
     assert "reprocess-page" in page
@@ -1179,6 +1188,116 @@ def test_load_route_graph_cache_reads_compact_cache(tmp_path):
     assert cache.system_count == 1
     assert cache.adjacency[30000142] == (30000144,)
     assert cache.systems[30000142].name == "Jita"
+
+
+def test_build_flight_planetary_payload_displays_customs_transfer_cost(monkeypatch, tmp_path):
+    cache = PlanetaryIndustryCache(
+        path=tmp_path / "eve_planetary_industry.json",
+        available=True,
+        build_number=3374020,
+        release_date="2026-06-03T12:42:22Z",
+        schematics={
+            65: PlanetarySchematic(
+                schematic_id=65,
+                name="Superconductors",
+                cycle_time_seconds=3600,
+                inputs=(
+                    PlanetaryItem(
+                        type_id=2389,
+                        name="Plasmoids",
+                        tier="P1",
+                        quantity=40,
+                        volume_m3=0.38,
+                        export_tax_base_per_unit=400.0,
+                        import_tax_base_per_unit=200.0,
+                    ),
+                    PlanetaryItem(
+                        type_id=3645,
+                        name="Water",
+                        tier="P1",
+                        quantity=40,
+                        volume_m3=0.38,
+                        export_tax_base_per_unit=400.0,
+                        import_tax_base_per_unit=200.0,
+                    ),
+                ),
+                outputs=(
+                    PlanetaryItem(
+                        type_id=9838,
+                        name="Superconductors",
+                        tier="P2",
+                        quantity=5,
+                        volume_m3=1.5,
+                        export_tax_base_per_unit=7200.0,
+                        import_tax_base_per_unit=3600.0,
+                    ),
+                ),
+            )
+        },
+        commodities={
+            2389: PlanetaryItem(type_id=2389, name="Plasmoids", tier="P1"),
+            3645: PlanetaryItem(type_id=3645, name="Water", tier="P1"),
+            9838: PlanetaryItem(type_id=9838, name="Superconductors", tier="P2"),
+        },
+    )
+    route_cache = RouteGraphCache(
+        path=tmp_path / "eve_route_graph.json",
+        available=True,
+        systems={
+            30000142: RouteSystem(
+                solar_system_id=30000142,
+                name="Jita",
+                region_id=10000002,
+                security_status=0.9,
+            )
+        },
+        adjacency={},
+    )
+
+    monkeypatch.setattr(corp_market, "load_planetary_industry_cache", lambda cache_path=corp_market.DEFAULT_PLANETARY_CACHE_PATH: cache)
+    monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
+
+    def fake_scan_system_market_orders(*, config, type_ids, system, order_type):
+        assert system.name == "Jita"
+        if order_type == "sell":
+            return {
+                2389: [{"price": 100.0}],
+                3645: [{"price": 110.0}],
+            }, 2, []
+        if order_type == "buy":
+            return {
+                9838: [{"price": 2200.0}],
+            }, 1, []
+        raise AssertionError(order_type)
+
+    monkeypatch.setattr(corp_market, "scan_system_market_orders", fake_scan_system_market_orders)
+
+    payload = build_flight_planetary_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        hub_name="Jita",
+        output_tier="P2",
+        owner_tax_percent=5.0,
+        npc_tax_percent=10.0,
+        customs_code_expertise_level=5,
+        sales_tax_percent=3.0,
+        broker_fee_percent=0.0,
+        top=5,
+    )
+
+    opportunity = payload["planetary"]["opportunities"][0]
+    assert payload["ok"] is True
+    assert payload["settings"]["output_tier"] == "P2"
+    assert payload["tax_profile"]["effective_export_tax_percent"] == pytest.approx(10.0)
+    assert opportunity["schematic_name"] == "Superconductors"
+    assert opportunity["input_value"] == pytest.approx(8400.0)
+    assert opportunity["output_value"] == pytest.approx(11000.0)
+    assert opportunity["import_customs_cost"] == pytest.approx(1600.0)
+    assert opportunity["export_customs_cost"] == pytest.approx(3600.0)
+    assert opportunity["customs_transfer_cost"] == pytest.approx(5200.0)
+    assert opportunity["sales_tax"] == pytest.approx(330.0)
+    assert opportunity["net_profit"] == pytest.approx(-2930.0)
+    assert opportunity["profit_per_day"] == pytest.approx(-70320.0)
+    assert "Customs transfer" in payload["planetary"]["pricing_note"]
 
 
 def test_load_reprocessing_cache_reads_ore_and_station_data(tmp_path):
