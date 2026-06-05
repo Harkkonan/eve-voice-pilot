@@ -2411,6 +2411,7 @@ def build_flight_hauling_payload(
     *,
     config: EveSsoConfig,
     session: FlightEsiSession,
+    origin_name: str = "",
     destination_name: str = DEFAULT_HAUL_DESTINATION_SYSTEM,
     detour_jumps: int = DEFAULT_HAUL_DETOUR_JUMPS,
     cargo_capacity_m3: float = DEFAULT_HAUL_CARGO_M3,
@@ -2432,7 +2433,15 @@ def build_flight_hauling_payload(
         raise CorpMarketError(recipe_cache.error or "Recipe cache is not available.")
     systems = route_cache.systems or {}
     adjacency = route_cache.adjacency or {}
-    origin = systems.get(current_solar_system_id)
+    clean_origin_name = str(origin_name or "").strip()
+    if clean_origin_name:
+        origin = resolve_route_system(route_cache, clean_origin_name)
+        if origin is None:
+            raise CorpMarketError(f"Starting system {clean_origin_name!r} was not found in the route graph cache.")
+        origin_source = "manual"
+    else:
+        origin = systems.get(current_solar_system_id)
+        origin_source = "esi-location"
     if origin is None:
         raise CorpMarketError(f"Current system {current_solar_system_id} is not in the route graph cache.")
     destination = resolve_route_system(route_cache, destination_name)
@@ -2475,6 +2484,8 @@ def build_flight_hauling_payload(
         "route": {
             "origin": origin.to_dict(jumps=0),
             "destination": destination.to_dict(jumps=max(0, len(route_path) - 1)),
+            "origin_query": clean_origin_name,
+            "origin_source": origin_source,
             "destination_query": destination_name,
             "route_jumps": max(0, len(route_path) - 1),
             "detour_jumps": clamp_haul_detour_jumps(detour_jumps),
@@ -4521,6 +4532,7 @@ def build_http_server(
             if session is None:
                 return
             query = parse_qs(urlparse(self.path).query)
+            origin = first_query_value(query, "origin_name") or ""
             destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
             detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
             cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
@@ -4543,6 +4555,7 @@ def build_http_server(
                 payload = build_flight_hauling_payload(
                     config=sso_config,
                     session=session,
+                    origin_name=origin,
                     destination_name=destination,
                     detour_jumps=detour_jumps,
                     cargo_capacity_m3=cargo_m3,
@@ -4575,6 +4588,7 @@ def build_http_server(
                 emit("scan_error", {"ok": False, "error": access_error})
                 return
             query = parse_qs(urlparse(self.path).query)
+            origin = first_query_value(query, "origin_name") or ""
             destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
             detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
             cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
@@ -4597,6 +4611,7 @@ def build_http_server(
                 payload = build_flight_hauling_payload(
                     config=sso_config,
                     session=session,
+                    origin_name=origin,
                     destination_name=destination,
                     detour_jumps=detour_jumps,
                     cargo_capacity_m3=cargo_m3,
@@ -5468,6 +5483,7 @@ def _render_flight_attendant_dashboard() -> str:
     .checkline input { margin-top: 3px; }
     .checkline span { color: var(--muted); }
     .checkline small { display: block; color: var(--amber); font-size: 12px; line-height: 1.35; margin-top: 3px; }
+    .input-note { color: var(--amber); font-size: 12px; line-height: 1.35; }
     .checkline.compact { min-height: 28px; font-size: 13px; }
     .haul-item-filter {
       border: 1px solid rgba(63, 85, 80, .68);
@@ -6147,20 +6163,24 @@ def _render_flight_attendant_dashboard() -> str:
             <div class="panel-header">
               <div>
                 <h2>Hauler Routes</h2>
-                <div class="meta">Current ESI location to a hub, with pickup systems on or near that route.</div>
+                <div class="meta">Live ESI location or chosen start system to a hub, with pickup systems on or near that route.</div>
               </div>
               <span class="pill reserved">Manual Hauling</span>
             </div>
             <form id="haul-route-form" class="note-form">
               <div class="row">
+                <label>Start system
+                  <input id="haul-origin" name="origin_name" autocomplete="off" value="" placeholder="Current ESI location">
+                  <small class="input-note">Leave blank to start from your live ESI system.</small>
+                </label>
                 <label>Destination
                   <input id="haul-destination" name="destination" autocomplete="off" value="Jita" placeholder="Jita, Hek, Rens, Dihra">
                 </label>
+              </div>
+              <div class="row">
                 <label>Cargo m3
                   <input id="haul-cargo-m3" name="cargo_m3" type="number" min="1" max="10000000" step="any" inputmode="decimal" value="10000">
                 </label>
-              </div>
-              <div class="row">
                 <label>Route preference
                   <select id="haul-route-preference" name="route_preference">
                     <option value="safer" selected>Prefer safer</option>
@@ -6177,12 +6197,12 @@ def _render_flight_attendant_dashboard() -> str:
                 </label>
               </div>
               <div class="row">
-                <label>Pickup detour jumps
-                  <input id="haul-detour-jumps" name="detour_jumps" type="number" min="0" max="5" step="1" value="1">
-                </label>
                 <label>Profit to allow detour
                   <input id="haul-min-margin" name="min_detour_margin_percent" type="range" min="0" max="100" step="1" value="10">
                   <span class="range-readout"><span class="meta">Minimum after-tax margin</span><strong id="haul-min-margin-value">10%</strong></span>
+                </label>
+                <label>Pickup detour jumps
+                  <input id="haul-detour-jumps" name="detour_jumps" type="number" min="0" max="5" step="1" value="1">
                 </label>
               </div>
               <div class="haul-item-filter" aria-label="Hauling item search filter">
@@ -6295,6 +6315,7 @@ def _render_flight_attendant_dashboard() -> str:
     const flightProfitFilters = document.querySelector("#flight-profit-filters");
     const flightProfitTop = document.querySelector("#flight-profit-top");
     const haulRouteForm = document.querySelector("#haul-route-form");
+    const haulOrigin = document.querySelector("#haul-origin");
     const haulDestination = document.querySelector("#haul-destination");
     const haulCargoM3 = document.querySelector("#haul-cargo-m3");
     const haulRoutePreference = document.querySelector("#haul-route-preference");
@@ -6318,6 +6339,7 @@ def _render_flight_attendant_dashboard() -> str:
     const flightIndustryNote = document.querySelector("#flight-industry-note");
     const notesKey = "eve-flight-attendant-notes-v1";
     const jumpsKey = "eve-flight-attendant-max-jumps-v1";
+    const haulOriginKey = "eve-flight-haul-origin-v1";
     const haulDestinationKey = "eve-flight-haul-destination-v1";
     const haulCargoKey = "eve-flight-haul-cargo-m3-v1";
     const haulDetourKey = "eve-flight-haul-detour-jumps-v1";
@@ -6605,6 +6627,14 @@ def _render_flight_attendant_dashboard() -> str:
       return parts.length ? parts.join(" + ") : "no item scope selected";
     }
 
+    function haulStartLabel(settings) {
+      return String(settings.originName || "").trim() || "current ESI system";
+    }
+
+    function haulRouteLabel(settings) {
+      return `${haulStartLabel(settings)} to ${settings.destination || "destination"}`;
+    }
+
     function updateHaulItemScopeSummary(settings = null) {
       const activeSettings = settings || {
         includeCommonMaterials: haulCommonMaterials.checked,
@@ -6615,6 +6645,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
 
     function readHaulSettings() {
+      const originName = String(window.localStorage.getItem(haulOriginKey) || haulOrigin.value || "").trim();
       const destination = String(window.localStorage.getItem(haulDestinationKey) || haulDestination.value || "Jita").trim() || "Jita";
       const cargo = Number(window.localStorage.getItem(haulCargoKey) || haulCargoM3.value || 10000);
       const detour = Number(window.localStorage.getItem(haulDetourKey) || haulDetourJumps.value || 1);
@@ -6623,6 +6654,7 @@ def _render_flight_attendant_dashboard() -> str:
       const avoidStored = window.localStorage.getItem(haulAvoidPodKillsKey);
       const commonStored = window.localStorage.getItem(haulCommonMaterialsKey);
       return {
+        originName,
         destination,
         cargoM3: clampHaulCargoM3(Number.isFinite(cargo) ? cargo : 10000),
         detourJumps: Math.max(0, Math.min(5, Math.round(Number.isFinite(detour) ? detour : 1))),
@@ -6635,6 +6667,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
 
     function writeHaulSettings(settings) {
+      const originName = String(settings.originName || "").trim();
       const destination = String(settings.destination || "Jita").trim() || "Jita";
       const cargoM3 = clampHaulCargoM3(settings.cargoM3);
       const detourJumps = Math.max(0, Math.min(5, Math.round(Number(settings.detourJumps) || 0)));
@@ -6643,6 +6676,7 @@ def _render_flight_attendant_dashboard() -> str:
       const avoidRecentPodKills = settings.avoidRecentPodKills == null ? haulAvoidPodKills.checked : Boolean(settings.avoidRecentPodKills);
       const includeCommonMaterials = settings.includeCommonMaterials == null ? haulCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
       const marketGroupIds = Array.isArray(settings.marketGroupIds) ? settings.marketGroupIds : readHaulMarketGroupIdsFromInputs();
+      haulOrigin.value = originName;
       haulDestination.value = destination;
       haulCargoM3.value = String(cargoM3);
       haulDetourJumps.value = String(detourJumps);
@@ -6653,6 +6687,7 @@ def _render_flight_attendant_dashboard() -> str:
       applyHaulMarketGroupIds(marketGroupIds);
       haulMinMarginValue.textContent = `${formatNumber(minDetourMarginPercent)}%`;
       updateHaulItemScopeSummary({includeCommonMaterials, marketGroupIds});
+      window.localStorage.setItem(haulOriginKey, originName);
       window.localStorage.setItem(haulDestinationKey, destination);
       window.localStorage.setItem(haulCargoKey, String(cargoM3));
       window.localStorage.setItem(haulDetourKey, String(detourJumps));
@@ -6661,7 +6696,7 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(haulAvoidPodKillsKey, avoidRecentPodKills ? "1" : "0");
       window.localStorage.setItem(haulCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
       window.localStorage.setItem(haulMarketGroupIdsKey, JSON.stringify(marketGroupIds));
-      return {destination, cargoM3, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills, includeCommonMaterials, marketGroupIds};
+      return {originName, destination, cargoM3, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills, includeCommonMaterials, marketGroupIds};
     }
 
     async function loadFlightStatus() {
@@ -6746,6 +6781,7 @@ def _render_flight_attendant_dashboard() -> str:
       }
       flightSystemName.textContent = location.solar_system_name || "Unknown System";
       flightLocationLine.textContent = `Live ESI location ${location.updated_at || ""}`;
+      haulOrigin.placeholder = location.solar_system_name ? `Current ESI: ${location.solar_system_name}` : "Current ESI location";
       if (missingRequiredScopes.length) {
         flightMessage.textContent = `${character.character_name || "Pilot"} connected, but reconnect ESI for new scopes: ${missingRequiredScopes.join(", ")}.`;
       } else {
@@ -6754,7 +6790,8 @@ def _render_flight_attendant_dashboard() -> str:
       renderFlightRoute(data.nearby_systems || {});
       resetFlightBuyers(`Ready to scan buy orders within ${readMaxJumps()} jumps.`);
       resetFlightProfitability(`Ready to rank profitability within ${readMaxJumps()} jumps.`);
-      resetFlightHauling(`Ready to scan route hauling opportunities to ${readHaulSettings().destination}.`);
+      const haulSettings = readHaulSettings();
+      resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(haulSettings)} to ${haulSettings.destination}.`);
       loadFlightIndustry();
     }
 
@@ -7086,7 +7123,7 @@ def _render_flight_attendant_dashboard() -> str:
           <span class="progress-spinner" aria-hidden="true"></span>
           <div class="progress-copy">
             <strong>Comparing corridor sell orders and destination buy orders</strong>
-            <span><strong>Elapsed ${escapeHtml(elapsed)}</strong> &middot; ${escapeHtml(itemScope)}; cargo ${formatVolume(settings.cargoM3)}; destination ${escapeHtml(settings.destination)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
+            <span><strong>Elapsed ${escapeHtml(elapsed)}</strong> &middot; ${escapeHtml(itemScope)}; route ${escapeHtml(haulRouteLabel(settings))}; cargo ${formatVolume(settings.cargoM3)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
           </div>
         </div>
         <div class="progress-bar" aria-hidden="true"><span></span></div>
@@ -7104,6 +7141,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     async function loadFlightHauling() {
       const settings = writeHaulSettings({
+        originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
         routePreference: haulRoutePreference.value,
@@ -7120,13 +7158,14 @@ def _render_flight_attendant_dashboard() -> str:
       const routeRule = settings.routePreference === "shorter" ? "Prefer shorter" : settings.routePreference === "less_secure" ? "Prefer less secure" : "Prefer safer";
       const podRule = settings.avoidRecentPodKills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
       const itemScope = haulItemScopeLabel(settings);
-      haulRouteSummary.textContent = `Scanning ${routeRule.toLowerCase()} route to ${settings.destination}, ${podRule}, with ${formatNumber(settings.detourJumps)} detour jumps and ${itemScope}...`;
+      haulRouteSummary.textContent = `Scanning ${routeRule.toLowerCase()} route from ${haulStartLabel(settings)} to ${settings.destination}, ${podRule}, with ${formatNumber(settings.detourJumps)} detour jumps and ${itemScope}...`;
       haulRoutePath.textContent = "";
       haulProgressLog.hidden = false;
       haulProgressLog.innerHTML = "";
       startHaulProgressTimer(settings, routeRule, podRule);
       haulOpportunityTop.innerHTML = `<div class="decision-empty">Route opportunities will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
+        origin_name: settings.originName,
         destination: settings.destination,
         cargo_m3: String(settings.cargoM3),
         route_preference: settings.routePreference,
@@ -7222,6 +7261,7 @@ def _render_flight_attendant_dashboard() -> str:
       const routeLabel = route.route_preference_label || "Safer";
       const avoidLabel = route.avoid_recent_pod_kills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
       const sourceLabel = route.route_source === "local-shortest-fallback" ? "local fallback" : "ESI route planner";
+      const originSourceLabel = route.origin_source === "manual" ? "manual start override" : "live ESI start";
       const routeWarning = route.route_warning ? `<div class="meta">${escapeHtml(route.route_warning)}</div>` : "";
       const scanDuration = elapsedSeconds == null ? "" : `<div class="meta">Scan duration: ${escapeHtml(formatElapsedDuration(elapsedSeconds))}.</div>`;
       haulRouteSummary.innerHTML = `
@@ -7229,7 +7269,7 @@ def _render_flight_attendant_dashboard() -> str:
         <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>:
         ${formatNumber(route.route_jumps)} jumps, ${formatNumber(hauling.pickup_system_count)} pickup systems,
         ${formatVolume(route.cargo_capacity_m3)} cargo.
-        <div class="meta">${escapeHtml(routeLabel)} route from ${escapeHtml(sourceLabel)}; ${escapeHtml(avoidLabel)}. Avoided ${formatNumber(route.avoided_pod_kill_system_count)} recent pod-kill systems; ${formatNumber(route.route_pod_kill_system_count)} remain on this path.</div>
+        <div class="meta">Start: ${escapeHtml(originSourceLabel)}. ${escapeHtml(routeLabel)} route from ${escapeHtml(sourceLabel)}; ${escapeHtml(avoidLabel)}. Avoided ${formatNumber(route.avoided_pod_kill_system_count)} recent pod-kill systems; ${formatNumber(route.route_pod_kill_system_count)} remain on this path.</div>
         ${scanDuration}
         ${routeWarning}
       `;
@@ -7555,6 +7595,7 @@ def _render_flight_attendant_dashboard() -> str:
       if (!button) return;
       haulDestination.value = button.dataset.haulDestination || "Jita";
       writeHaulSettings({
+        originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
         routePreference: haulRoutePreference.value,
@@ -7562,10 +7603,13 @@ def _render_flight_attendant_dashboard() -> str:
         detourJumps: haulDetourJumps.value,
         minDetourMarginPercent: haulMinMargin.value,
       });
+      const settings = readHaulSettings();
+      resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(settings)} to ${settings.destination}.`);
     });
 
     haulMinMargin.addEventListener("input", () => {
       writeHaulSettings({
+        originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
         routePreference: haulRoutePreference.value,
@@ -7577,6 +7621,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     haulRoutePreference.addEventListener("change", () => {
       writeHaulSettings({
+        originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
         routePreference: haulRoutePreference.value,
@@ -7584,11 +7629,13 @@ def _render_flight_attendant_dashboard() -> str:
         detourJumps: haulDetourJumps.value,
         minDetourMarginPercent: haulMinMargin.value,
       });
-      resetFlightHauling(`Ready to scan route hauling opportunities to ${readHaulSettings().destination}.`);
+      const settings = readHaulSettings();
+      resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(settings)} to ${settings.destination}.`);
     });
 
     haulAvoidPodKills.addEventListener("change", () => {
       writeHaulSettings({
+        originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
         routePreference: haulRoutePreference.value,
@@ -7596,11 +7643,13 @@ def _render_flight_attendant_dashboard() -> str:
         detourJumps: haulDetourJumps.value,
         minDetourMarginPercent: haulMinMargin.value,
       });
-      resetFlightHauling(`Ready to scan route hauling opportunities to ${readHaulSettings().destination}.`);
+      const settings = readHaulSettings();
+      resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(settings)} to ${settings.destination}.`);
     });
 
     function updateHaulScopeAndReset() {
       writeHaulSettings({
+        originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
         routePreference: haulRoutePreference.value,
@@ -7610,9 +7659,12 @@ def _render_flight_attendant_dashboard() -> str:
         includeCommonMaterials: haulCommonMaterials.checked,
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
       });
-      resetFlightHauling(`Ready to scan route hauling opportunities to ${readHaulSettings().destination}.`);
+      const settings = readHaulSettings();
+      resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(settings)} to ${settings.destination}.`);
     }
 
+    haulOrigin.addEventListener("change", updateHaulScopeAndReset);
+    haulDestination.addEventListener("change", updateHaulScopeAndReset);
     haulCommonMaterials.addEventListener("change", updateHaulScopeAndReset);
     haulMarketGroups.addEventListener("click", (event) => {
       if (event.target.closest("input[data-haul-market-group], .mini-check")) {

@@ -237,6 +237,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-profit-top\" class=\"decision-output\"" in page
     assert "data-tab-target=\"hauling\"" in page
     assert "id=\"haul-route-form\"" in page
+    assert "id=\"haul-origin\"" in page
+    assert "Start system" in page
+    assert "Leave blank to start from your live ESI system." in page
     assert "id=\"haul-destination\"" in page
     assert "id=\"haul-cargo-m3\" name=\"cargo_m3\" type=\"number\" min=\"1\" max=\"10000000\" step=\"any\"" in page
     assert "id=\"haul-route-preference\"" in page
@@ -1440,7 +1443,11 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
                 tuple(sorted(avoid_system_ids)),
             )
         )
-        return [1, 2, 3]
+        if origin_solar_system_id == 1 and destination_solar_system_id == 3:
+            return [1, 2, 3]
+        if origin_solar_system_id == 2 and destination_solar_system_id == 3:
+            return [2, 3]
+        return []
 
     monkeypatch.setattr(corp_market, "fetch_esi_route_path", fake_fetch_esi_route_path)
     monkeypatch.setattr(corp_market, "fetch_recent_pod_kill_system_ids", lambda config: ())
@@ -1458,6 +1465,8 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
 
     assert payload["ok"] is True
     assert payload["route"]["origin"]["name"] == "Start"
+    assert payload["route"]["origin_query"] == ""
+    assert payload["route"]["origin_source"] == "esi-location"
     assert payload["route"]["destination"]["name"] == "Jita"
     assert payload["route"]["route_jumps"] == 2
     assert payload["route"]["route_preference"] == "safer"
@@ -1488,6 +1497,34 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert "orders" in event_names
     assert any(payload["message"].startswith("Scanning route stop") for event, payload in progress_events if event == "route_step")
     assert any(payload["message"].startswith("Checking nearby") for event, payload in progress_events if event == "nearby_system")
+
+    sell_calls.clear()
+    buy_calls.clear()
+    route_calls.clear()
+    override_payload = build_flight_hauling_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        origin_name="Middle",
+        destination_name="Jita",
+        detour_jumps=1,
+        cargo_capacity_m3=10,
+        min_detour_margin_percent=10,
+    )
+
+    assert override_payload["location"]["solar_system_name"] == "Start"
+    assert override_payload["route"]["origin"]["name"] == "Middle"
+    assert override_payload["route"]["origin_query"] == "Middle"
+    assert override_payload["route"]["origin_source"] == "manual"
+    assert override_payload["route"]["route_jumps"] == 1
+    assert route_calls[0] == (2, 3, "safer", ())
+
+    with pytest.raises(CorpMarketError, match="Starting system 'Missing'"):
+        build_flight_hauling_payload(
+            config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+            session=session,
+            origin_name="Missing",
+            destination_name="Jita",
+        )
 
     filtered = build_flight_hauling_payload(
         config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
