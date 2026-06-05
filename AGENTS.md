@@ -1,0 +1,103 @@
+# EVE Voice Pilot Agent Instructions
+
+This repo is a Windows-first Python project for EVE Online helpers:
+
+- `EVE Voice Pilot`: a cautious voice-command app that maps one spoken command to one key or key chord.
+- `OCR Watcher`: a guarded screen-region watcher for manual testing and narrow hotkey experiments.
+- `Corp Intel Board`: an opt-in, read-only chat-log intel dashboard.
+- `Corp Market Concierge` / `Flight Attendant`: Discord-friendly corp coordination and read-only ESI planning helpers.
+- `Trade Agent`: EVE Workbench and ESI-backed route/trade recommendations.
+
+These instructions are for Codex and other coding agents working in this repository.
+
+## Public-Release Posture
+
+Build as if the repository may be published publicly.
+
+- Keep the project non-commercial unless the owner has completed a fresh policy review.
+- Do not commit secrets, API keys, Discord webhooks, SSO client secrets, access tokens, private chat logs, generated caches, local SQLite databases, local settings, downloaded models, or personal EVE profile files.
+- Treat `docs/eve_developer_license_review.md` as a review checklist, not as the source of truth.
+- Re-open the live CCP/EVE policy pages before each meaningful release, public hosting change, monetization change, new ESI/SSO scope, new client-input capability, or feature that changes privacy behavior.
+- Preserve notices and avoid implying CCP endorsement when using EVE, CCP, or related names, data, marks, or imagery.
+
+Useful official references:
+
+- EVE Developer License Agreement: https://developers.eveonline.com/license-agreement
+- EVE developer license docs: https://developers.eveonline.com/docs/resources/license/
+- EVE third-party policies: https://support.eveonline.com/hc/en-us/articles/8564030965660-Third-Party-Policies
+
+## Safety Boundaries
+
+This project should stay on the conservative side of EVE third-party-tool rules.
+
+- Voice commands must remain one spoken command to one key or key chord.
+- Do not add timed chains, stored rapid keystroke patterns, input broadcasting, multi-client automation, mouse movement/click automation, or bot-like gameplay loops.
+- Do not read EVE process memory, scrape cache files, inspect packets, reverse engineer the client, or modify the game client.
+- Do not add automatic in-game mail, contracts, market orders, asset moves, fleet actions, warps, targeting, module cycling, or other gameplay actions.
+- Keep key sending guarded by the active-window check unless the user explicitly chooses otherwise in a clear local setting.
+- Treat OCR-driven gameplay decisions and reaction alerts as high-risk; prefer dry-run diagnostics or manual user confirmation.
+- ESI and SSO features should use the minimum scopes needed, respect rate limits/cache behavior, verify identity where applicable, and avoid storing access/refresh tokens unless there is a specific reviewed reason.
+
+## Privacy And Data Handling
+
+- Prefer opt-in local operation over silent collection.
+- Keep raw chat logs, private channel text, player-by-player transcripts, invite links, tokens, and personal paths out of committed docs and generated public artifacts.
+- Public or shareable reports should be explicitly public-safe and should redact private links and sensitive details.
+- Store local operational state under ignored paths such as `profiles/*.sqlite3`, `profiles/my_eve_commands.json`, `profiles/my_ocr_watcher_settings.json`, `cache/`, and `models/`.
+- If adding a new local state file, update `.gitignore` before the feature is considered done.
+
+## Project Conventions
+
+- Default shell is PowerShell on Windows.
+- Prefer the repo's existing simple standard-library style before adding dependencies.
+- Use `rg` / `rg --files` for search.
+- Use `apply_patch` for manual edits.
+- Keep user-facing text beginner-friendly and practical.
+- Keep code comments sparse and useful.
+- Stay inside the current checkout unless the user explicitly names another path.
+
+## Common Commands
+
+Setup:
+
+```powershell
+.\scripts\setup.ps1
+```
+
+Run the voice app:
+
+```powershell
+.\Start-EveVoicePilot.bat
+```
+
+Run tests:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+```
+
+Focused test pass for voice-command core:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_core.py
+```
+
+Run `git diff --check` before committing documentation or code changes.
+
+## Git Rules
+
+- Explain Git status in plain language: `dirty` means there are local uncommitted changes, `ahead` means local commits are not pushed, and `behind` means remote commits are not present locally.
+- Do not push, pull, reset, clean, rebase, or rewrite history unless the user explicitly asks.
+- Before editing, inspect `git status --short --branch`.
+- If unrelated files are dirty, leave them untouched and unstaged.
+- Stage only files that belong to the completed task.
+- Do not commit generated packages, local settings, logs, crash dumps, extracted game assets, private saves, secrets, failed-check work, unclear WIP, or changes whose ownership is unclear.
+- After a meaningful completed slice, run appropriate checks and create a local checkpoint commit if the staged change is safe and self-contained.
+
+## Area Notes
+
+- `src/eve_voice_pilot/app.py`, `commands.py`, `input_sender.py`, `local_transcription.py`, `transcription.py`, and `speech_responses.py` are the core voice app surface.
+- `profiles/eve_voice_standard.json`, `data/eve_voice_keybind_standard.csv`, and `docs/eve_voice_keybind_standard.md` should stay in sync when changing default voice commands or recommended EVE keybinds.
+- `src/eve_voice_pilot/corp_intel.py` should remain read-only against the EVE client and opt-in for pilots.
+- `src/eve_voice_pilot/corp_market.py` contains the corp market concierge and Flight Attendant helpers; keep Discord/ESI flows explicit, manual where gameplay handoff is involved, and careful with tokens.
+- `docs/chatlog-knowledge/` is generated public-safe output. Do not hand-edit it for data corrections unless the user specifically asks; prefer fixing the generator/source workflow.
