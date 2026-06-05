@@ -5588,7 +5588,8 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .ops-tile strong { display: block; color: var(--text); font-size: 16px; margin-top: 3px; overflow-wrap: anywhere; }
     .ops-tile span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-    .briefing { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, .42fr); gap: 14px; }
+    .flight-console-panel { grid-column: 1 / -1; }
+    .briefing { display: grid; grid-template-columns: minmax(360px, .95fr) minmax(340px, .8fr); gap: 14px; align-items: start; }
     .system-board {
       border: 1px solid rgba(224, 168, 74, .42);
       background: linear-gradient(135deg, rgba(224, 168, 74, .12), rgba(97, 199, 217, .05)), rgba(8, 13, 15, .52);
@@ -5599,9 +5600,46 @@ def _render_flight_attendant_dashboard() -> str:
     .system-name { font-size: 34px; font-weight: 800; letter-spacing: 0; margin: 4px 0 6px; }
     .constellation-line { color: var(--muted); margin-bottom: 16px; }
     .flight-actions { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 16px; }
-    .module-stack { display: grid; gap: 10px; }
-    .module { border: 1px solid var(--line); background: rgba(17, 24, 25, .78); border-radius: 7px; padding: 11px; }
-    .module h3 { margin-bottom: 5px; }
+    .module-stack { display: grid; gap: 9px; align-content: start; }
+    .module { border: 1px solid var(--line); background: rgba(17, 24, 25, .78); border-radius: 7px; padding: 10px; }
+    .module summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .module summary::-webkit-details-marker { display: none; }
+    .module summary::after {
+      content: "Collapse";
+      flex: 0 0 auto;
+      color: var(--muted);
+      border: 1px solid rgba(63, 85, 80, .78);
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .module:not([open]) summary::after { content: "Expand"; color: var(--cyan); }
+    .module[open] summary { margin-bottom: 6px; }
+    .module h3 { margin-bottom: 0; }
+    .module-content { display: grid; gap: 6px; min-width: 0; }
+    .flight-output-module .module-content { max-height: 360px; overflow: auto; padding-right: 2px; }
+    .note-module {
+      border-color: rgba(224, 168, 74, .46);
+      background: rgba(8, 13, 15, .5);
+      margin-bottom: 12px;
+    }
+    .note-module .module-content { gap: 8px; }
+    .note-module form { gap: 8px; }
+    .note-module textarea { min-height: 62px; max-height: 126px; }
+    .note-module .note-list {
+      max-height: 170px;
+      overflow: auto;
+      margin-top: 0;
+      padding-right: 2px;
+    }
     .blueprint-list { display: grid; gap: 8px; margin-top: 6px; }
     .blueprint-item {
       display: grid;
@@ -5634,6 +5672,42 @@ def _render_flight_attendant_dashboard() -> str:
       padding: 12px;
       color: var(--muted);
       min-width: min(100%, 560px);
+    }
+    .output-details {
+      border: 1px solid rgba(63, 85, 80, .76);
+      background: rgba(8, 13, 15, .32);
+      border-radius: 7px;
+      overflow: hidden;
+    }
+    .output-details summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      cursor: pointer;
+      list-style: none;
+      padding: 9px 11px;
+      color: var(--cyan);
+      font-weight: 800;
+    }
+    .output-details summary::-webkit-details-marker { display: none; }
+    .output-details summary::after {
+      content: "Collapse";
+      flex: 0 0 auto;
+      color: var(--muted);
+      border: 1px solid rgba(63, 85, 80, .78);
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .output-details:not([open]) summary::after { content: "Expand"; color: var(--cyan); }
+    .output-details[open] summary { border-bottom: 1px solid rgba(63, 85, 80, .48); }
+    .output-details-body {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+      min-width: 0;
     }
     .progress-status { display: flex; align-items: center; gap: 12px; }
     .progress-spinner {
@@ -5760,6 +5834,9 @@ def _render_flight_attendant_dashboard() -> str:
     .danger { color: var(--red); }
     .note-form textarea { min-height: 112px; }
     .note-list { display: grid; gap: 9px; margin-top: 12px; }
+    .note-module .row { grid-template-columns: minmax(0, 1fr) minmax(112px, .5fr); }
+    .note-module .note-form textarea { min-height: 62px; max-height: 126px; }
+    .note-module .note-list { max-height: 170px; overflow: auto; margin-top: 0; padding-right: 2px; }
     .note-card {
       border: 1px solid var(--line);
       background: rgba(8, 13, 15, .5);
@@ -5914,7 +5991,7 @@ def _render_flight_attendant_dashboard() -> str:
 
       <section id="tab-flight" class="tab-panel" data-tab-panel="flight" hidden>
         <div class="flight-grid">
-          <section class="panel">
+          <section class="panel flight-console-panel">
             <div class="panel-header">
               <div>
                 <h2>Flight Attendant</h2>
@@ -5922,6 +5999,31 @@ def _render_flight_attendant_dashboard() -> str:
               </div>
               <span class="pill reserved">Preview</span>
             </div>
+            <details class="module note-module">
+              <summary><h3 class="warning">Captain's Notes</h3></summary>
+              <div class="module-content">
+                <form id="flight-note-form" class="note-form">
+                  <div class="row">
+                    <label>System
+                      <input name="system" autocomplete="off" placeholder="Jita, Amarr, Hek">
+                    </label>
+                    <label>Priority
+                      <select name="priority">
+                        <option value="normal">Normal</option>
+                        <option value="asset">Asset</option>
+                        <option value="market">Market</option>
+                        <option value="warning">Warning</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label>Note
+                    <textarea name="note" placeholder="Fuel cache, doctrine hulls, avoid undock"></textarea>
+                  </label>
+                  <button type="submit">Save Local Note</button>
+                </form>
+                <div id="flight-notes" class="note-list"></div>
+              </div>
+            </details>
             <div class="briefing">
               <div class="system-board">
                 <div class="meta">Current system briefing</div>
@@ -5941,70 +6043,53 @@ def _render_flight_attendant_dashboard() -> str:
                 <div id="flight-esi-message" class="meta"></div>
               </div>
               <div class="module-stack">
-                <div class="module">
-                  <h3 class="signal">Blueprint Library</h3>
-                  <div id="flight-blueprint-summary" class="meta">Connect ESI to scan owned blueprints.</div>
-                  <div id="flight-blueprint-top" class="meta"></div>
-                </div>
-                <div class="module">
-                  <h3 class="warning">Materials And Assets</h3>
-                  <div id="flight-asset-summary" class="meta">Connect ESI to scan owned asset stacks.</div>
-                  <div id="flight-asset-top" class="meta"></div>
-                </div>
-                <div class="module">
-                  <h3 class="signal">Nearby Systems</h3>
-                  <label>Max jumps
-                    <input id="flight-max-jumps" type="number" min="0" max="25" step="1" value="5">
-                  </label>
-                  <div id="flight-route-summary" class="meta">Connect ESI to calculate nearby systems.</div>
-                  <div id="flight-route-top" class="meta"></div>
-                </div>
-                <div class="module">
-                  <h3 class="warning">Buyer Orders</h3>
-                  <button id="flight-buyer-scan" class="ghost" type="button">Scan Buyers</button>
-                  <div id="flight-buyer-summary" class="meta">Connect ESI to scan nearby public buy orders.</div>
-                  <div id="flight-buyer-top" class="meta"></div>
-                </div>
-                <div class="module">
-                  <h3 class="signal">Recipe Cache</h3>
-                  <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
-                  <div id="flight-buildability-top" class="meta"></div>
-                </div>
-                <div class="module">
-                  <h3 class="danger">Pilot Still Acts</h3>
-                  <div id="flight-industry-note" class="meta">No warps, orders, contracts, clicks, or client input are performed by this page.</div>
-                </div>
+                <details class="module flight-output-module" open>
+                  <summary><h3 class="signal">Blueprint Library</h3></summary>
+                  <div class="module-content">
+                    <div id="flight-blueprint-summary" class="meta">Connect ESI to scan owned blueprints.</div>
+                    <div id="flight-blueprint-top" class="meta"></div>
+                  </div>
+                </details>
+                <details class="module flight-output-module" open>
+                  <summary><h3 class="warning">Materials And Assets</h3></summary>
+                  <div class="module-content">
+                    <div id="flight-asset-summary" class="meta">Connect ESI to scan owned asset stacks.</div>
+                    <div id="flight-asset-top" class="meta"></div>
+                  </div>
+                </details>
+                <details class="module flight-output-module" open>
+                  <summary><h3 class="signal">Nearby Systems</h3></summary>
+                  <div class="module-content">
+                    <label>Max jumps
+                      <input id="flight-max-jumps" type="number" min="0" max="25" step="1" value="5">
+                    </label>
+                    <div id="flight-route-summary" class="meta">Connect ESI to calculate nearby systems.</div>
+                    <div id="flight-route-top" class="meta"></div>
+                  </div>
+                </details>
+                <details class="module flight-output-module" open>
+                  <summary><h3 class="warning">Buyer Orders</h3></summary>
+                  <div class="module-content">
+                    <button id="flight-buyer-scan" class="ghost" type="button">Scan Buyers</button>
+                    <div id="flight-buyer-summary" class="meta">Connect ESI to scan nearby public buy orders.</div>
+                    <div id="flight-buyer-top" class="meta"></div>
+                  </div>
+                </details>
+                <details class="module flight-output-module" open>
+                  <summary><h3 class="signal">Recipe Cache</h3></summary>
+                  <div class="module-content">
+                    <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
+                    <div id="flight-buildability-top" class="meta"></div>
+                  </div>
+                </details>
+                <details class="module flight-output-module" open>
+                  <summary><h3 class="danger">Pilot Still Acts</h3></summary>
+                  <div class="module-content">
+                    <div id="flight-industry-note" class="meta">No warps, orders, contracts, clicks, or client input are performed by this page.</div>
+                  </div>
+                </details>
               </div>
             </div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Captain's Notes</h2>
-                <div class="meta">Saved in this browser only. Good for system reminders while backend storage is still planned.</div>
-              </div>
-            </div>
-            <form id="flight-note-form" class="note-form">
-              <div class="row">
-                <label>System
-                  <input name="system" autocomplete="off" placeholder="Jita, Amarr, Hek">
-                </label>
-                <label>Priority
-                  <select name="priority">
-                    <option value="normal">Normal</option>
-                    <option value="asset">Asset</option>
-                    <option value="market">Market</option>
-                    <option value="warning">Warning</option>
-                  </select>
-                </label>
-              </div>
-              <label>Note
-                <textarea name="note" placeholder="Fuel cache, doctrine hulls, avoid undock, cheap robotics nearby"></textarea>
-              </label>
-              <button type="submit">Save Local Note</button>
-            </form>
-            <div id="flight-notes" class="note-list"></div>
           </section>
 
           <section class="panel profit-panel" aria-labelledby="flight-profit-title">
@@ -6030,7 +6115,12 @@ def _render_flight_attendant_dashboard() -> str:
               <button class="secondary" type="button" data-profit-filter="watch">Watch</button>
               <button class="secondary" type="button" data-profit-filter="skip">Skip</button>
             </div>
-            <div id="flight-profit-top" class="decision-output"></div>
+            <details class="output-details" open>
+              <summary>Profitability Results</summary>
+              <div class="output-details-body">
+                <div id="flight-profit-top" class="decision-output"></div>
+              </div>
+            </details>
           </section>
 
           <section class="panel">
@@ -6125,9 +6215,14 @@ def _render_flight_attendant_dashboard() -> str:
               </div>
               <button id="haul-scan" class="ghost" type="submit">Scan Route</button>
             </form>
-            <div id="haul-route-summary" class="profit-summary">Connect ESI to scan route hauling opportunities.</div>
-            <div id="haul-route-path" class="meta"></div>
-            <div id="haul-progress-log" class="progress-log" hidden></div>
+            <details class="output-details" open>
+              <summary>Route Output</summary>
+              <div class="output-details-body">
+                <div id="haul-route-summary" class="profit-summary">Connect ESI to scan route hauling opportunities.</div>
+                <div id="haul-route-path" class="meta"></div>
+                <div id="haul-progress-log" class="progress-log" hidden></div>
+              </div>
+            </details>
           </section>
 
           <section class="panel">
@@ -6156,8 +6251,13 @@ def _render_flight_attendant_dashboard() -> str:
                 <div class="meta">Materials with cheap pickup orders near your route and stronger buy orders at the destination.</div>
               </div>
             </div>
-            <div id="haul-opportunity-summary" class="profit-summary">No route scan has run yet.</div>
-            <div id="haul-opportunity-top" class="decision-output"></div>
+            <details class="output-details" open>
+              <summary>Route Opportunity Results</summary>
+              <div class="output-details-body">
+                <div id="haul-opportunity-summary" class="profit-summary">No route scan has run yet.</div>
+                <div id="haul-opportunity-top" class="decision-output"></div>
+              </div>
+            </details>
           </section>
         </div>
       </section>
