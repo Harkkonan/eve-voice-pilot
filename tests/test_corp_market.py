@@ -250,6 +250,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
+    assert "formatElapsedDuration" in page
+    assert "startHaulProgressTimer" in page
+    assert "Elapsed ${escapeHtml(elapsed)}" in page
+    assert "Scan duration:" in page
     assert "data-profit-filter=\"build-now\"" in page
     assert "data-profit-filter=\"source-missing\"" in page
     assert "data-profit-filter=\"price-check\"" in page

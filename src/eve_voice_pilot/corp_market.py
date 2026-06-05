@@ -4564,6 +4564,7 @@ def _render_flight_attendant_dashboard() -> str:
     .progress-copy { display: grid; gap: 2px; min-width: 0; }
     .progress-copy strong { color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
     .progress-copy span { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .progress-copy span strong { color: var(--amber); font-size: 13px; }
     .progress-log {
       display: grid;
       gap: 6px;
@@ -4577,7 +4578,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .progress-entry {
       display: grid;
-      grid-template-columns: 86px minmax(0, 1fr);
+      grid-template-columns: 86px 58px minmax(0, 1fr);
       gap: 8px;
       align-items: start;
       border-bottom: 1px solid rgba(63, 85, 80, .28);
@@ -4587,6 +4588,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .progress-entry:last-child { border-bottom: 0; padding-bottom: 0; }
     .progress-entry b { color: var(--cyan); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+    .progress-entry time { color: var(--amber); font-size: 12px; font-weight: 800; }
     .progress-entry span { overflow-wrap: anywhere; }
     .range-readout { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     input[type="range"] { padding: 0; accent-color: var(--cyan); }
@@ -5122,6 +5124,8 @@ def _render_flight_attendant_dashboard() -> str:
     let flightProfitProgressTimer = null;
     let haulEventSource = null;
     let haulScanFinished = false;
+    let haulProgressTimer = null;
+    let haulProgressStartedAt = 0;
 
     function escapeHtml(value) {
       const replacements = {
@@ -5282,6 +5286,16 @@ def _render_flight_attendant_dashboard() -> str:
       const minutes = Math.floor((total % 3600) / 60);
       const secs = total % 60;
       if (hours) return `${hours}h ${minutes}m`;
+      if (minutes) return `${minutes}m ${secs}s`;
+      return `${secs}s`;
+    }
+
+    function formatElapsedDuration(seconds) {
+      const total = Math.max(0, Math.floor(Number(seconds || 0)));
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      if (hours) return `${hours}h ${minutes}m ${secs}s`;
       if (minutes) return `${minutes}m ${secs}s`;
       return `${secs}s`;
     }
@@ -5733,6 +5747,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     function resetFlightHauling(message) {
       closeHaulEventSource();
+      stopHaulProgressTimer();
       haulRouteSummary.textContent = message;
       haulRoutePath.textContent = "";
       haulProgressLog.hidden = true;
@@ -5749,6 +5764,44 @@ def _render_flight_attendant_dashboard() -> str:
       }
     }
 
+    function currentHaulElapsedSeconds() {
+      if (!haulProgressStartedAt) return 0;
+      return Math.max(0, Math.floor((Date.now() - haulProgressStartedAt) / 1000));
+    }
+
+    function stopHaulProgressTimer() {
+      const elapsedSeconds = currentHaulElapsedSeconds();
+      if (haulProgressTimer) {
+        window.clearInterval(haulProgressTimer);
+        haulProgressTimer = null;
+      }
+      haulProgressStartedAt = 0;
+      return elapsedSeconds;
+    }
+
+    function renderHaulProgressSummary(settings, routeRule, podRule) {
+      const elapsed = formatElapsedDuration(currentHaulElapsedSeconds());
+      haulOpportunitySummary.innerHTML = `
+        <div class="progress-status" aria-live="polite">
+          <span class="progress-spinner" aria-hidden="true"></span>
+          <div class="progress-copy">
+            <strong>Comparing corridor sell orders and destination buy orders</strong>
+            <span><strong>Elapsed ${escapeHtml(elapsed)}</strong> &middot; Cargo ${formatVolume(settings.cargoM3)}; destination ${escapeHtml(settings.destination)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
+          </div>
+        </div>
+        <div class="progress-bar" aria-hidden="true"><span></span></div>
+      `;
+    }
+
+    function startHaulProgressTimer(settings, routeRule, podRule) {
+      stopHaulProgressTimer();
+      haulProgressStartedAt = Date.now();
+      renderHaulProgressSummary(settings, routeRule, podRule);
+      haulProgressTimer = window.setInterval(() => {
+        renderHaulProgressSummary(settings, routeRule, podRule);
+      }, 1000);
+    }
+
     async function loadFlightHauling() {
       const settings = writeHaulSettings({
         destination: haulDestination.value,
@@ -5759,6 +5812,7 @@ def _render_flight_attendant_dashboard() -> str:
         minDetourMarginPercent: haulMinMargin.value,
       });
       closeHaulEventSource();
+      stopHaulProgressTimer();
       haulScanFinished = false;
       haulScanButton.disabled = true;
       const routeRule = settings.routePreference === "shorter" ? "Prefer shorter" : settings.routePreference === "less_secure" ? "Prefer less secure" : "Prefer safer";
@@ -5767,16 +5821,7 @@ def _render_flight_attendant_dashboard() -> str:
       haulRoutePath.textContent = "";
       haulProgressLog.hidden = false;
       haulProgressLog.innerHTML = "";
-      haulOpportunitySummary.innerHTML = `
-        <div class="progress-status" aria-live="polite">
-          <span class="progress-spinner" aria-hidden="true"></span>
-          <div class="progress-copy">
-            <strong>Comparing corridor sell orders and destination buy orders</strong>
-            <span>Cargo ${formatVolume(settings.cargoM3)}; destination ${escapeHtml(settings.destination)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
-          </div>
-        </div>
-        <div class="progress-bar" aria-hidden="true"><span></span></div>
-      `;
+      startHaulProgressTimer(settings, routeRule, podRule);
       haulOpportunityTop.innerHTML = `<div class="decision-empty">Route opportunities will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
         destination: settings.destination,
@@ -5804,27 +5849,30 @@ def _render_flight_attendant_dashboard() -> str:
       haulEventSource.addEventListener("scan_error", (event) => {
         const payload = parseHaulProgressEvent(event);
         haulScanFinished = true;
+        const elapsedSeconds = stopHaulProgressTimer();
         closeHaulEventSource();
-        appendHaulProgress("Stopped", {message: payload.error || "Route scan failed."});
-        haulRouteSummary.textContent = payload.error || "Route scan failed.";
-        haulOpportunitySummary.textContent = "Route scan failed.";
+        appendHaulProgress("Stopped", {message: payload.error || "Route scan failed.", elapsed_seconds: elapsedSeconds});
+        haulRouteSummary.textContent = `${payload.error || "Route scan failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+        haulOpportunitySummary.textContent = `Route scan failed after ${formatElapsedDuration(elapsedSeconds)}.`;
         haulOpportunityTop.textContent = "";
         haulScanButton.disabled = false;
       });
       haulEventSource.addEventListener("result", (event) => {
         haulScanFinished = true;
         const data = parseHaulProgressEvent(event);
-        renderFlightHauling(data);
-        appendHaulProgress("Done", {message: "Route opportunity scan complete."});
+        const elapsedSeconds = stopHaulProgressTimer();
+        renderFlightHauling(data, elapsedSeconds);
+        appendHaulProgress("Done", {message: `Route opportunity scan complete in ${formatElapsedDuration(elapsedSeconds)}.`, elapsed_seconds: elapsedSeconds});
         closeHaulEventSource();
         haulScanButton.disabled = false;
       });
       haulEventSource.onerror = () => {
         if (haulScanFinished) return;
+        const elapsedSeconds = stopHaulProgressTimer();
         closeHaulEventSource();
-        appendHaulProgress("Stopped", {message: "Route scan connection closed before results arrived."});
-        haulRouteSummary.textContent = "Route scan connection closed before results arrived.";
-        haulOpportunitySummary.textContent = "Route scan failed.";
+        appendHaulProgress("Stopped", {message: "Route scan connection closed before results arrived.", elapsed_seconds: elapsedSeconds});
+        haulRouteSummary.textContent = `Route scan connection closed before results arrived. Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+        haulOpportunitySummary.textContent = `Route scan failed after ${formatElapsedDuration(elapsedSeconds)}.`;
         haulOpportunityTop.textContent = "";
         haulScanButton.disabled = false;
       };
@@ -5841,10 +5889,11 @@ def _render_flight_attendant_dashboard() -> str:
     function appendHaulProgress(label, payload) {
       const message = payload.message || "";
       if (!message) return;
+      const elapsedSeconds = payload.elapsed_seconds == null ? currentHaulElapsedSeconds() : Number(payload.elapsed_seconds);
       haulProgressLog.hidden = false;
       const entry = document.createElement("div");
       entry.className = "progress-entry";
-      entry.innerHTML = `<b>${escapeHtml(label)}</b><span>${escapeHtml(message)}</span>`;
+      entry.innerHTML = `<b>${escapeHtml(label)}</b><time>${escapeHtml(formatElapsedDuration(elapsedSeconds))}</time><span>${escapeHtml(message)}</span>`;
       haulProgressLog.appendChild(entry);
       while (haulProgressLog.children.length > 80) {
         haulProgressLog.removeChild(haulProgressLog.firstElementChild);
@@ -5852,7 +5901,7 @@ def _render_flight_attendant_dashboard() -> str:
       haulProgressLog.scrollTop = haulProgressLog.scrollHeight;
     }
 
-    function renderFlightHauling(data) {
+    function renderFlightHauling(data, elapsedSeconds = null) {
       const route = data.route || {};
       const hauling = data.hauling || {};
       const origin = route.origin || {};
@@ -5865,12 +5914,14 @@ def _render_flight_attendant_dashboard() -> str:
       const avoidLabel = route.avoid_recent_pod_kills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
       const sourceLabel = route.route_source === "local-shortest-fallback" ? "local fallback" : "ESI route planner";
       const routeWarning = route.route_warning ? `<div class="meta">${escapeHtml(route.route_warning)}</div>` : "";
+      const scanDuration = elapsedSeconds == null ? "" : `<div class="meta">Scan duration: ${escapeHtml(formatElapsedDuration(elapsedSeconds))}.</div>`;
       haulRouteSummary.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> to
         <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>:
         ${formatNumber(route.route_jumps)} jumps, ${formatNumber(hauling.pickup_system_count)} pickup systems,
         ${formatVolume(route.cargo_capacity_m3)} cargo.
         <div class="meta">${escapeHtml(routeLabel)} route from ${escapeHtml(sourceLabel)}; ${escapeHtml(avoidLabel)}. Avoided ${formatNumber(route.avoided_pod_kill_system_count)} recent pod-kill systems; ${formatNumber(route.route_pod_kill_system_count)} remain on this path.</div>
+        ${scanDuration}
         ${routeWarning}
       `;
       haulRoutePath.innerHTML = renderHaulRoutePath(route.systems || []);
