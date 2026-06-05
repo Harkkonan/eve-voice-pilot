@@ -122,6 +122,7 @@ MAX_REPROCESSING_FACILITY_YIELD_PERCENT = 100.0
 MAX_REPROCESSING_BONUS_PERCENT = 100.0
 MAX_REPROCESSING_TAX_PERCENT = 100.0
 MAX_REPROCESSING_STATION_OPTIONS = 200
+MIN_REPROCESSING_STATION_STANDING = 1.5
 BASE_SALES_TAX_RATE = 0.075
 ACCOUNTING_SALES_TAX_REDUCTION_PER_LEVEL = 0.11
 TRADE_PNL_MARKET_FEE_REF_TYPES = frozenset(
@@ -6074,8 +6075,9 @@ def build_flight_reprocessing_locations_payload(
         "total_matching_stations": total_matching,
         "truncated": total_matching > len(station_options),
         "limit": MAX_REPROCESSING_STATION_OPTIONS,
+        "minimum_standing": MIN_REPROCESSING_STATION_STANDING,
         "notes": [
-            "Station options are NPC stations from the local SDE cache whose owner corporation or faction appears in your ESI standings.",
+            "Station options are NPC stations from the local SDE cache whose owner corporation or faction standing is greater than 1.5.",
             "Options are ranked by estimated net reprocessing yield after standings-adjusted station tax.",
         ],
     }
@@ -6098,7 +6100,7 @@ def build_reprocessing_station_options(
             station=station,
             owner_id=station.owner_id,
         )
-        if standing_value is None:
+        if standing_value is None or standing_value <= MIN_REPROCESSING_STATION_STANDING:
             continue
         base_yield_percent = station_reprocessing_yield_percent(station)
         base_station_tax_rate = station.reprocessing_tax_rate if station.reprocessing_tax_rate is not None else 0.0
@@ -9304,11 +9306,11 @@ def _render_flight_attendant_dashboard() -> str:
                   <select id="reprocess-station-select" name="reprocessing_station_id">
                     <option value="current">Use current ESI location</option>
                   </select>
-                  <small id="reprocess-location-status" class="input-note">Connect ESI to rank stations you have standing with.</small>
+                  <small id="reprocess-location-status" class="input-note">Connect ESI to rank stations with standing over 1.5.</small>
                 </label>
                 <label>Station list
                   <button id="reprocess-refresh-locations" class="secondary" type="button">Refresh Locations</button>
-                  <small class="input-note">NPC stations are ranked by estimated net yield after standings tax.</small>
+                  <small class="input-note">NPC stations above 1.5 standing are ranked by estimated net yield after standings tax.</small>
                 </label>
               </div>
               <details class="output-details">
@@ -10034,7 +10036,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetMarketAcquisition("Configure EVE SSO before planning market acquisitions.");
         resetTradePnl("Configure EVE SSO before analyzing trade history.");
         resetReprocessing("Configure EVE SSO before calculating ore reprocessing.");
-        clearReprocessingLocations("Configure EVE SSO before ranking reprocessing stations.", true);
+        clearReprocessingLocations("Configure EVE SSO before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
         return;
       }
@@ -10051,7 +10053,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetMarketAcquisition("Connect ESI to plan public buy orders.");
         resetTradePnl("Connect ESI to analyze recent wallet transactions.");
         resetReprocessing("Connect ESI to calculate ore reprocessing.");
-        clearReprocessingLocations("Connect ESI to rank reprocessing stations.", true);
+        clearReprocessingLocations("Connect ESI to rank reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
       }
@@ -10071,7 +10073,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetMarketAcquisition("Use an allowlisted EVE character before planning market acquisitions.");
         resetTradePnl("Use an allowlisted EVE character before analyzing trade history.");
         resetReprocessing("Use an allowlisted EVE character before calculating ore reprocessing.");
-        clearReprocessingLocations("Use an allowlisted EVE character before ranking reprocessing stations.", true);
+        clearReprocessingLocations("Use an allowlisted EVE character before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Use an allowlisted EVE character before scanning industry data.");
         return;
       }
@@ -10086,7 +10088,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetMarketAcquisition("Resolve the ESI error before planning market acquisitions.");
         resetTradePnl("Resolve the ESI error before analyzing trade history.");
         resetReprocessing("Resolve the ESI error before calculating ore reprocessing.");
-        clearReprocessingLocations("Resolve the ESI error before ranking reprocessing stations.", true);
+        clearReprocessingLocations("Resolve the ESI error before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
         return;
       }
@@ -11269,11 +11271,11 @@ def _render_flight_attendant_dashboard() -> str:
         structureBonusPercent: readOptionalPercentInput(reprocessStructureBonus) || "0",
       });
       if (!settings.oreTypeId) {
-        clearReprocessingLocations("Run the cache refresh before ranking reprocessing stations.");
+        clearReprocessingLocations("Run the cache refresh before ranking reprocessing stations over 1.5 standing.");
         return;
       }
       reprocessRefreshLocations.disabled = true;
-      reprocessLocationStatus.textContent = "Loading stations from ESI standings and local SDE data...";
+      reprocessLocationStatus.textContent = "Loading stations over 1.5 standing from ESI standings and local SDE data...";
       const params = new URLSearchParams({
         ore_type_id: settings.oreTypeId,
         structure_bonus_percent: settings.structureBonusPercent || "0",
@@ -11314,11 +11316,11 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(reprocessLocationKey, reprocessStationSelect.value);
       const total = Number(data.total_matching_stations || stations.length || 0);
       if (!stations.length) {
-        reprocessLocationStatus.textContent = "No NPC reprocessing stations matched your ESI standings.";
+        reprocessLocationStatus.textContent = "No NPC reprocessing stations matched standings over 1.5.";
       } else if (data.truncated) {
-        reprocessLocationStatus.textContent = `Showing top ${formatNumber(stations.length)} of ${formatNumber(total)} standing-matched NPC stations.`;
+        reprocessLocationStatus.textContent = `Showing top ${formatNumber(stations.length)} of ${formatNumber(total)} NPC stations over 1.5 standing.`;
       } else {
-        reprocessLocationStatus.textContent = `Loaded ${formatNumber(stations.length)} standing-matched NPC stations, ranked by net yield.`;
+        reprocessLocationStatus.textContent = `Loaded ${formatNumber(stations.length)} NPC stations over 1.5 standing, ranked by net yield.`;
       }
     }
 

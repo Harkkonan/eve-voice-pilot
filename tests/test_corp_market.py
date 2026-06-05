@@ -1386,7 +1386,7 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     assert valuation["ore_complete"] is True
 
 
-def test_build_flight_reprocessing_locations_payload_ranks_standing_stations(monkeypatch, tmp_path):
+def test_build_flight_reprocessing_locations_payload_filters_and_ranks_standing_stations(monkeypatch, tmp_path):
     cache = ReprocessingCache(
         path=tmp_path / "eve_reprocessing.json",
         available=True,
@@ -1434,6 +1434,15 @@ def test_build_flight_reprocessing_locations_payload_ranks_standing_stations(mon
                 reprocessing_efficiency=0.5,
                 reprocessing_tax_rate=0.05,
             ),
+            60000013: ReprocessingStation(
+                station_id=60000013,
+                owner_id=1000005,
+                owner_name="Boundary Standing Corp",
+                owner_faction_id=500003,
+                solar_system_id=30002782,
+                reprocessing_efficiency=0.5,
+                reprocessing_tax_rate=0.05,
+            ),
         },
     )
     route_cache = RouteGraphCache(
@@ -1456,6 +1465,12 @@ def test_build_flight_reprocessing_locations_payload_ranks_standing_stations(mon
             30002781: RouteSystem(
                 solar_system_id=30002781,
                 name="Unlisted",
+                region_id=200,
+                security_status=0.6,
+            ),
+            30002782: RouteSystem(
+                solar_system_id=30002782,
+                name="Boundary",
                 region_id=200,
                 security_status=0.6,
             ),
@@ -1498,6 +1513,7 @@ def test_build_flight_reprocessing_locations_payload_ranks_standing_stations(mon
         lambda config, session: [
             {"from_id": 1000002, "from_type": "corporation", "standing": 0.0},
             {"from_id": 1000003, "from_type": "corporation", "standing": 5.0},
+            {"from_id": 1000005, "from_type": "corporation", "standing": 1.5},
         ],
     )
     monkeypatch.setattr(
@@ -1529,11 +1545,11 @@ def test_build_flight_reprocessing_locations_payload_ranks_standing_stations(mon
     )
 
     assert payload["current_location"]["location_id"] == 60000004
-    assert payload["station_count"] == 2
-    assert payload["total_matching_stations"] == 2
-    assert [station["station_id"] for station in payload["stations"]] == [60000007, 60000004]
-    assert {station["station_id"] for station in payload["stations"]} == {60000004, 60000007}
-    assert payload["stations"][0]["net_yield_percent"] > payload["stations"][1]["net_yield_percent"]
+    assert payload["minimum_standing"] == 1.5
+    assert payload["station_count"] == 1
+    assert payload["total_matching_stations"] == 1
+    assert [station["station_id"] for station in payload["stations"]] == [60000007]
+    assert {station["station_id"] for station in payload["stations"]}.isdisjoint({60000004, 60000010, 60000013})
     assert payload["stations"][0]["solar_system_name"] == "Inaro"
     assert "standing 5.00" in payload["stations"][0]["label"]
     assert "tax 1.25%" in payload["stations"][0]["label"]
