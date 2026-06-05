@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 import sys
@@ -291,9 +291,14 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "renderAcquisitionOpportunities" in page
     assert "data-tab-target=\"trade-pnl\"" in page
     assert "id=\"trade-pnl-form\"" in page
-    assert "id=\"trade-pnl-days\"" in page
+    assert "id=\"trade-pnl-window-hours\"" in page
+    assert "id=\"trade-pnl-lens\"" in page
+    assert "id=\"trade-pnl-exclude\"" in page
+    assert "id=\"trade-pnl-show-matches\"" in page
     assert "id=\"trade-pnl-results\" class=\"decision-output\"" in page
     assert "Trade Profit And Loss" in page
+    assert "Considered Result" in page
+    assert "renderTradePnlMatches" in page
     assert "renderTradePnlItems" in page
     assert page.count("id=\"tab-trade-pnl\"") == 1
     assert page.count("id=\"tab-reprocessing\"") == 1
@@ -486,6 +491,7 @@ def test_trade_pnl_fifo_matches_expected_spread_and_fee_gap():
         transactions,
         journal_entries=journal_entries,
         type_names={34: "Tritanium", 35: "Pyerite", 36: "Mexallon"},
+        include_matches=True,
         now=datetime(2026, 6, 5, tzinfo=timezone.utc),
     )
 
@@ -503,13 +509,108 @@ def test_trade_pnl_fifo_matches_expected_spread_and_fee_gap():
     assert items[34]["status"] == "profit"
     assert items[34]["actual_profit_isk"] == pytest.approx(295)
     assert items[34]["open_quantity"] == 40
+    assert items[34]["matches"] == [
+        {
+            "buy_transaction_id": 100,
+            "buy_date": "2026-06-01T12:00:00Z",
+            "sell_transaction_id": 101,
+            "sell_date": "2026-06-02T12:00:00Z",
+            "quantity": 60,
+            "buy_unit_price": 10,
+            "sell_unit_price": 15,
+            "buy_cost_isk": 600,
+            "sell_revenue_isk": 900,
+            "fee_isk": -5,
+            "expected_profit_isk": 300,
+            "actual_profit_isk": 295,
+        }
+    ]
     assert items[35]["status"] == "loss"
     assert items[35]["actual_profit_isk"] == pytest.approx(-203)
+    assert items[35]["matches"][0]["actual_profit_isk"] == pytest.approx(-203)
     assert items[36]["status"] == "needs-older-buys"
     assert items[36]["unmatched_sell_quantity"] == 5
 
 
+def test_trade_pnl_window_and_exclusions_adjust_considered_result():
+    transactions = [
+        {
+            "transaction_id": 200,
+            "date": "2026-06-05T00:10:00Z",
+            "type_id": 35,
+            "quantity": 10,
+            "unit_price": 100,
+            "is_buy": True,
+        },
+        {
+            "transaction_id": 201,
+            "date": "2026-06-05T00:20:00Z",
+            "type_id": 35,
+            "quantity": 10,
+            "unit_price": 80,
+            "is_buy": False,
+        },
+        {
+            "transaction_id": 202,
+            "date": "2026-06-04T22:00:00Z",
+            "type_id": 34,
+            "quantity": 10,
+            "unit_price": 10,
+            "is_buy": True,
+        },
+        {
+            "transaction_id": 203,
+            "date": "2026-06-04T22:30:00Z",
+            "type_id": 34,
+            "quantity": 10,
+            "unit_price": 15,
+            "is_buy": False,
+        },
+    ]
+    journal_entries = [
+        {
+            "id": 601,
+            "date": "2026-06-05T00:20:01Z",
+            "ref_type": "transaction_tax",
+            "amount": -2,
+            "context_id": 201,
+            "context_id_type": "market_transaction_id",
+        }
+    ]
+
+    pnl = analyze_trade_pnl_transactions(
+        transactions,
+        journal_entries=journal_entries,
+        type_names={34: "Tritanium", 35: "Pyerite"},
+        window_hours=1,
+        excluded_tokens=("pyrite",),
+        include_matches=True,
+        now=datetime(2026, 6, 5, 0, 30, tzinfo=timezone.utc),
+    )
+
+    totals = pnl["totals"]
+    items = {item["type_id"]: item for item in pnl["items"]}
+    assert pnl["window_hours"] == 1
+    assert pnl["window_label"] == "1 hour"
+    assert pnl["transaction_count"] == 2
+    assert set(items) == {35}
+    assert items[35]["status"] == "excluded-loss"
+    assert items[35]["excluded"] is True
+    assert items[35]["excluded_reason"] == "Excluded by pyrite"
+    assert items[35]["actual_profit_isk"] == pytest.approx(-202)
+    assert items[35]["matches"][0]["actual_profit_isk"] == pytest.approx(-202)
+    assert totals["actual_profit_isk"] == pytest.approx(-202)
+    assert totals["considered_result_isk"] == pytest.approx(0)
+    assert totals["excluded_actual_profit_isk"] == pytest.approx(-202)
+    assert totals["excluded_item_count"] == 1
+    assert totals["considered_item_count"] == 0
+    assert totals["loss_item_count"] == 1
+
+
 def test_build_flight_trade_pnl_payload_uses_wallet_scope(monkeypatch):
+    current_time = datetime.now(timezone.utc)
+    buy_date = (current_time - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    sell_date = (current_time - timedelta(hours=12)).isoformat().replace("+00:00", "Z")
     session = FlightEsiSession(
         character_id=123456789,
         character_name="Trader Pilot",
@@ -529,7 +630,7 @@ def test_build_flight_trade_pnl_payload_uses_wallet_scope(monkeypatch):
         lambda config, session: [
             {
                 "transaction_id": 100,
-                "date": "2026-06-01T12:00:00Z",
+                "date": buy_date,
                 "type_id": 34,
                 "quantity": 10,
                 "unit_price": 100,
@@ -537,7 +638,7 @@ def test_build_flight_trade_pnl_payload_uses_wallet_scope(monkeypatch):
             },
             {
                 "transaction_id": 101,
-                "date": "2026-06-02T12:00:00Z",
+                "date": sell_date,
                 "type_id": 34,
                 "quantity": 10,
                 "unit_price": 130,
@@ -551,11 +652,14 @@ def test_build_flight_trade_pnl_payload_uses_wallet_scope(monkeypatch):
     payload = build_flight_trade_pnl_payload(
         config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
         session=session,
-        days=30,
+        window_hours=720,
+        include_matches=True,
     )
 
     assert payload["ok"] is True
+    assert payload["trade_pnl"]["window_hours"] == 720
     assert payload["trade_pnl"]["items"][0]["item_name"] == "Tritanium"
+    assert payload["trade_pnl"]["items"][0]["matches"][0]["buy_transaction_id"] == 100
     assert payload["trade_pnl"]["totals"]["actual_profit_isk"] == pytest.approx(300)
 
     missing_scope_session = FlightEsiSession(

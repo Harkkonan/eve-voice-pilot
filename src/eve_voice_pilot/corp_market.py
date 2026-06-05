@@ -59,6 +59,8 @@ MAX_FLIGHT_HAUL_OPPORTUNITIES = 20
 MAX_FLIGHT_ACQUISITION_OPPORTUNITIES = 20
 DEFAULT_FLIGHT_TRADE_PNL_DAYS = 30
 MAX_FLIGHT_TRADE_PNL_DAYS = 30
+DEFAULT_FLIGHT_TRADE_PNL_WINDOW_HOURS = 720
+MAX_FLIGHT_TRADE_PNL_WINDOW_HOURS = 720
 MAX_FLIGHT_TRADE_PNL_PAGES = 6
 MAX_FLIGHT_TRADE_JOURNAL_PAGES = 6
 MAX_FLIGHT_TRADE_PNL_TRANSACTIONS = 10_000
@@ -129,6 +131,8 @@ TRADE_PNL_MARKET_FEE_REF_TYPES = frozenset(
         "transaction_tax",
     }
 )
+TRADE_PNL_LENSES = {"inventory", "realized", "cashflow"}
+TRADE_PNL_TOKEN_ALIASES = {"pyrite": "pyerite"}
 FLIGHT_SESSION_COOKIE_NAME = "corp_market_flight_session"
 DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
@@ -1770,9 +1774,15 @@ def build_flight_trade_pnl_payload(
     config: EveSsoConfig,
     session: FlightEsiSession,
     days: int = DEFAULT_FLIGHT_TRADE_PNL_DAYS,
+    window_hours: Any = None,
+    accounting_lens: str = "inventory",
+    excluded_tokens: Iterable[str] = (),
+    include_matches: bool = False,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_WALLET_SCOPE,))
-    clean_days = clamp_trade_pnl_days(days)
+    clean_window_hours = clamp_trade_pnl_window_hours(
+        window_hours if window_hours is not None and str(window_hours).strip() else clamp_trade_pnl_days(days) * 24
+    )
     transactions = fetch_flight_wallet_transactions(config, session)
     journal_entries = fetch_flight_wallet_journal(config, session)
     type_ids = {
@@ -1786,7 +1796,10 @@ def build_flight_trade_pnl_payload(
         transactions,
         journal_entries=journal_entries,
         type_names=type_names,
-        days=clean_days,
+        window_hours=clean_window_hours,
+        accounting_lens=accounting_lens,
+        excluded_tokens=excluded_tokens,
+        include_matches=include_matches,
     )
     return {
         "ok": True,
@@ -1812,12 +1825,20 @@ def analyze_trade_pnl_transactions(
     journal_entries: Iterable[dict[str, Any]] = (),
     type_names: dict[int, str] | None = None,
     days: int = DEFAULT_FLIGHT_TRADE_PNL_DAYS,
+    window_hours: Any = None,
+    accounting_lens: str = "inventory",
+    excluded_tokens: Iterable[str] = (),
+    include_matches: bool = False,
     now: datetime | None = None,
     item_limit: int = MAX_FLIGHT_TRADE_PNL_ITEMS,
 ) -> dict[str, Any]:
-    clean_days = clamp_trade_pnl_days(days)
+    clean_window_hours = clamp_trade_pnl_window_hours(
+        window_hours if window_hours is not None and str(window_hours).strip() else clamp_trade_pnl_days(days) * 24
+    )
+    clean_lens = normalize_trade_pnl_lens(accounting_lens)
+    clean_excluded_tokens = clean_trade_pnl_excluded_tokens(excluded_tokens)
     current_time = now or datetime.now(timezone.utc)
-    cutoff = current_time - timedelta(days=clean_days)
+    cutoff = current_time - timedelta(hours=clean_window_hours)
     visible_transactions = [
         transaction
         for transaction in transactions
@@ -1900,9 +1921,27 @@ def analyze_trade_pnl_transactions(
             matched_quantity = min(remaining_to_match, lot_quantity)
             buy_cost = float(lot.get("unit_cost") or 0.0) * matched_quantity
             sell_revenue = float(unit_price) * matched_quantity
+            match_fee = transaction_fee * (matched_quantity / quantity) if quantity > 0 else 0.0
             summary["matched_quantity"] += matched_quantity
             summary["matched_buy_cost_isk"] += buy_cost
             summary["matched_sell_revenue_isk"] += sell_revenue
+            if include_matches:
+                summary["matches"].append(
+                    {
+                        "buy_transaction_id": lot.get("transaction_id"),
+                        "buy_date": lot.get("date") or "",
+                        "sell_transaction_id": transaction_id,
+                        "sell_date": transaction_date,
+                        "quantity": matched_quantity,
+                        "buy_unit_price": float(lot.get("unit_cost") or 0.0),
+                        "sell_unit_price": float(unit_price),
+                        "buy_cost_isk": buy_cost,
+                        "sell_revenue_isk": sell_revenue,
+                        "fee_isk": match_fee,
+                        "expected_profit_isk": sell_revenue - buy_cost,
+                        "actual_profit_isk": sell_revenue - buy_cost + match_fee,
+                    }
+                )
             lot["quantity_remaining"] = lot_quantity - matched_quantity
             remaining_to_match -= matched_quantity
             if int(lot.get("quantity_remaining") or 0) <= 0:
@@ -1925,6 +1964,9 @@ def analyze_trade_pnl_transactions(
     items = []
     totals = trade_pnl_empty_totals()
     for summary in summaries.values():
+        excluded, excluded_reason = trade_pnl_item_excluded(summary, clean_excluded_tokens)
+        summary["excluded"] = excluded
+        summary["excluded_reason"] = excluded_reason
         expected_profit = summary["matched_sell_revenue_isk"] - summary["matched_buy_cost_isk"]
         actual_profit = expected_profit + summary["allocated_fee_isk"]
         summary["expected_profit_isk"] = round(expected_profit, 4)
@@ -1944,10 +1986,16 @@ def analyze_trade_pnl_transactions(
     unallocated_fee_total = market_fee_total - allocated_fee_total
     visible_actual_profit = totals["expected_profit_isk"] + allocated_fee_total
     wallet_fee_adjusted_profit = totals["expected_profit_isk"] + market_fee_total
+    considered = trade_pnl_considered_totals(items, lens=clean_lens, unallocated_fee_total=unallocated_fee_total)
     items.sort(key=lambda item: (-abs(float(item.get("actual_profit_isk") or item.get("expected_profit_isk") or 0.0)), str(item["item_name"])))
     limited_items = items[: max(1, int(item_limit))]
     return {
-        "days": clean_days,
+        "days": max(1, int(round(clean_window_hours / 24.0))),
+        "window_hours": clean_window_hours,
+        "window_label": trade_pnl_window_label(clean_window_hours),
+        "accounting_lens": clean_lens,
+        "accounting_lens_label": trade_pnl_lens_label(clean_lens),
+        "excluded_tokens": list(clean_excluded_tokens),
         "cutoff": cutoff.isoformat().replace("+00:00", "Z"),
         "transaction_count": len(visible_transactions),
         "ignored_transaction_count": ignored_transactions,
@@ -1974,6 +2022,12 @@ def analyze_trade_pnl_transactions(
             "unmatched_sell_revenue_isk": round(totals["unmatched_sell_revenue_isk"], 4),
             "unmatched_sell_quantity": int(totals["unmatched_sell_quantity"]),
             "market_transaction_journal_total_isk": round(market_transaction_journal_total, 4),
+            "considered_result_isk": round(considered["considered_result_isk"], 4),
+            "excluded_actual_profit_isk": round(considered["excluded_actual_profit_isk"], 4),
+            "excluded_cashflow_isk": round(considered["excluded_cashflow_isk"], 4),
+            "excluded_item_count": int(considered["excluded_item_count"]),
+            "considered_item_count": int(considered["considered_item_count"]),
+            "loss_item_count": int(considered["loss_item_count"]),
         },
         "fee_ref_counts": dict(sorted(fee_ref_counts.items())),
         "expectation_source": "FIFO buy-vs-sell spread before wallet fees. Saved planner expectation snapshots are not stored yet.",
@@ -2011,6 +2065,9 @@ def trade_pnl_summary_for_type(summaries: dict[int, dict[str, Any]], *, type_id:
             "first_date": "",
             "last_date": "",
             "status": "no-match",
+            "excluded": False,
+            "excluded_reason": "",
+            "matches": [],
         },
     )
 
@@ -2033,6 +2090,7 @@ def trade_pnl_empty_totals() -> dict[str, float]:
 
 def trade_pnl_public_item(item: dict[str, Any]) -> dict[str, Any]:
     public_item = dict(item)
+    public_item["matches"] = [trade_pnl_public_match(match) for match in public_item.get("matches") or []]
     for key in (
         "buy_total_isk",
         "sell_total_isk",
@@ -2050,7 +2108,31 @@ def trade_pnl_public_item(item: dict[str, Any]) -> dict[str, Any]:
     return public_item
 
 
+def trade_pnl_public_match(match: dict[str, Any]) -> dict[str, Any]:
+    public_match = dict(match)
+    for key in (
+        "buy_unit_price",
+        "sell_unit_price",
+        "buy_cost_isk",
+        "sell_revenue_isk",
+        "fee_isk",
+        "expected_profit_isk",
+        "actual_profit_isk",
+    ):
+        public_match[key] = round(float(public_match.get(key) or 0.0), 4)
+    public_match["quantity"] = int(public_match.get("quantity") or 0)
+    return public_match
+
+
 def trade_pnl_item_status(item: dict[str, Any]) -> str:
+    if bool(item.get("excluded")):
+        if int(item.get("matched_quantity") or 0) > 0:
+            actual_profit = float(item.get("actual_profit_isk") or 0.0)
+            if actual_profit > 0:
+                return "excluded-profit"
+            if actual_profit < 0:
+                return "excluded-loss"
+        return "excluded"
     if int(item.get("matched_quantity") or 0) <= 0:
         if int(item.get("unmatched_sell_quantity") or 0) > 0:
             return "needs-older-buys"
@@ -2063,6 +2145,102 @@ def trade_pnl_item_status(item: dict[str, Any]) -> str:
     if actual_profit < 0:
         return "loss"
     return "break-even"
+
+
+def trade_pnl_considered_totals(items: Iterable[dict[str, Any]], *, lens: str, unallocated_fee_total: float) -> dict[str, Any]:
+    considered_result = 0.0
+    excluded_actual = 0.0
+    excluded_cashflow = 0.0
+    excluded_count = 0
+    considered_count = 0
+    loss_count = 0
+    for item in items:
+        actual_profit = float(item.get("actual_profit_isk") or 0.0)
+        cashflow = float(item.get("net_cashflow_isk") or 0.0)
+        if actual_profit < 0 and int(item.get("matched_quantity") or 0) > 0:
+            loss_count += 1
+        if bool(item.get("excluded")):
+            excluded_count += 1
+            excluded_actual += actual_profit
+            excluded_cashflow += cashflow
+            continue
+        considered_count += 1
+        if lens == "cashflow":
+            considered_result += cashflow
+        else:
+            considered_result += actual_profit
+    if lens == "cashflow":
+        considered_result += float(unallocated_fee_total or 0.0)
+    return {
+        "considered_result_isk": considered_result,
+        "excluded_actual_profit_isk": excluded_actual,
+        "excluded_cashflow_isk": excluded_cashflow,
+        "excluded_item_count": excluded_count,
+        "considered_item_count": considered_count,
+        "loss_item_count": loss_count,
+    }
+
+
+def trade_pnl_item_excluded(item: dict[str, Any], excluded_tokens: Iterable[str]) -> tuple[bool, str]:
+    name = str(item.get("item_name") or "")
+    normalized_name = normalize_trade_pnl_token(name)
+    type_id_text = str(item.get("type_id") or "")
+    for token in excluded_tokens:
+        normalized = normalize_trade_pnl_token(token)
+        if not normalized:
+            continue
+        if normalized == type_id_text or normalized in normalized_name:
+            return True, f"Excluded by {token}"
+    return False, ""
+
+
+def clean_trade_pnl_excluded_tokens(tokens: Iterable[str]) -> tuple[str, ...]:
+    cleaned: list[str] = []
+    for token in tokens:
+        for part in str(token or "").split(","):
+            clean = SPACE_RE.sub(" ", part.strip())
+            if clean and clean not in cleaned:
+                cleaned.append(clean[:80])
+    return tuple(cleaned[:30])
+
+
+def normalize_trade_pnl_token(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+    return TRADE_PNL_TOKEN_ALIASES.get(normalized, normalized)
+
+
+def normalize_trade_pnl_lens(value: Any) -> str:
+    normalized = normalize_trade_pnl_token(value)
+    aliases = {
+        "stock": "inventory",
+        "inventorymode": "inventory",
+        "realizedtrading": "realized",
+        "realizedtradingpnl": "realized",
+        "cash": "cashflow",
+        "walletcashflow": "cashflow",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in TRADE_PNL_LENSES:
+        return "inventory"
+    return normalized
+
+
+def trade_pnl_lens_label(lens: str) -> str:
+    if lens == "cashflow":
+        return "Wallet Cashflow"
+    if lens == "realized":
+        return "Realized Trading P&L"
+    return "Inventory Mode"
+
+
+def trade_pnl_window_label(window_hours: int) -> str:
+    if window_hours < 24:
+        return f"{window_hours} hour" if window_hours == 1 else f"{window_hours} hours"
+    days = window_hours / 24.0
+    if days.is_integer():
+        clean_days = int(days)
+        return f"{clean_days} day" if clean_days == 1 else f"{clean_days} days"
+    return f"{round(days, 1)} days"
 
 
 def trade_record_datetime(value: Any) -> datetime | None:
@@ -5518,6 +5696,14 @@ def clamp_trade_pnl_days(value: Any) -> int:
     return max(1, min(MAX_FLIGHT_TRADE_PNL_DAYS, days))
 
 
+def clamp_trade_pnl_window_hours(value: Any) -> int:
+    try:
+        hours = int(float(str(value).replace(",", "").strip()))
+    except (TypeError, ValueError):
+        hours = DEFAULT_FLIGHT_TRADE_PNL_WINDOW_HOURS
+    return max(1, min(MAX_FLIGHT_TRADE_PNL_WINDOW_HOURS, hours))
+
+
 def normalize_haul_route_preference(value: Any) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
     aliases = {
@@ -6826,9 +7012,23 @@ def build_http_server(
             if session is None:
                 return
             query = parse_qs(urlparse(self.path).query)
-            days = clamp_trade_pnl_days((query.get("days") or [DEFAULT_FLIGHT_TRADE_PNL_DAYS])[0])
+            window_value = first_query_value(query, "window_hours")
+            if window_value:
+                window_hours = clamp_trade_pnl_window_hours(window_value)
+            else:
+                window_hours = clamp_trade_pnl_days(first_query_value(query, "days") or DEFAULT_FLIGHT_TRADE_PNL_DAYS) * 24
+            lens = normalize_trade_pnl_lens(first_query_value(query, "lens") or "inventory")
+            excluded_tokens = clean_trade_pnl_excluded_tokens(query.get("exclude") or [])
+            include_matches = query_bool(first_query_value(query, "include_matches"), default=False)
             try:
-                payload = build_flight_trade_pnl_payload(config=sso_config, session=session, days=days)
+                payload = build_flight_trade_pnl_payload(
+                    config=sso_config,
+                    session=session,
+                    window_hours=window_hours,
+                    accounting_lens=lens,
+                    excluded_tokens=excluded_tokens,
+                    include_matches=include_matches,
+                )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
@@ -8756,8 +8956,36 @@ def _render_flight_attendant_dashboard() -> str:
             <form id="trade-pnl-form" class="note-form">
               <div class="row">
                 <label>History window
-                  <input id="trade-pnl-days" name="days" type="number" min="1" max="30" step="1" value="30">
-                  <small class="input-note">ESI wallet history is recent history, so older buy lots can be missing.</small>
+                  <select id="trade-pnl-window-hours" name="window_hours">
+                    <option value="1">1 hour</option>
+                    <option value="6">6 hours</option>
+                    <option value="24">24 hours</option>
+                    <option value="168">7 days</option>
+                    <option value="336">14 days</option>
+                    <option value="720" selected>30 days</option>
+                  </select>
+                  <small class="input-note">Only transactions inside this window are considered.</small>
+                </label>
+                <label>Accounting lens
+                  <select id="trade-pnl-lens" name="lens">
+                    <option value="inventory" selected>Inventory mode</option>
+                    <option value="realized">Realized trading P&amp;L</option>
+                    <option value="cashflow">Wallet cashflow</option>
+                  </select>
+                  <small class="input-note">Inventory mode treats buys as stock until matched to a sell.</small>
+                </label>
+              </div>
+              <div class="row">
+                <label>Exclude from considered income
+                  <input id="trade-pnl-exclude" name="exclude" autocomplete="off" placeholder="Pyerite, Tritanium, 35">
+                  <small class="input-note">Excluded items stay visible, but do not change the considered result.</small>
+                </label>
+                <label class="checkline">
+                  <input id="trade-pnl-show-matches" name="include_matches" type="checkbox">
+                  <span>
+                    Show matched transactions
+                    <small>Expands each item with buy/sell lot matches inside the selected window.</small>
+                  </span>
                 </label>
               </div>
               <button id="trade-pnl-analyze" class="ghost" type="submit">Analyze Trade History</button>
@@ -8781,6 +9009,7 @@ def _render_flight_attendant_dashboard() -> str:
             <ul class="charter-list">
               <li><strong>Expected:</strong> the FIFO buy-vs-sell spread before wallet fees.</li>
               <li><strong>Actual:</strong> matched spread after wallet fees that ESI can tie to market transactions.</li>
+              <li><strong>Considered:</strong> the number after your lens and exclusions are applied.</li>
               <li><strong>Unmatched:</strong> sells whose buys are outside the visible wallet-history window.</li>
               <li><strong>Open stock:</strong> visible buys that have not been matched to a later sell yet.</li>
               <li><strong>Manual action:</strong> the tab never places, edits, cancels, or updates market orders.</li>
@@ -8966,7 +9195,10 @@ def _render_flight_attendant_dashboard() -> str:
     const acqRoute = document.querySelector("#acq-route");
     const acqResults = document.querySelector("#acq-results");
     const tradePnlForm = document.querySelector("#trade-pnl-form");
-    const tradePnlDays = document.querySelector("#trade-pnl-days");
+    const tradePnlWindowHours = document.querySelector("#trade-pnl-window-hours");
+    const tradePnlLens = document.querySelector("#trade-pnl-lens");
+    const tradePnlExclude = document.querySelector("#trade-pnl-exclude");
+    const tradePnlShowMatches = document.querySelector("#trade-pnl-show-matches");
     const tradePnlAnalyzeButton = document.querySelector("#trade-pnl-analyze");
     const tradePnlSummary = document.querySelector("#trade-pnl-summary");
     const tradePnlFees = document.querySelector("#trade-pnl-fees");
@@ -9005,7 +9237,10 @@ def _render_flight_attendant_dashboard() -> str:
     const acqMinMarginKey = "eve-flight-acq-min-margin-v1";
     const acqCommonMaterialsKey = "eve-flight-acq-common-materials-v1";
     const acqMarketGroupIdsKey = "eve-flight-acq-market-group-ids-v1";
-    const tradePnlDaysKey = "eve-flight-trade-pnl-days-v1";
+    const tradePnlWindowHoursKey = "eve-flight-trade-pnl-window-hours-v1";
+    const tradePnlLensKey = "eve-flight-trade-pnl-lens-v1";
+    const tradePnlExcludeKey = "eve-flight-trade-pnl-exclude-v1";
+    const tradePnlShowMatchesKey = "eve-flight-trade-pnl-show-matches-v1";
     const reprocessOreKey = "eve-flight-reprocess-ore-type-v1";
     const reprocessQuantityKey = "eve-flight-reprocess-quantity-v1";
     const reprocessFacilityYieldKey = "eve-flight-reprocess-facility-yield-v1";
@@ -9604,7 +9839,7 @@ def _render_flight_attendant_dashboard() -> str:
       const acqSettings = readAcquisitionSettings();
       resetMarketAcquisition(`Ready to plan buy orders from ${acquisitionStartLabel(acqSettings)} toward ${acqSettings.destination}.`);
       const tradePnlSettings = readTradePnlSettings();
-      resetTradePnl(`Ready to analyze ${formatNumber(tradePnlSettings.days)} days of trade history.`);
+      resetTradePnl(`Ready to analyze ${tradePnlWindowLabel(tradePnlSettings.windowHours)} of trade history.`);
       const reprocessSettings = readReprocessingSettings();
       resetReprocessing(`Ready to calculate ${formatNumber(reprocessSettings.quantity)} ore units.`);
       loadFlightIndustry();
@@ -10481,23 +10716,48 @@ def _render_flight_attendant_dashboard() -> str:
       return `${days}d; ${volume}/day; ${orderCount} orders/day; median ${median}`;
     }
 
-    function clampTradePnlDays(value) {
-      const days = Number(value);
-      if (!Number.isFinite(days)) return 30;
-      return Math.max(1, Math.min(30, Math.round(days)));
+    function clampTradePnlWindowHours(value) {
+      const hours = Number(value);
+      if (!Number.isFinite(hours)) return 720;
+      return Math.max(1, Math.min(720, Math.round(hours)));
+    }
+
+    function normalizeTradePnlLens(value) {
+      const lens = String(value || "").trim();
+      return ["inventory", "realized", "cashflow"].includes(lens) ? lens : "inventory";
+    }
+
+    function tradePnlWindowLabel(hours) {
+      const cleanHours = clampTradePnlWindowHours(hours);
+      if (cleanHours < 24) return cleanHours === 1 ? "1 hour" : `${formatNumber(cleanHours)} hours`;
+      const days = cleanHours / 24;
+      return Number.isInteger(days) ? `${formatNumber(days)} day${days === 1 ? "" : "s"}` : `${days.toFixed(1)} days`;
     }
 
     function readTradePnlSettings() {
+      const showStored = window.localStorage.getItem(tradePnlShowMatchesKey);
       return {
-        days: clampTradePnlDays(window.localStorage.getItem(tradePnlDaysKey) || tradePnlDays.value || 30),
+        windowHours: clampTradePnlWindowHours(window.localStorage.getItem(tradePnlWindowHoursKey) || tradePnlWindowHours.value || 720),
+        lens: normalizeTradePnlLens(window.localStorage.getItem(tradePnlLensKey) || tradePnlLens.value || "inventory"),
+        exclude: String(window.localStorage.getItem(tradePnlExcludeKey) || tradePnlExclude.value || "").trim(),
+        showMatches: showStored == null ? tradePnlShowMatches.checked : showStored !== "0",
       };
     }
 
     function writeTradePnlSettings(settings) {
-      const days = clampTradePnlDays(settings.days);
-      tradePnlDays.value = String(days);
-      window.localStorage.setItem(tradePnlDaysKey, String(days));
-      return {days};
+      const windowHours = clampTradePnlWindowHours(settings.windowHours);
+      const lens = normalizeTradePnlLens(settings.lens);
+      const exclude = String(settings.exclude || "").trim();
+      const showMatches = Boolean(settings.showMatches);
+      tradePnlWindowHours.value = String(windowHours);
+      tradePnlLens.value = lens;
+      tradePnlExclude.value = exclude;
+      tradePnlShowMatches.checked = showMatches;
+      window.localStorage.setItem(tradePnlWindowHoursKey, String(windowHours));
+      window.localStorage.setItem(tradePnlLensKey, lens);
+      window.localStorage.setItem(tradePnlExcludeKey, exclude);
+      window.localStorage.setItem(tradePnlShowMatchesKey, showMatches ? "1" : "0");
+      return {windowHours, lens, exclude, showMatches};
     }
 
     function resetTradePnl(message) {
@@ -10508,12 +10768,22 @@ def _render_flight_attendant_dashboard() -> str:
     }
 
     async function loadTradePnl() {
-      const settings = writeTradePnlSettings({days: tradePnlDays.value});
+      const settings = writeTradePnlSettings({
+        windowHours: tradePnlWindowHours.value,
+        lens: tradePnlLens.value,
+        exclude: tradePnlExclude.value,
+        showMatches: tradePnlShowMatches.checked,
+      });
       tradePnlAnalyzeButton.disabled = true;
-      tradePnlSummary.textContent = `Reading ${formatNumber(settings.days)} days of wallet transactions...`;
+      tradePnlSummary.textContent = `Reading ${tradePnlWindowLabel(settings.windowHours)} of wallet transactions...`;
       tradePnlFees.textContent = "";
       tradePnlResults.innerHTML = `<div class="decision-empty">Item P&L will appear here when the wallet scan finishes.</div>`;
-      const params = new URLSearchParams({days: String(settings.days)});
+      const params = new URLSearchParams({
+        window_hours: String(settings.windowHours),
+        lens: settings.lens,
+        exclude: settings.exclude,
+        include_matches: settings.showMatches ? "1" : "0",
+      });
       try {
         const response = await fetch(`/api/flight/trade-pnl?${params}`);
         const data = await response.json();
@@ -10532,14 +10802,17 @@ def _render_flight_attendant_dashboard() -> str:
       const pnl = data.trade_pnl || {};
       const totals = pnl.totals || {};
       const itemLimit = pnl.items_truncated ? ` Showing largest ${formatNumber(pnl.item_limit)} of ${formatNumber(pnl.item_count)} item types.` : "";
+      const excludedText = totals.excluded_item_count
+        ? ` Excluded ${formatNumber(totals.excluded_item_count)} item types; raw excluded actual ${formatSignedIsk(totals.excluded_actual_profit_isk)}.`
+        : "";
       tradePnlSummary.innerHTML = `
         <div class="profit-stats">
-          <div class="profit-stat"><span>Actual P&L</span><b>${formatSignedIsk(totals.actual_profit_isk)}</b></div>
-          <div class="profit-stat"><span>Expected Spread</span><b>${formatSignedIsk(totals.expected_profit_isk)}</b></div>
+          <div class="profit-stat"><span>Considered Result</span><b>${formatSignedIsk(totals.considered_result_isk)}</b></div>
+          <div class="profit-stat"><span>All Actual P&L</span><b>${formatSignedIsk(totals.actual_profit_isk)}</b></div>
           <div class="profit-stat"><span>Fee Gap</span><b>${formatSignedIsk(totals.market_fee_isk)}</b></div>
           <div class="profit-stat"><span>Open Stock Cost</span><b>${formatIsk(totals.open_inventory_cost_isk)}</b></div>
         </div>
-        <div class="meta">${formatNumber(pnl.transaction_count)} market transactions and ${formatNumber(pnl.journal_entry_count)} wallet journal rows inside ${formatNumber(pnl.days)} days.${escapeHtml(itemLimit)}</div>
+        <div class="meta">${escapeHtml(pnl.accounting_lens_label || "Inventory Mode")} across ${escapeHtml(pnl.window_label || `${formatNumber(pnl.days)} days`)}. ${formatNumber(pnl.transaction_count)} market transactions and ${formatNumber(pnl.journal_entry_count)} wallet journal rows.${escapeHtml(itemLimit + excludedText)}</div>
         <div class="meta">${escapeHtml(pnl.expectation_source || "Expected spread is before wallet fees.")}</div>
         <div class="meta">${escapeHtml(pnl.limits_note || "Unmatched sells can mean the buy happened before the visible ESI history window.")}</div>
       `;
@@ -10547,6 +10820,7 @@ def _render_flight_attendant_dashboard() -> str:
         Wallet-level net cashflow ${formatSignedIsk(totals.net_cashflow_isk)}.
         Unmatched sell revenue ${formatIsk(totals.unmatched_sell_revenue_isk)} across ${formatNumber(totals.unmatched_sell_quantity)} units.
         Allocated fees ${formatSignedIsk(totals.allocated_fee_isk)}; unallocated fees ${formatSignedIsk(totals.unallocated_fee_isk)}.
+        Loss-making matched item types ${formatNumber(totals.loss_item_count)}.
         ${renderTradeFeeRefs(pnl.fee_ref_counts || {})}
       `;
       tradePnlResults.innerHTML = renderTradePnlItems(pnl.items || []);
@@ -10561,6 +10835,9 @@ def _render_flight_attendant_dashboard() -> str:
     function tradePnlStatusClass(status) {
       if (status === "profit") return "decision-build";
       if (status === "loss") return "decision-skip";
+      if (status === "excluded-loss") return "decision-price";
+      if (status === "excluded-profit") return "decision-price";
+      if (status === "excluded") return "decision-price";
       if (status === "open-stock") return "decision-stock";
       if (status === "needs-older-buys") return "decision-price";
       return "decision-watch";
@@ -10569,6 +10846,9 @@ def _render_flight_attendant_dashboard() -> str:
     function tradePnlStatusLabel(status) {
       if (status === "profit") return "Profit";
       if (status === "loss") return "Loss";
+      if (status === "excluded-loss") return "Excluded loss";
+      if (status === "excluded-profit") return "Excluded profit";
+      if (status === "excluded") return "Excluded";
       if (status === "open-stock") return "Open stock";
       if (status === "needs-older-buys") return "Needs older buys";
       if (status === "break-even") return "Break-even";
@@ -10580,12 +10860,15 @@ def _render_flight_attendant_dashboard() -> str:
       return `<div class="decision-list">${items.map((item) => {
         const status = item.status || "no-match";
         const statusClass = tradePnlStatusClass(status);
+        const excludedNote = item.excluded ? `<div class="meta">${escapeHtml(item.excluded_reason || "Excluded from considered result.")}</div>` : "";
+        const matches = item.matches || [];
         return `
           <div class="decision-row">
             <div class="decision-head">
               <strong>${escapeHtml(item.item_name)}</strong>
               <span class="pill ${statusClass}">${escapeHtml(tradePnlStatusLabel(status))}</span>
             </div>
+            ${excludedNote}
             <div class="decision-lede">Actual ${formatSignedIsk(item.actual_profit_isk)} vs expected ${formatSignedIsk(item.expected_profit_isk)}; fee gap ${formatSignedIsk(item.fee_gap_isk)}.</div>
             <div class="decision-metrics">
               <div class="decision-metric"><span>Matched Units</span><b>${formatNumber(item.matched_quantity)}</b><small>Bought ${formatNumber(item.buy_quantity)}; sold ${formatNumber(item.sell_quantity)}.</small></div>
@@ -10602,10 +10885,26 @@ def _render_flight_attendant_dashboard() -> str:
                 <div class="profit-detail-row"><span>Unmatched sell revenue</span><b>${formatIsk(item.unmatched_sell_revenue_isk)}</b></div>
                 <div class="profit-detail-row"><span>Visible dates</span><b>${escapeHtml(item.first_date || "unknown")} to ${escapeHtml(item.last_date || "unknown")}</b></div>
               </div>
+              ${renderTradePnlMatches(matches)}
             </details>
           </div>
         `;
       }).join("")}</div>`;
+    }
+
+    function renderTradePnlMatches(matches) {
+      if (!matches.length) return "";
+      return `
+        <div class="meta">Matched transactions</div>
+        <div class="profit-detail-grid">
+          ${matches.map((match) => `
+            <div class="profit-detail-row">
+              <span>Buy #${escapeHtml(match.buy_transaction_id)} -> Sell #${escapeHtml(match.sell_transaction_id)}<br><small>${escapeHtml(match.buy_date || "unknown")} to ${escapeHtml(match.sell_date || "unknown")}; ${formatNumber(match.quantity)} units @ ${formatIsk(match.buy_unit_price)} -> ${formatIsk(match.sell_unit_price)}</small></span>
+              <b>${formatSignedIsk(match.actual_profit_isk)}</b>
+            </div>
+          `).join("")}
+        </div>
+      `;
     }
 
     function clampReprocessQuantity(value) {
@@ -11186,15 +11485,23 @@ def _render_flight_attendant_dashboard() -> str:
     });
 
     function updateTradePnlAndReset() {
-      const settings = writeTradePnlSettings({days: tradePnlDays.value});
-      resetTradePnl(`Ready to analyze ${formatNumber(settings.days)} days of trade history.`);
+      const settings = writeTradePnlSettings({
+        windowHours: tradePnlWindowHours.value,
+        lens: tradePnlLens.value,
+        exclude: tradePnlExclude.value,
+        showMatches: tradePnlShowMatches.checked,
+      });
+      resetTradePnl(`Ready to analyze ${tradePnlWindowLabel(settings.windowHours)} of trade history.`);
     }
 
     tradePnlForm.addEventListener("submit", (event) => {
       event.preventDefault();
       loadTradePnl();
     });
-    tradePnlDays.addEventListener("change", updateTradePnlAndReset);
+    tradePnlWindowHours.addEventListener("change", updateTradePnlAndReset);
+    tradePnlLens.addEventListener("change", updateTradePnlAndReset);
+    tradePnlExclude.addEventListener("change", updateTradePnlAndReset);
+    tradePnlShowMatches.addEventListener("change", updateTradePnlAndReset);
 
     function updateReprocessingAndReset() {
       const settings = writeReprocessingSettings({
