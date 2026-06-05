@@ -4373,7 +4373,7 @@ def _render_flight_attendant_dashboard() -> str:
                   <input id="haul-destination" name="destination" autocomplete="off" value="Jita" placeholder="Jita, Hek, Rens, Dihra">
                 </label>
                 <label>Cargo m3
-                  <input id="haul-cargo-m3" name="cargo_m3" type="number" min="1" max="10000000" step="100" value="10000">
+                  <input id="haul-cargo-m3" name="cargo_m3" type="number" min="1" max="10000000" step="any" inputmode="decimal" value="10000">
                 </label>
               </div>
               <div class="row">
@@ -4654,20 +4654,26 @@ def _render_flight_attendant_dashboard() -> str:
       return jumps;
     }
 
+    function clampHaulCargoM3(value) {
+      const cargo = Number(value);
+      if (!Number.isFinite(cargo)) return 10000;
+      return Math.max(1, Math.min(10000000, cargo));
+    }
+
     function readHaulSettings() {
       const destination = String(window.localStorage.getItem(haulDestinationKey) || haulDestination.value || "Jita").trim() || "Jita";
       const cargo = Number(window.localStorage.getItem(haulCargoKey) || haulCargoM3.value || 10000);
       const detour = Number(window.localStorage.getItem(haulDetourKey) || haulDetourJumps.value || 1);
       return {
         destination,
-        cargoM3: Math.max(1, Math.min(10000000, Math.round(Number.isFinite(cargo) ? cargo : 10000))),
+        cargoM3: clampHaulCargoM3(Number.isFinite(cargo) ? cargo : 10000),
         detourJumps: Math.max(0, Math.min(5, Math.round(Number.isFinite(detour) ? detour : 1))),
       };
     }
 
     function writeHaulSettings(settings) {
       const destination = String(settings.destination || "Jita").trim() || "Jita";
-      const cargoM3 = Math.max(1, Math.min(10000000, Math.round(Number(settings.cargoM3) || 10000)));
+      const cargoM3 = clampHaulCargoM3(settings.cargoM3);
       const detourJumps = Math.max(0, Math.min(5, Math.round(Number(settings.detourJumps) || 0)));
       haulDestination.value = destination;
       haulCargoM3.value = String(cargoM3);

@@ -236,6 +236,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-tab-target=\"hauling\"" in page
     assert "id=\"haul-route-form\"" in page
     assert "id=\"haul-destination\"" in page
+    assert "id=\"haul-cargo-m3\" name=\"cargo_m3\" type=\"number\" min=\"1\" max=\"10000000\" step=\"any\"" in page
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
@@ -385,6 +386,12 @@ def test_adjusted_material_quantity_applies_blueprint_me_to_whole_job():
     assert corp_market.adjusted_material_quantity(333, 10) == 300
     assert corp_market.adjusted_material_quantity(1, 10, runs=10) == 10
     assert corp_market.adjusted_material_quantity(1000, -2) == 1020
+
+
+def test_haul_cargo_capacity_preserves_decimal_values():
+    assert corp_market.clamp_haul_cargo_m3("1234.56") == pytest.approx(1234.56)
+    assert corp_market.clamp_haul_cargo_m3("0") == 1.0
+    assert corp_market.clamp_haul_cargo_m3("20000000") == 10_000_000.0
 
 
 def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch, tmp_path):
