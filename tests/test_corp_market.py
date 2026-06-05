@@ -1301,7 +1301,7 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     monkeypatch.setattr(
         corp_market,
         "fetch_flight_standings",
-        lambda config, session: [{"from_id": 1000002, "from_type": "corporation", "standing": 4.0}],
+        lambda config, session: [{"from_id": 1000002, "from_type": "npc_corp", "standing": 4.0}],
     )
     monkeypatch.setattr(
         corp_market,
@@ -1365,6 +1365,7 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     assert payload["facility"]["source"] == "selected-sde-npc-station"
     assert payload["facility"]["facility_yield_percent"] == 50.0
     assert payload["facility"]["station_tax_percent"] == pytest.approx(2.0)
+    assert payload["facility"]["standing_source"] == "owner-corporation"
     assert payload["yield"]["gross_yield_percent"] == pytest.approx(68.45904)
     assert payload["yield"]["net_yield_percent"] == pytest.approx(67.0898592)
     assert payload["materials"][0]["base_quantity"] == 4000
@@ -1542,10 +1543,10 @@ def test_build_flight_reprocessing_locations_payload_filters_and_ranks_standing_
         "fetch_flight_standings",
         lambda config, session: [
             {"from_id": 1000002, "from_type": "corporation", "standing": 0.0},
-            {"from_id": 1000003, "from_type": "corporation", "standing": 5.0},
-            {"from_id": 1000005, "from_type": "corporation", "standing": 1.5},
-            {"from_id": 1000006, "from_type": "corporation", "standing": 2.0},
-            {"from_id": 1000007, "from_type": "corporation", "standing": 8.0},
+            {"from_id": 1000003, "from_type": "npc_corp", "standing": 5.0},
+            {"from_id": 1000005, "from_type": "npc_corp", "standing": 1.5},
+            {"from_id": 1000006, "from_type": "npc_corp", "standing": 2.0},
+            {"from_id": 1000007, "from_type": "npc_corp", "standing": 8.0},
         ],
     )
     monkeypatch.setattr(

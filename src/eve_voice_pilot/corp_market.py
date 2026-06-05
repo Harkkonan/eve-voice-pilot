@@ -6549,7 +6549,7 @@ def reprocessing_station_standing(
 ) -> tuple[float | None, str]:
     owner_id = owner_id or (station.owner_id if station else None)
     if owner_id:
-        corporation_standing = standing_for_entity(standings, from_id=owner_id, from_type="corporation")
+        corporation_standing = standing_for_entity(standings, from_id=owner_id, from_type="npc_corp")
         if corporation_standing is not None:
             return corporation_standing, "owner-corporation"
     if station and station.owner_faction_id:
@@ -6560,17 +6560,31 @@ def reprocessing_station_standing(
 
 
 def standing_for_entity(standings: Iterable[dict[str, Any]], *, from_id: int, from_type: str) -> float | None:
+    expected_types = standing_from_type_aliases(from_type)
     for item in standings:
         if not isinstance(item, dict):
             continue
         if clean_optional_int(item.get("from_id")) != int(from_id):
             continue
-        if str(item.get("from_type") or "").casefold() != from_type.casefold():
+        if normalize_standing_from_type(item.get("from_type")) not in expected_types:
             continue
         standing = clean_optional_float(item.get("standing"))
         if standing is not None:
             return standing
     return None
+
+
+def normalize_standing_from_type(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    return "npc_corp" if normalized == "corporation" else normalized
+
+
+def standing_from_type_aliases(from_type: str) -> set[str]:
+    normalized = normalize_standing_from_type(from_type)
+    aliases = {normalized}
+    if normalized == "npc_corp":
+        aliases.add("corporation")
+    return aliases
 
 
 def npc_reprocessing_station_tax_rate(base_tax_rate: float, standing: float | None) -> float:
