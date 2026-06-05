@@ -3170,8 +3170,19 @@ def build_flight_buyers_payload(
     config: EveSsoConfig,
     session: FlightEsiSession,
     max_jumps: int = DEFAULT_FLIGHT_MAX_JUMPS,
+    progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_BLUEPRINTS_SCOPE))
+    max_jumps = clamp_flight_max_jumps(max_jumps)
+    if progress is not None:
+        progress(
+            "scan_start",
+            {
+                "message": f"Reading ESI location and owned blueprints for a buyer scan within {max_jumps} jumps.",
+                "max_jumps": max_jumps,
+                "percent": 0,
+            },
+        )
     location = fetch_flight_location(config, session)
     current_solar_system_id = int(location.get("solar_system_id") or 0)
     route_cache = load_route_graph_cache()
@@ -3187,6 +3198,15 @@ def build_flight_buyers_payload(
     if not recipe_cache.available:
         raise CorpMarketError(recipe_cache.error or "Recipe cache is not available.")
     blueprints = fetch_flight_blueprints(config, session)
+    if progress is not None:
+        progress(
+            "blueprints",
+            {
+                "message": f"Loaded {len(blueprints)} owned blueprint records from ESI.",
+                "blueprint_records": len(blueprints),
+                "percent": 8,
+            },
+        )
     buyers = scan_buyers_for_owned_blueprints(
         config=config,
         blueprints=blueprints,
@@ -3194,6 +3214,7 @@ def build_flight_buyers_payload(
         route_cache=route_cache,
         current_solar_system_id=current_solar_system_id,
         max_jumps=max_jumps,
+        progress=progress,
     )
     return {
         "ok": True,
@@ -3448,12 +3469,14 @@ def scan_buyers_for_owned_blueprints(
     route_cache: RouteGraphCache,
     current_solar_system_id: int,
     max_jumps: int,
+    progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     systems = route_cache.systems or {}
     adjacency = route_cache.adjacency or {}
+    max_jumps = clamp_flight_max_jumps(max_jumps)
     jump_distances = jump_distances_within(
         start_system_id=current_solar_system_id,
-        max_jumps=clamp_flight_max_jumps(max_jumps),
+        max_jumps=max_jumps,
         adjacency=adjacency,
     )
     region_ids = sorted(
@@ -3469,13 +3492,50 @@ def scan_buyers_for_owned_blueprints(
     product_targets = owned_blueprint_product_targets(blueprints=blueprints, recipes=recipe_cache.recipes or {})
     product_truncated = len(product_targets) > MAX_FLIGHT_BUYER_SCAN_PRODUCTS
     scan_targets = product_targets[:MAX_FLIGHT_BUYER_SCAN_PRODUCTS]
+    region_count = len(scan_region_ids)
+    product_count = len(scan_targets)
+    total_steps = product_count * max(1, region_count)
+
+    def progress_percent(completed_steps: int) -> int:
+        if total_steps <= 0:
+            return 100
+        return max(10, min(99, round(10 + (completed_steps / total_steps) * 88)))
+
+    if progress is not None:
+        progress(
+            "scan_scope",
+            {
+                "message": (
+                    f"Scanning {product_count} blueprint products across {region_count} nearby market regions. "
+                    f"{len(jump_distances)} systems are inside {max_jumps} jumps."
+                ),
+                "product_count": product_count,
+                "region_count": region_count,
+                "reachable_system_count": len(jump_distances),
+                "total_steps": total_steps,
+                "percent": 10 if total_steps else 100,
+            },
+        )
 
     products = []
     total_order_count = 0
     scan_errors = []
-    for target in scan_targets:
+    for product_index, target in enumerate(scan_targets, start=1):
         product_orders = []
-        for region_id in scan_region_ids:
+        if progress is not None:
+            progress(
+                "product_start",
+                {
+                    "message": f"Checking buyer orders for {target['product_name']} ({product_index}/{product_count}).",
+                    "product_index": product_index,
+                    "product_count": product_count,
+                    "product_name": target["product_name"],
+                    "percent": progress_percent((product_index - 1) * max(1, region_count)),
+                },
+            )
+        for region_index, region_id in enumerate(scan_region_ids, start=1):
+            completed_steps = ((product_index - 1) * max(1, region_count)) + region_index
+            before_region_order_count = len(product_orders)
             try:
                 raw_orders = fetch_market_buy_orders(config, region_id=region_id, type_id=target["product_type_id"])
             except CorpMarketError as exc:
@@ -3487,6 +3547,21 @@ def scan_buyers_for_owned_blueprints(
                         "error": str(exc),
                     }
                 )
+                if progress is not None:
+                    progress(
+                        "scan_warning",
+                        {
+                            "message": (
+                                f"{target['product_name']}: region {region_index}/{region_count} failed: {exc}"
+                            ),
+                            "product_index": product_index,
+                            "product_count": product_count,
+                            "product_name": target["product_name"],
+                            "region_index": region_index,
+                            "region_count": region_count,
+                            "percent": progress_percent(completed_steps),
+                        },
+                    )
                 continue
             for order in raw_orders:
                 record = build_buyer_order_record(
@@ -3498,8 +3573,49 @@ def scan_buyers_for_owned_blueprints(
                 )
                 if record is not None:
                     product_orders.append(record)
+            if progress is not None:
+                nearby_order_count = len(product_orders) - before_region_order_count
+                progress(
+                    "orders",
+                    {
+                        "message": (
+                            f"{target['product_name']}: region {region_index}/{region_count} returned "
+                            f"{len(raw_orders)} buy orders; {nearby_order_count} are inside the jump range."
+                        ),
+                        "product_index": product_index,
+                        "product_count": product_count,
+                        "product_name": target["product_name"],
+                        "region_index": region_index,
+                        "region_count": region_count,
+                        "raw_order_count": len(raw_orders),
+                        "nearby_order_count": nearby_order_count,
+                        "step": completed_steps,
+                        "total_steps": total_steps,
+                        "percent": progress_percent(completed_steps),
+                    },
+                )
         product_orders.sort(key=lambda item: (-float(item["price"]), int(item["jumps"]), -int(item["volume_remain"])))
         total_order_count += len(product_orders)
+        if progress is not None:
+            best_order = product_orders[0] if product_orders else None
+            if best_order:
+                message = (
+                    f"{target['product_name']}: best nearby buyer is {best_order['system_name']} "
+                    f"at {best_order['price']:.2f} ISK."
+                )
+            else:
+                message = f"{target['product_name']}: no nearby buy orders found."
+            progress(
+                "product_done",
+                {
+                    "message": message,
+                    "product_index": product_index,
+                    "product_count": product_count,
+                    "product_name": target["product_name"],
+                    "order_count": len(product_orders),
+                    "percent": progress_percent(product_index * max(1, region_count)),
+                },
+            )
         products.append(
             {
                 **target,
@@ -3515,7 +3631,7 @@ def scan_buyers_for_owned_blueprints(
         )
     )
     return {
-        "max_jumps": clamp_flight_max_jumps(max_jumps),
+        "max_jumps": max_jumps,
         "reachable_system_count": len(jump_distances),
         "regions_scanned": len(scan_region_ids),
         "total_regions_in_range": len(region_ids),
@@ -6268,6 +6384,9 @@ def build_http_server(
             if path == "/api/flight/buyers":
                 self._handle_flight_buyers()
                 return
+            if path == "/api/flight/buyers/progress":
+                self._handle_flight_buyers_progress()
+                return
             if path == "/api/flight/profitability":
                 self._handle_flight_profitability()
                 return
@@ -6397,6 +6516,43 @@ def build_http_server(
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
             self._send_json(payload)
+
+        def _handle_flight_buyers_progress(self) -> None:
+            self._send_sse_headers()
+
+            def emit(event: str, payload: dict[str, Any]) -> None:
+                self._send_sse_event(event, payload)
+
+            if not sso_config.enabled:
+                emit("scan_error", {"ok": False, "error": "EVE SSO is not configured."})
+                return
+            session = self._flight_session()
+            if session is None:
+                emit("scan_error", {"ok": False, "error": "Connect ESI before scanning buyer orders."})
+                return
+            access_error = flight_member_access_error(sso_config, session)
+            if access_error:
+                emit("scan_error", {"ok": False, "error": access_error})
+                return
+            query = parse_qs(urlparse(self.path).query)
+            max_jumps = clamp_flight_max_jumps((query.get("max_jumps") or [DEFAULT_FLIGHT_MAX_JUMPS])[0])
+            try:
+                payload = build_flight_buyers_payload(
+                    config=sso_config,
+                    session=session,
+                    max_jumps=max_jumps,
+                    progress=emit,
+                )
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except CorpMarketError as exc:
+                emit("scan_error", {"ok": False, "error": str(exc)})
+                return
+            try:
+                emit("result", payload)
+                emit("done", {"ok": True, "generated_at": now_iso()})
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
         def _handle_flight_profitability(self) -> None:
             session = self._require_flight_session("ranking profitability")
@@ -7563,6 +7719,46 @@ def _render_flight_attendant_dashboard() -> str:
       border: 1px solid rgba(97, 199, 217, .45);
     }
     .button-link[hidden] { display: none; }
+    .sso-scope-justification {
+      margin-top: 12px;
+      border: 1px solid rgba(97, 199, 217, .28);
+      border-radius: 7px;
+      background: rgba(5, 9, 11, .42);
+      padding: 10px;
+    }
+    .sso-scope-justification summary {
+      cursor: pointer;
+      color: var(--cyan);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .sso-scope-justification p {
+      margin: 9px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .sso-scope-list {
+      display: grid;
+      gap: 8px;
+      margin: 10px 0;
+    }
+    .sso-scope-list dt {
+      color: var(--amber);
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .sso-scope-list dd {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .progress-bar.is-meter span {
+      width: var(--progress-percent, 0%);
+      animation: none;
+      transition: width .25s ease;
+    }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
     .filters button { padding: 7px 10px; font-size: 13px; }
@@ -8072,6 +8268,46 @@ def _render_flight_attendant_dashboard() -> str:
                   <button id="flight-refresh" class="ghost" type="button">Refresh</button>
                   <button class="ghost" type="button" disabled>Generate Briefing</button>
                 </div>
+                <details class="sso-scope-justification" open>
+                  <summary>Why This App Requests ESI Scopes</summary>
+                  <p>Corp Market Concierge uses EVE Online SSO so pilots can choose exactly what character data they share. The app only requests <strong>read-only</strong> ESI scopes. It cannot buy, sell, contract, move assets, send mail, place market orders, control your ship, or perform any in-game action for you.</p>
+                  <p>We use these scopes to make trade, hauling, and industry recommendations more useful:</p>
+                  <dl class="sso-scope-list">
+                    <div>
+                      <dt>esi-location.read_location.v1</dt>
+                      <dd>Used to find your current system so routes can start from where you actually are.</dd>
+                    </div>
+                    <div>
+                      <dt>esi-assets.read_assets.v1</dt>
+                      <dd>Used to see what materials/items you already own, so blueprint and hauling suggestions can account for stock you already have.</dd>
+                    </div>
+                    <div>
+                      <dt>esi-characters.read_blueprints.v1</dt>
+                      <dd>Used to identify owned blueprints and recommend profitable production options.</dd>
+                    </div>
+                    <div>
+                      <dt>esi-skills.read_skills.v1</dt>
+                      <dd>Used for industry and market math, such as tax/efficiency assumptions where relevant.</dd>
+                    </div>
+                    <div>
+                      <dt>esi-characters.read_standings.v1</dt>
+                      <dd>Used for character context and future access/standing-aware recommendations. This is read-only.</dd>
+                    </div>
+                    <div>
+                      <dt>esi-clones.read_implants.v1</dt>
+                      <dd>Used for future skill/implant-aware calculations where implants affect planning assumptions.</dd>
+                    </div>
+                    <div>
+                      <dt>esi-universe.read_structures.v1</dt>
+                      <dd>Used to resolve private/upwell structure names when ESI returns a structure ID instead of a normal station.</dd>
+                    </div>
+                    <div>
+                      <dt>esi-wallet.read_character_wallet.v1</dt>
+                      <dd>Used for wallet-aware affordability planning, so the app can avoid recommending purchases beyond available ISK. It is read-only and does not expose wallet transactions unless we request a separate transaction scope, which we do not.</dd>
+                    </div>
+                  </dl>
+                  <p>Public market prices and public market orders come from public ESI data. The app does not need market order write access, contract write access, mail access, or any gameplay-control permissions. Users can revoke access any time from EVE Online's authorized applications page.</p>
+                </details>
                 <div id="flight-esi-message" class="meta"></div>
               </div>
               <div class="module-stack">
@@ -8104,6 +8340,7 @@ def _render_flight_attendant_dashboard() -> str:
                   <div class="module-content">
                     <button id="flight-buyer-scan" class="ghost" type="button">Scan Buyers</button>
                     <div id="flight-buyer-summary" class="meta">Connect ESI to scan nearby public buy orders.</div>
+                    <div id="flight-buyer-progress-log" class="progress-log" hidden></div>
                     <div id="flight-buyer-top" class="meta"></div>
                   </div>
                 </details>
@@ -8587,6 +8824,7 @@ def _render_flight_attendant_dashboard() -> str:
     const flightRouteTop = document.querySelector("#flight-route-top");
     const flightBuyerScanButton = document.querySelector("#flight-buyer-scan");
     const flightBuyerSummary = document.querySelector("#flight-buyer-summary");
+    const flightBuyerProgressLog = document.querySelector("#flight-buyer-progress-log");
     const flightBuyerTop = document.querySelector("#flight-buyer-top");
     const flightProfitScanButton = document.querySelector("#flight-profit-scan");
     const flightProfitSummary = document.querySelector("#flight-profit-summary");
@@ -8681,6 +8919,13 @@ def _render_flight_attendant_dashboard() -> str:
     let includeClosed = false;
     let flightProfitFilter = "all";
     let flightProfitProducts = [];
+    let buyerEventSource = null;
+    let buyerScanFinished = false;
+    let buyerProgressTimer = null;
+    let buyerProgressStartedAt = 0;
+    let buyerProgressMaxJumps = 0;
+    let buyerProgressPercent = 0;
+    let buyerProgressMessage = "";
     let flightProfitProgressTimer = null;
     let haulEventSource = null;
     let haulScanFinished = false;
@@ -9294,27 +9539,196 @@ def _render_flight_attendant_dashboard() -> str:
     }
 
     function resetFlightBuyers(message) {
+      closeBuyerEventSource();
+      stopBuyerProgressTimer();
       flightBuyerSummary.textContent = message;
+      flightBuyerProgressLog.hidden = true;
+      flightBuyerProgressLog.innerHTML = "";
       flightBuyerTop.textContent = "";
       flightBuyerScanButton.disabled = false;
     }
 
+    function closeBuyerEventSource() {
+      if (buyerEventSource) {
+        buyerEventSource.close();
+        buyerEventSource = null;
+      }
+    }
+
+    function currentBuyerElapsedSeconds() {
+      if (!buyerProgressStartedAt) return 0;
+      return Math.max(0, Math.floor((Date.now() - buyerProgressStartedAt) / 1000));
+    }
+
+    function stopBuyerProgressTimer() {
+      const elapsedSeconds = currentBuyerElapsedSeconds();
+      if (buyerProgressTimer) {
+        window.clearInterval(buyerProgressTimer);
+        buyerProgressTimer = null;
+      }
+      buyerProgressStartedAt = 0;
+      return elapsedSeconds;
+    }
+
+    function renderBuyerProgressSummary() {
+      const elapsed = formatElapsedDuration(currentBuyerElapsedSeconds());
+      const percent = Math.max(0, Math.min(100, Math.round(Number(buyerProgressPercent || 0))));
+      const meterPercent = Math.max(4, percent);
+      flightBuyerSummary.innerHTML = `
+        <div class="progress-status" aria-live="polite">
+          <span class="progress-spinner" aria-hidden="true"></span>
+          <div class="progress-copy">
+            <strong>${escapeHtml(buyerProgressMessage || "Scanning nearby buyer orders")}</strong>
+            <span><strong>${formatNumber(percent)}%</strong> complete &middot; within ${formatNumber(buyerProgressMaxJumps)} jumps; elapsed ${escapeHtml(elapsed)}.</span>
+          </div>
+        </div>
+        <div class="progress-bar is-meter" aria-label="${formatNumber(percent)}% complete" style="--progress-percent: ${meterPercent}%"><span></span></div>
+      `;
+    }
+
+    function startBuyerProgressTimer(maxJumps) {
+      stopBuyerProgressTimer();
+      buyerProgressStartedAt = Date.now();
+      buyerProgressMaxJumps = maxJumps;
+      buyerProgressPercent = 0;
+      buyerProgressMessage = `Starting buyer scan within ${maxJumps} jumps`;
+      renderBuyerProgressSummary();
+      buyerProgressTimer = window.setInterval(renderBuyerProgressSummary, 1000);
+    }
+
     async function loadFlightBuyers() {
       const maxJumps = writeMaxJumps(readMaxJumps());
+      closeBuyerEventSource();
+      stopBuyerProgressTimer();
+      buyerScanFinished = false;
       flightBuyerScanButton.disabled = true;
-      flightBuyerSummary.textContent = `Scanning buyer orders within ${maxJumps} jumps...`;
-      flightBuyerTop.textContent = "";
+      flightBuyerProgressLog.hidden = false;
+      flightBuyerProgressLog.innerHTML = "";
+      startBuyerProgressTimer(maxJumps);
+      flightBuyerTop.innerHTML = `<div class="decision-empty">Buyer scan results will appear here when the scan finishes.</div>`;
+      if (typeof EventSource === "undefined") {
+        try {
+          const response = await fetch(`/api/flight/buyers?max_jumps=${encodeURIComponent(maxJumps)}`);
+          const data = await response.json();
+          if (!data.ok) throw new Error(data.error || "Could not scan buyer orders");
+          stopBuyerProgressTimer();
+          renderFlightBuyers(data.buyers || {});
+        } catch (error) {
+          stopBuyerProgressTimer();
+          flightBuyerSummary.textContent = error.message;
+          flightBuyerTop.textContent = "";
+        } finally {
+          flightBuyerScanButton.disabled = false;
+        }
+        return;
+      }
       try {
-        const response = await fetch(`/api/flight/buyers?max_jumps=${encodeURIComponent(maxJumps)}`);
-        const data = await response.json();
-        if (!data.ok) throw new Error(data.error || "Could not scan buyer orders");
-        renderFlightBuyers(data.buyers || {});
+        buyerEventSource = new EventSource(`/api/flight/buyers/progress?max_jumps=${encodeURIComponent(maxJumps)}`);
+        buyerEventSource.addEventListener("scan_start", (event) => {
+          const payload = parseBuyerProgressEvent(event);
+          updateBuyerProgressFromPayload(payload);
+          appendBuyerProgress("Start", payload);
+        });
+        buyerEventSource.addEventListener("blueprints", (event) => {
+          const payload = parseBuyerProgressEvent(event);
+          updateBuyerProgressFromPayload(payload);
+          appendBuyerProgress("Blueprints", payload);
+        });
+        buyerEventSource.addEventListener("scan_scope", (event) => {
+          const payload = parseBuyerProgressEvent(event);
+          updateBuyerProgressFromPayload(payload);
+          appendBuyerProgress("Scope", payload);
+        });
+        buyerEventSource.addEventListener("product_start", (event) => {
+          const payload = parseBuyerProgressEvent(event);
+          updateBuyerProgressFromPayload(payload);
+          appendBuyerProgress(`Product ${formatNumber(payload.product_index)}`, payload);
+        });
+        buyerEventSource.addEventListener("orders", (event) => {
+          const payload = parseBuyerProgressEvent(event);
+          updateBuyerProgressFromPayload(payload);
+          appendBuyerProgress(`Orders ${formatNumber(payload.step)}/${formatNumber(payload.total_steps)}`, payload);
+        });
+        buyerEventSource.addEventListener("scan_warning", (event) => {
+          const payload = parseBuyerProgressEvent(event);
+          updateBuyerProgressFromPayload(payload);
+          appendBuyerProgress("Warning", payload);
+        });
+        buyerEventSource.addEventListener("product_done", (event) => {
+          const payload = parseBuyerProgressEvent(event);
+          updateBuyerProgressFromPayload(payload);
+          appendBuyerProgress(`Done ${formatNumber(payload.product_index)}`, payload);
+        });
+        buyerEventSource.addEventListener("scan_error", (event) => {
+          const payload = parseBuyerProgressEvent(event);
+          buyerScanFinished = true;
+          const elapsedSeconds = stopBuyerProgressTimer();
+          closeBuyerEventSource();
+          appendBuyerProgress("Stopped", {message: payload.error || "Buyer scan failed.", elapsed_seconds: elapsedSeconds});
+          flightBuyerSummary.textContent = `${payload.error || "Buyer scan failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+          flightBuyerTop.textContent = "";
+          flightBuyerScanButton.disabled = false;
+        });
+        buyerEventSource.addEventListener("result", (event) => {
+          buyerScanFinished = true;
+          const data = parseBuyerProgressEvent(event);
+          const elapsedSeconds = stopBuyerProgressTimer();
+          buyerProgressPercent = 100;
+          buyerProgressMessage = "Buyer scan complete";
+          renderFlightBuyers(data.buyers || {});
+          appendBuyerProgress("Done", {message: `Buyer scan complete in ${formatElapsedDuration(elapsedSeconds)}.`, elapsed_seconds: elapsedSeconds});
+          closeBuyerEventSource();
+          flightBuyerScanButton.disabled = false;
+        });
+        buyerEventSource.onerror = () => {
+          if (buyerScanFinished) return;
+          const elapsedSeconds = stopBuyerProgressTimer();
+          closeBuyerEventSource();
+          appendBuyerProgress("Stopped", {message: "Buyer scan connection closed before results arrived.", elapsed_seconds: elapsedSeconds});
+          flightBuyerSummary.textContent = `Buyer scan connection closed before results arrived. Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+          flightBuyerTop.textContent = "";
+          flightBuyerScanButton.disabled = false;
+        };
       } catch (error) {
+        closeBuyerEventSource();
+        stopBuyerProgressTimer();
         flightBuyerSummary.textContent = error.message;
         flightBuyerTop.textContent = "";
-      } finally {
         flightBuyerScanButton.disabled = false;
       }
+    }
+
+    function parseBuyerProgressEvent(event) {
+      try {
+        return JSON.parse(event.data || "{}");
+      } catch (_error) {
+        return {message: "Unreadable progress update."};
+      }
+    }
+
+    function updateBuyerProgressFromPayload(payload) {
+      if (payload.percent != null) {
+        buyerProgressPercent = Math.max(0, Math.min(100, Number(payload.percent) || 0));
+      }
+      if (payload.message) {
+        buyerProgressMessage = payload.message;
+      }
+      renderBuyerProgressSummary();
+    }
+
+    function appendBuyerProgress(label, payload) {
+      const message = payload.message || "";
+      if (!message) return;
+      const elapsedSeconds = payload.elapsed_seconds == null ? currentBuyerElapsedSeconds() : Number(payload.elapsed_seconds);
+      flightBuyerProgressLog.hidden = false;
+      const entry = document.createElement("div");
+      entry.className = "progress-entry";
+      entry.innerHTML = `<b>${escapeHtml(label)}</b><time>${escapeHtml(formatElapsedDuration(elapsedSeconds))}</time><span>${escapeHtml(message)}</span>`;
+      flightBuyerProgressLog.appendChild(entry);
+      while (flightBuyerProgressLog.children.length > 80) {
+        flightBuyerProgressLog.removeChild(flightBuyerProgressLog.firstElementChild);
+      }
+      flightBuyerProgressLog.scrollTop = flightBuyerProgressLog.scrollHeight;
     }
 
     function renderFlightBuyers(buyers) {

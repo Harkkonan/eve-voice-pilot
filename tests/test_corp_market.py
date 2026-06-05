@@ -227,6 +227,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/status" in page
     assert "/api/flight/industry" in page
     assert "/api/flight/buyers" in page
+    assert "/api/flight/buyers/progress" in page
     assert "/api/flight/profitability" in page
     assert "/api/flight/hauling" in page
     assert "/api/flight/hauling/progress" in page
@@ -242,11 +243,15 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-route-summary\"" in page
     assert "id=\"flight-buyer-scan\"" in page
     assert "id=\"flight-buyer-summary\"" in page
+    assert "id=\"flight-buyer-progress-log\"" in page
     assert "id=\"flight-profit-scan\"" in page
     assert "id=\"flight-profit-summary\"" in page
     assert "id=\"flight-profit-filters\"" in page
     assert "class=\"panel profit-panel\"" in page
     assert "id=\"flight-profit-top\" class=\"decision-output\"" in page
+    assert "Why This App Requests ESI Scopes" in page
+    assert "It cannot buy, sell, contract, move assets, send mail, place market orders" in page
+    assert "esi-wallet.read_character_wallet.v1" in page
     assert "data-tab-target=\"hauling\"" in page
     assert "data-tab-target=\"acquisition\"" in page
     assert "id=\"haul-route-form\"" in page
@@ -1387,10 +1392,12 @@ def test_build_flight_buyers_payload_scans_nearby_owned_blueprint_products(monke
 
     monkeypatch.setattr(corp_market, "fetch_market_buy_orders", fake_fetch_market_buy_orders)
 
+    progress_events = []
     payload = build_flight_buyers_payload(
         config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
         session=session,
         max_jumps=1,
+        progress=lambda event, event_payload: progress_events.append((event, event_payload)),
     )
 
     assert payload["ok"] is True
@@ -1403,6 +1410,11 @@ def test_build_flight_buyers_payload_scans_nearby_owned_blueprint_products(monke
     assert product["best_order"]["system_name"] == "One Jump"
     assert product["best_order"]["price"] == 1200.5
     assert product["best_order"]["jumps"] == 1
+    event_names = [event for event, _payload in progress_events]
+    assert event_names[:3] == ["scan_start", "blueprints", "scan_scope"]
+    assert "orders" in event_names
+    assert "product_done" in event_names
+    assert all(0 <= event_payload["percent"] <= 100 for _event, event_payload in progress_events if "percent" in event_payload)
 
 
 def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monkeypatch, tmp_path):
