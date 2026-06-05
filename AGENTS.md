@@ -15,7 +15,7 @@ These instructions are for Codex and other coding agents working in this reposit
 Build as if the repository may be published publicly.
 
 - Keep the project non-commercial unless the owner has completed a fresh policy review.
-- Do not commit secrets, API keys, Discord webhooks, SSO client secrets, access tokens, private chat logs, generated caches, local SQLite databases, local settings, downloaded models, or personal EVE profile files.
+- Do not commit secrets, API keys, Discord webhooks, SSO client secrets, access tokens, private chat logs, generated chat-log artifacts, local archives, generated caches, local SQLite databases, local settings, downloaded models, or personal EVE profile files.
 - Treat `docs/eve_developer_license_review.md` as a review checklist, not as the source of truth.
 - Re-open the live CCP/EVE policy pages before each meaningful release, public hosting change, monetization change, new ESI/SSO scope, new client-input capability, or feature that changes privacy behavior.
 - Preserve notices and avoid implying CCP endorsement when using EVE, CCP, or related names, data, marks, or imagery.
@@ -43,8 +43,8 @@ This project should stay on the conservative side of EVE third-party-tool rules.
 - Prefer opt-in local operation over silent collection.
 - Keep raw chat logs, private channel text, player-by-player transcripts, invite links, tokens, and personal paths out of committed docs and generated public artifacts.
 - Public or shareable reports should be explicitly public-safe and should redact private links and sensitive details.
-- Store local operational state under ignored paths such as `profiles/*.sqlite3`, `profiles/my_eve_commands.json`, `profiles/my_ocr_watcher_settings.json`, `cache/`, and `models/`.
-- If adding a new local state file, update `.gitignore` before the feature is considered done.
+- Store local operational state under ignored paths such as `profiles/*.sqlite3`, `profiles/my_eve_commands.json`, `profiles/my_ocr_watcher_settings.json`, `cache/`, `models/`, and `local_archives/`.
+- If adding a new local state file, update `.gitignore` and verify it with `git status --ignored` or `git check-ignore` before the feature is considered done.
 
 ## Project Conventions
 
@@ -100,4 +100,4 @@ Run `git diff --check` before committing documentation or code changes.
 - `profiles/eve_voice_standard.json`, `data/eve_voice_keybind_standard.csv`, and `docs/eve_voice_keybind_standard.md` should stay in sync when changing default voice commands or recommended EVE keybinds.
 - `src/eve_voice_pilot/corp_intel.py` should remain read-only against the EVE client and opt-in for pilots.
 - `src/eve_voice_pilot/corp_market.py` contains the corp market concierge and Flight Attendant helpers; keep Discord/ESI flows explicit, manual where gameplay handoff is involved, and careful with tokens.
-- `docs/chatlog-knowledge/` is generated public-safe output. Do not hand-edit it for data corrections unless the user specifically asks; prefer fixing the generator/source workflow.
+- The old `docs/chatlog-knowledge/` static site, generator, and tests were retired on 2026-06-05 because they were derived from local EVE chat logs. Preserve old copies only in ignored `local_archives/`; do not reintroduce chat-log-derived public artifacts without fresh privacy/policy review and owner approval.
