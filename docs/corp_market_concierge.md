@@ -38,6 +38,7 @@ The first version is a safe briefing surface:
 - It can use a local SDE route graph to show systems within the selected jump range of the current ESI location.
 - It can scan public ESI buy orders for products made by owned blueprints and filter those buyer orders to the selected jump range.
 - It includes a `Hauler Routes` tab that compares cheap public material sell orders on or near a selected route with higher public buy orders in the destination system.
+- It includes a `Market Acquisition Planner` tab that compares public buy/sell orders with public market history before suggesting public buy-order ceilings, first-order size, and collection range.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
@@ -136,6 +137,22 @@ If these caches are missing, the Flight Attendant tab still requires ESI and wil
 The Flight Attendant buyer scanner uses your connected ESI location and blueprint list, the local recipe cache, the local route graph, and public ESI market orders. It does not reveal buyer character names because public ESI market orders do not expose those identities. It shows public buy orders by product, price, remaining volume, system, and jumps from your current location.
 
 Public ESI market orders are cached in the local server process for 5 minutes. This keeps repeated buyer, profitability, and hauling scans from hammering the same market-order endpoint and lines up with CCP's market-order cache/rate-limit direction.
+
+### Market Acquisition Planner
+
+The `Market Acquisition Planner` tab is for strategic public buy-order placement. It uses the connected pilot's current system, a chosen downstream demand system, public regional market orders, public regional market history, the route graph, and a user-entered broker-fee estimate.
+
+It recommends:
+
+- a safe bid ceiling after estimated broker fees and downstream sales tax;
+- a small suggested starting bid;
+- a first-order unit count capped by budget, destination buy-order depth, and recent market-history volume;
+- a narrow or wider buy-order range;
+- visible history warnings.
+
+History warnings are intentionally plain-language. A `Possible trap` signal means the top-of-book spread is not supported by recent market history, the competing buy side is already above the safe ceiling, or another market-history/current-order mismatch needs manual checking. It is not proof of bad intent by another player. Treat it as a reason to verify the item in EVE before posting a buy order.
+
+This tab does not place, update, or cancel market orders. The pilot still creates every buy order manually in EVE.
 
 ### Blueprint Profitability
 

@@ -210,3 +210,5 @@ For a shared LAN test, set the public link base that Discord members should open
 For an Internet-accessible Flight Attendant link, use `--public-hosting-mode` with an HTTPS public base URL, EVE SSO credentials, and `--allowed-corporation-ids` or `--allowed-alliance-ids`. This keeps hosted Flight Attendant access member-only and tightens remote market writes.
 
 Listings are stored in ignored local SQLite data at `profiles/corp_market.sqlite3`. More detail is in `docs/corp_market_concierge.md`.
+
+The Flight Attendant tab also includes a `Market Acquisition Planner`. It compares public ESI market orders with public market history to suggest cautious public buy-order ceilings, first-order size, and collection range. `Possible trap` warnings mean the current order spread is not well supported by recent history or is too thin to trust without checking in EVE.

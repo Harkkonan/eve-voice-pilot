@@ -22,6 +22,7 @@ from eve_voice_pilot.corp_market import (
     RouteSystem,
     build_discord_webhook_payload,
     build_flight_buyers_payload,
+    build_flight_acquisition_payload,
     build_flight_hauling_payload,
     build_flight_industry_payload,
     build_flight_profitability_payload,
@@ -220,6 +221,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/profitability" in page
     assert "/api/flight/hauling" in page
     assert "/api/flight/hauling/progress" in page
+    assert "/api/flight/acquisition" in page
     assert "/flight/login" in page
     assert "id=\"flight-system-name\"" in page
     assert "id=\"flight-login-link\"" in page
@@ -236,6 +238,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "class=\"panel profit-panel\"" in page
     assert "id=\"flight-profit-top\" class=\"decision-output\"" in page
     assert "data-tab-target=\"hauling\"" in page
+    assert "data-tab-target=\"acquisition\"" in page
     assert "id=\"haul-route-form\"" in page
     assert "id=\"haul-origin\"" in page
     assert "Start system" in page
@@ -262,6 +265,15 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
+    assert "id=\"acquisition-form\"" in page
+    assert "id=\"acq-budget\"" in page
+    assert "id=\"acq-broker-fee\"" in page
+    assert "id=\"acq-results\" class=\"decision-output\"" in page
+    assert "Market Acquisition Planner" in page
+    assert "Possible trap" in page
+    assert "Market history can reveal" in page
+    assert "writeAcquisitionSettings" in page
+    assert "renderAcquisitionOpportunities" in page
     assert "/static/corp-market/hauler-background.png" in page
     assert "document.body.dataset.activeTab = targetTab" in page
     assert "formatElapsedDuration" in page
@@ -1270,6 +1282,176 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
     assert product["confidence"] == "strong"
 
 
+def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(monkeypatch, tmp_path):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Quartermaster",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(
+            "esi-location.read_location.v1",
+            "esi-skills.read_skills.v1",
+        ),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+    route_cache = RouteGraphCache(
+        path=tmp_path / "route.json",
+        available=True,
+        build_number=3374020,
+        systems={
+            1: RouteSystem(solar_system_id=1, name="Start", region_id=100, security_status=0.9),
+            2: RouteSystem(solar_system_id=2, name="One Jump", region_id=100, security_status=0.8),
+            30000142: RouteSystem(solar_system_id=30000142, name="Jita", region_id=200, security_status=0.9),
+        },
+        adjacency={1: (2,), 2: (1,), 30000142: ()},
+    )
+    recipe_cache = IndustryRecipeCache(
+        path=tmp_path / "recipes.json",
+        available=True,
+        build_number=3374020,
+        recipes={
+            681: IndustryRecipe(
+                blueprint_type_id=681,
+                blueprint_name="Hobgoblin I Blueprint",
+                product_type_id=165,
+                product_name="Hobgoblin I",
+                product_quantity=1,
+                materials=(IndustryMaterial(type_id=34, name="Tritanium", quantity=1000),),
+                manufacturing_time_seconds=600,
+                max_production_limit=1500,
+                skills=(),
+            )
+        },
+    )
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_location",
+        lambda config, session: {
+            "solar_system_id": 1,
+            "solar_system_name": "Start",
+            "updated_at": "2026-06-04T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_skills",
+        lambda config, session: {
+            "skills": [
+                {
+                    "skill_id": corp_market.ACCOUNTING_SKILL_TYPE_ID,
+                    "active_skill_level": 5,
+                    "trained_skill_level": 5,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
+    monkeypatch.setattr(corp_market, "load_industry_recipe_cache", lambda: recipe_cache)
+    monkeypatch.setattr(
+        corp_market,
+        "build_haul_route_plan",
+        lambda **kwargs: {
+            "path": [1, 30000142],
+            "preference": "safer",
+            "preference_label": "Safer",
+            "source": "test-route",
+            "warning": "",
+            "avoid_recent_pod_kills": False,
+            "recent_pod_kill_system_count": 0,
+            "avoided_pod_kill_system_ids": [],
+            "route_pod_kill_system_ids": [],
+        },
+    )
+
+    def fake_fetch_market_buy_orders(config, *, region_id, type_id):
+        if region_id == 100:
+            return [
+                {
+                    "order_id": 10,
+                    "is_buy_order": True,
+                    "system_id": 2,
+                    "location_id": 60008494,
+                    "price": 50.0,
+                    "volume_remain": 1000,
+                    "min_volume": 1,
+                }
+            ]
+        if region_id == 200:
+            return [
+                {
+                    "order_id": 20,
+                    "is_buy_order": True,
+                    "system_id": 30000142,
+                    "location_id": 60003760,
+                    "price": 500.0,
+                    "volume_remain": 10,
+                    "min_volume": 1,
+                }
+            ]
+        return []
+
+    def fake_fetch_market_sell_orders(config, *, region_id, type_id):
+        return [
+            {
+                "order_id": 30,
+                "is_buy_order": False,
+                "system_id": 2,
+                "location_id": 60008494,
+                "price": 80.0,
+                "volume_remain": 1000,
+                "min_volume": 1,
+            }
+        ]
+
+    def fake_fetch_market_history(config, *, region_id, type_id):
+        average = 80.0 if region_id == 100 else 100.0
+        return [
+            {
+                "date": f"2026-05-{day:02d}",
+                "average": average,
+                "highest": average * 1.1,
+                "lowest": average * 0.9,
+                "order_count": 4,
+                "volume": 1000,
+            }
+            for day in range(1, 31)
+        ]
+
+    monkeypatch.setattr(corp_market, "fetch_market_buy_orders", fake_fetch_market_buy_orders)
+    monkeypatch.setattr(corp_market, "fetch_market_sell_orders", fake_fetch_market_sell_orders)
+    monkeypatch.setattr(corp_market, "fetch_market_history", fake_fetch_market_history)
+
+    payload = build_flight_acquisition_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        destination_name="Jita",
+        budget_isk=1_000_000,
+        pickup_jumps=1,
+        min_margin_percent=10,
+        broker_fee_percent=3,
+        target_days=3,
+    )
+
+    assert payload["ok"] is True
+    acquisition = payload["acquisition"]
+    assert acquisition["opportunity_count"] == 1
+    assert acquisition["possible_trap_count"] == 1
+    opportunity = acquisition["opportunities"][0]
+    assert opportunity["item_name"] == "Tritanium"
+    assert opportunity["risk_level"] == "possible-trap"
+    assert opportunity["decision"]["label"] == "Verify before posting"
+    assert opportunity["range_recommendation"]["range"] == "station"
+    assert opportunity["recommended_units"] == 10
+    assert opportunity["suggested_bid"] == pytest.approx(68.0)
+    assert opportunity["history_flags"][0]["label"] == "Possible trap: price spike"
+    assert "possible trap" in acquisition["pricing_note"]
+
+
 def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeypatch, tmp_path):
     session = FlightEsiSession(
         character_id=123456789,
@@ -1671,6 +1853,62 @@ def test_fetch_market_orders_reuses_local_cache(monkeypatch):
     assert second == [{"order_id": 10, "is_buy_order": True}]
     assert corp_market.market_order_cache_status()["ttl_seconds"] == 300
     corp_market.clear_market_order_cache()
+
+
+def test_fetch_market_history_uses_public_history_endpoint_and_cache(monkeypatch):
+    corp_market.clear_market_history_cache()
+    requests = []
+
+    class FakeResponse:
+        headers = {"Expires": "Fri, 05 Jun 2099 11:05:00 GMT"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                [
+                    {
+                        "date": "2026-06-01",
+                        "average": 100.0,
+                        "highest": 120.0,
+                        "lowest": 90.0,
+                        "order_count": 5,
+                        "volume": 500,
+                    }
+                ]
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        requests.append(request)
+        return FakeResponse()
+
+    monkeypatch.setattr(corp_market, "urlopen", fake_urlopen)
+
+    first = corp_market.fetch_market_history(
+        corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        region_id=10000002,
+        type_id=34,
+    )
+    first[0]["average"] = 999
+    second = corp_market.fetch_market_history(
+        corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        region_id=10000002,
+        type_id=34,
+    )
+
+    assert len(requests) == 1
+    assert second[0]["average"] == 100.0
+    url = requests[0].full_url
+    assert url.startswith("https://esi.test/latest/markets/10000002/history/?")
+    assert "type_id=34" in url
+    assert requests[0].headers["Accept"] == "application/json"
+    assert "Authorization" not in requests[0].headers
+    assert corp_market.market_history_cache_status()["entries"] == 1
+    corp_market.clear_market_history_cache()
 
 
 def test_flight_industry_payload_requires_blueprint_and_asset_scopes(monkeypatch):

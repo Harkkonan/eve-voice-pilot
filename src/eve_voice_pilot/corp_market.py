@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
 import json
@@ -51,8 +52,16 @@ MAX_FLIGHT_BUYER_SCAN_REGIONS = 8
 MAX_FLIGHT_PROFIT_MATERIAL_TYPES = 120
 MAX_FLIGHT_HAUL_MATERIAL_TYPES = 80
 MAX_FLIGHT_HAUL_SCAN_TYPES = 240
+MAX_FLIGHT_ACQUISITION_SCAN_TYPES = 100
 MAX_HAUL_MARKET_GROUP_IDS = 32
 MAX_FLIGHT_HAUL_OPPORTUNITIES = 20
+MAX_FLIGHT_ACQUISITION_OPPORTUNITIES = 20
+DEFAULT_FLIGHT_TRADE_PNL_DAYS = 30
+MAX_FLIGHT_TRADE_PNL_DAYS = 30
+MAX_FLIGHT_TRADE_PNL_PAGES = 6
+MAX_FLIGHT_TRADE_JOURNAL_PAGES = 6
+MAX_FLIGHT_TRADE_PNL_TRANSACTIONS = 10_000
+MAX_FLIGHT_TRADE_PNL_ITEMS = 40
 DEFAULT_HAUL_DESTINATION_SYSTEM = "Jita"
 DEFAULT_HAUL_DETOUR_JUMPS = 1
 MAX_HAUL_DETOUR_JUMPS = 5
@@ -60,6 +69,14 @@ DEFAULT_HAUL_CARGO_M3 = 10_000.0
 MAX_HAUL_CARGO_M3 = 10_000_000.0
 DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT = 10.0
 MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT = 500.0
+DEFAULT_ACQUISITION_BUDGET_ISK = 50_000_000.0
+MAX_ACQUISITION_BUDGET_ISK = 1_000_000_000_000.0
+DEFAULT_ACQUISITION_PICKUP_JUMPS = 2
+MAX_ACQUISITION_PICKUP_JUMPS = 10
+DEFAULT_ACQUISITION_BROKER_FEE_PERCENT = 3.0
+MAX_ACQUISITION_BROKER_FEE_PERCENT = 20.0
+DEFAULT_ACQUISITION_TARGET_DAYS = 3
+MAX_ACQUISITION_TARGET_DAYS = 30
 DEFAULT_HAUL_ROUTE_PREFERENCE = "safer"
 HAUL_ROUTE_PREFERENCES = {"shorter", "safer", "less_secure"}
 HAUL_ROUTE_ESI_PREFERENCES = {"shorter": "Shorter", "safer": "Safer", "less_secure": "LessSecure"}
@@ -75,16 +92,26 @@ FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
 FLIGHT_SKILLS_SCOPE = "esi-skills.read_skills.v1"
 FLIGHT_STANDINGS_SCOPE = "esi-characters.read_standings.v1"
+FLIGHT_WALLET_SCOPE = "esi-wallet.read_character_wallet.v1"
 DEFAULT_FLIGHT_ESI_SCOPES = (
     FLIGHT_LOCATION_SCOPE,
     FLIGHT_ASSETS_SCOPE,
     FLIGHT_BLUEPRINTS_SCOPE,
     FLIGHT_SKILLS_SCOPE,
     FLIGHT_STANDINGS_SCOPE,
+    FLIGHT_WALLET_SCOPE,
 )
 ACCOUNTING_SKILL_TYPE_ID = 16622
 BASE_SALES_TAX_RATE = 0.075
 ACCOUNTING_SALES_TAX_REDUCTION_PER_LEVEL = 0.11
+TRADE_PNL_MARKET_FEE_REF_TYPES = frozenset(
+    {
+        "brokers_fee",
+        "market_fine_paid",
+        "market_provider_tax",
+        "transaction_tax",
+    }
+)
 FLIGHT_SESSION_COOKIE_NAME = "corp_market_flight_session"
 DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
@@ -306,6 +333,8 @@ FIT_HEADER_RE = re.compile(r"^\[(?P<hull>[^,\]]+),\s*(?P<name>[^\]]+)\]\s*$")
 FIT_QUANTITY_RE = re.compile(r"\sx[\d,]+\s*$", re.IGNORECASE)
 MARKET_ORDER_CACHE_LOCK = threading.Lock()
 MARKET_ORDER_CACHE: dict[tuple[str, int, int, str], tuple[float, list[dict[str, Any]]]] = {}
+MARKET_HISTORY_CACHE_LOCK = threading.Lock()
+MARKET_HISTORY_CACHE: dict[tuple[str, int, int], tuple[float, list[dict[str, Any]]]] = {}
 SYSTEM_KILLS_CACHE_LOCK = threading.Lock()
 SYSTEM_KILLS_CACHE: dict[str, tuple[float, tuple[int, ...]]] = {}
 STATIC_MARKET_DATA_LOCK = threading.Lock()
@@ -1771,6 +1800,74 @@ def market_order_cache_status() -> dict[str, Any]:
     }
 
 
+def fetch_market_history(config: EveSsoConfig, *, region_id: int, type_id: int) -> list[dict[str, Any]]:
+    base_url = config.esi_base_url.rstrip("/")
+    cache_key = (base_url, int(region_id), int(type_id))
+    now = time.time()
+    with MARKET_HISTORY_CACHE_LOCK:
+        cached = MARKET_HISTORY_CACHE.get(cache_key)
+        if cached is not None:
+            expires_at, cached_history = cached
+            if now < expires_at:
+                return [dict(item) for item in cached_history]
+            MARKET_HISTORY_CACHE.pop(cache_key, None)
+    url = add_query_params(
+        f"{base_url}/markets/{region_id}/history/?datasource=tranquility",
+        {"type_id": str(type_id)},
+    )
+    request = Request(url, headers={"Accept": "application/json", **flight_esi_headers()}, method="GET")
+    try:
+        with urlopen(request, timeout=45.0) as response:
+            raw = response.read().decode("utf-8")
+            expires_at = market_history_expiry_timestamp(response.headers.get("Expires"))
+    except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+        raise CorpMarketError(f"ESI market history for type {type_id} in region {region_id} request failed: {exc}") from exc
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CorpMarketError(f"ESI market history returned non-JSON data: {raw[:200]!r}") from exc
+    if not isinstance(payload, list):
+        raise CorpMarketError("ESI market history returned unexpected data.")
+    history = [item for item in payload if isinstance(item, dict)]
+    with MARKET_HISTORY_CACHE_LOCK:
+        MARKET_HISTORY_CACHE[cache_key] = (expires_at, [dict(item) for item in history])
+    return history
+
+
+def market_history_expiry_timestamp(expires_header: str | None) -> float:
+    fallback = time.time() + 6 * 3600
+    if not expires_header:
+        return fallback
+    try:
+        expires_at = parsedate_to_datetime(expires_header)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return fallback
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    timestamp = expires_at.timestamp()
+    if timestamp <= time.time():
+        return fallback
+    return timestamp
+
+
+def clear_market_history_cache() -> None:
+    with MARKET_HISTORY_CACHE_LOCK:
+        MARKET_HISTORY_CACHE.clear()
+
+
+def market_history_cache_status() -> dict[str, Any]:
+    now = time.time()
+    with MARKET_HISTORY_CACHE_LOCK:
+        expired_keys = [key for key, (expires_at, _history) in MARKET_HISTORY_CACHE.items() if now >= expires_at]
+        for key in expired_keys:
+            MARKET_HISTORY_CACHE.pop(key, None)
+        entry_count = len(MARKET_HISTORY_CACHE)
+    return {
+        "entries": entry_count,
+        "note": "Public market history is cached until the ESI response expiry when available.",
+    }
+
+
 def fetch_esi_route_path(
     config: EveSsoConfig,
     *,
@@ -2505,6 +2602,95 @@ def build_flight_hauling_payload(
     }
 
 
+def build_flight_acquisition_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    origin_name: str = "",
+    destination_name: str = DEFAULT_HAUL_DESTINATION_SYSTEM,
+    budget_isk: float = DEFAULT_ACQUISITION_BUDGET_ISK,
+    pickup_jumps: int = DEFAULT_ACQUISITION_PICKUP_JUMPS,
+    min_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT,
+    broker_fee_percent: float = DEFAULT_ACQUISITION_BROKER_FEE_PERCENT,
+    target_days: int = DEFAULT_ACQUISITION_TARGET_DAYS,
+    route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE,
+    include_common_materials: bool = True,
+    market_group_ids: Iterable[int] = (),
+) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
+    location = fetch_flight_location(config, session)
+    current_solar_system_id = int(location.get("solar_system_id") or 0)
+    route_cache = load_route_graph_cache()
+    if not route_cache.available:
+        raise CorpMarketError(route_cache.error or "Route graph cache is not available.")
+    recipe_cache = load_industry_recipe_cache()
+    if not recipe_cache.available:
+        raise CorpMarketError(recipe_cache.error or "Recipe cache is not available.")
+    systems = route_cache.systems or {}
+    adjacency = route_cache.adjacency or {}
+    clean_origin_name = str(origin_name or "").strip()
+    if clean_origin_name:
+        origin = resolve_route_system(route_cache, clean_origin_name)
+        if origin is None:
+            raise CorpMarketError(f"Starting system {clean_origin_name!r} was not found in the route graph cache.")
+        origin_source = "manual"
+    else:
+        origin = systems.get(current_solar_system_id)
+        origin_source = "esi-location"
+    if origin is None:
+        raise CorpMarketError(f"Current system {current_solar_system_id} is not in the route graph cache.")
+    destination = resolve_route_system(route_cache, destination_name)
+    if destination is None:
+        raise CorpMarketError(f"Destination system {destination_name!r} was not found in the route graph cache.")
+    route_plan = build_haul_route_plan(
+        config=config,
+        origin_solar_system_id=origin.solar_system_id,
+        destination_solar_system_id=destination.solar_system_id,
+        route_preference=route_preference,
+        avoid_recent_pod_kills=False,
+        adjacency=adjacency,
+    )
+    skills = fetch_flight_skills(config, session)
+    sales_tax = build_sales_tax_profile(skills)
+    acquisition = scan_market_acquisition_opportunities(
+        config=config,
+        recipe_cache=recipe_cache,
+        route_cache=route_cache,
+        origin=origin,
+        destination=destination,
+        budget_isk=budget_isk,
+        pickup_jumps=pickup_jumps,
+        min_margin_percent=min_margin_percent,
+        broker_fee_percent=broker_fee_percent,
+        target_days=target_days,
+        sales_tax=sales_tax,
+        include_common_materials=include_common_materials,
+        market_group_ids=market_group_ids,
+    )
+    route_path = route_plan["path"]
+    route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "location": location,
+        "route": {
+            "origin": origin.to_dict(jumps=0),
+            "destination": destination.to_dict(jumps=max(0, len(route_path) - 1)),
+            "origin_query": clean_origin_name,
+            "origin_source": origin_source,
+            "destination_query": destination_name,
+            "route_jumps": max(0, len(route_path) - 1),
+            "route_preference": route_plan["preference"],
+            "route_preference_label": route_plan["preference_label"],
+            "route_source": route_plan["source"],
+            "route_warning": route_plan["warning"],
+            "systems": route_systems,
+        },
+        "acquisition": acquisition,
+    }
+
+
 def scan_buyers_for_owned_blueprints(
     *,
     config: EveSsoConfig,
@@ -3116,6 +3302,520 @@ def scan_route_hauling_opportunities(
             "system. Profit is after sales tax for selling into the destination buy order. Public market orders are "
             "cached locally for 5 minutes. The page does not place orders or verify station docking access."
         ),
+    }
+
+
+def scan_market_acquisition_opportunities(
+    *,
+    config: EveSsoConfig,
+    recipe_cache: IndustryRecipeCache,
+    route_cache: RouteGraphCache,
+    origin: RouteSystem,
+    destination: RouteSystem,
+    budget_isk: float,
+    pickup_jumps: int,
+    min_margin_percent: float,
+    broker_fee_percent: float,
+    target_days: int,
+    sales_tax: dict[str, Any],
+    include_common_materials: bool,
+    market_group_ids: Iterable[int],
+) -> dict[str, Any]:
+    systems = route_cache.systems or {}
+    adjacency = route_cache.adjacency or {}
+    clean_budget = clamp_acquisition_budget_isk(budget_isk)
+    clean_pickup_jumps = clamp_acquisition_pickup_jumps(pickup_jumps)
+    clean_min_margin_percent = clamp_haul_min_detour_margin_percent(min_margin_percent)
+    clean_broker_fee_percent = clamp_acquisition_broker_fee_percent(broker_fee_percent)
+    clean_target_days = clamp_acquisition_target_days(target_days)
+    broker_fee_rate = clean_broker_fee_percent / 100.0
+    sales_tax_rate = clean_optional_float(sales_tax.get("rate")) or 0.0
+
+    pickup_distances = jump_distances_from(
+        start_system_id=origin.solar_system_id,
+        adjacency=adjacency,
+        max_jumps=clean_pickup_jumps,
+    )
+    pickup_region_ranks: dict[int, int] = {}
+    for system_id, jumps in pickup_distances.items():
+        system = systems.get(system_id)
+        if system is None or system.region_id is None:
+            continue
+        current_rank = pickup_region_ranks.get(system.region_id)
+        if current_rank is None or jumps < current_rank:
+            pickup_region_ranks[system.region_id] = jumps
+    pickup_region_ids = [
+        region_id
+        for region_id, _rank in sorted(pickup_region_ranks.items(), key=lambda item: (item[1], item[0]))
+    ]
+    pickup_region_truncated = len(pickup_region_ids) > MAX_FLIGHT_BUYER_SCAN_REGIONS
+    scan_pickup_region_ids = pickup_region_ids[:MAX_FLIGHT_BUYER_SCAN_REGIONS]
+    if destination.region_id is None:
+        raise CorpMarketError("Destination system does not have a usable market region in the route graph cache.")
+
+    item_targets, item_scope = build_haul_item_targets(
+        config=config,
+        recipe_cache=recipe_cache,
+        include_common_materials=include_common_materials,
+        market_group_ids=market_group_ids,
+    )
+    item_truncated = len(item_targets) > MAX_FLIGHT_ACQUISITION_SCAN_TYPES
+    scan_targets = item_targets[:MAX_FLIGHT_ACQUISITION_SCAN_TYPES]
+    if not scan_targets:
+        raise CorpMarketError("Choose Common materials or at least one market category before planning acquisitions.")
+
+    opportunities = []
+    total_source_buy_order_count = 0
+    total_source_sell_order_count = 0
+    total_destination_buy_order_count = 0
+    history_regions = set()
+    trap_signal_count = 0
+    caution_signal_count = 0
+    errors = []
+    destination_distances = {destination.solar_system_id: 0}
+
+    for target in scan_targets:
+        type_id = int(target["type_id"])
+        source_buy_orders = []
+        source_sell_orders = []
+        for region_id in scan_pickup_region_ids:
+            try:
+                raw_source_buys = fetch_market_buy_orders(config, region_id=region_id, type_id=type_id)
+            except CorpMarketError as exc:
+                errors.append({"order_type": "buy", "type_id": type_id, "region_id": region_id, "error": str(exc)})
+                raw_source_buys = []
+            for order in raw_source_buys:
+                record = build_reachable_market_order_record(
+                    order,
+                    systems=systems,
+                    jump_distances=pickup_distances,
+                    region_id=region_id,
+                    order_type="buy",
+                )
+                if record is not None:
+                    source_buy_orders.append(record)
+            try:
+                raw_source_sells = fetch_market_sell_orders(config, region_id=region_id, type_id=type_id)
+            except CorpMarketError as exc:
+                errors.append({"order_type": "sell", "type_id": type_id, "region_id": region_id, "error": str(exc)})
+                raw_source_sells = []
+            for order in raw_source_sells:
+                record = build_reachable_market_order_record(
+                    order,
+                    systems=systems,
+                    jump_distances=pickup_distances,
+                    region_id=region_id,
+                    order_type="sell",
+                )
+                if record is not None:
+                    source_sell_orders.append(record)
+        try:
+            raw_destination_buys = fetch_market_buy_orders(config, region_id=destination.region_id, type_id=type_id)
+        except CorpMarketError as exc:
+            errors.append(
+                {"order_type": "buy", "type_id": type_id, "region_id": destination.region_id, "error": str(exc)}
+            )
+            raw_destination_buys = []
+        destination_buy_orders = []
+        for order in raw_destination_buys:
+            record = build_reachable_market_order_record(
+                order,
+                systems=systems,
+                jump_distances=destination_distances,
+                region_id=destination.region_id,
+                order_type="buy",
+            )
+            if record is not None:
+                destination_buy_orders.append(record)
+
+        source_buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
+        source_sell_orders.sort(key=lambda item: market_order_sort_key(item, order_type="sell"))
+        destination_buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
+        total_source_buy_order_count += len(source_buy_orders)
+        total_source_sell_order_count += len(source_sell_orders)
+        total_destination_buy_order_count += len(destination_buy_orders)
+        if not destination_buy_orders:
+            continue
+
+        source_region_id = origin.region_id or (scan_pickup_region_ids[0] if scan_pickup_region_ids else None)
+        if source_region_id is None:
+            continue
+        source_history = []
+        destination_history = []
+        try:
+            source_history = fetch_market_history(config, region_id=source_region_id, type_id=type_id)
+            history_regions.add(source_region_id)
+        except CorpMarketError as exc:
+            errors.append({"history": "source", "type_id": type_id, "region_id": source_region_id, "error": str(exc)})
+        if destination.region_id != source_region_id:
+            try:
+                destination_history = fetch_market_history(config, region_id=destination.region_id, type_id=type_id)
+                history_regions.add(destination.region_id)
+            except CorpMarketError as exc:
+                errors.append(
+                    {"history": "destination", "type_id": type_id, "region_id": destination.region_id, "error": str(exc)}
+                )
+        else:
+            destination_history = source_history
+
+        best_destination_buy = destination_buy_orders[0]
+        best_source_buy = source_buy_orders[0] if source_buy_orders else None
+        best_source_sell = source_sell_orders[0] if source_sell_orders else None
+        source_stats = market_history_stats(source_history)
+        destination_stats = market_history_stats(destination_history)
+        net_destination_price = float(best_destination_buy["price"]) * (1.0 - sales_tax_rate)
+        target_margin_rate = clean_min_margin_percent / 100.0
+        max_safe_bid = net_destination_price / max((1.0 + broker_fee_rate) * (1.0 + target_margin_rate), 0.0001)
+        if max_safe_bid <= 0:
+            continue
+        suggested_bid = acquisition_suggested_bid(
+            max_safe_bid=max_safe_bid,
+            best_source_buy=best_source_buy,
+            best_source_sell=best_source_sell,
+            source_history=source_stats,
+        )
+        if suggested_bid <= 0:
+            continue
+        estimated_unit_cost = suggested_bid * (1.0 + broker_fee_rate)
+        budget_units = int(clean_budget // max(estimated_unit_cost, 0.01))
+        history_units = acquisition_history_unit_cap(source_stats, target_days=clean_target_days)
+        destination_units = int(best_destination_buy.get("volume_remain") or 0)
+        units = min(limit for limit in (budget_units, destination_units, history_units) if limit >= 0)
+        if units <= 0:
+            continue
+        broker_fee_total = suggested_bid * units * broker_fee_rate
+        bid_total = suggested_bid * units
+        net_revenue = net_destination_price * units
+        net_profit = net_revenue - bid_total - broker_fee_total
+        if net_profit <= 0:
+            continue
+        margin_percent = profit_margin_percent(net_profit, bid_total + broker_fee_total)
+        flags = acquisition_history_flags(
+            source_stats=source_stats,
+            destination_stats=destination_stats,
+            best_source_buy=best_source_buy,
+            best_source_sell=best_source_sell,
+            best_destination_buy=best_destination_buy,
+            max_safe_bid=max_safe_bid,
+            suggested_bid=suggested_bid,
+            units=units,
+            target_days=clean_target_days,
+        )
+        risk_level = acquisition_risk_level(flags)
+        if risk_level == "possible-trap":
+            trap_signal_count += 1
+        elif risk_level == "caution":
+            caution_signal_count += 1
+        range_recommendation = acquisition_range_recommendation(
+            risk_level=risk_level,
+            source_stats=source_stats,
+            units=units,
+            pickup_jumps=clean_pickup_jumps,
+            margin_percent=margin_percent,
+        )
+        opportunity = {
+            "type_id": type_id,
+            "item_name": target["name"],
+            "recipe_count": int(target.get("recipe_count") or 0),
+            "source_labels": target.get("source_labels", []),
+            "volume_m3": target.get("volume_m3"),
+            "decision": acquisition_decision(risk_level=risk_level, margin_percent=margin_percent),
+            "risk_level": risk_level,
+            "range_recommendation": range_recommendation,
+            "placement_system": origin.name,
+            "pickup_jumps": clean_pickup_jumps,
+            "target_days": clean_target_days,
+            "suggested_bid": suggested_bid,
+            "max_safe_bid": max_safe_bid,
+            "recommended_units": units,
+            "estimated_bid_total": bid_total,
+            "estimated_broker_fee": broker_fee_total,
+            "estimated_isk_committed": bid_total + broker_fee_total,
+            "net_destination_price": net_destination_price,
+            "net_profit": net_profit,
+            "net_profit_per_unit": net_profit / units,
+            "margin_percent": margin_percent,
+            "sales_tax_rate": sales_tax_rate,
+            "broker_fee_rate": broker_fee_rate,
+            "best_source_buy": best_source_buy,
+            "best_source_sell": best_source_sell,
+            "best_destination_buy": best_destination_buy,
+            "source_history": source_stats,
+            "destination_history": destination_stats,
+            "history_flags": flags,
+        }
+        opportunities.append(opportunity)
+
+    opportunities.sort(
+        key=lambda item: (
+            acquisition_risk_sort_rank(str(item["risk_level"])),
+            -float(item.get("net_profit") or 0.0),
+            -float(item.get("margin_percent") or 0.0),
+            item["item_name"],
+        )
+    )
+    return {
+        "origin_system": origin.to_dict(jumps=0),
+        "destination_system": destination.to_dict(jumps=0),
+        "budget_isk": clean_budget,
+        "pickup_jumps": clean_pickup_jumps,
+        "min_margin_percent": clean_min_margin_percent,
+        "broker_fee_percent": clean_broker_fee_percent,
+        "target_days": clean_target_days,
+        "pickup_system_count": len(pickup_distances),
+        "pickup_regions_scanned": len(scan_pickup_region_ids),
+        "pickup_regions_total": len(pickup_region_ids),
+        "pickup_region_truncated": pickup_region_truncated,
+        "destination_region_id": destination.region_id,
+        "scanned_item_types": len(scan_targets),
+        "total_item_types": len(item_targets),
+        "item_truncated": item_truncated,
+        "item_scope": {
+            **item_scope,
+            "scanned_item_types": len(scan_targets),
+            "total_item_types": len(item_targets),
+            "item_truncated": item_truncated,
+        },
+        "source_buy_order_count": total_source_buy_order_count,
+        "source_sell_order_count": total_source_sell_order_count,
+        "destination_buy_order_count": total_destination_buy_order_count,
+        "history_region_count": len(history_regions),
+        "opportunity_count": len(opportunities),
+        "possible_trap_count": trap_signal_count,
+        "caution_count": caution_signal_count,
+        "opportunities": opportunities[:MAX_FLIGHT_ACQUISITION_OPPORTUNITIES],
+        "errors": errors[:12],
+        "sales_tax": sales_tax,
+        "market_cache": market_order_cache_status(),
+        "history_cache": market_history_cache_status(),
+        "pricing_note": (
+            "This planner suggests public buy-order ceilings from public regional orders and market history. "
+            "A possible trap flag means recent history does not support the apparent spread or fill volume; "
+            "verify the item in EVE before posting an order. The page does not place orders."
+        ),
+    }
+
+
+def market_history_stats(history: Iterable[dict[str, Any]], *, days: int = 30) -> dict[str, Any]:
+    rows = sorted((item for item in history if isinstance(item, dict)), key=lambda item: str(item.get("date") or ""))
+    recent = rows[-max(1, int(days)) :]
+    volumes = [float(item.get("volume") or 0.0) for item in recent]
+    order_counts = [float(item.get("order_count") or 0.0) for item in recent]
+    averages = [float(item.get("average") or 0.0) for item in recent if clean_optional_float(item.get("average"))]
+    lows = [float(item.get("lowest") or 0.0) for item in recent if clean_optional_float(item.get("lowest"))]
+    highs = [float(item.get("highest") or 0.0) for item in recent if clean_optional_float(item.get("highest"))]
+    latest = recent[-1] if recent else {}
+    return {
+        "days": len(recent),
+        "latest_date": str(latest.get("date") or ""),
+        "latest_volume": clean_optional_int(latest.get("volume")) or 0,
+        "latest_order_count": clean_optional_int(latest.get("order_count")) or 0,
+        "latest_average": clean_optional_float(latest.get("average")),
+        "avg_daily_volume": (sum(volumes) / len(volumes)) if volumes else 0.0,
+        "avg_daily_order_count": (sum(order_counts) / len(order_counts)) if order_counts else 0.0,
+        "median_average": median_number(averages),
+        "median_low": median_number(lows),
+        "median_high": median_number(highs),
+    }
+
+
+def median_number(values: Iterable[float]) -> float | None:
+    clean_values = sorted(float(value) for value in values if value is not None and float(value) > 0)
+    count = len(clean_values)
+    if not count:
+        return None
+    middle = count // 2
+    if count % 2:
+        return clean_values[middle]
+    return (clean_values[middle - 1] + clean_values[middle]) / 2.0
+
+
+def acquisition_suggested_bid(
+    *,
+    max_safe_bid: float,
+    best_source_buy: dict[str, Any] | None,
+    best_source_sell: dict[str, Any] | None,
+    source_history: dict[str, Any],
+) -> float:
+    candidates = []
+    if best_source_buy is not None:
+        candidates.append(float(best_source_buy.get("price") or 0.0) * 1.01)
+    median_average = clean_optional_float(source_history.get("median_average"))
+    if median_average:
+        candidates.append(median_average * 0.85)
+    if best_source_sell is not None:
+        candidates.append(float(best_source_sell.get("price") or 0.0) * 0.85)
+    if not candidates:
+        candidates.append(max_safe_bid * 0.75)
+    positive_candidates = [value for value in candidates if value > 0]
+    if not positive_candidates:
+        return 0.0
+    return min(max_safe_bid, max(positive_candidates))
+
+
+def acquisition_history_unit_cap(source_stats: dict[str, Any], *, target_days: int) -> int:
+    avg_daily_volume = clean_optional_float(source_stats.get("avg_daily_volume")) or 0.0
+    if avg_daily_volume <= 0:
+        return 1
+    return max(1, int(avg_daily_volume * clamp_acquisition_target_days(target_days)))
+
+
+def acquisition_history_flags(
+    *,
+    source_stats: dict[str, Any],
+    destination_stats: dict[str, Any],
+    best_source_buy: dict[str, Any] | None,
+    best_source_sell: dict[str, Any] | None,
+    best_destination_buy: dict[str, Any],
+    max_safe_bid: float,
+    suggested_bid: float,
+    units: int,
+    target_days: int,
+) -> list[dict[str, str]]:
+    flags: list[dict[str, str]] = []
+    source_days = int(source_stats.get("days") or 0)
+    destination_days = int(destination_stats.get("days") or 0)
+    if source_days < 7:
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Limited source history",
+                "detail": "This item has less than a week of source-region history, so fill speed is uncertain.",
+            }
+        )
+    source_daily_volume = clean_optional_float(source_stats.get("avg_daily_volume")) or 0.0
+    if source_daily_volume > 0 and units > source_daily_volume * max(1, int(target_days)):
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Thin fill volume",
+                "detail": "Recommended units are above the recent source-region volume window.",
+            }
+        )
+    source_daily_orders = clean_optional_float(source_stats.get("avg_daily_order_count")) or 0.0
+    if source_days and source_daily_orders < 1.5:
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Sparse source orders",
+                "detail": "Recent history shows few daily market orders, so a buy order may sit for a long time.",
+            }
+        )
+    destination_median = clean_optional_float(destination_stats.get("median_average"))
+    destination_price = float(best_destination_buy.get("price") or 0.0)
+    if destination_days >= 7 and destination_median and destination_price > destination_median * 1.75:
+        flags.append(
+            {
+                "severity": "trap",
+                "label": "Possible trap: price spike",
+                "detail": "The best destination buy order is far above the recent market-history average; verify this is real demand before posting.",
+            }
+        )
+    if best_source_buy is not None and float(best_source_buy.get("price") or 0.0) >= max_safe_bid:
+        flags.append(
+            {
+                "severity": "trap",
+                "label": "Possible trap: competition too high",
+                "detail": "The current competing buy order is already at or above the safe bid ceiling.",
+            }
+        )
+    if best_source_sell is not None and suggested_bid >= float(best_source_sell.get("price") or 0.0):
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Near instant-buy price",
+                "detail": "The suggested bid is close to the lowest sell order; a buy order may not add much advantage.",
+            }
+        )
+    if int(best_destination_buy.get("volume_remain") or 0) <= max(1, units // 3):
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Low destination depth",
+                "detail": "The downstream buy order has limited remaining volume; recheck it before committing ISK.",
+            }
+        )
+    if not flags:
+        flags.append(
+            {
+                "severity": "clear",
+                "label": "History supports a cautious test",
+                "detail": "Recent history and current orders do not show an obvious trap signal.",
+            }
+        )
+    return flags
+
+
+def acquisition_risk_level(flags: Iterable[dict[str, str]]) -> str:
+    severities = {str(flag.get("severity") or "") for flag in flags}
+    if "trap" in severities:
+        return "possible-trap"
+    if "caution" in severities:
+        return "caution"
+    return "clear"
+
+
+def acquisition_risk_sort_rank(risk_level: str) -> int:
+    return {"clear": 0, "caution": 1, "possible-trap": 2}.get(risk_level, 3)
+
+
+def acquisition_decision(*, risk_level: str, margin_percent: float | None) -> dict[str, str]:
+    if risk_level == "possible-trap":
+        return {
+            "code": "verify",
+            "tone": "price",
+            "label": "Verify before posting",
+            "reason": "Market history shows a possible trap signal. Treat this as a lead, not a trade.",
+        }
+    if margin_percent is not None and margin_percent >= 25:
+        return {
+            "code": "place-small",
+            "tone": "build",
+            "label": "Place a small order",
+            "reason": "The spread survives fees and the history does not show a major warning.",
+        }
+    if margin_percent is not None and margin_percent > 0:
+        return {
+            "code": "test",
+            "tone": "source",
+            "label": "Test with low volume",
+            "reason": "The margin is positive, but keep the first order small until fills prove demand.",
+        }
+    return {
+        "code": "watch",
+        "tone": "watch",
+        "label": "Watch only",
+        "reason": "The current spread is not strong enough after estimated fees.",
+    }
+
+
+def acquisition_range_recommendation(
+    *,
+    risk_level: str,
+    source_stats: dict[str, Any],
+    units: int,
+    pickup_jumps: int,
+    margin_percent: float | None,
+) -> dict[str, str]:
+    avg_daily_volume = clean_optional_float(source_stats.get("avg_daily_volume")) or 0.0
+    if risk_level == "possible-trap" or pickup_jumps <= 0:
+        return {
+            "range": "station",
+            "reason": "Keep the order narrow until the history signal is verified.",
+        }
+    if avg_daily_volume >= max(units * 2, 10) and pickup_jumps >= 5 and (margin_percent or 0.0) >= 20:
+        return {
+            "range": "5 jumps",
+            "reason": "History shows enough volume to justify a wider collection range, but plan for scattered deliveries.",
+        }
+    if avg_daily_volume >= max(units, 5) and pickup_jumps >= 1:
+        return {
+            "range": "solar system",
+            "reason": "Use a system range first so fills stay easy to collect.",
+        }
+    return {
+        "range": "station",
+        "reason": "Thin history favors a narrow order that is easy to monitor.",
     }
 
 
@@ -3913,6 +4613,38 @@ def clamp_haul_min_detour_margin_percent(value: Any) -> float:
     return max(0.0, min(MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT, margin))
 
 
+def clamp_acquisition_budget_isk(value: Any) -> float:
+    try:
+        budget = float(value)
+    except (TypeError, ValueError):
+        budget = DEFAULT_ACQUISITION_BUDGET_ISK
+    return max(1.0, min(MAX_ACQUISITION_BUDGET_ISK, budget))
+
+
+def clamp_acquisition_pickup_jumps(value: Any) -> int:
+    try:
+        jumps = int(value)
+    except (TypeError, ValueError):
+        jumps = DEFAULT_ACQUISITION_PICKUP_JUMPS
+    return max(0, min(MAX_ACQUISITION_PICKUP_JUMPS, jumps))
+
+
+def clamp_acquisition_broker_fee_percent(value: Any) -> float:
+    try:
+        broker_fee = float(value)
+    except (TypeError, ValueError):
+        broker_fee = DEFAULT_ACQUISITION_BROKER_FEE_PERCENT
+    return max(0.0, min(MAX_ACQUISITION_BROKER_FEE_PERCENT, broker_fee))
+
+
+def clamp_acquisition_target_days(value: Any) -> int:
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        days = DEFAULT_ACQUISITION_TARGET_DAYS
+    return max(1, min(MAX_ACQUISITION_TARGET_DAYS, days))
+
+
 def normalize_haul_route_preference(value: Any) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
     aliases = {
@@ -4301,6 +5033,7 @@ def build_flight_hosting_diagnostics(
         },
         "esi": {
             "market_order_cache": market_order_cache_status(),
+            "market_history_cache": market_history_cache_status(),
             "compatibility_date": esi_compatibility_date(),
         },
         "static_caches": {
@@ -4401,6 +5134,9 @@ def build_http_server(
                 return
             if path == "/api/flight/hauling/progress":
                 self._handle_flight_hauling_progress()
+                return
+            if path == "/api/flight/acquisition":
+                self._handle_flight_acquisition()
                 return
             if path == "/flight/login":
                 self._handle_flight_login()
@@ -4632,6 +5368,56 @@ def build_http_server(
                 emit("done", {"ok": True, "generated_at": now_iso()})
             except (BrokenPipeError, ConnectionResetError):
                 return
+
+        def _handle_flight_acquisition(self) -> None:
+            session = self._require_flight_session("planning market acquisitions")
+            if session is None:
+                return
+            query = parse_qs(urlparse(self.path).query)
+            origin = first_query_value(query, "origin_name") or ""
+            destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
+            budget_isk = clamp_acquisition_budget_isk(
+                (query.get("budget_isk") or [DEFAULT_ACQUISITION_BUDGET_ISK])[0]
+            )
+            pickup_jumps = clamp_acquisition_pickup_jumps(
+                (query.get("pickup_jumps") or [DEFAULT_ACQUISITION_PICKUP_JUMPS])[0]
+            )
+            min_margin = clamp_haul_min_detour_margin_percent(
+                (query.get("min_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
+            )
+            broker_fee = clamp_acquisition_broker_fee_percent(
+                (query.get("broker_fee_percent") or [DEFAULT_ACQUISITION_BROKER_FEE_PERCENT])[0]
+            )
+            target_days = clamp_acquisition_target_days(
+                (query.get("target_days") or [DEFAULT_ACQUISITION_TARGET_DAYS])[0]
+            )
+            route_preference = normalize_haul_route_preference(
+                (query.get("route_preference") or [DEFAULT_HAUL_ROUTE_PREFERENCE])[0]
+            )
+            include_common_materials = query_bool(
+                (query.get("common_materials") or ["1"])[0],
+                default=True,
+            )
+            market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
+            try:
+                payload = build_flight_acquisition_payload(
+                    config=sso_config,
+                    session=session,
+                    origin_name=origin,
+                    destination_name=destination,
+                    budget_isk=budget_isk,
+                    pickup_jumps=pickup_jumps,
+                    min_margin_percent=min_margin,
+                    broker_fee_percent=broker_fee,
+                    target_days=target_days,
+                    route_preference=route_preference,
+                    include_common_materials=include_common_materials,
+                    market_group_ids=market_group_ids,
+                )
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
 
         def _handle_flight_login(self) -> None:
             if not sso_config.enabled:
@@ -5433,18 +6219,23 @@ def _render_flight_attendant_dashboard() -> str:
       box-shadow: 0 18px 44px rgba(0, 0, 0, .22);
       min-width: 0;
     }
-    body[data-active-tab="hauling"] #tab-hauling .panel {
+    body[data-active-tab="hauling"] #tab-hauling .panel,
+    body[data-active-tab="acquisition"] #tab-acquisition .panel {
       background: linear-gradient(180deg, rgba(11, 18, 20, .8), rgba(7, 11, 13, .72));
       border-color: rgba(97, 199, 217, .34);
       box-shadow: 0 22px 58px rgba(0, 0, 0, .34);
       backdrop-filter: blur(3px);
     }
-    body[data-active-tab="hauling"] #tab-hauling .panel:first-child {
+    body[data-active-tab="hauling"] #tab-hauling .panel:first-child,
+    body[data-active-tab="acquisition"] #tab-acquisition .panel:first-child {
       background: linear-gradient(180deg, rgba(11, 18, 20, .84), rgba(7, 11, 13, .78));
     }
     body[data-active-tab="hauling"] #tab-hauling input,
     body[data-active-tab="hauling"] #tab-hauling select,
-    body[data-active-tab="hauling"] #tab-hauling textarea {
+    body[data-active-tab="hauling"] #tab-hauling textarea,
+    body[data-active-tab="acquisition"] #tab-acquisition input,
+    body[data-active-tab="acquisition"] #tab-acquisition select,
+    body[data-active-tab="acquisition"] #tab-acquisition textarea {
       background: rgba(5, 9, 11, .84);
     }
     body[data-active-tab="flight"] #tab-flight .panel {
@@ -5922,6 +6713,7 @@ def _render_flight_attendant_dashboard() -> str:
       <button type="button" data-tab-target="market" aria-selected="true">Market Board</button>
       <button type="button" data-tab-target="flight" aria-selected="false">Flight Attendant</button>
       <button type="button" data-tab-target="hauling" aria-selected="false">Hauler Routes</button>
+      <button type="button" data-tab-target="acquisition" aria-selected="false">Acquisition Planner</button>
     </nav>
 
     <main>
@@ -6281,6 +7073,116 @@ def _render_flight_attendant_dashboard() -> str:
           </section>
         </div>
       </section>
+
+      <section id="tab-acquisition" class="tab-panel" data-tab-panel="acquisition" hidden>
+        <div class="flight-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Market Acquisition Planner</h2>
+                <div class="meta">Public buy-order advice from current orders, market history, budget, estimated broker fee, and downstream demand.</div>
+              </div>
+              <span class="pill reserved">Advisory Only</span>
+            </div>
+            <form id="acquisition-form" class="note-form">
+              <div class="row">
+                <label>Buy order system
+                  <input id="acq-origin" name="origin_name" autocomplete="off" value="" placeholder="Current ESI location">
+                  <small class="input-note">Leave blank to use your live ESI system as the suggested placement area.</small>
+                </label>
+                <label>Downstream demand
+                  <input id="acq-destination" name="destination" autocomplete="off" value="Jita" placeholder="Jita, Amarr, Hek, Rens">
+                  <small class="input-note">The planner checks public buy orders in this destination system.</small>
+                </label>
+              </div>
+              <div class="row">
+                <label>Budget ISK
+                  <input id="acq-budget" name="budget_isk" type="number" min="1" max="1000000000000" step="1000000" inputmode="decimal" value="50000000">
+                </label>
+                <label>Broker fee estimate
+                  <input id="acq-broker-fee" name="broker_fee_percent" type="number" min="0" max="20" step="0.1" inputmode="decimal" value="3">
+                  <small class="input-note">Adjust this to your character and structure. This version does not read wallet/order skills.</small>
+                </label>
+              </div>
+              <div class="row">
+                <label>Collection range
+                  <input id="acq-pickup-jumps" name="pickup_jumps" type="number" min="0" max="10" step="1" value="2">
+                  <small class="input-note">Wider ranges can create scattered deliveries that must be hauled manually.</small>
+                </label>
+                <label>Target fill window
+                  <input id="acq-target-days" name="target_days" type="number" min="1" max="30" step="1" value="3">
+                  <small class="input-note">History volume caps the first order size to this many days of recent volume.</small>
+                </label>
+                <label>Minimum margin
+                  <input id="acq-min-margin" name="min_margin_percent" type="range" min="0" max="100" step="1" value="10">
+                  <span class="range-readout"><span class="meta">After-fee target margin</span><strong id="acq-min-margin-value">10%</strong></span>
+                </label>
+              </div>
+              <div class="haul-item-filter" aria-label="Acquisition item search filter">
+                <div class="haul-filter-head">
+                  <strong>Items to search</strong>
+                  <span class="meta scope-warning">Market history is checked per item type, so broad scans take longer.</span>
+                </div>
+                <label class="checkline">
+                  <input id="acq-common-materials" name="common_materials" type="checkbox" checked>
+                  <span>
+                    Common materials
+                    <small>Default: practical industry inputs where buy orders can help a quartermaster stock up.</small>
+                  </span>
+                </label>
+                <details>
+                  <summary>Market categories</summary>
+                  <div id="acq-market-groups" class="haul-market-groups">
+@@HAUL_MARKET_GROUP_OPTIONS@@
+                  </div>
+                </details>
+                <div id="acq-item-scope-summary" class="meta">Scanning common materials only.</div>
+              </div>
+              <button id="acq-scan" class="ghost" type="submit">Plan Buy Orders</button>
+            </form>
+            <details class="output-details" open>
+              <summary>Planner Output</summary>
+              <div class="output-details-body">
+                <div id="acq-summary" class="profit-summary">Connect ESI to plan market acquisitions.</div>
+                <div id="acq-route" class="meta"></div>
+              </div>
+            </details>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>History Trap Signals</h2>
+                <div class="meta">Market history can reveal when the apparent spread is too thin, too spiky, or too slow to trust.</div>
+              </div>
+            </div>
+            <ul class="charter-list">
+              <li><strong>Possible trap:</strong> the current top order is far away from recent history or competing buy orders already consume the safe margin.</li>
+              <li><strong>Caution:</strong> recent volume or order count is thin, so the order may sit or fill too slowly.</li>
+              <li><strong>Clear:</strong> history supports a small test order, not a guarantee.</li>
+              <li><strong>Manual action:</strong> the planner never places orders, updates orders, creates contracts, or touches the EVE client.</li>
+            </ul>
+          </section>
+
+          <section class="panel profit-panel" aria-labelledby="acq-results-title">
+            <div class="panel-header">
+              <div>
+                <div class="profit-title">
+                  <h2 id="acq-results-title">Acquisition Recommendations</h2>
+                  <span class="pill reserved">Buy Order Plan</span>
+                </div>
+                <div class="meta">Suggested bid ceilings, range, units, and market-history warnings for public buy orders.</div>
+              </div>
+            </div>
+            <details class="output-details" open>
+              <summary>Recommendation Results</summary>
+              <div class="output-details-body">
+                <div id="acq-results" class="decision-output"></div>
+              </div>
+            </details>
+          </section>
+        </div>
+      </section>
     </main>
   </div>
   <script>
@@ -6325,7 +7227,7 @@ def _render_flight_attendant_dashboard() -> str:
     const haulMinMarginValue = document.querySelector("#haul-min-margin-value");
     const haulCommonMaterials = document.querySelector("#haul-common-materials");
     const haulMarketGroups = document.querySelector("#haul-market-groups");
-    const haulMarketGroupInputs = Array.from(document.querySelectorAll("input[data-haul-market-group]"));
+    const haulMarketGroupInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-group]"));
     const haulItemScopeSummary = document.querySelector("#haul-item-scope-summary");
     const haulHubButtons = document.querySelector("#haul-hub-buttons");
     const haulScanButton = document.querySelector("#haul-scan");
@@ -6334,6 +7236,23 @@ def _render_flight_attendant_dashboard() -> str:
     const haulProgressLog = document.querySelector("#haul-progress-log");
     const haulOpportunitySummary = document.querySelector("#haul-opportunity-summary");
     const haulOpportunityTop = document.querySelector("#haul-opportunity-top");
+    const acquisitionForm = document.querySelector("#acquisition-form");
+    const acqOrigin = document.querySelector("#acq-origin");
+    const acqDestination = document.querySelector("#acq-destination");
+    const acqBudget = document.querySelector("#acq-budget");
+    const acqBrokerFee = document.querySelector("#acq-broker-fee");
+    const acqPickupJumps = document.querySelector("#acq-pickup-jumps");
+    const acqTargetDays = document.querySelector("#acq-target-days");
+    const acqMinMargin = document.querySelector("#acq-min-margin");
+    const acqMinMarginValue = document.querySelector("#acq-min-margin-value");
+    const acqCommonMaterials = document.querySelector("#acq-common-materials");
+    const acqMarketGroups = document.querySelector("#acq-market-groups");
+    const acqMarketGroupInputs = Array.from(acqMarketGroups.querySelectorAll("input[data-haul-market-group]"));
+    const acqItemScopeSummary = document.querySelector("#acq-item-scope-summary");
+    const acqScanButton = document.querySelector("#acq-scan");
+    const acqSummary = document.querySelector("#acq-summary");
+    const acqRoute = document.querySelector("#acq-route");
+    const acqResults = document.querySelector("#acq-results");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
@@ -6348,7 +7267,16 @@ def _render_flight_attendant_dashboard() -> str:
     const haulAvoidPodKillsKey = "eve-flight-haul-avoid-pod-kills-v1";
     const haulCommonMaterialsKey = "eve-flight-haul-common-materials-v1";
     const haulMarketGroupIdsKey = "eve-flight-haul-market-group-ids-v1";
-    const validTabs = new Set(["market", "flight", "hauling"]);
+    const acqOriginKey = "eve-flight-acq-origin-v1";
+    const acqDestinationKey = "eve-flight-acq-destination-v1";
+    const acqBudgetKey = "eve-flight-acq-budget-v1";
+    const acqBrokerFeeKey = "eve-flight-acq-broker-fee-v1";
+    const acqPickupJumpsKey = "eve-flight-acq-pickup-jumps-v1";
+    const acqTargetDaysKey = "eve-flight-acq-target-days-v1";
+    const acqMinMarginKey = "eve-flight-acq-min-margin-v1";
+    const acqCommonMaterialsKey = "eve-flight-acq-common-materials-v1";
+    const acqMarketGroupIdsKey = "eve-flight-acq-market-group-ids-v1";
+    const validTabs = new Set(["market", "flight", "hauling", "acquisition"]);
     let filterType = "";
     let includeClosed = false;
     let flightProfitFilter = "all";
@@ -6699,6 +7627,129 @@ def _render_flight_attendant_dashboard() -> str:
       return {originName, destination, cargoM3, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills, includeCommonMaterials, marketGroupIds};
     }
 
+    function clampAcquisitionBudget(value) {
+      const budget = Number(value);
+      if (!Number.isFinite(budget)) return 50000000;
+      return Math.max(1, Math.min(1000000000000, budget));
+    }
+
+    function clampAcquisitionBrokerFee(value) {
+      const fee = Number(value);
+      if (!Number.isFinite(fee)) return 3;
+      return Math.max(0, Math.min(20, fee));
+    }
+
+    function clampAcquisitionPickupJumps(value) {
+      const jumps = Number(value);
+      if (!Number.isFinite(jumps)) return 2;
+      return Math.max(0, Math.min(10, Math.round(jumps)));
+    }
+
+    function clampAcquisitionTargetDays(value) {
+      const days = Number(value);
+      if (!Number.isFinite(days)) return 3;
+      return Math.max(1, Math.min(30, Math.round(days)));
+    }
+
+    function readAcqMarketGroupIdsFromInputs() {
+      return acqMarketGroupInputs
+        .filter((input) => input.checked)
+        .map((input) => Number(input.dataset.haulMarketGroup))
+        .filter((value) => Number.isFinite(value) && value > 0);
+    }
+
+    function readStoredAcqMarketGroupIds() {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(acqMarketGroupIdsKey) || "[]");
+        if (!Array.isArray(parsed)) return [];
+        return parsed.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    function applyAcqMarketGroupIds(groupIds) {
+      const selected = new Set((groupIds || []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0));
+      acqMarketGroupInputs.forEach((input) => {
+        input.checked = selected.has(Number(input.dataset.haulMarketGroup));
+      });
+    }
+
+    function acquisitionItemScopeLabel(settings) {
+      const parts = [];
+      if (settings.includeCommonMaterials) parts.push("common materials");
+      const groupCount = (settings.marketGroupIds || []).length;
+      if (groupCount) parts.push(`${formatNumber(groupCount)} market categor${groupCount === 1 ? "y" : "ies"}`);
+      return parts.length ? parts.join(" + ") : "no item scope selected";
+    }
+
+    function updateAcquisitionItemScopeSummary(settings = null) {
+      const activeSettings = settings || {
+        includeCommonMaterials: acqCommonMaterials.checked,
+        marketGroupIds: readAcqMarketGroupIdsFromInputs(),
+      };
+      acqItemScopeSummary.textContent = `${acquisitionItemScopeLabel(activeSettings)}. Market history is checked for every scanned item type.`;
+    }
+
+    function acquisitionStartLabel(settings) {
+      return String(settings.originName || "").trim() || "current ESI system";
+    }
+
+    function readAcquisitionSettings() {
+      const originName = String(window.localStorage.getItem(acqOriginKey) || acqOrigin.value || "").trim();
+      const destination = String(window.localStorage.getItem(acqDestinationKey) || acqDestination.value || "Jita").trim() || "Jita";
+      const budget = Number(window.localStorage.getItem(acqBudgetKey) || acqBudget.value || 50000000);
+      const brokerFee = Number(window.localStorage.getItem(acqBrokerFeeKey) || acqBrokerFee.value || 3);
+      const pickupJumps = Number(window.localStorage.getItem(acqPickupJumpsKey) || acqPickupJumps.value || 2);
+      const targetDays = Number(window.localStorage.getItem(acqTargetDaysKey) || acqTargetDays.value || 3);
+      const minMargin = Number(window.localStorage.getItem(acqMinMarginKey) || acqMinMargin.value || 10);
+      const commonStored = window.localStorage.getItem(acqCommonMaterialsKey);
+      return {
+        originName,
+        destination,
+        budgetIsk: clampAcquisitionBudget(Number.isFinite(budget) ? budget : 50000000),
+        brokerFeePercent: clampAcquisitionBrokerFee(Number.isFinite(brokerFee) ? brokerFee : 3),
+        pickupJumps: clampAcquisitionPickupJumps(Number.isFinite(pickupJumps) ? pickupJumps : 2),
+        targetDays: clampAcquisitionTargetDays(Number.isFinite(targetDays) ? targetDays : 3),
+        minMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
+        includeCommonMaterials: commonStored == null ? acqCommonMaterials.checked : commonStored !== "0",
+        marketGroupIds: readStoredAcqMarketGroupIds(),
+      };
+    }
+
+    function writeAcquisitionSettings(settings) {
+      const originName = String(settings.originName || "").trim();
+      const destination = String(settings.destination || "Jita").trim() || "Jita";
+      const budgetIsk = clampAcquisitionBudget(settings.budgetIsk);
+      const brokerFeePercent = clampAcquisitionBrokerFee(settings.brokerFeePercent);
+      const pickupJumps = clampAcquisitionPickupJumps(settings.pickupJumps);
+      const targetDays = clampAcquisitionTargetDays(settings.targetDays);
+      const minMarginPercent = clampHaulMinMargin(settings.minMarginPercent);
+      const includeCommonMaterials = settings.includeCommonMaterials == null ? acqCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
+      const marketGroupIds = Array.isArray(settings.marketGroupIds) ? settings.marketGroupIds : readAcqMarketGroupIdsFromInputs();
+      acqOrigin.value = originName;
+      acqDestination.value = destination;
+      acqBudget.value = String(budgetIsk);
+      acqBrokerFee.value = String(brokerFeePercent);
+      acqPickupJumps.value = String(pickupJumps);
+      acqTargetDays.value = String(targetDays);
+      acqMinMargin.value = String(minMarginPercent);
+      acqCommonMaterials.checked = includeCommonMaterials;
+      applyAcqMarketGroupIds(marketGroupIds);
+      acqMinMarginValue.textContent = `${formatNumber(minMarginPercent)}%`;
+      updateAcquisitionItemScopeSummary({includeCommonMaterials, marketGroupIds});
+      window.localStorage.setItem(acqOriginKey, originName);
+      window.localStorage.setItem(acqDestinationKey, destination);
+      window.localStorage.setItem(acqBudgetKey, String(budgetIsk));
+      window.localStorage.setItem(acqBrokerFeeKey, String(brokerFeePercent));
+      window.localStorage.setItem(acqPickupJumpsKey, String(pickupJumps));
+      window.localStorage.setItem(acqTargetDaysKey, String(targetDays));
+      window.localStorage.setItem(acqMinMarginKey, String(minMarginPercent));
+      window.localStorage.setItem(acqCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
+      window.localStorage.setItem(acqMarketGroupIdsKey, JSON.stringify(marketGroupIds));
+      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, targetDays, minMarginPercent, includeCommonMaterials, marketGroupIds};
+    }
+
     async function loadFlightStatus() {
       try {
         const maxJumps = writeMaxJumps(readMaxJumps());
@@ -6714,6 +7765,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightBuyers("Flight Attendant buyer scanner is offline.");
         resetFlightProfitability("Flight Attendant profitability ranking is offline.");
         resetFlightHauling("Flight Attendant hauler route scanner is offline.");
+        resetMarketAcquisition("Market acquisition planner is offline.");
         resetFlightIndustry("Flight Attendant ESI status is offline.");
       }
     }
@@ -6736,6 +7788,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightBuyers("Configure EVE SSO before scanning buyer orders.");
         resetFlightProfitability("Configure EVE SSO before ranking profitability.");
         resetFlightHauling("Configure EVE SSO before scanning hauler routes.");
+        resetMarketAcquisition("Configure EVE SSO before planning market acquisitions.");
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
         return;
       }
@@ -6749,6 +7802,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightBuyers("Connect ESI to scan nearby public buy orders.");
         resetFlightProfitability("Connect ESI to rank owned blueprint profitability.");
         resetFlightHauling("Connect ESI to scan route hauling opportunities.");
+        resetMarketAcquisition("Connect ESI to plan public buy orders.");
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
       }
@@ -6765,6 +7819,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightBuyers("Use an allowlisted EVE character before scanning buyer orders.");
         resetFlightProfitability("Use an allowlisted EVE character before ranking profitability.");
         resetFlightHauling("Use an allowlisted EVE character before scanning hauler routes.");
+        resetMarketAcquisition("Use an allowlisted EVE character before planning market acquisitions.");
         resetFlightIndustry("Use an allowlisted EVE character before scanning industry data.");
         return;
       }
@@ -6776,6 +7831,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightBuyers("Resolve the ESI error before scanning buyer orders.");
         resetFlightProfitability("Resolve the ESI error before ranking profitability.");
         resetFlightHauling("Resolve the ESI error before scanning hauler routes.");
+        resetMarketAcquisition("Resolve the ESI error before planning market acquisitions.");
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
         return;
       }
@@ -6792,6 +7848,8 @@ def _render_flight_attendant_dashboard() -> str:
       resetFlightProfitability(`Ready to rank profitability within ${readMaxJumps()} jumps.`);
       const haulSettings = readHaulSettings();
       resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(haulSettings)} to ${haulSettings.destination}.`);
+      const acqSettings = readAcquisitionSettings();
+      resetMarketAcquisition(`Ready to plan buy orders from ${acquisitionStartLabel(acqSettings)} toward ${acqSettings.destination}.`);
       loadFlightIndustry();
     }
 
@@ -7337,6 +8395,166 @@ def _render_flight_attendant_dashboard() -> str:
       }).join("")}</div>`;
     }
 
+    function resetMarketAcquisition(message) {
+      acqSummary.textContent = message;
+      acqRoute.textContent = "";
+      acqResults.innerHTML = "";
+      acqScanButton.disabled = false;
+    }
+
+    async function loadMarketAcquisition() {
+      const settings = writeAcquisitionSettings({
+        originName: acqOrigin.value,
+        destination: acqDestination.value,
+        budgetIsk: acqBudget.value,
+        brokerFeePercent: acqBrokerFee.value,
+        pickupJumps: acqPickupJumps.value,
+        targetDays: acqTargetDays.value,
+        minMarginPercent: acqMinMargin.value,
+        includeCommonMaterials: acqCommonMaterials.checked,
+        marketGroupIds: readAcqMarketGroupIdsFromInputs(),
+      });
+      acqScanButton.disabled = true;
+      acqSummary.textContent = `Checking public orders and market history for ${acquisitionItemScopeLabel(settings)}...`;
+      acqRoute.textContent = "";
+      acqResults.innerHTML = `<div class="decision-empty">Recommendations will appear here when the scan finishes.</div>`;
+      const params = new URLSearchParams({
+        origin_name: settings.originName,
+        destination: settings.destination,
+        budget_isk: String(settings.budgetIsk),
+        broker_fee_percent: String(settings.brokerFeePercent),
+        pickup_jumps: String(settings.pickupJumps),
+        target_days: String(settings.targetDays),
+        min_margin_percent: String(settings.minMarginPercent),
+        common_materials: settings.includeCommonMaterials ? "1" : "0",
+        market_group_ids: settings.marketGroupIds.join(","),
+      });
+      try {
+        const response = await fetch(`/api/flight/acquisition?${params}`);
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Could not plan market acquisitions");
+        renderMarketAcquisition(data);
+      } catch (error) {
+        acqSummary.textContent = error.message;
+        acqRoute.textContent = "";
+        acqResults.textContent = "";
+      } finally {
+        acqScanButton.disabled = false;
+      }
+    }
+
+    function renderMarketAcquisition(data) {
+      const route = data.route || {};
+      const acquisition = data.acquisition || {};
+      const origin = route.origin || acquisition.origin_system || {};
+      const destination = route.destination || acquisition.destination_system || {};
+      const salesTax = acquisition.sales_tax || {};
+      const marketCache = acquisition.market_cache || {};
+      const historyCache = acquisition.history_cache || {};
+      const itemScope = acquisition.item_scope || {};
+      const selectedGroups = (itemScope.selected_market_groups || []).map((group) => group.name).filter(Boolean);
+      const groupText = selectedGroups.length ? ` Market categories: ${selectedGroups.slice(0, 4).map((name) => escapeHtml(name)).join(", ")}${selectedGroups.length > 4 ? `, +${formatNumber(selectedGroups.length - 4)} more` : ""}.` : "";
+      const commonText = itemScope.include_common_materials ? "Common materials included." : "Common materials not included.";
+      const itemLimit = acquisition.item_truncated ? ` Limited to ${formatNumber(acquisition.scanned_item_types)} of ${formatNumber(acquisition.total_item_types)} selected item types.` : "";
+      const regionLimit = acquisition.pickup_region_truncated ? ` Limited to ${formatNumber(acquisition.pickup_regions_scanned)} of ${formatNumber(acquisition.pickup_regions_total)} pickup regions.` : "";
+      const routeWarning = route.route_warning ? `<div class="meta">${escapeHtml(route.route_warning)}</div>` : "";
+      acqRoute.innerHTML = `
+        <strong>${escapeHtml(origin.name || "Current system")}</strong> buy-order area toward
+        <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>.
+        <div class="meta">Budget ${formatIsk(acquisition.budget_isk)}; collection ${formatNumber(acquisition.pickup_jumps)} jumps; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days.</div>
+        ${routeWarning}
+      `;
+      acqSummary.innerHTML = `
+        <div class="profit-stats">
+          <div class="profit-stat"><span>Recommendations</span><b>${formatNumber(acquisition.opportunity_count)}</b></div>
+          <div class="profit-stat"><span>Possible Traps</span><b>${formatNumber(acquisition.possible_trap_count)}</b></div>
+          <div class="profit-stat"><span>Source Buys</span><b>${formatNumber(acquisition.source_buy_order_count)}</b></div>
+          <div class="profit-stat"><span>History Regions</span><b>${formatNumber(acquisition.history_region_count)}</b></div>
+        </div>
+        <div class="meta">Scanned ${formatNumber(acquisition.scanned_item_types)} item types across ${formatNumber(acquisition.pickup_regions_scanned)} pickup regions.${escapeHtml(itemLimit + regionLimit)}</div>
+        <div class="meta">${escapeHtml(commonText)}${groupText}</div>
+        <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on downstream buy-order sales.</div>
+        <div class="meta">Order cache: ${formatNumber(marketCache.entries)} entries. History cache: ${formatNumber(historyCache.entries)} entries.</div>
+        <div class="meta">${escapeHtml(acquisition.pricing_note || "Planner is advisory only; verify in EVE before posting buy orders.")}</div>
+      `;
+      acqResults.innerHTML = renderAcquisitionOpportunities(acquisition.opportunities || []);
+    }
+
+    function acquisitionRiskClass(riskLevel) {
+      if (riskLevel === "possible-trap") return "decision-price";
+      if (riskLevel === "caution") return "decision-watch";
+      return "decision-build";
+    }
+
+    function acquisitionRiskLabel(riskLevel) {
+      if (riskLevel === "possible-trap") return "Possible trap";
+      if (riskLevel === "caution") return "Caution";
+      return "Clear";
+    }
+
+    function renderAcquisitionOpportunities(opportunities) {
+      if (!opportunities.length) {
+        return `<div class="decision-empty">No buy-order acquisition recommendations cleared the current filters.</div>`;
+      }
+      return `<div class="decision-list">${opportunities.slice(0, 12).map((item) => {
+        const decision = item.decision || {};
+        const range = item.range_recommendation || {};
+        const sourceBuy = item.best_source_buy || {};
+        const sourceSell = item.best_source_sell || {};
+        const destinationBuy = item.best_destination_buy || {};
+        const riskClass = acquisitionRiskClass(item.risk_level);
+        return `
+          <div class="decision-row">
+            <div class="decision-head">
+              <strong>${escapeHtml(item.item_name)}</strong>
+              <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
+            </div>
+            <div class="decision-lede">${escapeHtml(decision.label || "Review")} in ${escapeHtml(item.placement_system || "source")} at ${formatIsk(item.suggested_bid)} or less; ${escapeHtml(range.range || "station")} range.</div>
+            <div class="decision-metrics">
+              <div class="decision-metric"><span>Suggested Bid</span><b>${formatIsk(item.suggested_bid)}</b><small>Safe ceiling ${formatIsk(item.max_safe_bid)}.</small></div>
+              <div class="decision-metric"><span>Units</span><b>${formatNumber(item.recommended_units)}</b><small>Estimated ISK committed ${formatIsk(item.estimated_isk_committed)}.</small></div>
+              <div class="decision-metric"><span>After-Fee Profit</span><b>${formatSignedIsk(item.net_profit)}</b><small>${formatPercent(item.margin_percent)} on bid plus broker fee.</small></div>
+              <div class="decision-metric"><span>Destination Demand</span><b>${escapeHtml(destinationBuy.system_name || "unknown")}</b><small>${formatIsk(destinationBuy.price)} buy; ${formatNumber(destinationBuy.volume_remain)} units left.</small></div>
+            </div>
+            <div class="decision-lede">${escapeHtml(decision.reason || "Verify current orders in EVE before posting.")}</div>
+            ${renderAcquisitionHistoryFlags(item.history_flags || [])}
+            <details class="profit-details">
+              <summary>Market details</summary>
+              <div class="profit-detail-grid">
+                <div class="profit-detail-row"><span>Recommended range</span><b>${escapeHtml(range.range || "station")}</b></div>
+                <div class="profit-detail-row"><span>Range reason</span><b>${escapeHtml(range.reason || "Keep the first order easy to monitor.")}</b></div>
+                <div class="profit-detail-row"><span>Best competing source buy</span><b>${sourceBuy.price == null ? "none nearby" : `${formatIsk(sourceBuy.price)} in ${escapeHtml(sourceBuy.system_name || "source")}`}</b></div>
+                <div class="profit-detail-row"><span>Lowest nearby source sell</span><b>${sourceSell.price == null ? "none nearby" : `${formatIsk(sourceSell.price)} in ${escapeHtml(sourceSell.system_name || "source")}`}</b></div>
+                <div class="profit-detail-row"><span>Broker fee estimate</span><b>${formatIsk(item.estimated_broker_fee)}</b></div>
+                <div class="profit-detail-row"><span>Source history</span><b>${renderHistoryStats(item.source_history || {})}</b></div>
+                <div class="profit-detail-row"><span>Destination history</span><b>${renderHistoryStats(item.destination_history || {})}</b></div>
+              </div>
+            </details>
+          </div>
+        `;
+      }).join("")}</div>`;
+    }
+
+    function renderAcquisitionHistoryFlags(flags) {
+      if (!flags.length) return "";
+      return `
+        <div class="decision-counts">
+          ${flags.map((flag) => {
+            const cls = flag.severity === "trap" ? "decision-price" : flag.severity === "caution" ? "decision-watch" : "decision-build";
+            return `<span class="pill ${cls}" title="${escapeHtml(flag.detail || "")}">${escapeHtml(flag.label || "History signal")}</span>`;
+          }).join("")}
+        </div>
+      `;
+    }
+
+    function renderHistoryStats(stats) {
+      const days = formatNumber(stats.days || 0);
+      const volume = formatNumber(stats.avg_daily_volume || 0);
+      const orderCount = Number(stats.avg_daily_order_count || 0).toLocaleString(undefined, {maximumFractionDigits: 1});
+      const median = stats.median_average == null ? "unknown" : formatIsk(stats.median_average);
+      return `${days}d; ${volume}/day; ${orderCount} orders/day; median ${median}`;
+    }
+
     function resetFlightIndustry(message) {
       flightBlueprintSummary.textContent = message;
       flightBlueprintTop.textContent = "";
@@ -7676,6 +8894,47 @@ def _render_flight_attendant_dashboard() -> str:
       updateHaulScopeAndReset();
     });
 
+    function updateAcquisitionScopeAndReset() {
+      writeAcquisitionSettings({
+        originName: acqOrigin.value,
+        destination: acqDestination.value,
+        budgetIsk: acqBudget.value,
+        brokerFeePercent: acqBrokerFee.value,
+        pickupJumps: acqPickupJumps.value,
+        targetDays: acqTargetDays.value,
+        minMarginPercent: acqMinMargin.value,
+        includeCommonMaterials: acqCommonMaterials.checked,
+        marketGroupIds: readAcqMarketGroupIdsFromInputs(),
+      });
+      const settings = readAcquisitionSettings();
+      resetMarketAcquisition(`Ready to plan buy orders from ${acquisitionStartLabel(settings)} toward ${settings.destination}.`);
+    }
+
+    acquisitionForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadMarketAcquisition();
+    });
+    acqOrigin.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqDestination.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqBudget.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqBrokerFee.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqPickupJumps.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqTargetDays.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqMinMargin.addEventListener("input", () => {
+      acqMinMarginValue.textContent = `${formatNumber(clampHaulMinMargin(acqMinMargin.value))}%`;
+    });
+    acqMinMargin.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqCommonMaterials.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqMarketGroups.addEventListener("click", (event) => {
+      if (event.target.closest("input[data-haul-market-group], .mini-check")) {
+        event.stopPropagation();
+      }
+    });
+    acqMarketGroups.addEventListener("change", (event) => {
+      if (!event.target.closest("input[data-haul-market-group]")) return;
+      updateAcquisitionScopeAndReset();
+    });
+
     flightProfitFilters.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-profit-filter]");
       if (!button) return;
@@ -7699,6 +8958,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     writeMaxJumps(readMaxJumps());
     writeHaulSettings(readHaulSettings());
+    writeAcquisitionSettings(readAcquisitionSettings());
     showTab(initialTab());
     updateFilterButtons();
     renderNotes();
