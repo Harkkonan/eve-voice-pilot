@@ -78,6 +78,42 @@ Or directly on the command line:
 
 Do not commit SSO secrets. Keep them in your local shell, Windows environment, or another private secret store.
 
+### Public Flight Attendant Hosting
+
+For a corp-clickable Flight Attendant link, use HTTPS, EVE SSO, and a corporation or alliance allowlist. Re-open the live CCP/EVE policy pages before sharing the link beyond a small trusted test group.
+
+Register the hosted callback URL in the EVE Developers portal:
+
+```text
+https://YOUR-DOMAIN-OR-TUNNEL/flight/callback
+```
+
+Then start the local server behind your HTTPS tunnel or reverse proxy:
+
+```powershell
+$env:CORP_MARKET_SSO_CLIENT_ID = "client-id"
+$env:CORP_MARKET_SSO_CLIENT_SECRET = "client-secret"
+$env:CORP_MARKET_PUBLIC_BASE_URL = "https://YOUR-DOMAIN-OR-TUNNEL"
+$env:CORP_MARKET_SSO_CALLBACK_URL = "https://YOUR-DOMAIN-OR-TUNNEL/flight/callback"
+$env:CORP_MARKET_ALLOWED_CORPORATION_IDS = "123456789"
+.\scripts\run_corp_market.ps1 serve --public-hosting-mode
+```
+
+Public hosting mode refuses to start unless the public base URL and callback URL use HTTPS, EVE SSO is configured, and at least one allowed corporation or alliance id is present. Flight Attendant access tokens remain in server memory only; no refresh token or token file is stored by this version.
+
+Use the diagnostics endpoint after startup:
+
+```text
+https://YOUR-DOMAIN-OR-TUNNEL/api/flight/diagnostics
+```
+
+Remote market listing writes are locked down in public hosting mode. Add an admin token for operator-only writes, or add `--trusted-members-can-write-market` if allowlisted EVE SSO members should be able to create, reserve, and update market listings from the shared site:
+
+```powershell
+$env:CORP_MARKET_ADMIN_TOKEN = "change-this-token"
+.\scripts\run_corp_market.ps1 serve --public-hosting-mode
+```
+
 ### Local Static Data Caches
 
 Flight Attendant uses ESI to learn your actual location, owned blueprints, and materials. It uses CCP's Static Data Export for blueprint recipes and jump-aware route math. Build or refresh the local static caches from PowerShell:
@@ -162,11 +198,13 @@ To apply Discord forum tags automatically, copy the tag ids from Discord develop
 
 The webhook URL must come from **Channel Settings > Integrations > Webhooks > Copy Webhook URL**. Do not use the Discord channel link or a forum post link.
 
-If corp members need to open links from other computers, set a LAN or tunnel URL:
+If corp members need to open links from other computers on a trusted LAN, set a LAN URL:
 
 ```powershell
 .\scripts\run_corp_market.ps1 serve --host 0.0.0.0 --public-base-url "http://HOST-LAN-IP:8770" --discord-webhook-url "https://discord.com/api/webhooks/..."
 ```
+
+Use the public-hosting mode above for an Internet-accessible tunnel or domain.
 
 For remote offer creation and status changes, add an admin token:
 
@@ -174,7 +212,7 @@ For remote offer creation and status changes, add an admin token:
 .\scripts\run_corp_market.ps1 serve --host 0.0.0.0 --public-base-url "http://HOST-LAN-IP:8770" --admin-token "change-this-token" --discord-webhook-url "https://discord.com/api/webhooks/..."
 ```
 
-Loopback browser requests from the host computer can always create and edit offers. Remote reserve clicks are allowed so members can claim offers from Discord links.
+Loopback browser requests from the host computer can create and edit offers in local/LAN mode. In public hosting mode, remote writes require the market admin token or trusted allowlisted SSO member write access.
 
 ## First-Version Workflow
 

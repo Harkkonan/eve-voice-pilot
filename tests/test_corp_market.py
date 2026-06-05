@@ -309,6 +309,44 @@ def test_flight_status_reports_missing_sso_configuration():
     assert payload["callback_url"] == "http://127.0.0.1:8770/flight/callback"
     assert "esi-skills.read_skills.v1" in payload["required_scopes"]
     assert "esi-characters.read_standings.v1" in payload["required_scopes"]
+    assert payload["membership"]["required"] is False
+    assert payload["hosting"]["token_storage"] == "server-memory-only"
+
+
+def test_flight_status_rejects_non_allowlisted_session_before_esi_fetch():
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Guest Pilot",
+        corporation_id=9999,
+        corporation_name="Other Corp",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1",),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+        membership_ok=False,
+    )
+
+    payload = build_flight_status_payload(
+        config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://market.test/flight/callback",
+            allowed_corporation_ids=(1001,),
+        ),
+        session=session,
+        callback_url="https://market.test/flight/callback",
+        public_base_url="https://market.test",
+        public_hosting_mode=True,
+        secure_cookies=True,
+    )
+
+    assert payload["connected"] is True
+    assert payload["membership"]["required"] is True
+    assert payload["membership"]["allowed"] is False
+    assert payload["error"] == "This EVE character is not in the configured corp/alliance allowlist."
+    assert payload["location"] is None
 
 
 def test_flight_esi_session_store_keeps_access_token_in_memory():
@@ -320,6 +358,7 @@ def test_flight_esi_session_store_keeps_access_token_in_memory():
         alliance_id=None,
         alliance_name="",
         scopes=("esi-location.read_location.v1",),
+        membership_ok=True,
     )
     store = FlightEsiSessionStore()
 
@@ -329,7 +368,80 @@ def test_flight_esi_session_store_keeps_access_token_in_memory():
     assert session is not None
     assert session.character_name == "Scout Pilot"
     assert session.access_token == "access-token"
+    assert session.membership_ok is True
+    assert session.to_public_dict()["membership_ok"] is True
     assert session.expires_in_seconds > 0
+
+
+def test_public_hosting_config_requires_https_sso_and_member_allowlist():
+    unsafe_config = corp_market.EveSsoConfig(callback_url="http://127.0.0.1:8770/flight/callback")
+
+    errors = corp_market.public_hosting_config_errors(
+        public_base_url="http://127.0.0.1:8770",
+        sso_config=unsafe_config,
+        public_hosting_mode=True,
+    )
+
+    assert "--public-base-url must be an https URL" in errors[0]
+    assert "EVE SSO client id" in errors[1]
+    assert "allowed-corporation" in errors[2]
+
+    safe_config = corp_market.EveSsoConfig(
+        client_id="client-id",
+        client_secret="client-secret",
+        callback_url="https://market.test/flight/callback",
+        allowed_corporation_ids=(1001,),
+    )
+    assert (
+        corp_market.public_hosting_config_errors(
+            public_base_url="https://market.test",
+            sso_config=safe_config,
+            public_hosting_mode=True,
+        )
+        == []
+    )
+
+
+def test_public_hosting_helpers_tighten_callbacks_cookies_and_writes():
+    assert (
+        corp_market.default_flight_callback_url(
+            public_base_url="https://market.test",
+            url_host="127.0.0.1",
+            port=8770,
+        )
+        == "https://market.test/flight/callback"
+    )
+    assert "Secure" in corp_market.flight_session_cookie_header("session-id", secure=True)
+    assert "Secure" in corp_market.clear_flight_session_cookie_header(secure=True)
+    assert not corp_market.market_write_access_allowed(
+        is_loopback=True,
+        public_hosting_mode=True,
+        admin_token="",
+        auth_header="",
+        token_header="",
+    )
+    assert corp_market.market_write_access_allowed(
+        is_loopback=False,
+        public_hosting_mode=True,
+        admin_token="secret",
+        auth_header="Bearer secret",
+        token_header="",
+    )
+    assert corp_market.market_write_access_allowed(
+        is_loopback=False,
+        public_hosting_mode=True,
+        admin_token="",
+        auth_header="",
+        token_header="",
+        trusted_member=True,
+    )
+    assert corp_market.market_write_access_allowed(
+        is_loopback=False,
+        public_hosting_mode=False,
+        admin_token="",
+        auth_header="",
+        token_header="",
+    )
 
 
 def test_fetch_flight_location_uses_read_only_esi_scope(monkeypatch):

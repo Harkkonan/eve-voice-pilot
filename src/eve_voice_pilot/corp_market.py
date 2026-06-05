@@ -361,6 +361,7 @@ class FlightEsiSession:
     access_token: str
     connected_at: str
     expires_at: float
+    membership_ok: bool = True
 
     @property
     def expired(self) -> bool:
@@ -379,6 +380,7 @@ class FlightEsiSession:
             "alliance_id": self.alliance_id,
             "alliance_name": self.alliance_name,
             "scopes": list(self.scopes),
+            "membership_ok": self.membership_ok,
             "connected_at": self.connected_at,
             "expires_in_seconds": self.expires_in_seconds,
         }
@@ -403,6 +405,7 @@ class FlightEsiSessionStore:
             access_token=access_token,
             connected_at=now_iso(),
             expires_at=time.time() + ttl_seconds,
+            membership_ok=pilot.membership_ok,
         )
         with self._lock:
             self._sessions[session_id] = session
@@ -4064,11 +4067,104 @@ def build_sales_tax_profile(skills_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def flight_session_has_member_access(config: EveSsoConfig, session: FlightEsiSession | None) -> bool:
+    if session is None:
+        return False
+    if not config.membership_restricted:
+        return True
+    return bool(session.membership_ok)
+
+
+def verified_pilot_has_member_access(config: EveSsoConfig, pilot: VerifiedPilot) -> bool:
+    if not config.membership_restricted:
+        return True
+    return bool(pilot.membership_ok)
+
+
+def flight_membership_status(config: EveSsoConfig, session: FlightEsiSession | None) -> dict[str, Any]:
+    required = config.membership_restricted
+    allowed = flight_session_has_member_access(config, session) if session else None
+    if not required:
+        message = "No corp or alliance allowlist is configured."
+    elif session is None:
+        message = "Sign in with an allowlisted corporation or alliance character."
+    elif allowed:
+        message = "Signed-in character is in the configured corp/alliance allowlist."
+    else:
+        message = "Signed-in character is not in the configured corp/alliance allowlist."
+    return {
+        "required": required,
+        "allowed": allowed,
+        "corporation_allowlist_count": len(config.allowed_corporation_ids),
+        "alliance_allowlist_count": len(config.allowed_alliance_ids),
+        "trusted_members_can_write_market": bool(config.trusted_members_can_edit),
+        "message": message,
+    }
+
+
+def flight_member_access_error(config: EveSsoConfig, session: FlightEsiSession | None) -> str:
+    if session is None:
+        return "Connect ESI before using Flight Attendant."
+    if config.membership_restricted and not session.membership_ok:
+        return "This EVE character is not in the configured corp/alliance allowlist."
+    return ""
+
+
+def is_https_url(url: str) -> bool:
+    return urlparse(str(url or "")).scheme.lower() == "https"
+
+
+def should_secure_flight_cookie(public_base_url: str) -> bool:
+    return is_https_url(public_base_url)
+
+
+def default_flight_callback_url(*, public_base_url: str, url_host: str, port: int) -> str:
+    if public_base_url and urlparse(public_base_url).scheme.lower() in {"http", "https"}:
+        return f"{public_base_url.rstrip('/')}/flight/callback"
+    return f"http://{url_host}:{port}/flight/callback"
+
+
+def public_hosting_config_errors(*, public_base_url: str, sso_config: EveSsoConfig, public_hosting_mode: bool) -> list[str]:
+    if not public_hosting_mode:
+        return []
+    errors: list[str] = []
+    if not is_https_url(public_base_url):
+        errors.append("--public-base-url must be an https URL in public hosting mode")
+    if not sso_config.enabled:
+        errors.append("EVE SSO client id, client secret, and callback URL are required")
+    elif not is_https_url(sso_config.callback_url):
+        errors.append("--sso-callback-url must be an https URL in public hosting mode")
+    if not sso_config.membership_restricted:
+        errors.append("configure --allowed-corporation-ids or --allowed-alliance-ids for member-only access")
+    return errors
+
+
+def market_write_access_allowed(
+    *,
+    is_loopback: bool,
+    public_hosting_mode: bool,
+    admin_token: str,
+    auth_header: str,
+    token_header: str,
+    trusted_member: bool = False,
+) -> bool:
+    if trusted_member:
+        return True
+    if admin_token:
+        return auth_header == f"Bearer {admin_token}" or token_header == admin_token or (is_loopback and not public_hosting_mode)
+    if public_hosting_mode:
+        return False
+    return True
+
+
 def build_flight_status_payload(
     *,
     config: EveSsoConfig,
     session: FlightEsiSession | None,
     callback_url: str,
+    public_base_url: str = "",
+    public_hosting_mode: bool = False,
+    secure_cookies: bool = False,
     max_jumps: int = DEFAULT_FLIGHT_MAX_JUMPS,
 ) -> dict[str, Any]:
     clean_max_jumps = clamp_flight_max_jumps(max_jumps)
@@ -4085,6 +4181,14 @@ def build_flight_status_payload(
         "logout_url": "/flight/logout",
         "callback_url": callback_url,
         "character": session.to_public_dict() if session else None,
+        "membership": flight_membership_status(config, session),
+        "hosting": {
+            "public_hosting_mode": bool(public_hosting_mode),
+            "public_base_url": public_base_url,
+            "secure_cookies": bool(secure_cookies),
+            "token_storage": "server-memory-only",
+            "market_order_cache_ttl_seconds": int(MARKET_ORDER_CACHE_TTL_SECONDS),
+        },
         "location": None,
         "nearby_systems": {
             "available": False,
@@ -4103,6 +4207,9 @@ def build_flight_status_payload(
     if not session:
         payload["note"] = "Connect ESI to show your current system."
         return payload
+    if not flight_session_has_member_access(config, session):
+        payload["error"] = flight_member_access_error(config, session)
+        return payload
     try:
         location = fetch_flight_location(config, session)
         payload["location"] = location
@@ -4113,6 +4220,88 @@ def build_flight_status_payload(
     except (CorpIntelError, CorpMarketError, ValueError) as exc:
         payload["error"] = str(exc)
     return payload
+
+
+def build_flight_hosting_diagnostics(
+    *,
+    public_base_url: str,
+    sso_config: EveSsoConfig,
+    public_hosting_mode: bool,
+    secure_cookies: bool,
+) -> dict[str, Any]:
+    recipe_cache = load_industry_recipe_cache()
+    route_cache = load_route_graph_cache()
+    checks = [
+        {
+            "name": "HTTPS public URL",
+            "ok": (not public_hosting_mode) or is_https_url(public_base_url),
+            "detail": "Public hosting mode should use an HTTPS tunnel or domain.",
+        },
+        {
+            "name": "EVE SSO configured",
+            "ok": sso_config.enabled,
+            "detail": "Flight Attendant needs an EVE SSO app client id, secret, and callback URL.",
+        },
+        {
+            "name": "Member allowlist",
+            "ok": (not public_hosting_mode) or sso_config.membership_restricted,
+            "detail": "Use allowed corporation or alliance ids before sharing a public link.",
+        },
+        {
+            "name": "Secure cookies",
+            "ok": (not public_hosting_mode) or secure_cookies,
+            "detail": "HTTPS public URLs receive Secure session cookies.",
+        },
+        {
+            "name": "Recipe cache",
+            "ok": recipe_cache.available,
+            "detail": recipe_cache.error or "Blueprint recipe cache is ready.",
+        },
+        {
+            "name": "Route graph cache",
+            "ok": route_cache.available,
+            "detail": route_cache.error or "Jump-aware route graph cache is ready.",
+        },
+    ]
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "hosting": {
+            "public_hosting_mode": bool(public_hosting_mode),
+            "public_base_url": public_base_url,
+            "public_base_url_https": is_https_url(public_base_url),
+            "secure_cookies": bool(secure_cookies),
+            "token_storage": "server-memory-only",
+            "market_write_policy": (
+                "admin-token-or-trusted-member"
+                if public_hosting_mode
+                else "local-loopback-or-admin-token"
+            ),
+        },
+        "sso": {
+            "configured": sso_config.enabled,
+            "callback_url": sso_config.callback_url,
+            "callback_url_https": is_https_url(sso_config.callback_url),
+            "scopes": list(sso_config.scopes or DEFAULT_FLIGHT_ESI_SCOPES),
+            "membership_restricted": sso_config.membership_restricted,
+            "corporation_allowlist_count": len(sso_config.allowed_corporation_ids),
+            "alliance_allowlist_count": len(sso_config.allowed_alliance_ids),
+            "trusted_members_can_write_market": bool(sso_config.trusted_members_can_edit),
+        },
+        "esi": {
+            "market_order_cache": market_order_cache_status(),
+            "compatibility_date": esi_compatibility_date(),
+        },
+        "static_caches": {
+            "recipe_cache_available": recipe_cache.available,
+            "route_graph_available": route_cache.available,
+        },
+        "checks": checks,
+        "notes": [
+            "Flight Attendant is advisory only; pilots perform all EVE actions manually.",
+            "No EVE refresh token or token file is stored by this process.",
+        ],
+    }
 
 
 def flight_esi_headers(access_token: str = "") -> dict[str, str]:
@@ -4159,11 +4348,13 @@ def build_http_server(
     sso_config: EveSsoConfig | None = None,
     auth_state_store: AuthStateStore | None = None,
     flight_session_store: FlightEsiSessionStore | None = None,
+    public_hosting_mode: bool = False,
 ) -> ThreadingHTTPServer:
     public_base_url = public_base_url.rstrip("/")
     sso_config = sso_config or EveSsoConfig()
     auth_state_store = auth_state_store or AuthStateStore()
     flight_session_store = flight_session_store or FlightEsiSessionStore()
+    secure_flight_cookies = should_secure_flight_cookie(public_base_url)
 
     class CorpMarketHandler(BaseHTTPRequestHandler):
         server_version = "CorpMarketConcierge/0.1"
@@ -4181,6 +4372,9 @@ def build_http_server(
                 return
             if path == "/api/flight/status":
                 self._handle_flight_status()
+                return
+            if path == "/api/flight/diagnostics":
+                self._handle_flight_diagnostics()
                 return
             if path == "/api/flight/industry":
                 self._handle_flight_industry()
@@ -4228,6 +4422,8 @@ def build_http_server(
                 self._handle_offer_create()
                 return
             if path.startswith("/api/offers/") and path.endswith("/reserve"):
+                if not self._require_write_access():
+                    return
                 self._handle_offer_reserve(path)
                 return
             if path.startswith("/api/offers/") and path.endswith("/status"):
@@ -4266,17 +4462,26 @@ def build_http_server(
                 config=sso_config,
                 session=session,
                 callback_url=sso_config.callback_url,
+                public_base_url=public_base_url,
+                public_hosting_mode=public_hosting_mode,
+                secure_cookies=secure_flight_cookies,
                 max_jumps=max_jumps,
             )
             self._send_json(payload)
 
+        def _handle_flight_diagnostics(self) -> None:
+            self._send_json(
+                build_flight_hosting_diagnostics(
+                    public_base_url=public_base_url,
+                    sso_config=sso_config,
+                    public_hosting_mode=public_hosting_mode,
+                    secure_cookies=secure_flight_cookies,
+                )
+            )
+
         def _handle_flight_industry(self) -> None:
-            if not sso_config.enabled:
-                self._send_json({"ok": False, "error": "EVE SSO is not configured."}, status=503)
-                return
-            session = self._flight_session()
+            session = self._require_flight_session("loading industry analysis")
             if session is None:
-                self._send_json({"ok": False, "error": "Connect ESI before loading industry analysis."}, status=401)
                 return
             try:
                 payload = build_flight_industry_payload(config=sso_config, session=session)
@@ -4286,12 +4491,8 @@ def build_http_server(
             self._send_json(payload)
 
         def _handle_flight_buyers(self) -> None:
-            if not sso_config.enabled:
-                self._send_json({"ok": False, "error": "EVE SSO is not configured."}, status=503)
-                return
-            session = self._flight_session()
+            session = self._require_flight_session("scanning buyer orders")
             if session is None:
-                self._send_json({"ok": False, "error": "Connect ESI before scanning buyer orders."}, status=401)
                 return
             query = parse_qs(urlparse(self.path).query)
             max_jumps = clamp_flight_max_jumps((query.get("max_jumps") or [DEFAULT_FLIGHT_MAX_JUMPS])[0])
@@ -4303,12 +4504,8 @@ def build_http_server(
             self._send_json(payload)
 
         def _handle_flight_profitability(self) -> None:
-            if not sso_config.enabled:
-                self._send_json({"ok": False, "error": "EVE SSO is not configured."}, status=503)
-                return
-            session = self._flight_session()
+            session = self._require_flight_session("ranking profitability")
             if session is None:
-                self._send_json({"ok": False, "error": "Connect ESI before ranking profitability."}, status=401)
                 return
             query = parse_qs(urlparse(self.path).query)
             max_jumps = clamp_flight_max_jumps((query.get("max_jumps") or [DEFAULT_FLIGHT_MAX_JUMPS])[0])
@@ -4320,12 +4517,8 @@ def build_http_server(
             self._send_json(payload)
 
         def _handle_flight_hauling(self) -> None:
-            if not sso_config.enabled:
-                self._send_json({"ok": False, "error": "EVE SSO is not configured."}, status=503)
-                return
-            session = self._flight_session()
+            session = self._require_flight_session("scanning hauler routes")
             if session is None:
-                self._send_json({"ok": False, "error": "Connect ESI before scanning hauler routes."}, status=401)
                 return
             query = parse_qs(urlparse(self.path).query)
             destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
@@ -4376,6 +4569,10 @@ def build_http_server(
             session = self._flight_session()
             if session is None:
                 emit("scan_error", {"ok": False, "error": "Connect ESI before scanning hauler routes."})
+                return
+            access_error = flight_member_access_error(sso_config, session)
+            if access_error:
+                emit("scan_error", {"ok": False, "error": access_error})
                 return
             query = parse_qs(urlparse(self.path).query)
             destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
@@ -4464,6 +4661,19 @@ def build_http_server(
                 token_response = exchange_sso_code(sso_config, code)
                 access_token = str(token_response["access_token"])
                 pilot = verify_sso_character(sso_config, access_token=access_token)
+                if not verified_pilot_has_member_access(sso_config, pilot):
+                    self._send_html(
+                        render_flight_auth_result(
+                            "This EVE character is not in the configured corp/alliance allowlist.",
+                            ok=False,
+                            details=[
+                                "Try signing in with a corporation or alliance character that is allowed for this site.",
+                                "Ask the site operator to update the Flight Attendant allowlist if this looks wrong.",
+                            ],
+                        ),
+                        status=403,
+                    )
+                    return
                 session_id = flight_session_store.create(
                     pilot,
                     access_token=access_token,
@@ -4474,7 +4684,7 @@ def build_http_server(
                 return
             self.send_response(302)
             self.send_header("Location", "/#flight")
-            self.send_header("Set-Cookie", flight_session_cookie_header(session_id))
+            self.send_header("Set-Cookie", flight_session_cookie_header(session_id, secure=secure_flight_cookies))
             self.end_headers()
 
         def _handle_flight_logout(self) -> None:
@@ -4482,11 +4692,25 @@ def build_http_server(
             flight_session_store.delete(session_id)
             self.send_response(302)
             self.send_header("Location", "/#flight")
-            self.send_header("Set-Cookie", clear_flight_session_cookie_header())
+            self.send_header("Set-Cookie", clear_flight_session_cookie_header(secure=secure_flight_cookies))
             self.end_headers()
 
         def _flight_session(self) -> FlightEsiSession | None:
             return flight_session_store.get(request_cookie(self, FLIGHT_SESSION_COOKIE_NAME))
+
+        def _require_flight_session(self, action: str) -> FlightEsiSession | None:
+            if not sso_config.enabled:
+                self._send_json({"ok": False, "error": "EVE SSO is not configured."}, status=503)
+                return None
+            session = self._flight_session()
+            if session is None:
+                self._send_json({"ok": False, "error": f"Connect ESI before {action}."}, status=401)
+                return None
+            access_error = flight_member_access_error(sso_config, session)
+            if access_error:
+                self._send_json({"ok": False, "error": access_error}, status=403)
+                return None
+            return session
 
         def _handle_offer_api(self, path: str) -> None:
             listing_id = path.removeprefix("/api/offers/").split("/", 1)[0]
@@ -4637,15 +4861,28 @@ def build_http_server(
             return json.loads(body.decode("utf-8"))
 
         def _require_write_access(self) -> bool:
-            if request_is_loopback(self):
-                return True
-            if not admin_token:
-                return True
             auth = self.headers.get("Authorization", "")
             token = self.headers.get("X-Admin-Token", "") or self.headers.get("X-Market-Token", "")
-            if auth == f"Bearer {admin_token}" or token == admin_token:
+            trusted_member = (
+                sso_config.trusted_members_can_edit
+                and sso_config.membership_restricted
+                and flight_session_has_member_access(sso_config, self._flight_session())
+            )
+            if market_write_access_allowed(
+                is_loopback=request_is_loopback(self),
+                public_hosting_mode=public_hosting_mode,
+                admin_token=admin_token,
+                auth_header=auth,
+                token_header=token,
+                trusted_member=trusted_member,
+            ):
                 return True
-            self._send_json({"ok": False, "error": "Write access requires the market admin token."}, status=403)
+            error = (
+                "Public hosting mode requires the market admin token or trusted SSO member write access."
+                if public_hosting_mode
+                else "Write access requires the market admin token."
+            )
+            self._send_json({"ok": False, "error": error}, status=403)
             return False
 
         def log_message(self, format: str, *args: Any) -> None:
@@ -6382,8 +6619,20 @@ def _render_flight_attendant_dashboard() -> str:
       }
       const character = data.character || {};
       const location = data.location || {};
+      const membership = data.membership || {};
       flightPilotName.textContent = character.character_name || "Connected pilot";
       flightTokenStatus.textContent = `${Math.ceil((character.expires_in_seconds || 0) / 60)} min`;
+      if (membership.required && membership.allowed === false) {
+        flightSystemName.textContent = "Member Check Failed";
+        flightLocationLine.textContent = membership.message || "This character is not allowed for this Flight Attendant.";
+        flightMessage.textContent = "Sign out, then reconnect with an allowlisted corporation or alliance character.";
+        resetFlightRoute("Use an allowlisted EVE character before calculating nearby systems.");
+        resetFlightBuyers("Use an allowlisted EVE character before scanning buyer orders.");
+        resetFlightProfitability("Use an allowlisted EVE character before ranking profitability.");
+        resetFlightHauling("Use an allowlisted EVE character before scanning hauler routes.");
+        resetFlightIndustry("Use an allowlisted EVE character before scanning industry data.");
+        return;
+      }
       if (data.error) {
         flightSystemName.textContent = "ESI Error";
         flightLocationLine.textContent = data.error;
@@ -7517,14 +7766,28 @@ def run_server(args: argparse.Namespace) -> int:
     store = MarketStore(args.market_db_path)
     url_host = url_host_for_bind(args.host)
     public_base_url = (args.public_base_url or f"http://{url_host}:{args.port}").rstrip("/")
-    sso_callback_url = args.sso_callback_url or f"http://{url_host}:{args.port}/flight/callback"
+    sso_callback_url = args.sso_callback_url or default_flight_callback_url(
+        public_base_url=public_base_url,
+        url_host=url_host,
+        port=args.port,
+    )
     sso_config = EveSsoConfig(
         client_id=args.sso_client_id,
         client_secret=args.sso_client_secret,
         callback_url=sso_callback_url,
         scopes=tuple(parse_csv(args.sso_scopes)) or DEFAULT_FLIGHT_ESI_SCOPES,
+        allowed_corporation_ids=parse_int_csv(args.allowed_corporation_ids),
+        allowed_alliance_ids=parse_int_csv(args.allowed_alliance_ids),
+        trusted_members_can_edit=args.trusted_members_can_write_market,
         esi_base_url=args.esi_base_url,
     )
+    hosting_errors = public_hosting_config_errors(
+        public_base_url=public_base_url,
+        sso_config=sso_config,
+        public_hosting_mode=args.public_hosting_mode,
+    )
+    if hosting_errors:
+        raise CorpMarketError("Public hosting mode needs: " + "; ".join(hosting_errors) + ".")
     server = build_http_server(
         args.host,
         args.port,
@@ -7539,6 +7802,7 @@ def run_server(args: argparse.Namespace) -> int:
         sso_config=sso_config,
         auth_state_store=AuthStateStore(),
         flight_session_store=FlightEsiSessionStore(),
+        public_hosting_mode=args.public_hosting_mode,
     )
     url = f"http://{url_host}:{args.port}/"
     print(f"Corp market concierge listening at {url}")
@@ -7548,6 +7812,14 @@ def run_server(args: argparse.Namespace) -> int:
         print(f"Flight Attendant ESI enabled. Callback URL: {sso_config.callback_url}")
         print(f"Flight Attendant ESI scopes: {', '.join(sso_config.scopes)}")
         print("Flight Attendant access tokens are kept in server memory only.")
+        if sso_config.membership_restricted:
+            print(
+                "Flight Attendant member allowlist: "
+                f"corps={list(sso_config.allowed_corporation_ids)}, "
+                f"alliances={list(sso_config.allowed_alliance_ids)}"
+            )
+        else:
+            print("Flight Attendant member allowlist is not configured; any EVE-authenticated character can sign in.")
     else:
         print("Flight Attendant ESI is not configured.")
         print(f"Register callback URL: {sso_callback_url}")
@@ -7560,6 +7832,10 @@ def run_server(args: argparse.Namespace) -> int:
         print("Discord webhook posting is disabled. Set --discord-webhook-url to post new offers.")
     if args.admin_token:
         print("Remote offer creation/status writes require the market admin token.")
+    if args.trusted_members_can_write_market:
+        print("Trusted allowlisted SSO members can create and update market listings.")
+    if args.public_hosting_mode:
+        print("Public hosting mode is enabled: HTTPS, EVE SSO, and a corp/alliance allowlist are required.")
     if args.open_browser:
         webbrowser.open(url)
     try:
@@ -7618,6 +7894,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Base URL placed in Discord offer links. Use a LAN or tunnel URL for corp access.",
     )
     serve.add_argument(
+        "--public-hosting-mode",
+        action="store_true",
+        default=env_bool("CORP_MARKET_PUBLIC_HOSTING_MODE"),
+        help="Require HTTPS, EVE SSO, and a corp/alliance allowlist for public Flight Attendant hosting.",
+    )
+    serve.add_argument(
         "--admin-token",
         default=os.environ.get("CORP_MARKET_ADMIN_TOKEN", ""),
         help="Optional token for remote offer creation and status changes.",
@@ -7641,6 +7923,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--sso-scopes",
         default=os.environ.get("CORP_MARKET_SSO_SCOPES", " ".join(DEFAULT_FLIGHT_ESI_SCOPES)),
         help="Space or comma-separated EVE SSO scopes for Flight Attendant.",
+    )
+    serve.add_argument(
+        "--allowed-corporation-ids",
+        default=os.environ.get("CORP_MARKET_ALLOWED_CORPORATION_IDS", ""),
+        help="Comma-separated corporation ids allowed to use the hosted Flight Attendant.",
+    )
+    serve.add_argument(
+        "--allowed-alliance-ids",
+        default=os.environ.get("CORP_MARKET_ALLOWED_ALLIANCE_IDS", ""),
+        help="Comma-separated alliance ids allowed to use the hosted Flight Attendant.",
+    )
+    serve.add_argument(
+        "--trusted-members-can-write-market",
+        action="store_true",
+        default=env_bool("CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET"),
+        help="Allow allowlisted EVE SSO members to create, reserve, and update market listings.",
     )
     serve.add_argument(
         "--esi-base-url",
@@ -7784,6 +8082,24 @@ def parse_csv(value: str | None) -> tuple[str, ...]:
     return tuple(item.strip() for item in re.split(r"[,\s]+", value) if item.strip())
 
 
+def parse_int_csv(value: str | None) -> tuple[int, ...]:
+    ids: list[int] = []
+    for item in parse_csv(value):
+        try:
+            item_id = int(item)
+        except ValueError as exc:
+            raise CorpMarketError(f"Expected numeric id, got {item!r}.") from exc
+        if item_id > 0 and item_id not in ids:
+            ids.append(item_id)
+    return tuple(ids)
+
+
+def env_bool(name: str, *, default: bool = False) -> bool:
+    if name not in os.environ:
+        return default
+    return query_bool(os.environ.get(name), default=default)
+
+
 def parse_forum_tag_map(value: str | None) -> dict[str, tuple[str, ...]]:
     result: dict[str, list[str]] = {}
     for item in parse_csv(value):
@@ -7824,15 +8140,17 @@ def request_cookie(handler: BaseHTTPRequestHandler, name: str) -> str:
     return ""
 
 
-def flight_session_cookie_header(session_id: str) -> str:
-    return (
+def flight_session_cookie_header(session_id: str, *, secure: bool = False) -> str:
+    header = (
         f"{FLIGHT_SESSION_COOKIE_NAME}={session_id}; Path=/; HttpOnly; SameSite=Lax; "
         f"Max-Age={60 * 60}"
     )
+    return f"{header}; Secure" if secure else header
 
 
-def clear_flight_session_cookie_header() -> str:
-    return f"{FLIGHT_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+def clear_flight_session_cookie_header(*, secure: bool = False) -> str:
+    header = f"{FLIGHT_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    return f"{header}; Secure" if secure else header
 
 
 def clean_token_ttl_seconds(value: Any) -> int:

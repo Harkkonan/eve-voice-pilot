@@ -1,6 +1,6 @@
 # EVE Developer License Review
 
-Last verified: 2026-06-03
+Last verified: 2026-06-05
 
 Authoritative source:
 
@@ -19,7 +19,7 @@ This file is a project review aid, not legal advice and not a substitute for the
 
 ## Current Project Posture
 
-The corp intel board is designed to stay on the conservative side of CCP's third-party-tool rules:
+The corp intel board and hosted Flight Attendant/Corp Market surfaces are designed to stay on the conservative side of CCP's third-party-tool rules:
 
 - It is read-only with respect to the EVE client.
 - It does not send keys, click, read packets, scrape cache files, inspect process memory, or automate gameplay.
@@ -27,6 +27,8 @@ The corp intel board is designed to stay on the conservative side of CCP's third
 - It uses EVE SSO to prove character ownership and public ESI to check corporation/alliance membership.
 - It signature-verifies SSO access tokens and discards EVE access/refresh tokens after login.
 - It stores local operational records only: verified pilot identity, token hashes, watchlist settings, and sanitized intel events.
+- The hosted Flight Attendant remains advisory only: it can read opted-in ESI data and public market orders, but the pilot performs all in-game hauling, buying, selling, contracts, and mail manually.
+- Public Flight Attendant hosting should use HTTPS, EVE SSO, and a configured corporation/alliance allowlist.
 - It should remain non-commercial unless a future review confirms the exact monetization method is allowed.
 
 ## License Topics To Re-check
@@ -67,3 +69,4 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 ## Review Log
 
 - 2026-06-03: Created project review doc from the official EVE Developer License Agreement and EVE developer docs. Current corp intel board design remains read-only, opt-in, non-commercial, and SSO/ESI based.
+- 2026-06-05: Re-opened the official EVE Developer License Agreement, EVE SSO docs, ESI rate-limit docs, and EVE third-party policy page for Flight Attendant public-hosting hardening. The implementation remains member-gated, non-commercial, read-only/advisory, and manual for all in-game actions.
