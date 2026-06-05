@@ -304,6 +304,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert page.count("id=\"tab-trade-pnl\"") == 1
     assert page.count("id=\"tab-reprocessing\"") == 1
     assert "https://images.evetech.net/types/" in page
+    assert "reprocess-page" in page
+    assert "reprocess-setup-panel" in page
+    assert "reprocess-knowledge-panel" in page
+    assert "reprocess-summary-panel" in page
+    assert "reprocess-output-panel" in page
     assert "reprocess-field-desk" in page
     assert "reprocess-status-rail" in page
     assert "field-notebook" in page

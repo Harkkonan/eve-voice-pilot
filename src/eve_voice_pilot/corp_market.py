@@ -8336,6 +8336,16 @@ def _render_flight_attendant_dashboard() -> str:
         url("/static/corp-market/flight-attendant-background.png") center top / cover no-repeat fixed,
         var(--bg);
     }
+    body[data-active-tab="reprocessing"] {
+      background:
+        radial-gradient(circle at 12% 20%, rgba(224, 168, 74, .16), transparent 26%),
+        radial-gradient(circle at 86% 8%, rgba(97, 199, 217, .1), transparent 28%),
+        linear-gradient(90deg, rgba(11, 15, 12, .96), rgba(9, 13, 13, .72) 48%, rgba(7, 10, 12, .96)),
+        repeating-linear-gradient(90deg, rgba(224, 168, 74, .045) 0 1px, transparent 1px 54px),
+        repeating-linear-gradient(0deg, rgba(97, 199, 217, .035) 0 1px, transparent 1px 54px),
+        #080b0b;
+      background-size: auto, auto, auto, 54px 54px, 54px 54px, auto;
+    }
     .shell { width: min(1360px, calc(100vw - 32px)); margin: 0 auto; padding-bottom: 34px; min-width: 0; }
     header { padding: 24px 0 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: end; }
     h1 { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: 0; }
@@ -8390,9 +8400,72 @@ def _render_flight_attendant_dashboard() -> str:
       border-color: rgba(97, 199, 217, .75);
       background: linear-gradient(180deg, #75d6e2, #4baebe);
     }
+    body[data-active-tab="reprocessing"] header {
+      border-bottom: 1px solid rgba(224, 168, 74, .2);
+      margin-bottom: 2px;
+    }
+    body[data-active-tab="reprocessing"] .brand-mark {
+      color: #1c1609;
+      border-color: rgba(224, 168, 74, .82);
+      background:
+        radial-gradient(circle at 40% 32%, rgba(255, 245, 189, .92), transparent 34%),
+        linear-gradient(135deg, #d7aa53, #7d5b26);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 8px 18px rgba(0, 0, 0, .3);
+    }
+    body[data-active-tab="reprocessing"] .status {
+      border-color: rgba(224, 168, 74, .44);
+      background:
+        linear-gradient(180deg, rgba(25, 26, 21, .96), rgba(7, 10, 11, .88)),
+        rgba(8, 13, 15, .9);
+    }
+    body[data-active-tab="reprocessing"] .tabbar {
+      border-top-color: rgba(224, 168, 74, .24);
+      border-bottom-color: rgba(224, 168, 74, .34);
+    }
+    body[data-active-tab="reprocessing"] .tabbar button {
+      border-color: rgba(111, 98, 66, .58);
+      background:
+        linear-gradient(180deg, rgba(30, 32, 26, .92), rgba(8, 12, 13, .82));
+    }
+    body[data-active-tab="reprocessing"] .tabbar button[aria-selected="true"] {
+      color: #17140d;
+      border-color: rgba(224, 168, 74, .88);
+      background:
+        linear-gradient(180deg, #d6b265, #a17635);
+    }
     .tab-panel[hidden] { display: none; }
     .market-grid { display: grid; grid-template-columns: minmax(0, 382px) minmax(0, 1fr); gap: 16px; min-width: 0; }
     .flight-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; min-width: 0; }
+    .reprocess-page {
+      display: grid;
+      grid-template-columns: minmax(360px, .92fr) minmax(300px, .58fr);
+      grid-template-areas:
+        "setup notes"
+        "summary summary"
+        "output output";
+      gap: 14px;
+      min-width: 0;
+      position: relative;
+    }
+    .reprocess-page::before {
+      content: "";
+      position: absolute;
+      inset: -12px 0;
+      pointer-events: none;
+      border: 1px solid rgba(224, 168, 74, .18);
+      border-radius: 10px;
+      background:
+        linear-gradient(120deg, transparent 0 62%, rgba(224, 168, 74, .08) 63%, transparent 66%),
+        linear-gradient(34deg, transparent 0 44%, rgba(97, 199, 217, .045) 45%, transparent 48%);
+    }
+    .reprocess-page > .panel {
+      position: relative;
+      z-index: 1;
+    }
+    .reprocess-setup-panel { grid-area: setup; }
+    .reprocess-knowledge-panel { grid-area: notes; }
+    .reprocess-summary-panel { grid-area: summary; }
+    .reprocess-output-panel { grid-area: output; }
     .panel {
       background: rgba(17, 24, 25, .94);
       border: 1px solid var(--line);
@@ -8424,6 +8497,54 @@ def _render_flight_attendant_dashboard() -> str:
     body[data-active-tab="reprocessing"] #tab-reprocessing select,
     body[data-active-tab="reprocessing"] #tab-reprocessing textarea {
       background: rgba(5, 9, 11, .84);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .panel {
+      border-color: rgba(169, 137, 74, .56);
+      background:
+        linear-gradient(90deg, rgba(224, 168, 74, .045) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(224, 168, 74, .035) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(21, 25, 19, .93), rgba(7, 11, 12, .9));
+      background-size: 28px 28px, 28px 28px, auto;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035), 0 22px 54px rgba(0, 0, 0, .38);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .panel-header {
+      border-bottom: 1px solid rgba(224, 168, 74, .24);
+      margin: -2px 0 13px;
+      padding-bottom: 11px;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing h2 {
+      color: #f4efe0;
+      font-size: 19px;
+      letter-spacing: .015em;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .meta,
+    body[data-active-tab="reprocessing"] #tab-reprocessing .input-note {
+      color: #b9c0b4;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing label {
+      color: #c6cabf;
+      font-weight: 750;
+      letter-spacing: .025em;
+      text-transform: uppercase;
+      font-size: 11px;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing input,
+    body[data-active-tab="reprocessing"] #tab-reprocessing select,
+    body[data-active-tab="reprocessing"] #tab-reprocessing textarea {
+      border-color: rgba(169, 137, 74, .42);
+      background:
+        linear-gradient(180deg, rgba(237, 244, 239, .035), transparent),
+        rgba(5, 9, 11, .88);
+      color: #f2f0e8;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing input:focus,
+    body[data-active-tab="reprocessing"] #tab-reprocessing select:focus,
+    body[data-active-tab="reprocessing"] #tab-reprocessing textarea:focus {
+      outline-color: rgba(224, 168, 74, .3);
+      border-color: rgba(224, 168, 74, .78);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing button {
+      border-color: rgba(169, 137, 74, .62);
     }
     body[data-active-tab="flight"] #tab-flight .panel {
       background: linear-gradient(180deg, rgba(11, 18, 20, .8), rgba(7, 11, 13, .72));
@@ -8849,6 +8970,103 @@ def _render_flight_attendant_dashboard() -> str:
         #111819;
       background-size: 34px 34px, 34px 34px, auto, auto;
     }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-page > .panel.reprocess-setup-panel {
+      border-color: rgba(224, 168, 74, .58);
+      background:
+        radial-gradient(circle at 82% 18%, rgba(97, 199, 217, .12), transparent 32%),
+        linear-gradient(180deg, rgba(35, 36, 28, .94), rgba(9, 12, 12, .9));
+      background-size: auto;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel {
+      color: #2b2b22;
+      border-color: rgba(224, 168, 74, .54);
+      background:
+        repeating-linear-gradient(0deg, rgba(88, 74, 50, .13) 0 1px, transparent 1px 25px),
+        repeating-linear-gradient(90deg, rgba(88, 74, 50, .08) 0 1px, transparent 1px 25px),
+        linear-gradient(180deg, #d8ceb3, #bcae8e);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel::before {
+      content: "";
+      position: absolute;
+      top: 11px;
+      right: 18px;
+      width: 76px;
+      height: 18px;
+      border-radius: 2px;
+      background: rgba(80, 69, 47, .25);
+      transform: rotate(2deg);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, .16);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel h2,
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .meta,
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .charter-list li,
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .charter-list strong {
+      color: inherit;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .panel-header {
+      border-color: rgba(61, 51, 34, .24);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .charter-list li {
+      border-left-color: rgba(45, 107, 52, .72);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel {
+      padding: 0;
+      overflow: hidden;
+      border-color: rgba(63, 85, 80, .88);
+      background:
+        linear-gradient(180deg, rgba(17, 24, 25, .97), rgba(7, 11, 13, .9)),
+        rgba(8, 13, 15, .92);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel .panel-header {
+      margin: 0;
+      padding: 12px 14px;
+      border-bottom-color: rgba(63, 85, 80, .68);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel .output-details {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel .output-details summary {
+      display: none;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel .output-details-body {
+      display: grid;
+      gap: 10px;
+      padding: 12px 14px 14px;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel .profit-summary,
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel #reprocess-location-detail {
+      min-width: 0;
+      border: 1px solid rgba(63, 85, 80, .64);
+      border-radius: 6px;
+      background: rgba(5, 9, 11, .46);
+      padding: 10px;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel #reprocess-location-detail:empty {
+      display: none;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-output-panel {
+      padding: 14px;
+      border-color: rgba(224, 168, 74, .54);
+      background:
+        linear-gradient(90deg, rgba(224, 168, 74, .055) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(97, 199, 217, .04) 1px, transparent 1px),
+        linear-gradient(135deg, rgba(224, 168, 74, .12), rgba(97, 199, 217, .06) 36%, rgba(8, 13, 15, .97)),
+        #111819;
+      background-size: 34px 34px, 34px 34px, auto, auto;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-output-panel .output-details {
+      border: 0;
+      background: transparent;
+      overflow: visible;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-output-panel .output-details summary {
+      display: none;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-output-panel .output-details-body {
+      padding: 0;
+    }
     .reprocess-field-desk {
       display: grid;
       grid-template-columns: minmax(240px, .72fr) minmax(320px, .9fr) minmax(520px, 1.38fr);
@@ -9149,6 +9367,17 @@ def _render_flight_attendant_dashboard() -> str:
       overflow: hidden;
       flex: 0 0 auto;
     }
+    .specimen-image-frame::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, rgba(237, 244, 239, .22), transparent 8px, transparent calc(100% - 8px), rgba(237, 244, 239, .16)),
+        linear-gradient(180deg, rgba(237, 244, 239, .18), transparent 10px, transparent calc(100% - 10px), rgba(5, 9, 11, .25));
+      mix-blend-mode: screen;
+      opacity: .18;
+    }
     .specimen-image-frame::before {
       content: "";
       position: absolute;
@@ -9167,17 +9396,30 @@ def _render_flight_attendant_dashboard() -> str:
     .specimen-image-frame img {
       position: relative;
       z-index: 1;
-      width: 72%;
-      height: 72%;
+      width: 66%;
+      height: 66%;
       object-fit: contain;
+      object-position: center center;
+      transform: translateY(-2%);
       filter: drop-shadow(0 10px 13px rgba(0, 0, 0, .45)) saturate(1.12) contrast(1.06);
     }
     .specimen-image-frame.ore-image img {
-      width: min(132px, 76%);
-      height: min(132px, 76%);
+      width: min(132px, 70%);
+      height: min(132px, 70%);
+      transform: translateY(-1%);
+    }
+    .specimen-image-frame.mineral-image img {
+      width: 58%;
+      height: 58%;
+      transform: translateY(-5%);
     }
     .specimen-image-frame.image-missing::after {
       content: "No image";
+      position: relative;
+      inset: auto;
+      background: none;
+      mix-blend-mode: normal;
+      opacity: 1;
       color: var(--muted);
       font-size: 12px;
       font-weight: 800;
@@ -9338,6 +9580,14 @@ def _render_flight_attendant_dashboard() -> str:
     }
     @media (max-width: 1040px) {
       .market-grid, .flight-grid, .briefing { grid-template-columns: 1fr; }
+      .reprocess-page {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "setup"
+          "notes"
+          "summary"
+          "output";
+      }
       .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .profit-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .reprocess-field-desk {
@@ -9354,6 +9604,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
     @media (max-width: 720px) {
       .shell { width: auto; margin: 0 10px; }
+      .reprocess-page::before { inset: -6px 0; }
       header { grid-template-columns: 1fr; align-items: start; }
       .status { text-align: left; }
       .brand { align-items: start; display: grid; grid-template-columns: 42px minmax(0, 1fr); }
@@ -10001,8 +10252,8 @@ def _render_flight_attendant_dashboard() -> str:
       </section>
 
       <section id="tab-reprocessing" class="tab-panel" data-tab-panel="reprocessing" hidden>
-        <div class="flight-grid">
-          <section class="panel">
+        <div class="reprocess-page">
+          <section class="panel reprocess-setup-panel">
             <div class="panel-header">
               <div>
                 <h2>Ore Reprocessing Calculator</h2>
@@ -10069,16 +10320,9 @@ def _render_flight_attendant_dashboard() -> str:
               </details>
               <button id="reprocess-calculate" class="ghost" type="submit">Calculate Reprocessing</button>
             </form>
-            <details class="output-details" open>
-              <summary>Calculation Summary</summary>
-              <div class="output-details-body">
-                <div id="reprocess-summary" class="profit-summary">Connect ESI, choose ore, and enter the amount to calculate.</div>
-                <div id="reprocess-location-detail" class="meta"></div>
-              </div>
-            </details>
           </section>
 
-          <section class="panel">
+          <section class="panel reprocess-knowledge-panel">
             <div class="panel-header">
               <div>
                 <h2>What ESI Knows</h2>
@@ -10093,7 +10337,23 @@ def _render_flight_attendant_dashboard() -> str:
             </ul>
           </section>
 
-          <section class="panel profit-panel" aria-labelledby="reprocess-results-title">
+          <section class="panel reprocess-summary-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Assay Status</h2>
+                <div class="meta">Current inputs, selected facility, and value deltas.</div>
+              </div>
+            </div>
+            <details class="output-details" open>
+              <summary>Calculation Summary</summary>
+              <div class="output-details-body">
+                <div id="reprocess-summary" class="profit-summary">Connect ESI, choose ore, and enter the amount to calculate.</div>
+                <div id="reprocess-location-detail" class="meta"></div>
+              </div>
+            </details>
+          </section>
+
+          <section class="panel profit-panel reprocess-output-panel" aria-labelledby="reprocess-results-title">
             <div class="panel-header">
               <div>
                 <div class="profit-title">
