@@ -113,9 +113,9 @@ def build_recipe_cache(*, sde_zip: Path, fallback_info: dict[str, Any], source_u
     if not sde_zip.exists():
         raise CorpRecipeCacheError(f"SDE zip does not exist: {sde_zip}")
     with ZipFile(sde_zip) as archive:
-        names = read_type_names(archive)
+        type_metadata = read_type_metadata(archive)
         sde_info = read_sde_info(archive) or fallback_info
-        recipes = read_manufacturing_recipes(archive, names)
+        recipes = read_manufacturing_recipes(archive, type_metadata)
 
     sorted_recipes = {str(key): recipes[key] for key in sorted(recipes)}
     return {
@@ -159,16 +159,18 @@ def build_route_graph_cache(*, sde_zip: Path, fallback_info: dict[str, Any], sou
     }
 
 
-def read_type_names(archive: ZipFile) -> dict[int, str]:
-    names: dict[int, str] = {}
+def read_type_metadata(archive: ZipFile) -> dict[int, dict[str, Any]]:
+    metadata: dict[int, dict[str, Any]] = {}
     for record in iter_jsonl_member(archive, "types.jsonl"):
         type_id = clean_int(record.get("_key"))
         if type_id <= 0:
             continue
         name = english_name(record.get("name"))
-        if name:
-            names[type_id] = name
-    return names
+        metadata[type_id] = {
+            "name": name or f"Type {type_id}",
+            "volume_m3": clean_float(record.get("volume")),
+        }
+    return metadata
 
 
 def read_solar_systems(archive: ZipFile) -> dict[int, dict[str, Any]]:
@@ -212,7 +214,7 @@ def read_sde_info(archive: ZipFile) -> dict[str, Any] | None:
     return None
 
 
-def read_manufacturing_recipes(archive: ZipFile, names: dict[int, str]) -> dict[int, dict[str, Any]]:
+def read_manufacturing_recipes(archive: ZipFile, type_metadata: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
     recipes: dict[int, dict[str, Any]] = {}
     for record in iter_jsonl_member(archive, "blueprints.jsonl"):
         blueprint_type_id = clean_int(record.get("blueprintTypeID") or record.get("_key"))
@@ -232,32 +234,36 @@ def read_manufacturing_recipes(archive: ZipFile, names: dict[int, str]) -> dict[
             product_type_id = clean_int(product.get("typeID") or product.get("type_id"))
             quantity = clean_int(product.get("quantity"))
             if product_type_id > 0 and quantity > 0:
-                products.append(
-                    {
-                        "type_id": product_type_id,
-                        "name": names.get(product_type_id, f"Type {product_type_id}"),
-                        "quantity": quantity,
-                    }
-                )
+                product_payload = {
+                    "type_id": product_type_id,
+                    "name": type_name(type_metadata, product_type_id),
+                    "quantity": quantity,
+                }
+                volume_m3 = type_volume(type_metadata, product_type_id)
+                if volume_m3 is not None:
+                    product_payload["volume_m3"] = volume_m3
+                products.append(product_payload)
         materials = []
         for material in material_records:
             material_type_id = clean_int(material.get("typeID") or material.get("type_id"))
             quantity = clean_int(material.get("quantity"))
             if material_type_id > 0 and quantity > 0:
-                materials.append(
-                    {
-                        "type_id": material_type_id,
-                        "name": names.get(material_type_id, f"Type {material_type_id}"),
-                        "quantity": quantity,
-                    }
-                )
+                material_payload = {
+                    "type_id": material_type_id,
+                    "name": type_name(type_metadata, material_type_id),
+                    "quantity": quantity,
+                }
+                volume_m3 = type_volume(type_metadata, material_type_id)
+                if volume_m3 is not None:
+                    material_payload["volume_m3"] = volume_m3
+                materials.append(material_payload)
         if not products or not materials:
             continue
 
         first_product = products[0]
         recipes[blueprint_type_id] = {
             "blueprint_type_id": blueprint_type_id,
-            "blueprint_name": names.get(blueprint_type_id, f"Blueprint {blueprint_type_id}"),
+            "blueprint_name": type_name(type_metadata, blueprint_type_id, fallback_prefix="Blueprint"),
             "activity": "manufacturing",
             "product_type_id": first_product["type_id"],
             "product_name": first_product["name"],
@@ -267,6 +273,20 @@ def read_manufacturing_recipes(archive: ZipFile, names: dict[int, str]) -> dict[
             "materials": materials,
         }
     return recipes
+
+
+def type_name(type_metadata: dict[int, dict[str, Any]], type_id: int, *, fallback_prefix: str = "Type") -> str:
+    metadata = type_metadata.get(type_id) or {}
+    name = str(metadata.get("name") or "").strip()
+    return name or f"{fallback_prefix} {type_id}"
+
+
+def type_volume(type_metadata: dict[int, dict[str, Any]], type_id: int) -> float | None:
+    metadata = type_metadata.get(type_id) or {}
+    volume_m3 = clean_float(metadata.get("volume_m3"))
+    if volume_m3 is None or volume_m3 <= 0:
+        return None
+    return volume_m3
 
 
 def iter_jsonl_member(archive: ZipFile, name: str) -> Iterable[dict[str, Any]]:

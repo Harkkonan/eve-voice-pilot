@@ -46,6 +46,13 @@ MAX_FLIGHT_MAX_JUMPS = 25
 MAX_FLIGHT_BUYER_SCAN_PRODUCTS = 40
 MAX_FLIGHT_BUYER_SCAN_REGIONS = 8
 MAX_FLIGHT_PROFIT_MATERIAL_TYPES = 120
+MAX_FLIGHT_HAUL_MATERIAL_TYPES = 80
+MAX_FLIGHT_HAUL_OPPORTUNITIES = 20
+DEFAULT_HAUL_DESTINATION_SYSTEM = "Jita"
+DEFAULT_HAUL_DETOUR_JUMPS = 1
+MAX_HAUL_DETOUR_JUMPS = 5
+DEFAULT_HAUL_CARGO_M3 = 10_000.0
+MAX_HAUL_CARGO_M3 = 10_000_000.0
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
@@ -203,6 +210,7 @@ class IndustryMaterial:
     type_id: int
     name: str
     quantity: int
+    volume_m3: float | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "IndustryMaterial | None":
@@ -214,10 +222,16 @@ class IndustryMaterial:
         name = str(payload.get("name") or "").strip()
         if type_id <= 0 or quantity <= 0:
             return None
-        return cls(type_id=type_id, name=name or f"Type {type_id}", quantity=quantity)
+        volume_m3 = clean_optional_float(payload.get("volume_m3") or payload.get("volume"))
+        if volume_m3 is not None and volume_m3 <= 0:
+            volume_m3 = None
+        return cls(type_id=type_id, name=name or f"Type {type_id}", quantity=quantity, volume_m3=volume_m3)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type_id": self.type_id, "name": self.name, "quantity": self.quantity}
+        payload: dict[str, Any] = {"type_id": self.type_id, "name": self.name, "quantity": self.quantity}
+        if self.volume_m3 is not None:
+            payload["volume_m3"] = self.volume_m3
+        return payload
 
 
 @dataclass(frozen=True)
@@ -259,6 +273,39 @@ class IndustryRecipe:
             materials=materials,
             manufacturing_time_seconds=max(0, manufacturing_time),
         )
+
+
+@dataclass(frozen=True)
+class OwnedBlueprint:
+    type_id: int
+    material_efficiency: int
+    time_efficiency: int
+    runs: int
+    quantity: int
+
+    @property
+    def is_original(self) -> bool:
+        return self.quantity == -1
+
+    @property
+    def is_copy(self) -> bool:
+        return self.quantity == -2
+
+    @property
+    def usable_for_one_run(self) -> bool:
+        return self.is_original or self.runs > 0
+
+    @property
+    def kind(self) -> str:
+        if self.is_original:
+            return "Original"
+        if self.is_copy:
+            return "Copy"
+        return "Blueprint"
+
+    @property
+    def limited_runs(self) -> int | None:
+        return None if self.is_original else max(0, self.runs)
 
 
 @dataclass(frozen=True)
@@ -1257,6 +1304,7 @@ def summarize_flight_industry(
     blueprint_items = [item for item in blueprints if isinstance(item, dict)]
     asset_items = [item for item in assets if isinstance(item, dict)]
     blueprint_type_counts = count_by_type_id(blueprint_items)
+    best_blueprints_by_type = best_owned_blueprints_by_type(blueprint_items)
     asset_quantities = quantity_by_type_id(asset_items)
     top_blueprints = sorted(blueprint_type_counts.items(), key=lambda item: item[1], reverse=True)[:5]
     top_assets = sorted(asset_quantities.items(), key=lambda item: item[1], reverse=True)[:5]
@@ -1269,7 +1317,7 @@ def summarize_flight_industry(
     owned_blueprint_type_ids = set(blueprint_type_counts)
     known_recipe_type_ids = owned_blueprint_type_ids.intersection(recipes)
     buildability = build_recipe_buildability(
-        blueprint_type_counts=blueprint_type_counts,
+        blueprints=blueprint_items,
         asset_quantities=asset_quantities,
         recipes=recipes,
     )
@@ -1290,6 +1338,16 @@ def summarize_flight_industry(
                     "product_name": recipes[type_id].product_name if type_id in recipes else "",
                     "product_quantity": recipes[type_id].product_quantity if type_id in recipes else 0,
                     "material_count": len(recipes[type_id].materials) if type_id in recipes else 0,
+                    "best_material_efficiency": (
+                        best_blueprints_by_type[type_id].material_efficiency if type_id in best_blueprints_by_type else None
+                    ),
+                    "best_time_efficiency": (
+                        best_blueprints_by_type[type_id].time_efficiency if type_id in best_blueprints_by_type else None
+                    ),
+                    "best_runs": (
+                        best_blueprints_by_type[type_id].limited_runs if type_id in best_blueprints_by_type else None
+                    ),
+                    "best_kind": best_blueprints_by_type[type_id].kind if type_id in best_blueprints_by_type else "",
                 }
                 for type_id, count in top_blueprints
             ],
@@ -1363,27 +1421,37 @@ def load_industry_recipe_cache(cache_path: Path = DEFAULT_INDUSTRY_RECIPE_CACHE_
 
 def build_recipe_buildability(
     *,
-    blueprint_type_counts: dict[int, int],
+    blueprints: Iterable[dict[str, Any]],
     asset_quantities: dict[int, int],
     recipes: dict[int, IndustryRecipe],
 ) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     ready_count = 0
-    for blueprint_type_id, owned_count in blueprint_type_counts.items():
-        recipe = recipes.get(blueprint_type_id)
+    targets = owned_blueprint_product_targets(blueprints=blueprints, recipes=recipes)
+    for target in targets:
+        if not target.get("blueprint_usable", True):
+            continue
+        recipe = recipes.get(int(target["blueprint_type_id"]))
         if recipe is None:
             continue
         missing_materials = []
         covered_material_types = 0
-        for material in recipe.materials:
-            available_quantity = asset_quantities.get(material.type_id, 0)
-            shortage = max(0, material.quantity - available_quantity)
+        material_rows = adjusted_recipe_materials(
+            recipe,
+            material_efficiency=int(target.get("blueprint_material_efficiency") or 0),
+            runs=1,
+        )
+        for material in material_rows:
+            available_quantity = asset_quantities.get(int(material["type_id"]), 0)
+            required_quantity = int(material["quantity"])
+            shortage = max(0, required_quantity - available_quantity)
             if shortage:
                 missing_materials.append(
                     {
-                        "type_id": material.type_id,
-                        "name": material.name,
-                        "required": material.quantity,
+                        "type_id": material["type_id"],
+                        "name": material["name"],
+                        "base_required": material["base_quantity"],
+                        "required": required_quantity,
                         "available": available_quantity,
                         "shortage": shortage,
                     }
@@ -1395,12 +1463,18 @@ def build_recipe_buildability(
             ready_count += 1
         candidates.append(
             {
-                "blueprint_type_id": blueprint_type_id,
+                "blueprint_type_id": target["blueprint_type_id"],
                 "blueprint_name": recipe.blueprint_name,
                 "product_type_id": recipe.product_type_id,
                 "product_name": recipe.product_name,
                 "product_quantity": recipe.product_quantity,
-                "owned_blueprints": owned_count,
+                "owned_blueprints": target["owned_blueprints"],
+                "owned_originals": target.get("owned_originals", 0),
+                "owned_copies": target.get("owned_copies", 0),
+                "blueprint_material_efficiency": target.get("blueprint_material_efficiency", 0),
+                "blueprint_time_efficiency": target.get("blueprint_time_efficiency", 0),
+                "blueprint_runs": target.get("blueprint_runs"),
+                "blueprint_kind": target.get("blueprint_kind", "Blueprint"),
                 "can_build_one_run": can_build,
                 "required_material_types": len(recipe.materials),
                 "covered_material_types": covered_material_types,
@@ -1660,6 +1734,70 @@ def build_flight_profitability_payload(
     }
 
 
+def build_flight_hauling_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    destination_name: str = DEFAULT_HAUL_DESTINATION_SYSTEM,
+    detour_jumps: int = DEFAULT_HAUL_DETOUR_JUMPS,
+    cargo_capacity_m3: float = DEFAULT_HAUL_CARGO_M3,
+) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
+    location = fetch_flight_location(config, session)
+    current_solar_system_id = int(location.get("solar_system_id") or 0)
+    route_cache = load_route_graph_cache()
+    if not route_cache.available:
+        raise CorpMarketError(route_cache.error or "Route graph cache is not available.")
+    recipe_cache = load_industry_recipe_cache()
+    if not recipe_cache.available:
+        raise CorpMarketError(recipe_cache.error or "Recipe cache is not available.")
+    systems = route_cache.systems or {}
+    adjacency = route_cache.adjacency or {}
+    origin = systems.get(current_solar_system_id)
+    if origin is None:
+        raise CorpMarketError(f"Current system {current_solar_system_id} is not in the route graph cache.")
+    destination = resolve_route_system(route_cache, destination_name)
+    if destination is None:
+        raise CorpMarketError(f"Destination system {destination_name!r} was not found in the route graph cache.")
+    route_path = shortest_route_path(
+        start_system_id=origin.solar_system_id,
+        destination_system_id=destination.solar_system_id,
+        adjacency=adjacency,
+    )
+    if not route_path:
+        raise CorpMarketError(f"No stargate route from {origin.name} to {destination.name} was found.")
+    skills = fetch_flight_skills(config, session)
+    sales_tax = build_sales_tax_profile(skills)
+    opportunities = scan_route_hauling_opportunities(
+        config=config,
+        recipe_cache=recipe_cache,
+        route_cache=route_cache,
+        origin_solar_system_id=origin.solar_system_id,
+        destination_solar_system_id=destination.solar_system_id,
+        route_path=route_path,
+        detour_jumps=detour_jumps,
+        cargo_capacity_m3=cargo_capacity_m3,
+        sales_tax=sales_tax,
+    )
+    route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "location": location,
+        "route": {
+            "origin": origin.to_dict(jumps=0),
+            "destination": destination.to_dict(jumps=max(0, len(route_path) - 1)),
+            "destination_query": destination_name,
+            "route_jumps": max(0, len(route_path) - 1),
+            "detour_jumps": clamp_haul_detour_jumps(detour_jumps),
+            "cargo_capacity_m3": clamp_haul_cargo_m3(cargo_capacity_m3),
+            "systems": route_systems,
+        },
+        "hauling": opportunities,
+    }
+
+
 def scan_buyers_for_owned_blueprints(
     *,
     config: EveSsoConfig,
@@ -1815,6 +1953,8 @@ def rank_profitability_for_owned_blueprints(
 
     products = []
     for target in scan_targets:
+        if not target.get("blueprint_usable", True):
+            continue
         recipe = recipes.get(int(target["blueprint_type_id"]))
         if recipe is None:
             continue
@@ -1826,11 +1966,17 @@ def rank_profitability_for_owned_blueprints(
         missing_priced_material_types = 0
         replacement_cost = 0.0
         missing_replacement_cost = 0.0
-        for material in recipe.materials:
-            available = asset_quantities.get(material.type_id, 0)
-            required = material.quantity
+        recipe_materials = adjusted_recipe_materials(
+            recipe,
+            material_efficiency=int(target.get("blueprint_material_efficiency") or 0),
+            runs=1,
+        )
+        for material in recipe_materials:
+            material_type_id = int(material["type_id"])
+            available = asset_quantities.get(material_type_id, 0)
+            required = int(material["quantity"])
             missing = max(0, required - available)
-            sell_order = best_material_sells.get(material.type_id)
+            sell_order = best_material_sells.get(material_type_id)
             unit_price = float(sell_order["price"]) if sell_order else None
             material_replacement_cost = required * unit_price if unit_price is not None else None
             material_missing_cost = missing * unit_price if unit_price is not None else None
@@ -1841,8 +1987,9 @@ def rank_profitability_for_owned_blueprints(
                     missing_priced_material_types += 1
                 missing_replacement_cost += material_missing_cost or 0.0
             material_row = {
-                "type_id": material.type_id,
-                "name": material.name,
+                "type_id": material_type_id,
+                "name": material["name"],
+                "base_required": material["base_quantity"],
                 "required": required,
                 "available": available,
                 "missing": missing,
@@ -1855,7 +2002,7 @@ def rank_profitability_for_owned_blueprints(
             if missing > 0:
                 missing_materials.append(material_row)
 
-        required_material_types = len(recipe.materials)
+        required_material_types = len(recipe_materials)
         missing_material_types = sum(1 for item in material_rows if int(item["missing"]) > 0)
         can_build = missing_material_types == 0
         all_material_prices_known = priced_material_types == required_material_types
@@ -1964,6 +2111,194 @@ def rank_profitability_for_owned_blueprints(
             "Visible profit subtracts sales tax from the buyer revenue using your Accounting skill. "
             "Details show the before-tax true profit and wallet gain. "
             "ESI market orders do not expose buyer character names."
+        ),
+    }
+
+
+def scan_route_hauling_opportunities(
+    *,
+    config: EveSsoConfig,
+    recipe_cache: IndustryRecipeCache,
+    route_cache: RouteGraphCache,
+    origin_solar_system_id: int,
+    destination_solar_system_id: int,
+    route_path: list[int],
+    detour_jumps: int,
+    cargo_capacity_m3: float,
+    sales_tax: dict[str, Any],
+) -> dict[str, Any]:
+    systems = route_cache.systems or {}
+    adjacency = route_cache.adjacency or {}
+    clean_detour_jumps = clamp_haul_detour_jumps(detour_jumps)
+    clean_cargo_capacity_m3 = clamp_haul_cargo_m3(cargo_capacity_m3)
+    pickup_detours = route_corridor_systems(
+        route_path=route_path,
+        adjacency=adjacency,
+        detour_jumps=clean_detour_jumps,
+        destination_system_id=destination_solar_system_id,
+    )
+    route_jumps = max(0, len(route_path) - 1)
+    origin_distances = jump_distances_from(
+        start_system_id=origin_solar_system_id,
+        adjacency=adjacency,
+        max_jumps=route_jumps + clean_detour_jumps * 2,
+    )
+    destination_distances = jump_distances_from(
+        start_system_id=destination_solar_system_id,
+        adjacency=adjacency,
+        max_jumps=route_jumps + clean_detour_jumps * 2,
+    )
+    pickup_jump_distances = {
+        system_id: jumps
+        for system_id, jumps in origin_distances.items()
+        if system_id in pickup_detours and system_id in systems
+    }
+    pickup_region_ranks: dict[int, int] = {}
+    for system_id, jumps in pickup_jump_distances.items():
+        region_id = systems[system_id].region_id
+        if region_id is None:
+            continue
+        current_rank = pickup_region_ranks.get(region_id)
+        if current_rank is None or jumps < current_rank:
+            pickup_region_ranks[region_id] = jumps
+    pickup_region_ids = [
+        region_id
+        for region_id, _rank in sorted(pickup_region_ranks.items(), key=lambda item: (item[1], item[0]))
+    ]
+    pickup_region_truncated = len(pickup_region_ids) > MAX_FLIGHT_BUYER_SCAN_REGIONS
+    scan_pickup_region_ids = pickup_region_ids[:MAX_FLIGHT_BUYER_SCAN_REGIONS]
+    destination = systems.get(destination_solar_system_id)
+    if destination is None or destination.region_id is None:
+        raise CorpMarketError("Destination system does not have a usable market region in the route graph cache.")
+
+    material_targets = industry_material_trade_targets(recipe_cache.recipes or {})
+    material_truncated = len(material_targets) > MAX_FLIGHT_HAUL_MATERIAL_TYPES
+    scan_targets = material_targets[:MAX_FLIGHT_HAUL_MATERIAL_TYPES]
+    sales_tax_rate = clean_optional_float(sales_tax.get("rate")) or 0.0
+
+    opportunities = []
+    total_sell_order_count = 0
+    total_buy_order_count = 0
+    errors = []
+    for target in scan_targets:
+        type_id = int(target["type_id"])
+        sell_orders = []
+        for region_id in scan_pickup_region_ids:
+            try:
+                raw_orders = fetch_market_sell_orders(config, region_id=region_id, type_id=type_id)
+            except CorpMarketError as exc:
+                errors.append({"order_type": "sell", "type_id": type_id, "region_id": region_id, "error": str(exc)})
+                continue
+            for order in raw_orders:
+                record = build_reachable_market_order_record(
+                    order,
+                    systems=systems,
+                    jump_distances=pickup_jump_distances,
+                    region_id=region_id,
+                    order_type="sell",
+                )
+                if record is not None:
+                    sell_orders.append(record)
+        try:
+            raw_buy_orders = fetch_market_buy_orders(config, region_id=destination.region_id, type_id=type_id)
+        except CorpMarketError as exc:
+            errors.append(
+                {"order_type": "buy", "type_id": type_id, "region_id": destination.region_id, "error": str(exc)}
+            )
+            raw_buy_orders = []
+        buy_orders = []
+        for order in raw_buy_orders:
+            record = build_reachable_market_order_record(
+                order,
+                systems=systems,
+                jump_distances={destination_solar_system_id: route_jumps},
+                region_id=destination.region_id,
+                order_type="buy",
+            )
+            if record is not None:
+                buy_orders.append(record)
+        sell_orders.sort(key=lambda item: market_order_sort_key(item, order_type="sell"))
+        buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
+        total_sell_order_count += len(sell_orders)
+        total_buy_order_count += len(buy_orders)
+        if not sell_orders or not buy_orders:
+            continue
+        sell_order = sell_orders[0]
+        buy_order = buy_orders[0]
+        units = min(int(sell_order["volume_remain"]), int(buy_order["volume_remain"]))
+        volume_m3 = target.get("volume_m3")
+        cargo_limited = False
+        if volume_m3 is not None and float(volume_m3) > 0:
+            cargo_units = max(0, int((clean_cargo_capacity_m3 + 1e-9) / float(volume_m3)))
+            units = min(units, cargo_units)
+            cargo_limited = cargo_units < min(int(sell_order["volume_remain"]), int(buy_order["volume_remain"]))
+        if units <= 0:
+            continue
+        gross_spread_per_unit = float(buy_order["price"]) - float(sell_order["price"])
+        net_sell_price = float(buy_order["price"]) * (1.0 - sales_tax_rate)
+        net_profit_per_unit = net_sell_price - float(sell_order["price"])
+        total_net_profit = net_profit_per_unit * units
+        if total_net_profit <= 0:
+            continue
+        pickup_system_id = int(sell_order["system_id"])
+        origin_to_pickup = origin_distances.get(pickup_system_id)
+        pickup_to_destination = destination_distances.get(pickup_system_id)
+        extra_route_jumps = None
+        if origin_to_pickup is not None and pickup_to_destination is not None:
+            extra_route_jumps = max(0, origin_to_pickup + pickup_to_destination - route_jumps)
+        opportunities.append(
+            {
+                "type_id": type_id,
+                "item_name": target["name"],
+                "recipe_count": target["recipe_count"],
+                "volume_m3": volume_m3,
+                "units": units,
+                "cargo_limited": cargo_limited,
+                "cargo_capacity_m3": clean_cargo_capacity_m3,
+                "gross_spread_per_unit": gross_spread_per_unit,
+                "net_profit_per_unit": net_profit_per_unit,
+                "net_profit": total_net_profit,
+                "margin_percent": profit_margin_percent(net_profit_per_unit, float(sell_order["price"])),
+                "sales_tax_rate": sales_tax_rate,
+                "pickup_order": sell_order,
+                "destination_order": buy_order,
+                "pickup_detour_jumps": pickup_detours.get(pickup_system_id, 0),
+                "origin_to_pickup_jumps": origin_to_pickup,
+                "pickup_to_destination_jumps": pickup_to_destination,
+                "extra_route_jumps": extra_route_jumps,
+            }
+        )
+
+    opportunities.sort(
+        key=lambda item: (
+            -float(item["net_profit"]),
+            int(item.get("extra_route_jumps") if item.get("extra_route_jumps") is not None else 99),
+            -float(item["net_profit_per_unit"]),
+            item["item_name"],
+        )
+    )
+    return {
+        "route_jumps": route_jumps,
+        "detour_jumps": clean_detour_jumps,
+        "cargo_capacity_m3": clean_cargo_capacity_m3,
+        "pickup_system_count": len(pickup_jump_distances),
+        "pickup_regions_scanned": len(scan_pickup_region_ids),
+        "pickup_regions_total": len(pickup_region_ids),
+        "pickup_region_truncated": pickup_region_truncated,
+        "destination_region_id": destination.region_id,
+        "scanned_materials": len(scan_targets),
+        "total_materials": len(material_targets),
+        "material_truncated": material_truncated,
+        "sell_order_count": total_sell_order_count,
+        "buy_order_count": total_buy_order_count,
+        "profitable_opportunities": len(opportunities),
+        "opportunities": opportunities[:MAX_FLIGHT_HAUL_OPPORTUNITIES],
+        "errors": errors[:12],
+        "sales_tax": sales_tax,
+        "pricing_note": (
+            "This scan compares public sell orders along the route corridor with public buy orders in the destination "
+            "system. Profit is after sales tax for selling into the destination buy order. The page does not place "
+            "orders or verify station docking access."
         ),
     }
 
@@ -2117,10 +2452,19 @@ def owned_blueprint_product_targets(
     blueprints: Iterable[dict[str, Any]],
     recipes: dict[int, IndustryRecipe],
 ) -> list[dict[str, Any]]:
-    blueprint_counts = count_by_type_id(item for item in blueprints if isinstance(item, dict))
+    owned_blueprints = [
+        blueprint
+        for item in blueprints
+        if isinstance(item, dict)
+        for blueprint in [owned_blueprint_from_esi(item)]
+        if blueprint is not None
+    ]
     targets_by_product_id: dict[int, dict[str, Any]] = {}
-    for blueprint_type_id, owned_blueprints in sorted(blueprint_counts.items(), key=lambda item: (-item[1], item[0])):
-        recipe = recipes.get(blueprint_type_id)
+    for blueprint in sorted(
+        owned_blueprints,
+        key=lambda item: (-blueprint_quality_rank(item)[0], -item.material_efficiency, -item.time_efficiency, item.type_id),
+    ):
+        recipe = recipes.get(blueprint.type_id)
         if recipe is None:
             continue
         target = targets_by_product_id.setdefault(
@@ -2132,9 +2476,38 @@ def owned_blueprint_product_targets(
                 "blueprint_type_id": recipe.blueprint_type_id,
                 "blueprint_name": recipe.blueprint_name,
                 "owned_blueprints": 0,
+                "owned_originals": 0,
+                "owned_copies": 0,
+                "blueprint_material_efficiency": 0,
+                "blueprint_time_efficiency": 0,
+                "blueprint_runs": None,
+                "blueprint_kind": "Blueprint",
+                "blueprint_usable": False,
             },
         )
-        target["owned_blueprints"] = int(target["owned_blueprints"]) + owned_blueprints
+        target["owned_blueprints"] = int(target["owned_blueprints"]) + 1
+        if blueprint.is_original:
+            target["owned_originals"] = int(target["owned_originals"]) + 1
+        if blueprint.is_copy:
+            target["owned_copies"] = int(target["owned_copies"]) + 1
+        current_rank = target.get("_quality_rank")
+        candidate_rank = blueprint_quality_rank(blueprint)
+        if current_rank is None or candidate_rank > current_rank:
+            target.update(
+                {
+                    "blueprint_type_id": recipe.blueprint_type_id,
+                    "blueprint_name": recipe.blueprint_name,
+                    "product_quantity": recipe.product_quantity,
+                    "blueprint_material_efficiency": blueprint.material_efficiency,
+                    "blueprint_time_efficiency": blueprint.time_efficiency,
+                    "blueprint_runs": blueprint.limited_runs,
+                    "blueprint_kind": blueprint.kind,
+                    "blueprint_usable": blueprint.usable_for_one_run,
+                    "_quality_rank": candidate_rank,
+                }
+            )
+    for target in targets_by_product_id.values():
+        target.pop("_quality_rank", None)
     return sorted(targets_by_product_id.values(), key=lambda item: (-int(item["owned_blueprints"]), item["product_name"]))
 
 
@@ -2203,6 +2576,129 @@ def build_reachable_market_order_record(
     }
 
 
+def industry_material_trade_targets(recipes: dict[int, IndustryRecipe]) -> list[dict[str, Any]]:
+    material_counts: dict[int, int] = {}
+    material_names: dict[int, str] = {}
+    material_volumes: dict[int, float | None] = {}
+    for recipe in recipes.values():
+        for material in recipe.materials:
+            material_counts[material.type_id] = material_counts.get(material.type_id, 0) + 1
+            material_names[material.type_id] = material.name
+            if material.volume_m3 is not None:
+                material_volumes[material.type_id] = material.volume_m3
+    targets = [
+        {
+            "type_id": type_id,
+            "name": material_names.get(type_id) or f"Type {type_id}",
+            "recipe_count": count,
+            "volume_m3": material_volumes.get(type_id),
+        }
+        for type_id, count in material_counts.items()
+    ]
+    return sorted(targets, key=lambda item: (-int(item["recipe_count"]), str(item["name"]), int(item["type_id"])))
+
+
+def resolve_route_system(route_cache: RouteGraphCache, name: str) -> RouteSystem | None:
+    systems = route_cache.systems or {}
+    normalized = normalize_system_name(name)
+    if not normalized:
+        normalized = normalize_system_name(DEFAULT_HAUL_DESTINATION_SYSTEM)
+    aliases = {
+        "dhira": "dihra",
+        "amarrhomeworld": "amarr",
+        "amarrhome": "amarr",
+    }
+    normalized = aliases.get(normalized, normalized)
+    for system in systems.values():
+        if normalize_system_name(system.name) == normalized:
+            return system
+    return None
+
+
+def normalize_system_name(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def shortest_route_path(
+    *,
+    start_system_id: int,
+    destination_system_id: int,
+    adjacency: dict[int, tuple[int, ...]],
+) -> list[int]:
+    if start_system_id <= 0 or destination_system_id <= 0:
+        return []
+    if start_system_id == destination_system_id:
+        return [start_system_id]
+    parents: dict[int, int | None] = {start_system_id: None}
+    frontier = [start_system_id]
+    cursor = 0
+    while cursor < len(frontier):
+        system_id = frontier[cursor]
+        cursor += 1
+        for neighbor_id in adjacency.get(system_id, ()):
+            if neighbor_id in parents:
+                continue
+            parents[neighbor_id] = system_id
+            if neighbor_id == destination_system_id:
+                path = [destination_system_id]
+                parent = system_id
+                while parent is not None:
+                    path.append(parent)
+                    parent = parents[parent]
+                return list(reversed(path))
+            frontier.append(neighbor_id)
+    return []
+
+
+def route_corridor_systems(
+    *,
+    route_path: list[int],
+    adjacency: dict[int, tuple[int, ...]],
+    detour_jumps: int,
+    destination_system_id: int,
+) -> dict[int, int]:
+    clean_detour_jumps = clamp_haul_detour_jumps(detour_jumps)
+    corridor: dict[int, int] = {}
+    for route_system_id in route_path:
+        nearby = jump_distances_within(
+            start_system_id=route_system_id,
+            max_jumps=clean_detour_jumps,
+            adjacency=adjacency,
+        )
+        for system_id, jumps_from_route in nearby.items():
+            if system_id == destination_system_id:
+                continue
+            previous = corridor.get(system_id)
+            if previous is None or jumps_from_route < previous:
+                corridor[system_id] = jumps_from_route
+    return corridor
+
+
+def jump_distances_from(
+    *,
+    start_system_id: int,
+    adjacency: dict[int, tuple[int, ...]],
+    max_jumps: int | None = None,
+) -> dict[int, int]:
+    if start_system_id <= 0:
+        return {}
+    distances = {start_system_id: 0}
+    frontier = [start_system_id]
+    cursor = 0
+    while cursor < len(frontier):
+        system_id = frontier[cursor]
+        cursor += 1
+        next_distance = distances[system_id] + 1
+        if max_jumps is not None and next_distance > max_jumps:
+            continue
+        for neighbor_id in adjacency.get(system_id, ()):
+            if neighbor_id in distances:
+                continue
+            distances[neighbor_id] = next_distance
+            frontier.append(neighbor_id)
+    return distances
+
+
 def jump_distances_within(
     *,
     start_system_id: int,
@@ -2232,6 +2728,22 @@ def clamp_flight_max_jumps(value: Any) -> int:
     return max(0, min(MAX_FLIGHT_MAX_JUMPS, jumps))
 
 
+def clamp_haul_detour_jumps(value: Any) -> int:
+    try:
+        jumps = int(value)
+    except (TypeError, ValueError):
+        jumps = DEFAULT_HAUL_DETOUR_JUMPS
+    return max(0, min(MAX_HAUL_DETOUR_JUMPS, jumps))
+
+
+def clamp_haul_cargo_m3(value: Any) -> float:
+    try:
+        cargo_m3 = float(value)
+    except (TypeError, ValueError):
+        cargo_m3 = DEFAULT_HAUL_CARGO_M3
+    return max(1.0, min(MAX_HAUL_CARGO_M3, cargo_m3))
+
+
 def clean_optional_int(value: Any) -> int | None:
     try:
         result = int(value)
@@ -2245,6 +2757,85 @@ def clean_optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def clean_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def clean_blueprint_efficiency(value: Any) -> int:
+    efficiency = clean_int(value)
+    return max(-100, min(99, efficiency))
+
+
+def owned_blueprint_from_esi(item: dict[str, Any]) -> OwnedBlueprint | None:
+    type_id = clean_optional_int(item.get("type_id"))
+    if not type_id:
+        return None
+    return OwnedBlueprint(
+        type_id=type_id,
+        material_efficiency=clean_blueprint_efficiency(item.get("material_efficiency")),
+        time_efficiency=clean_blueprint_efficiency(item.get("time_efficiency")),
+        runs=clean_int(item.get("runs")),
+        quantity=clean_int(item.get("quantity")),
+    )
+
+
+def blueprint_quality_rank(blueprint: OwnedBlueprint) -> tuple[int, int, int, int, int]:
+    run_rank = 1_000_000 if blueprint.limited_runs is None else blueprint.limited_runs
+    return (
+        1 if blueprint.usable_for_one_run else 0,
+        blueprint.material_efficiency,
+        blueprint.time_efficiency,
+        1 if blueprint.is_original else 0,
+        run_rank,
+    )
+
+
+def adjusted_material_quantity(base_quantity: int, material_efficiency: int, runs: int = 1) -> int:
+    clean_base = max(0, int(base_quantity))
+    clean_runs = max(1, int(runs))
+    if clean_base <= 0:
+        return 0
+    if clean_base == 1:
+        return clean_runs
+    efficiency = clean_blueprint_efficiency(material_efficiency)
+    numerator = clean_base * clean_runs * (100 - efficiency)
+    return max(1, -(-numerator // 100))
+
+
+def adjusted_recipe_materials(
+    recipe: IndustryRecipe,
+    *,
+    material_efficiency: int,
+    runs: int = 1,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "type_id": material.type_id,
+            "name": material.name,
+            "base_quantity": material.quantity * max(1, int(runs)),
+            "quantity": adjusted_material_quantity(material.quantity, material_efficiency, runs=runs),
+        }
+        for material in recipe.materials
+    ]
+
+
+def best_owned_blueprints_by_type(blueprints: Iterable[dict[str, Any]]) -> dict[int, OwnedBlueprint]:
+    best: dict[int, OwnedBlueprint] = {}
+    for item in blueprints:
+        if not isinstance(item, dict):
+            continue
+        blueprint = owned_blueprint_from_esi(item)
+        if blueprint is None:
+            continue
+        current = best.get(blueprint.type_id)
+        if current is None or blueprint_quality_rank(blueprint) > blueprint_quality_rank(current):
+            best[blueprint.type_id] = blueprint
+    return best
 
 
 def clamp_skill_level(value: Any) -> int:
@@ -2397,6 +2988,9 @@ def build_http_server(
             if path == "/api/flight/profitability":
                 self._handle_flight_profitability()
                 return
+            if path == "/api/flight/hauling":
+                self._handle_flight_hauling()
+                return
             if path == "/flight/login":
                 self._handle_flight_login()
                 return
@@ -2514,6 +3108,31 @@ def build_http_server(
             max_jumps = clamp_flight_max_jumps((query.get("max_jumps") or [DEFAULT_FLIGHT_MAX_JUMPS])[0])
             try:
                 payload = build_flight_profitability_payload(config=sso_config, session=session, max_jumps=max_jumps)
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
+        def _handle_flight_hauling(self) -> None:
+            if not sso_config.enabled:
+                self._send_json({"ok": False, "error": "EVE SSO is not configured."}, status=503)
+                return
+            session = self._flight_session()
+            if session is None:
+                self._send_json({"ok": False, "error": "Connect ESI before scanning hauler routes."}, status=401)
+                return
+            query = parse_qs(urlparse(self.path).query)
+            destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
+            detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
+            cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
+            try:
+                payload = build_flight_hauling_payload(
+                    config=sso_config,
+                    session=session,
+                    destination_name=destination,
+                    detour_jumps=detour_jumps,
+                    cargo_capacity_m3=cargo_m3,
+                )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
@@ -3515,6 +4134,7 @@ def _render_flight_attendant_dashboard() -> str:
     <nav class="tabbar" aria-label="Dashboard tabs">
       <button type="button" data-tab-target="market" aria-selected="true">Market Board</button>
       <button type="button" data-tab-target="flight" aria-selected="false">Flight Attendant</button>
+      <button type="button" data-tab-target="hauling" aria-selected="false">Hauler Routes</button>
     </nav>
 
     <main>
@@ -3736,6 +4356,81 @@ def _render_flight_attendant_dashboard() -> str:
           </section>
         </div>
       </section>
+
+      <section id="tab-hauling" class="tab-panel" data-tab-panel="hauling" hidden>
+        <div class="flight-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Hauler Routes</h2>
+                <div class="meta">Current ESI location to a hub, with pickup systems on or near that route.</div>
+              </div>
+              <span class="pill reserved">Manual Hauling</span>
+            </div>
+            <form id="haul-route-form" class="note-form">
+              <div class="row">
+                <label>Destination
+                  <input id="haul-destination" name="destination" autocomplete="off" value="Jita" placeholder="Jita, Hek, Rens, Dihra">
+                </label>
+                <label>Cargo m3
+                  <input id="haul-cargo-m3" name="cargo_m3" type="number" min="1" max="10000000" step="100" value="10000">
+                </label>
+              </div>
+              <div class="row">
+                <label>Pickup detour jumps
+                  <input id="haul-detour-jumps" name="detour_jumps" type="number" min="0" max="5" step="1" value="1">
+                </label>
+                <label>Scan mode
+                  <select disabled>
+                    <option>Common build materials</option>
+                  </select>
+                </label>
+              </div>
+              <div id="haul-hub-buttons" class="filters" aria-label="Hub shortcuts">
+                <button class="secondary" type="button" data-haul-destination="Jita">Jita</button>
+                <button class="secondary" type="button" data-haul-destination="Amarr">Amarr</button>
+                <button class="secondary" type="button" data-haul-destination="Hek">Hek</button>
+                <button class="secondary" type="button" data-haul-destination="Rens">Rens</button>
+                <button class="secondary" type="button" data-haul-destination="Dodixie">Dodixie</button>
+                <button class="secondary" type="button" data-haul-destination="Dihra">Dihra</button>
+              </div>
+              <button id="haul-scan" class="ghost" type="submit">Scan Route</button>
+            </form>
+            <div id="haul-route-summary" class="profit-summary">Connect ESI to scan route hauling opportunities.</div>
+            <div id="haul-route-path" class="meta"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Route Rules</h2>
+                <div class="meta">Public orders only, after-tax destination buy revenue, and no automatic market action.</div>
+              </div>
+            </div>
+            <ul class="charter-list">
+              <li><strong>Pickup side:</strong> lowest public sell order in systems on the route or inside the detour radius.</li>
+              <li><strong>Destination side:</strong> highest public buy order in the selected destination system.</li>
+              <li><strong>Cargo:</strong> capacity limits are applied when the local static cache includes item volume.</li>
+              <li><strong>Docking:</strong> the scan does not prove access to a station or structure.</li>
+              <li><strong>Manual pilot:</strong> every purchase, haul, sale, and route decision stays inside EVE.</li>
+            </ul>
+          </section>
+
+          <section class="panel profit-panel" aria-labelledby="haul-opportunity-title">
+            <div class="panel-header">
+              <div>
+                <div class="profit-title">
+                  <h2 id="haul-opportunity-title">Route Opportunities</h2>
+                  <span class="pill reserved">Buy Low / Sell High</span>
+                </div>
+                <div class="meta">Materials with cheap pickup orders near your route and stronger buy orders at the destination.</div>
+              </div>
+            </div>
+            <div id="haul-opportunity-summary" class="profit-summary">No route scan has run yet.</div>
+            <div id="haul-opportunity-top" class="decision-output"></div>
+          </section>
+        </div>
+      </section>
     </main>
   </div>
   <script>
@@ -3769,12 +4464,25 @@ def _render_flight_attendant_dashboard() -> str:
     const flightProfitSummary = document.querySelector("#flight-profit-summary");
     const flightProfitFilters = document.querySelector("#flight-profit-filters");
     const flightProfitTop = document.querySelector("#flight-profit-top");
+    const haulRouteForm = document.querySelector("#haul-route-form");
+    const haulDestination = document.querySelector("#haul-destination");
+    const haulCargoM3 = document.querySelector("#haul-cargo-m3");
+    const haulDetourJumps = document.querySelector("#haul-detour-jumps");
+    const haulHubButtons = document.querySelector("#haul-hub-buttons");
+    const haulScanButton = document.querySelector("#haul-scan");
+    const haulRouteSummary = document.querySelector("#haul-route-summary");
+    const haulRoutePath = document.querySelector("#haul-route-path");
+    const haulOpportunitySummary = document.querySelector("#haul-opportunity-summary");
+    const haulOpportunityTop = document.querySelector("#haul-opportunity-top");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
     const notesKey = "eve-flight-attendant-notes-v1";
     const jumpsKey = "eve-flight-attendant-max-jumps-v1";
-    const validTabs = new Set(["market", "flight"]);
+    const haulDestinationKey = "eve-flight-haul-destination-v1";
+    const haulCargoKey = "eve-flight-haul-cargo-m3-v1";
+    const haulDetourKey = "eve-flight-haul-detour-jumps-v1";
+    const validTabs = new Set(["market", "flight", "hauling"]);
     let filterType = "";
     let includeClosed = false;
     let flightProfitFilter = "all";
@@ -3928,6 +4636,11 @@ def _render_flight_attendant_dashboard() -> str:
       return `${(Number(value || 0) * 100).toFixed(2)}%`;
     }
 
+    function formatVolume(value) {
+      if (value == null) return "unknown";
+      return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2})} m3`;
+    }
+
     function readMaxJumps() {
       const value = Number(window.localStorage.getItem(jumpsKey) || flightMaxJumps.value || 5);
       if (!Number.isFinite(value)) return 5;
@@ -3939,6 +4652,30 @@ def _render_flight_attendant_dashboard() -> str:
       flightMaxJumps.value = String(jumps);
       window.localStorage.setItem(jumpsKey, String(jumps));
       return jumps;
+    }
+
+    function readHaulSettings() {
+      const destination = String(window.localStorage.getItem(haulDestinationKey) || haulDestination.value || "Jita").trim() || "Jita";
+      const cargo = Number(window.localStorage.getItem(haulCargoKey) || haulCargoM3.value || 10000);
+      const detour = Number(window.localStorage.getItem(haulDetourKey) || haulDetourJumps.value || 1);
+      return {
+        destination,
+        cargoM3: Math.max(1, Math.min(10000000, Math.round(Number.isFinite(cargo) ? cargo : 10000))),
+        detourJumps: Math.max(0, Math.min(5, Math.round(Number.isFinite(detour) ? detour : 1))),
+      };
+    }
+
+    function writeHaulSettings(settings) {
+      const destination = String(settings.destination || "Jita").trim() || "Jita";
+      const cargoM3 = Math.max(1, Math.min(10000000, Math.round(Number(settings.cargoM3) || 10000)));
+      const detourJumps = Math.max(0, Math.min(5, Math.round(Number(settings.detourJumps) || 0)));
+      haulDestination.value = destination;
+      haulCargoM3.value = String(cargoM3);
+      haulDetourJumps.value = String(detourJumps);
+      window.localStorage.setItem(haulDestinationKey, destination);
+      window.localStorage.setItem(haulCargoKey, String(cargoM3));
+      window.localStorage.setItem(haulDetourKey, String(detourJumps));
+      return {destination, cargoM3, detourJumps};
     }
 
     async function loadFlightStatus() {
@@ -3955,6 +4692,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightRoute("Flight Attendant route status is offline.");
         resetFlightBuyers("Flight Attendant buyer scanner is offline.");
         resetFlightProfitability("Flight Attendant profitability ranking is offline.");
+        resetFlightHauling("Flight Attendant hauler route scanner is offline.");
         resetFlightIndustry("Flight Attendant ESI status is offline.");
       }
     }
@@ -3976,6 +4714,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightRoute("Configure EVE SSO before calculating nearby systems.");
         resetFlightBuyers("Configure EVE SSO before scanning buyer orders.");
         resetFlightProfitability("Configure EVE SSO before ranking profitability.");
+        resetFlightHauling("Configure EVE SSO before scanning hauler routes.");
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
         return;
       }
@@ -3988,6 +4727,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightRoute("Connect ESI to calculate nearby systems.");
         resetFlightBuyers("Connect ESI to scan nearby public buy orders.");
         resetFlightProfitability("Connect ESI to rank owned blueprint profitability.");
+        resetFlightHauling("Connect ESI to scan route hauling opportunities.");
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
       }
@@ -4002,6 +4742,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightRoute("Resolve the ESI error before calculating nearby systems.");
         resetFlightBuyers("Resolve the ESI error before scanning buyer orders.");
         resetFlightProfitability("Resolve the ESI error before ranking profitability.");
+        resetFlightHauling("Resolve the ESI error before scanning hauler routes.");
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
         return;
       }
@@ -4015,6 +4756,7 @@ def _render_flight_attendant_dashboard() -> str:
       renderFlightRoute(data.nearby_systems || {});
       resetFlightBuyers(`Ready to scan buy orders within ${readMaxJumps()} jumps.`);
       resetFlightProfitability(`Ready to rank profitability within ${readMaxJumps()} jumps.`);
+      resetFlightHauling(`Ready to scan route hauling opportunities to ${readHaulSettings().destination}.`);
       loadFlightIndustry();
     }
 
@@ -4225,6 +4967,7 @@ def _render_flight_attendant_dashboard() -> str:
         const decisionClass = decisionClassName(decision.code);
         const afterTaxProfit = formatSignedIsk(product.taxed_replacement_profit);
         const afterTaxWalletGain = formatSignedIsk(product.taxed_cash_profit);
+        const blueprintQuality = renderBlueprintQuality(product);
         return `
           <div class="decision-row" data-decision="${escapeHtml(decision.code || "unknown")}">
             <div class="decision-head">
@@ -4237,7 +4980,7 @@ def _render_flight_attendant_dashboard() -> str:
               <div class="decision-metric"><span>True Profit</span><b>${afterTaxProfit} (${formatPercent(product.taxed_replacement_margin_percent)})</b><small>After sales tax; counts all materials as valuable.</small></div>
               <div class="decision-metric"><span>Wallet Gain</span><b>${afterTaxWalletGain} (${formatPercent(product.taxed_cash_margin_percent)})</b><small>After sales tax; only subtracts missing buys.</small></div>
               <div class="decision-metric"><span>Buyer</span><b>${buyer}</b></div>
-              <div class="decision-metric"><span>Materials</span><b>${build}</b></div>
+              <div class="decision-metric"><span>Materials</span><b>${build}</b><small>${blueprintQuality}</small></div>
             </div>
             <div class="meta">${missing}</div>
             ${renderProfitMathDetails(product)}
@@ -4248,12 +4991,13 @@ def _render_flight_attendant_dashboard() -> str:
 
     function renderProfitMathDetails(product) {
       const detailRows = [
+        ["Blueprint quality", renderBlueprintQuality(product)],
         ["Buyer revenue", formatIsk(product.product_revenue)],
         [`Sales tax (${formatRatePercent(product.sales_tax_rate)})`, `-${formatIsk(product.sales_tax)}`],
         ["Immediate-sale broker fee", formatIsk(product.broker_fee)],
         ["Net revenue after tax and fees", formatIsk(product.net_revenue)],
-        ["All materials value", `-${formatIsk(product.replacement_cost)}`],
-        ["Missing materials to buy", `-${formatIsk(product.missing_replacement_cost)}`],
+        ["ME-adjusted all materials value", `-${formatIsk(product.replacement_cost)}`],
+        ["ME-adjusted missing materials", `-${formatIsk(product.missing_replacement_cost)}`],
         ["Before-tax true profit", formatSignedIsk(product.replacement_profit)],
         ["Before-tax wallet gain", formatSignedIsk(product.cash_profit)],
       ];
@@ -4285,6 +5029,129 @@ def _render_flight_attendant_dashboard() -> str:
         "skip": "decision-skip",
       };
       return classes[code] || "decision-watch";
+    }
+
+    function resetFlightHauling(message) {
+      haulRouteSummary.textContent = message;
+      haulRoutePath.textContent = "";
+      haulOpportunitySummary.textContent = "No route scan has run yet.";
+      haulOpportunityTop.textContent = "";
+      haulScanButton.disabled = false;
+    }
+
+    async function loadFlightHauling() {
+      const settings = writeHaulSettings({
+        destination: haulDestination.value,
+        cargoM3: haulCargoM3.value,
+        detourJumps: haulDetourJumps.value,
+      });
+      haulScanButton.disabled = true;
+      haulRouteSummary.textContent = `Scanning route to ${settings.destination} with ${formatNumber(settings.detourJumps)} detour jumps...`;
+      haulRoutePath.textContent = "";
+      haulOpportunitySummary.innerHTML = `
+        <div class="progress-status" aria-live="polite">
+          <span class="progress-spinner" aria-hidden="true"></span>
+          <div class="progress-copy">
+            <strong>Comparing corridor sell orders and destination buy orders</strong>
+            <span>Cargo ${formatVolume(settings.cargoM3)}; destination ${escapeHtml(settings.destination)}.</span>
+          </div>
+        </div>
+        <div class="progress-bar" aria-hidden="true"><span></span></div>
+      `;
+      haulOpportunityTop.innerHTML = `<div class="decision-empty">Route opportunities will appear here when the scan finishes.</div>`;
+      try {
+        const params = new URLSearchParams({
+          destination: settings.destination,
+          cargo_m3: String(settings.cargoM3),
+          detour_jumps: String(settings.detourJumps),
+        });
+        const response = await fetch(`/api/flight/hauling?${params}`);
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Could not scan hauler route");
+        renderFlightHauling(data);
+      } catch (error) {
+        haulRouteSummary.textContent = error.message;
+        haulRoutePath.textContent = "";
+        haulOpportunitySummary.textContent = "Route scan failed.";
+        haulOpportunityTop.textContent = "";
+      } finally {
+        haulScanButton.disabled = false;
+      }
+    }
+
+    function renderFlightHauling(data) {
+      const route = data.route || {};
+      const hauling = data.hauling || {};
+      const origin = route.origin || {};
+      const destination = route.destination || {};
+      const salesTax = hauling.sales_tax || {};
+      const materialLimit = hauling.material_truncated ? ` Limited to ${formatNumber(hauling.scanned_materials)} of ${formatNumber(hauling.total_materials)} materials.` : "";
+      const regionLimit = hauling.pickup_region_truncated ? ` Limited to ${formatNumber(hauling.pickup_regions_scanned)} of ${formatNumber(hauling.pickup_regions_total)} pickup regions.` : "";
+      haulRouteSummary.innerHTML = `
+        <strong>${escapeHtml(origin.name || "Current system")}</strong> to
+        <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>:
+        ${formatNumber(route.route_jumps)} jumps, ${formatNumber(hauling.pickup_system_count)} pickup systems,
+        ${formatVolume(route.cargo_capacity_m3)} cargo.
+      `;
+      haulRoutePath.innerHTML = renderHaulRoutePath(route.systems || []);
+      haulOpportunitySummary.innerHTML = `
+        <div class="profit-stats">
+          <div class="profit-stat"><span>Profitable</span><b>${formatNumber(hauling.profitable_opportunities)}</b></div>
+          <div class="profit-stat"><span>Sell Orders</span><b>${formatNumber(hauling.sell_order_count)}</b></div>
+          <div class="profit-stat"><span>Buy Orders</span><b>${formatNumber(hauling.buy_order_count)}</b></div>
+          <div class="profit-stat"><span>Materials</span><b>${formatNumber(hauling.scanned_materials)}</b></div>
+        </div>
+        <div class="meta">
+          Pickup detour ${formatNumber(hauling.detour_jumps)} jumps; scanned ${formatNumber(hauling.pickup_regions_scanned)}
+          pickup regions.${escapeHtml(materialLimit + regionLimit)}
+        </div>
+        <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on destination buy-order sales.</div>
+        <div class="meta">${escapeHtml(hauling.pricing_note || "Public market order route scan.")}</div>
+      `;
+      haulOpportunityTop.innerHTML = renderHaulOpportunities(hauling.opportunities || []);
+    }
+
+    function renderHaulRoutePath(systems) {
+      if (!systems.length) return "No route path returned yet.";
+      const visible = systems.slice(0, 18).map((system) => escapeHtml(system.name)).join(" &rarr; ");
+      const hiddenCount = Math.max(0, systems.length - 18);
+      return hiddenCount ? `${visible} &rarr; ${formatNumber(hiddenCount)} more` : visible;
+    }
+
+    function renderHaulOpportunities(opportunities) {
+      if (!opportunities.length) return `<div class="decision-empty">No profitable route opportunities found for this destination yet.</div>`;
+      return `<div class="decision-list">${opportunities.slice(0, 12).map((item) => {
+        const pickup = item.pickup_order || {};
+        const destination = item.destination_order || {};
+        const extraJumps = item.extra_route_jumps == null ? "unknown" : `${formatNumber(item.extra_route_jumps)} extra`;
+        const cargoNote = item.volume_m3 == null
+          ? "volume unknown"
+          : `${formatVolume(item.volume_m3)} each${item.cargo_limited ? "; cargo limited" : ""}`;
+        return `
+          <div class="decision-row">
+            <div class="decision-head">
+              <strong>${escapeHtml(item.item_name)}</strong>
+              <span class="pill decision-build">${formatSignedIsk(item.net_profit)}</span>
+            </div>
+            <div class="decision-lede">Buy in ${escapeHtml(pickup.system_name || "pickup")} at ${formatIsk(pickup.price)}; sell in ${escapeHtml(destination.system_name || "destination")} at ${formatIsk(destination.price)}.</div>
+            <div class="decision-metrics">
+              <div class="decision-metric"><span>Units</span><b>${formatNumber(item.units)}</b><small>${escapeHtml(cargoNote)}</small></div>
+              <div class="decision-metric"><span>After-Tax Per Unit</span><b>${formatSignedIsk(item.net_profit_per_unit)}</b><small>${formatPercent(item.margin_percent)} on pickup cost.</small></div>
+              <div class="decision-metric"><span>Pickup</span><b>${escapeHtml(pickup.system_name || "unknown")}</b><small>${formatNumber(pickup.jumps)} jumps from current; ${formatNumber(item.pickup_detour_jumps)} from route.</small></div>
+              <div class="decision-metric"><span>Route</span><b>${escapeHtml(extraJumps)}</b><small>Origin-pickup-destination compared with direct route.</small></div>
+            </div>
+            <details class="profit-details">
+              <summary>Order details</summary>
+              <div class="profit-detail-grid">
+                <div class="profit-detail-row"><span>Pickup order remaining</span><b>${formatNumber(pickup.volume_remain)}</b></div>
+                <div class="profit-detail-row"><span>Destination order remaining</span><b>${formatNumber(destination.volume_remain)}</b></div>
+                <div class="profit-detail-row"><span>Gross spread per unit</span><b>${formatSignedIsk(item.gross_spread_per_unit)}</b></div>
+                <div class="profit-detail-row"><span>Sales tax</span><b>${formatRatePercent(item.sales_tax_rate)}</b></div>
+              </div>
+            </details>
+          </div>
+        `;
+      }).join("")}</div>`;
     }
 
     function resetFlightIndustry(message) {
@@ -4347,7 +5214,10 @@ def _render_flight_attendant_dashboard() -> str:
         const value = formatNumber(item[valueKey]);
         const product = item.product_name ? ` to ${escapeHtml(item.product_name)}` : "";
         const recipe = item.recipe_known === true ? " &middot; recipe" : item.recipe_known === false ? " &middot; no recipe" : "";
-        return `${escapeHtml(item.name)}${product} (${value})${recipe}`;
+        const quality = item.best_material_efficiency != null
+          ? ` &middot; ME ${formatNumber(item.best_material_efficiency)} / TE ${formatNumber(item.best_time_efficiency)}`
+          : "";
+        return `${escapeHtml(item.name)}${product} (${value})${recipe}${quality}`;
       }).join("<br>");
     }
 
@@ -4360,20 +5230,26 @@ def _render_flight_attendant_dashboard() -> str:
         Static recipes${build}: <strong>${formatNumber(recipes.known_blueprint_types)}</strong> known,
         <strong>${formatNumber(recipes.missing_blueprint_types)}</strong> missing.
         <br>One-run material coverage: <strong>${formatNumber(buildability.buildable_one_run_types)}</strong>
-        of <strong>${formatNumber(buildability.known_blueprint_types)}</strong> known types.
+        of <strong>${formatNumber(buildability.known_blueprint_types)}</strong> known types, using owned blueprint ME.
       `;
+    }
+
+    function renderBlueprintQuality(item) {
+      const runs = item.blueprint_runs == null ? "unlimited runs" : `${formatNumber(item.blueprint_runs)} runs`;
+      return `${escapeHtml(item.blueprint_kind || "Blueprint")} | ME ${formatNumber(item.blueprint_material_efficiency)} / TE ${formatNumber(item.blueprint_time_efficiency)} | ${runs}`;
     }
 
     function renderBuildabilityList(items) {
       if (!items.length) return "No recipe candidates ready yet.";
       return items.map((item) => {
+        const quality = renderBlueprintQuality(item);
         if (item.can_build_one_run) {
-          return `${escapeHtml(item.product_name)}: base one-run materials covered`;
+          return `${escapeHtml(item.product_name)}: ME-adjusted one-run materials covered (${quality})`;
         }
         const missing = (item.missing_materials || [])
           .map((material) => `${escapeHtml(material.name)} ${formatNumber(material.shortage)}`)
           .join(", ");
-        return `${escapeHtml(item.product_name)}: missing ${missing || "materials"}`;
+        return `${escapeHtml(item.product_name)}: missing ${missing || "materials"} (${quality})`;
       }).join("<br>");
     }
 
@@ -4495,6 +5371,22 @@ def _render_flight_attendant_dashboard() -> str:
       loadFlightProfitability();
     });
 
+    haulRouteForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadFlightHauling();
+    });
+
+    haulHubButtons.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-haul-destination]");
+      if (!button) return;
+      haulDestination.value = button.dataset.haulDestination || "Jita";
+      writeHaulSettings({
+        destination: haulDestination.value,
+        cargoM3: haulCargoM3.value,
+        detourJumps: haulDetourJumps.value,
+      });
+    });
+
     flightProfitFilters.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-profit-filter]");
       if (!button) return;
@@ -4517,6 +5409,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
 
     writeMaxJumps(readMaxJumps());
+    writeHaulSettings(readHaulSettings());
     showTab(initialTab());
     updateFilterButtons();
     renderNotes();

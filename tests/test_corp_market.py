@@ -21,6 +21,7 @@ from eve_voice_pilot.corp_market import (
     RouteSystem,
     build_discord_webhook_payload,
     build_flight_buyers_payload,
+    build_flight_hauling_payload,
     build_flight_industry_payload,
     build_flight_profitability_payload,
     build_flight_status_payload,
@@ -216,6 +217,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/industry" in page
     assert "/api/flight/buyers" in page
     assert "/api/flight/profitability" in page
+    assert "/api/flight/hauling" in page
     assert "/flight/login" in page
     assert "id=\"flight-system-name\"" in page
     assert "id=\"flight-login-link\"" in page
@@ -231,6 +233,12 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-profit-filters\"" in page
     assert "class=\"panel profit-panel\"" in page
     assert "id=\"flight-profit-top\" class=\"decision-output\"" in page
+    assert "data-tab-target=\"hauling\"" in page
+    assert "id=\"haul-route-form\"" in page
+    assert "id=\"haul-destination\"" in page
+    assert "id=\"haul-scan\"" in page
+    assert "id=\"haul-route-summary\"" in page
+    assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
     assert "data-profit-filter=\"build-now\"" in page
     assert "data-profit-filter=\"source-missing\"" in page
     assert "data-profit-filter=\"price-check\"" in page
@@ -241,6 +249,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Wallet Gain" in page
     assert "Math details" in page
     assert "Expected after tax and fees" in page
+    assert "ME-adjusted all materials value" in page
+    assert "ME-adjusted one-run materials covered" in page
 
 
 def test_flight_status_reports_missing_sso_configuration():
@@ -369,6 +379,14 @@ def test_sales_tax_profile_uses_accounting_skill_level():
     assert profile["broker_fee_rate"] == 0.0
 
 
+def test_adjusted_material_quantity_applies_blueprint_me_to_whole_job():
+    assert corp_market.adjusted_material_quantity(1000, 10) == 900
+    assert corp_market.adjusted_material_quantity(500, 10) == 450
+    assert corp_market.adjusted_material_quantity(333, 10) == 300
+    assert corp_market.adjusted_material_quantity(1, 10, runs=10) == 10
+    assert corp_market.adjusted_material_quantity(1000, -2) == 1020
+
+
 def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch, tmp_path):
     session = FlightEsiSession(
         character_id=123456789,
@@ -393,7 +411,7 @@ def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypa
         corp_market,
         "fetch_flight_blueprints",
         lambda config, session: [
-            {"type_id": 681, "quantity": -1},
+            {"type_id": 681, "quantity": -1, "runs": -1, "material_efficiency": 10, "time_efficiency": 20},
             {"type_id": 681, "quantity": -2},
             {"type_id": 983, "quantity": -1},
         ],
@@ -455,6 +473,9 @@ def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypa
     assert payload["industry"]["recipes"]["missing_blueprint_types"] == 1
     assert payload["industry"]["buildability"]["buildable_one_run_types"] == 1
     assert payload["industry"]["buildability"]["top_candidates"][0]["can_build_one_run"] is True
+    assert payload["industry"]["buildability"]["top_candidates"][0]["blueprint_material_efficiency"] == 10
+    assert payload["industry"]["blueprints"]["top_types"][0]["best_material_efficiency"] == 10
+    assert payload["industry"]["blueprints"]["top_types"][0]["best_time_efficiency"] == 20
     assert payload["industry"]["assets"]["stacks"] == 3
     assert payload["industry"]["assets"]["unique_types"] == 2
     assert payload["industry"]["assets"]["total_units"] == 9000
@@ -659,7 +680,19 @@ def test_build_flight_buyers_payload_scans_nearby_owned_blueprint_products(monke
             "updated_at": "2026-06-04T00:00:00Z",
         },
     )
-    monkeypatch.setattr(corp_market, "fetch_flight_blueprints", lambda config, session: [{"type_id": 681, "quantity": -1}])
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_blueprints",
+        lambda config, session: [
+            {
+                "type_id": 681,
+                "quantity": -1,
+                "runs": -1,
+                "material_efficiency": 10,
+                "time_efficiency": 20,
+            }
+        ],
+    )
     monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
     monkeypatch.setattr(corp_market, "load_industry_recipe_cache", lambda: recipe_cache)
 
@@ -766,7 +799,19 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
             "updated_at": "2026-06-04T00:00:00Z",
         },
     )
-    monkeypatch.setattr(corp_market, "fetch_flight_blueprints", lambda config, session: [{"type_id": 681, "quantity": -1}])
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_blueprints",
+        lambda config, session: [
+            {
+                "type_id": 681,
+                "quantity": -1,
+                "runs": -1,
+                "material_efficiency": 10,
+                "time_efficiency": 20,
+            }
+        ],
+    )
     monkeypatch.setattr(
         corp_market,
         "fetch_flight_assets",
@@ -858,21 +903,213 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
     assert product["sales_tax"] == pytest.approx(337.5)
     assert product["broker_fee"] == 0.0
     assert product["net_revenue"] == pytest.approx(9662.5)
-    assert product["replacement_cost"] == 4500.0
-    assert product["replacement_profit"] == 5500.0
-    assert product["replacement_margin_percent"] == 55.0
-    assert product["taxed_replacement_profit"] == pytest.approx(5162.5)
-    assert product["taxed_replacement_margin_percent"] == pytest.approx(51.625)
-    assert product["missing_replacement_cost"] == 2000.0
-    assert product["cash_profit"] == 8000.0
-    assert product["cash_margin_percent"] == 80.0
-    assert product["taxed_cash_profit"] == pytest.approx(7662.5)
-    assert product["taxed_cash_margin_percent"] == pytest.approx(76.625)
+    assert product["blueprint_material_efficiency"] == 10
+    assert product["blueprint_time_efficiency"] == 20
+    assert product["blueprint_kind"] == "Original"
+    assert product["blueprint_runs"] is None
+    assert product["replacement_cost"] == 4050.0
+    assert product["replacement_profit"] == 5950.0
+    assert product["replacement_margin_percent"] == 59.5
+    assert product["taxed_replacement_profit"] == pytest.approx(5612.5)
+    assert product["taxed_replacement_margin_percent"] == pytest.approx(56.125)
+    assert product["missing_replacement_cost"] == 1750.0
+    assert product["cash_profit"] == 8250.0
+    assert product["cash_margin_percent"] == 82.5
+    assert product["taxed_cash_profit"] == pytest.approx(7912.5)
+    assert product["taxed_cash_margin_percent"] == pytest.approx(79.125)
     assert product["can_build_one_run"] is False
     assert product["missing_material_types"] == 1
     assert product["missing_materials"][0]["name"] == "Pyerite"
-    assert product["missing_materials"][0]["missing"] == 400
+    assert product["missing_materials"][0]["base_required"] == 500
+    assert product["missing_materials"][0]["required"] == 450
+    assert product["missing_materials"][0]["missing"] == 350
     assert product["confidence"] == "strong"
+
+
+def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeypatch, tmp_path):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Hauler Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(
+            "esi-location.read_location.v1",
+            "esi-skills.read_skills.v1",
+        ),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+    route_cache = RouteGraphCache(
+        path=tmp_path / "route.json",
+        available=True,
+        build_number=3374020,
+        systems={
+            1: RouteSystem(solar_system_id=1, name="Start", region_id=100, security_status=0.9),
+            2: RouteSystem(solar_system_id=2, name="Middle", region_id=100, security_status=0.8),
+            3: RouteSystem(solar_system_id=3, name="Jita", region_id=200, security_status=0.9),
+            4: RouteSystem(solar_system_id=4, name="Side Pickup", region_id=100, security_status=0.7),
+            5: RouteSystem(solar_system_id=5, name="Too Far", region_id=100, security_status=0.6),
+            6: RouteSystem(solar_system_id=6, name="Other Destination", region_id=200, security_status=0.9),
+        },
+        adjacency={
+            1: (2,),
+            2: (1, 3, 4),
+            3: (2,),
+            4: (2, 5),
+            5: (4,),
+            6: (),
+        },
+    )
+    recipe_cache = IndustryRecipeCache(
+        path=tmp_path / "recipes.json",
+        available=True,
+        build_number=3374020,
+        recipes={
+            681: IndustryRecipe(
+                blueprint_type_id=681,
+                blueprint_name="Hobgoblin I Blueprint",
+                product_type_id=165,
+                product_name="Hobgoblin I",
+                product_quantity=1,
+                materials=(
+                    IndustryMaterial(type_id=34, name="Tritanium", quantity=1000, volume_m3=0.01),
+                    IndustryMaterial(type_id=35, name="Pyerite", quantity=500, volume_m3=0.01),
+                ),
+            )
+        },
+    )
+    sell_calls = []
+    buy_calls = []
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_location",
+        lambda config, session: {
+            "solar_system_id": 1,
+            "solar_system_name": "Start",
+            "updated_at": "2026-06-04T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_skills",
+        lambda config, session: {
+            "skills": [
+                {
+                    "skill_id": corp_market.ACCOUNTING_SKILL_TYPE_ID,
+                    "active_skill_level": 5,
+                    "trained_skill_level": 5,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
+    monkeypatch.setattr(corp_market, "load_industry_recipe_cache", lambda: recipe_cache)
+
+    def fake_fetch_market_sell_orders(config, *, region_id, type_id):
+        sell_calls.append((region_id, type_id))
+        if type_id == 34:
+            return [
+                {
+                    "order_id": 20,
+                    "is_buy_order": False,
+                    "system_id": 4,
+                    "location_id": 60008494,
+                    "price": 2.0,
+                    "volume_remain": 5000,
+                    "min_volume": 1,
+                },
+                {
+                    "order_id": 21,
+                    "is_buy_order": False,
+                    "system_id": 5,
+                    "location_id": 60008495,
+                    "price": 1.0,
+                    "volume_remain": 9999,
+                    "min_volume": 1,
+                },
+            ]
+        return [
+            {
+                "order_id": 22,
+                "is_buy_order": False,
+                "system_id": 2,
+                "location_id": 60008496,
+                "price": 7.0,
+                "volume_remain": 2000,
+                "min_volume": 1,
+            }
+        ]
+
+    def fake_fetch_market_buy_orders(config, *, region_id, type_id):
+        buy_calls.append((region_id, type_id))
+        if type_id == 34:
+            return [
+                {
+                    "order_id": 30,
+                    "is_buy_order": True,
+                    "system_id": 3,
+                    "location_id": 60003760,
+                    "price": 8.0,
+                    "volume_remain": 2000,
+                    "min_volume": 1,
+                },
+                {
+                    "order_id": 31,
+                    "is_buy_order": True,
+                    "system_id": 6,
+                    "location_id": 60003761,
+                    "price": 99.0,
+                    "volume_remain": 9999,
+                    "min_volume": 1,
+                },
+            ]
+        return [
+            {
+                "order_id": 32,
+                "is_buy_order": True,
+                "system_id": 3,
+                "location_id": 60003760,
+                "price": 7.1,
+                "volume_remain": 2000,
+                "min_volume": 1,
+            }
+        ]
+
+    monkeypatch.setattr(corp_market, "fetch_market_sell_orders", fake_fetch_market_sell_orders)
+    monkeypatch.setattr(corp_market, "fetch_market_buy_orders", fake_fetch_market_buy_orders)
+
+    payload = build_flight_hauling_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        destination_name="Jita",
+        detour_jumps=1,
+        cargo_capacity_m3=10,
+    )
+
+    assert payload["ok"] is True
+    assert payload["route"]["origin"]["name"] == "Start"
+    assert payload["route"]["destination"]["name"] == "Jita"
+    assert payload["route"]["route_jumps"] == 2
+    assert sorted(sell_calls) == [(100, 34), (100, 35)]
+    assert sorted(buy_calls) == [(200, 34), (200, 35)]
+    hauling = payload["hauling"]
+    assert hauling["profitable_opportunities"] == 1
+    assert hauling["sales_tax"]["accounting_level"] == 5
+    opportunity = hauling["opportunities"][0]
+    assert opportunity["item_name"] == "Tritanium"
+    assert opportunity["units"] == 1000
+    assert opportunity["cargo_limited"] is True
+    assert opportunity["pickup_order"]["system_name"] == "Side Pickup"
+    assert opportunity["destination_order"]["system_name"] == "Jita"
+    assert opportunity["pickup_detour_jumps"] == 1
+    assert opportunity["extra_route_jumps"] == 2
+    assert opportunity["gross_spread_per_unit"] == 6.0
+    assert opportunity["net_profit_per_unit"] == pytest.approx(5.73)
+    assert opportunity["net_profit"] == pytest.approx(5730.0)
 
 
 def test_fetch_market_buy_orders_uses_public_market_endpoint(monkeypatch):

@@ -37,6 +37,7 @@ The first version is a safe briefing surface:
 - It can compare owned blueprint type IDs with a local static recipe cache before market pricing is added.
 - It can use a local SDE route graph to show systems within the selected jump range of the current ESI location.
 - It can scan public ESI buy orders for products made by owned blueprints and filter those buyer orders to the selected jump range.
+- It includes a `Hauler Routes` tab that compares cheap public material sell orders on or near a selected route with higher public buy orders in the destination system.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
@@ -57,6 +58,8 @@ Request these scopes:
 esi-location.read_location.v1
 esi-assets.read_assets.v1
 esi-characters.read_blueprints.v1
+esi-skills.read_skills.v1
+esi-characters.read_standings.v1
 ```
 
 Start the market board with your SSO app credentials, either through environment variables:
@@ -95,6 +98,18 @@ If these caches are missing, the Flight Attendant tab still requires ESI and wil
 ### Buyer Order Scanner
 
 The Flight Attendant buyer scanner uses your connected ESI location and blueprint list, the local recipe cache, the local route graph, and public ESI market orders. It does not reveal buyer character names because public ESI market orders do not expose those identities. It shows public buy orders by product, price, remaining volume, system, and jumps from your current location.
+
+### Hauler Route Scanner
+
+The `Hauler Routes` tab uses your connected ESI location as the route start. Pick a destination such as Jita, Amarr, Hek, Rens, Dodixie, or Dihra, then scan for common build materials that can be bought from public sell orders on or near the route and sold into public buy orders in the destination system.
+
+The scan ranks opportunities by after-tax profit using your Accounting skill. It is an advisory board only: it does not buy items, sell items, create contracts, move the ship, or prove docking access at the listed structure.
+
+Cargo capacity is applied when the local recipe cache includes `volume_m3`. Run the static cache refresh again after this update if the hauler tab says volume is unknown:
+
+```powershell
+python .\scripts\update_industry_recipe_cache.py
+```
 
 ## Discord Channel Posting
 
