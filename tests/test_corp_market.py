@@ -305,8 +305,15 @@ def test_dashboard_includes_flight_esi_hooks():
     assert page.count("id=\"tab-reprocessing\"") == 1
     assert "https://images.evetech.net/types/" in page
     assert "reprocess-field-desk" in page
+    assert "reprocess-status-rail" in page
+    assert "field-notebook" in page
+    assert "minerals-total" in page
+    assert "reprocess-desk-footer" in page
     assert "ore-specimen" in page
     assert "mineral-card" in page
+    assert "Yield Breakdown" in page
+    assert "Processing Fee" in page
+    assert "Standing Row Used" in page
     assert "Selected Ore" in page
     assert "Awaiting calculation" in page
     assert "Recovered Minerals" in page

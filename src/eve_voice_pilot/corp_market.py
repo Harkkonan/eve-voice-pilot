@@ -8851,10 +8851,11 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .reprocess-field-desk {
       display: grid;
-      grid-template-columns: minmax(220px, .68fr) minmax(300px, 1.32fr);
+      grid-template-columns: minmax(240px, .72fr) minmax(320px, .9fr) minmax(520px, 1.38fr);
       grid-template-areas:
-        "sample ledger"
-        "sample tray";
+        "rail rail rail"
+        "sample notebook tray"
+        "footer footer footer";
       gap: 13px;
       position: relative;
     }
@@ -8869,8 +8870,10 @@ def _render_flight_attendant_dashboard() -> str:
       opacity: .8;
     }
     .ore-specimen,
-    .assay-ledger,
-    .mineral-tray {
+    .reprocess-status-rail,
+    .field-notebook,
+    .mineral-tray,
+    .reprocess-desk-footer {
       position: relative;
       z-index: 1;
       border: 1px solid rgba(85, 111, 103, .78);
@@ -8889,6 +8892,47 @@ def _render_flight_attendant_dashboard() -> str:
         linear-gradient(180deg, rgba(224, 168, 74, .12), rgba(8, 13, 15, .72)),
         rgba(17, 24, 25, .84);
     }
+    .reprocess-status-rail {
+      grid-area: rail;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      border-color: rgba(63, 85, 80, .9);
+      background:
+        linear-gradient(180deg, rgba(17, 24, 25, .96), rgba(7, 11, 13, .86)),
+        rgba(8, 13, 15, .9);
+      padding: 0;
+      overflow: hidden;
+    }
+    .status-rail-cell {
+      min-height: 70px;
+      padding: 11px 14px;
+      border-right: 1px solid rgba(63, 85, 80, .62);
+    }
+    .status-rail-cell:last-child { border-right: 0; }
+    .status-rail-cell span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .status-rail-cell b {
+      display: block;
+      color: var(--text);
+      font-size: 17px;
+      line-height: 1.18;
+      margin-top: 5px;
+      overflow-wrap: anywhere;
+    }
+    .status-rail-cell small {
+      display: block;
+      color: var(--muted);
+      line-height: 1.25;
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .status-rail-cell .green { color: var(--green); }
     .assay-ledger {
       grid-area: ledger;
       display: grid;
@@ -8926,6 +8970,99 @@ def _render_flight_attendant_dashboard() -> str:
       line-height: 1.25;
       margin-top: 3px;
     }
+    .field-notebook {
+      grid-area: notebook;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      color: #1f231d;
+      border-color: rgba(224, 168, 74, .52);
+      padding: 14px 14px 14px 38px;
+      background:
+        repeating-linear-gradient(0deg, rgba(88, 74, 50, .18) 0 1px, transparent 1px 27px),
+        repeating-linear-gradient(90deg, rgba(88, 74, 50, .12) 0 1px, transparent 1px 27px),
+        linear-gradient(180deg, #d8ceb3, #bfb191);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 16px 38px rgba(0, 0, 0, .32);
+    }
+    .field-notebook::before {
+      content: "";
+      position: absolute;
+      left: 13px;
+      top: 12px;
+      bottom: 12px;
+      width: 10px;
+      border-left: 2px solid rgba(50, 39, 24, .35);
+      background:
+        radial-gradient(circle, rgba(35, 29, 20, .9) 0 3px, transparent 4px) 0 10px / 10px 30px repeat-y;
+      opacity: .7;
+    }
+    .notebook-section {
+      position: relative;
+      z-index: 1;
+      border-top: 1px solid rgba(61, 51, 34, .28);
+      padding-top: 9px;
+    }
+    .notebook-section:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+    .notebook-ribbon {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      margin-bottom: 7px;
+      padding: 4px 10px;
+      border-radius: 3px;
+      color: #e8e0c7;
+      background: linear-gradient(180deg, #2b2c28, #141615);
+      box-shadow: 0 2px 0 rgba(0, 0, 0, .28);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .notebook-math-row,
+    .notebook-value-row,
+    .notebook-standing-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: baseline;
+      color: #25281f;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .notebook-math-row b,
+    .notebook-value-row b,
+    .notebook-standing-row b { color: #1b1d17; }
+    .notebook-math-row.is-total,
+    .notebook-value-row.is-total {
+      margin-top: 5px;
+      padding-top: 5px;
+      border-top: 1px solid rgba(61, 51, 34, .32);
+      color: #2d6b34;
+      font-weight: 900;
+    }
+    .notebook-fee-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      border: 1px solid rgba(61, 51, 34, .22);
+      border-radius: 4px;
+      background: rgba(255, 248, 224, .24);
+      padding: 9px;
+    }
+    .notebook-fee-card div { display: grid; gap: 2px; }
+    .notebook-fee-card span { color: #514735; font-size: 11px; font-weight: 800; text-transform: uppercase; }
+    .notebook-fee-card b { color: #1b1d17; font-size: 18px; }
+    .notebook-fee-card .fee-arrow { color: #2d6b34; font-size: 22px; text-align: center; }
+    .notebook-value-grid { display: grid; gap: 4px; }
+    .notebook-note {
+      color: #453c2c;
+      font-size: 12px;
+      line-height: 1.35;
+    }
     .mineral-tray {
       grid-area: tray;
       padding: 13px;
@@ -8942,15 +9079,28 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .tray-heading strong { color: var(--text); font-size: 17px; }
     .tray-heading span { color: var(--amber); font-size: 12px; font-weight: 800; }
+    .minerals-total {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      margin-top: 12px;
+      border: 1px solid rgba(224, 168, 74, .4);
+      border-radius: 6px;
+      background: rgba(5, 9, 11, .48);
+      padding: 10px 12px;
+    }
+    .minerals-total span { color: var(--muted); }
+    .minerals-total b { color: var(--amber); font-size: 18px; }
     .mineral-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
       gap: 10px;
     }
     .mineral-card {
       --sample-accent: var(--cyan);
       display: grid;
-      grid-template-columns: 78px minmax(0, 1fr);
+      grid-template-columns: 1fr;
       gap: 10px;
       position: relative;
       min-width: 0;
@@ -8959,7 +9109,7 @@ def _render_flight_attendant_dashboard() -> str:
       background:
         linear-gradient(135deg, color-mix(in srgb, var(--sample-accent) 14%, transparent), transparent 48%),
         rgba(8, 13, 15, .74);
-      padding: 10px;
+      padding: 12px;
       overflow: hidden;
     }
     .mineral-card.is-empty {
@@ -9011,8 +9161,8 @@ def _render_flight_attendant_dashboard() -> str:
       min-height: 162px;
     }
     .specimen-image-frame.mineral-image {
-      width: 78px;
-      height: 78px;
+      width: 100%;
+      height: 118px;
     }
     .specimen-image-frame img {
       position: relative;
@@ -9049,6 +9199,8 @@ def _render_flight_attendant_dashboard() -> str:
       font-size: 16px;
       line-height: 1.18;
       overflow-wrap: anywhere;
+      letter-spacing: .04em;
+      text-transform: uppercase;
     }
     .sample-qty {
       border: 1px solid color-mix(in srgb, var(--sample-accent) 55%, rgba(63, 85, 80, .8));
@@ -9060,9 +9212,16 @@ def _render_flight_attendant_dashboard() -> str:
       font-weight: 900;
       white-space: nowrap;
     }
+    .mineral-card .sample-qty {
+      justify-self: end;
+      color: #d7ffd6;
+      font-size: 17px;
+      border-color: color-mix(in srgb, var(--sample-accent) 60%, rgba(63, 85, 80, .8));
+      background: color-mix(in srgb, var(--sample-accent) 20%, rgba(8, 13, 15, .86));
+    }
     .sample-ledger {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: 1fr;
       gap: 6px;
     }
     .sample-ledger .decision-metric {
@@ -9070,7 +9229,15 @@ def _render_flight_attendant_dashboard() -> str:
       padding: 7px;
       background: rgba(17, 24, 25, .56);
     }
-    .sample-ledger .decision-metric b { font-size: 12px; }
+    .sample-ledger .decision-metric {
+      display: grid;
+      grid-template-columns: minmax(0, .85fr) minmax(0, 1fr);
+      gap: 8px;
+      align-items: baseline;
+    }
+    .sample-ledger .decision-metric span { color: color-mix(in srgb, var(--sample-accent) 62%, var(--muted)); }
+    .sample-ledger .decision-metric b { font-size: 13px; text-align: right; }
+    .sample-ledger .decision-metric small { grid-column: 1 / -1; }
     .sample-flow {
       display: flex;
       flex-wrap: wrap;
@@ -9094,6 +9261,21 @@ def _render_flight_attendant_dashboard() -> str:
       background: rgba(224, 168, 74, .08);
       padding: 9px 10px;
     }
+    .reprocess-desk-footer {
+      grid-area: footer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      background: rgba(8, 13, 15, .62);
+    }
+    .reprocess-desk-footer span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .reprocess-desk-footer b { color: var(--text); }
     .profit-details {
       border-top: 1px solid rgba(63, 85, 80, .52);
       margin-top: 10px;
@@ -9161,11 +9343,14 @@ def _render_flight_attendant_dashboard() -> str:
       .reprocess-field-desk {
         grid-template-columns: 1fr;
         grid-template-areas:
+          "rail"
           "sample"
-          "ledger"
-          "tray";
+          "notebook"
+          "tray"
+          "footer";
       }
-      .assay-ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .reprocess-status-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .status-rail-cell { border-bottom: 1px solid rgba(63, 85, 80, .5); }
     }
     @media (max-width: 720px) {
       .shell { width: auto; margin: 0 10px; }
@@ -9181,9 +9366,11 @@ def _render_flight_attendant_dashboard() -> str:
       .offer, .note-card { grid-template-columns: 1fr; }
       .profit-panel { min-height: 360px; }
       .profit-actions { display: grid; grid-template-columns: 1fr; }
-      .assay-ledger, .ore-readouts, .sample-ledger, .mineral-grid { grid-template-columns: 1fr; }
-      .mineral-card { grid-template-columns: 66px minmax(0, 1fr); }
-      .specimen-image-frame.mineral-image { width: 66px; height: 66px; }
+      .reprocess-status-rail, .ore-readouts, .sample-ledger, .mineral-grid { grid-template-columns: 1fr; }
+      .field-notebook { padding-left: 32px; }
+      .notebook-fee-card { grid-template-columns: 1fr; }
+      .notebook-fee-card .fee-arrow { transform: rotate(90deg); }
+      .specimen-image-frame.mineral-image { height: 96px; }
       .actions { justify-content: stretch; max-width: none; }
       .actions a, .actions button { flex: 1; }
     }
@@ -12125,6 +12312,7 @@ def _render_flight_attendant_dashboard() -> str:
       `).join("");
       return `
         <div class="reprocess-field-desk">
+          ${renderReprocessingStatusRail({})}
           <aside class="ore-specimen">
             ${renderEveTypeIcon(ore.typeId, ore.name, "ore-image", 128)}
             <div class="ore-copy">
@@ -12133,11 +12321,7 @@ def _render_flight_attendant_dashboard() -> str:
               <p>${escapeHtml(message || "Run the calculation to inspect recovered minerals.")}</p>
             </div>
           </aside>
-          <div class="assay-ledger">
-            <div class="assay-cell"><span>Output</span><b>Pending</b><small>Full portions only</small></div>
-            <div class="assay-cell"><span>Jita Buy</span><b>Pending</b><small>Public buy orders</small></div>
-            <div class="assay-cell"><span>EVE Est.</span><b>Pending</b><small>ESI market prices</small></div>
-          </div>
+          ${renderReprocessingEmptyNotebook(message)}
           <div class="mineral-tray">
             <div class="tray-heading">
               <strong>Recovered Minerals</strong>
@@ -12145,7 +12329,55 @@ def _render_flight_attendant_dashboard() -> str:
             </div>
             <div class="mineral-grid">${emptyCards}</div>
           </div>
+          <div class="reprocess-desk-footer">
+            <span><b>Images:</b> EVE Image Server type icons.</span>
+            <span><b>Status:</b> Awaiting a completed assay.</span>
+          </div>
         </div>
+      `;
+    }
+
+    function renderReprocessingStatusRail(data) {
+      const facility = data.facility || {};
+      const yieldData = data.yield || {};
+      const owner = facility.owner_name || (facility.owner_id ? `Owner ${facility.owner_id}` : "pending");
+      const standing = facility.standing == null ? "unknown" : Number(facility.standing).toFixed(2);
+      const baseFee = facility.base_station_tax_percent == null ? "pending" : formatPercent(facility.base_station_tax_percent);
+      const adjustedTax = facility.adjusted_station_tax_percent ?? facility.station_tax_percent ?? yieldData.station_tax_percent;
+      const adjustedFee = facility.adjusted_station_tax_percent == null && yieldData.station_tax_percent == null
+        ? "pending"
+        : formatPercent(facility.adjusted_station_tax_percent ?? yieldData.station_tax_percent);
+      return `
+        <div class="reprocess-status-rail">
+          <div class="status-rail-cell"><span>Location</span><b>${escapeHtml(facility.location_name || "Pending location")}</b><small>${escapeHtml(facility.location_kind || "current ESI location")}</small></div>
+          <div class="status-rail-cell"><span>Facility</span><b>${escapeHtml(owner)}</b><small>${escapeHtml(facility.source || "waiting for ESI")}</small></div>
+          <div class="status-rail-cell"><span>Standing</span><b>${escapeHtml(standing)}</b><small>${adjustedTax == null ? "tax pending" : `${formatPercent(adjustedTax)} tax`}</small></div>
+          <div class="status-rail-cell"><span>Total Efficiency</span><b class="green">${formatPercent(yieldData.net_yield_percent)}</b><small>Net yield</small></div>
+          <div class="status-rail-cell"><span>Processing Fee</span><b>${escapeHtml(adjustedFee)}</b><small>Base ${escapeHtml(baseFee)}</small></div>
+        </div>
+      `;
+    }
+
+    function renderReprocessingEmptyNotebook(message) {
+      return `
+        <section class="field-notebook">
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Yield Breakdown</span>
+            <div class="notebook-note">${escapeHtml(message || "Run the calculation to fill the assay notebook.")}</div>
+          </div>
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Processing Fee</span>
+            <div class="notebook-fee-card">
+              <div><span>Base Fee</span><b>Pending</b></div>
+              <div class="fee-arrow">-></div>
+              <div><span>Adjusted Fee</span><b>Pending</b></div>
+            </div>
+          </div>
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Value Comparison</span>
+            <div class="notebook-note">Jita buy-order and EVE estimated-price values appear here after the calculation.</div>
+          </div>
+        </section>
       `;
     }
 
@@ -12173,27 +12405,88 @@ def _render_flight_attendant_dashboard() -> str:
       `;
     }
 
-    function renderReprocessingAssayLedger(data) {
-      const materials = data.materials || [];
+    function renderReprocessingNotebook(data, notes) {
+      const facility = data.facility || {};
+      const yieldData = data.yield || {};
+      const breakdown = yieldData.breakdown || {};
       const valuation = data.jita_valuation || {};
       const eveEstimate = valuation.eve_estimate || {};
-      const totalNet = materials.reduce((sum, material) => sum + Number(material.net_quantity || 0), 0);
+      const specializationName = breakdown.specialization_skill_name || "Ore specialization";
+      const baseFee = facility.base_station_tax_percent == null ? yieldData.station_tax_percent : facility.base_station_tax_percent;
+      const adjustedFee = facility.adjusted_station_tax_percent ?? yieldData.station_tax_percent;
+      const noteRows = (notes || []).slice(0, 4).map((note) => `<div class="notebook-note">${escapeHtml(note)}</div>`).join("");
+      const row = facility.standing_row || {};
+      const owner = facility.owner_name || (facility.owner_id ? `Owner ${facility.owner_id}` : "unknown owner");
+      const standingText = row.standing == null
+        ? `No standing row found for ${owner}; base fee is used.`
+        : `${row.from_type || row.raw_from_type || "unknown"} ${row.from_id || ""} (${owner}), standing ${Number(row.standing).toFixed(2)}.`;
       return `
-        <div class="assay-ledger">
-          <div class="assay-cell"><span>Recovered Stacks</span><b>${formatNumber(materials.length)}</b><small>${formatNumber(totalNet)} total units</small></div>
-          <div class="assay-cell"><span>Jita Buy Output</span><b>${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)}</b><small>${renderReprocessingJitaDelta(valuation)}</small></div>
-          <div class="assay-cell"><span>EVE Est. Output</span><b>${renderReprocessingJitaValue(eveEstimate.processed_material_value, eveEstimate.processed_partial_material_value)}</b><small>${renderReprocessingEveEstimateDelta(eveEstimate)}</small></div>
-        </div>
+        <section class="field-notebook">
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Yield Breakdown</span>
+            <div class="notebook-math-row"><span>Facility base yield</span><b>${formatPercent(breakdown.facility_yield_percent)}</b></div>
+            <div class="notebook-math-row"><span>Reprocessing</span><b>${formatMultiplier(breakdown.reprocessing_multiplier)}</b></div>
+            <div class="notebook-math-row"><span>Reprocessing Efficiency</span><b>${formatMultiplier(breakdown.reprocessing_efficiency_multiplier)}</b></div>
+            <div class="notebook-math-row"><span>${escapeHtml(specializationName)}</span><b>${formatMultiplier(breakdown.specialization_multiplier)}</b></div>
+            <div class="notebook-math-row"><span>Implant</span><b>${formatMultiplier(breakdown.implant_multiplier)}</b></div>
+            <div class="notebook-math-row"><span>Structure bonus</span><b>${formatMultiplier(breakdown.structure_multiplier)}</b></div>
+            <div class="notebook-math-row"><span>Gross yield</span><b>${formatPercent(breakdown.gross_yield_percent)}</b></div>
+            <div class="notebook-math-row"><span>Processing fee</span><b>-${formatPercent(breakdown.processing_fee_percent)}</b></div>
+            <div class="notebook-math-row is-total"><span>Net yield</span><b>${formatPercent(breakdown.net_yield_percent)}</b></div>
+          </div>
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Processing Fee</span>
+            <div class="notebook-fee-card">
+              <div><span>Base Fee</span><b>${formatPercent(baseFee)}</b></div>
+              <div class="fee-arrow">-></div>
+              <div><span>Adjusted Fee</span><b>${formatPercent(adjustedFee)}</b></div>
+            </div>
+          </div>
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Value Comparison</span>
+            <div class="notebook-value-grid">
+              <div class="notebook-value-row"><span>EVE estimate: ore</span><b>${renderReprocessingJitaValue(eveEstimate.ore_value, null)}</b></div>
+              <div class="notebook-value-row"><span>EVE estimate: processed</span><b>${renderReprocessingJitaValue(eveEstimate.processed_material_value, eveEstimate.processed_partial_material_value)}</b></div>
+              <div class="notebook-value-row is-total"><span>EVE estimate delta</span><b>${renderReprocessingEveEstimateDelta(eveEstimate)}</b></div>
+              <div class="notebook-value-row"><span>Jita buy: ore</span><b>${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)}</b></div>
+              <div class="notebook-value-row"><span>Jita buy: processed</span><b>${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)}</b></div>
+              <div class="notebook-value-row is-total"><span>Jita buy delta</span><b>${renderReprocessingJitaDelta(valuation)}</b></div>
+            </div>
+          </div>
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Standing Row Used</span>
+            <div class="notebook-standing-row"><span>${escapeHtml(standingText)}</span><b>${escapeHtml(facility.standing_source || "")}</b></div>
+          </div>
+          ${noteRows ? `<div class="notebook-section"><span class="notebook-ribbon">Notes</span>${noteRows}</div>` : ""}
+        </section>
       `;
     }
 
     function renderReprocessingMaterials(data, notes) {
       const materials = data.materials || [];
-      const noteBlock = notes.length
-        ? `<div class="meta reprocess-notes">${notes.slice(0, 8).map((note) => escapeHtml(note)).join("<br>")}</div>`
-        : "";
       if (!materials.length) {
-        return `${noteBlock}<div class="decision-empty">No output materials were calculated.</div>`;
+        return `
+          <div class="reprocess-field-desk">
+            ${renderReprocessingStatusRail(data)}
+            ${renderReprocessingOreSpecimen(data)}
+            ${renderReprocessingNotebook(data, (notes || []).concat(["No output materials were calculated."]))}
+            <div class="mineral-tray">
+              <div class="tray-heading">
+                <strong>Recovered Minerals</strong>
+                <span>0 stacks</span>
+              </div>
+              <div class="decision-empty">No output materials were calculated.</div>
+              <div class="minerals-total">
+                <span>Minerals Total (Jita Buy)</span>
+                <b>unknown</b>
+              </div>
+            </div>
+            <div class="reprocess-desk-footer">
+              <span><b>Skills:</b> Reprocessing ${formatNumber((data.skills || {}).reprocessing_level)}, Reprocessing Efficiency ${formatNumber((data.skills || {}).reprocessing_efficiency_level)}</span>
+              <span><b>Cache:</b> ${escapeHtml((data.cache || {}).build_number || "unknown")}</span>
+            </div>
+          </div>
+        `;
       }
       const rows = materials.map((material) => `
         <article class="mineral-card" style="--sample-accent: ${escapeHtml(reprocessingSampleAccent(material.type_id))}">
@@ -12217,16 +12510,24 @@ def _render_flight_attendant_dashboard() -> str:
         </article>
       `).join("");
       return `
-        ${noteBlock}
         <div class="reprocess-field-desk">
+          ${renderReprocessingStatusRail(data)}
           ${renderReprocessingOreSpecimen(data)}
-          ${renderReprocessingAssayLedger(data)}
+          ${renderReprocessingNotebook(data, notes)}
           <div class="mineral-tray">
             <div class="tray-heading">
               <strong>Recovered Minerals</strong>
               <span>${formatNumber(materials.length)} stack${materials.length === 1 ? "" : "s"}</span>
             </div>
             <div class="mineral-grid">${rows}</div>
+            <div class="minerals-total">
+              <span>Minerals Total (Jita Buy)</span>
+              <b>${renderReprocessingJitaValue((data.jita_valuation || {}).processed_material_value, (data.jita_valuation || {}).processed_partial_material_value)}</b>
+            </div>
+          </div>
+          <div class="reprocess-desk-footer">
+            <span><b>Skills:</b> Reprocessing ${formatNumber((data.skills || {}).reprocessing_level)}, Reprocessing Efficiency ${formatNumber((data.skills || {}).reprocessing_efficiency_level)}</span>
+            <span><b>Cache:</b> ${escapeHtml((data.cache || {}).build_number || "unknown")}</span>
           </div>
         </div>
       `;
