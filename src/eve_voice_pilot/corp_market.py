@@ -5111,8 +5111,8 @@ def _render_flight_attendant_dashboard() -> str:
     }
     body[data-active-tab="flight"] {
       background:
-        linear-gradient(90deg, rgba(5, 9, 11, .91) 0%, rgba(5, 9, 11, .7) 44%, rgba(5, 9, 11, .36) 100%),
-        linear-gradient(180deg, rgba(8, 14, 16, .5), rgba(6, 9, 12, .86) 78%),
+        linear-gradient(90deg, rgba(5, 9, 11, .78) 0%, rgba(5, 9, 11, .48) 44%, rgba(5, 9, 11, .1) 100%),
+        linear-gradient(180deg, rgba(8, 14, 16, .18), rgba(6, 9, 12, .76) 82%),
         url("/static/corp-market/flight-attendant-background.png") center top / cover no-repeat fixed,
         var(--bg);
     }
@@ -5196,13 +5196,18 @@ def _render_flight_attendant_dashboard() -> str:
       background: rgba(5, 9, 11, .84);
     }
     body[data-active-tab="flight"] #tab-flight .panel {
-      background: linear-gradient(180deg, rgba(11, 18, 20, .9), rgba(7, 11, 13, .87));
-      border-color: rgba(97, 199, 217, .24);
-      box-shadow: 0 22px 58px rgba(0, 0, 0, .32);
-      backdrop-filter: blur(2px);
+      background: linear-gradient(180deg, rgba(11, 18, 20, .8), rgba(7, 11, 13, .72));
+      border-color: rgba(97, 199, 217, .34);
+      box-shadow: 0 22px 58px rgba(0, 0, 0, .34);
+      backdrop-filter: blur(3px);
     }
     body[data-active-tab="flight"] #tab-flight .panel:first-child {
-      background: linear-gradient(180deg, rgba(11, 18, 20, .93), rgba(7, 11, 13, .9));
+      background: linear-gradient(180deg, rgba(11, 18, 20, .84), rgba(7, 11, 13, .78));
+    }
+    body[data-active-tab="flight"] #tab-flight input,
+    body[data-active-tab="flight"] #tab-flight select,
+    body[data-active-tab="flight"] #tab-flight textarea {
+      background: rgba(5, 9, 11, .84);
     }
     .panel-header { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .panel-header > div { min-width: 0; max-width: 100%; }
