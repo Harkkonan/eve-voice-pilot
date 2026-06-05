@@ -8839,6 +8839,261 @@ def _render_flight_attendant_dashboard() -> str:
     .decision-metric span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
     .decision-metric b { display: block; color: var(--text); font-size: 13px; overflow-wrap: anywhere; margin-top: 2px; }
     .decision-metric small { display: block; color: var(--muted); margin-top: 3px; line-height: 1.25; }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .profit-panel {
+      position: relative;
+      overflow: hidden;
+      background:
+        linear-gradient(90deg, rgba(97, 199, 217, .05) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(224, 168, 74, .045) 1px, transparent 1px),
+        linear-gradient(135deg, rgba(224, 168, 74, .13), rgba(97, 199, 217, .08) 42%, rgba(8, 13, 15, .96)),
+        #111819;
+      background-size: 34px 34px, 34px 34px, auto, auto;
+    }
+    .reprocess-field-desk {
+      display: grid;
+      grid-template-columns: minmax(220px, .68fr) minmax(300px, 1.32fr);
+      grid-template-areas:
+        "sample ledger"
+        "sample tray";
+      gap: 13px;
+      position: relative;
+    }
+    .reprocess-field-desk::before {
+      content: "";
+      position: absolute;
+      inset: -18px;
+      pointer-events: none;
+      background:
+        linear-gradient(120deg, transparent 0 42%, rgba(224, 168, 74, .08) 43%, transparent 46%),
+        linear-gradient(22deg, transparent 0 58%, rgba(97, 199, 217, .05) 59%, transparent 61%);
+      opacity: .8;
+    }
+    .ore-specimen,
+    .assay-ledger,
+    .mineral-tray {
+      position: relative;
+      z-index: 1;
+      border: 1px solid rgba(85, 111, 103, .78);
+      border-radius: 8px;
+      background: rgba(8, 13, 15, .66);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035), 0 12px 32px rgba(0, 0, 0, .24);
+    }
+    .ore-specimen {
+      grid-area: sample;
+      display: grid;
+      align-content: start;
+      gap: 12px;
+      padding: 14px;
+      border-color: rgba(224, 168, 74, .5);
+      background:
+        linear-gradient(180deg, rgba(224, 168, 74, .12), rgba(8, 13, 15, .72)),
+        rgba(17, 24, 25, .84);
+    }
+    .assay-ledger {
+      grid-area: ledger;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      padding: 10px;
+    }
+    .assay-cell {
+      border: 1px solid rgba(63, 85, 80, .58);
+      border-radius: 7px;
+      background: rgba(17, 24, 25, .68);
+      padding: 8px;
+      min-height: 64px;
+    }
+    .assay-cell span,
+    .bench-label {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .assay-cell b {
+      display: block;
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.2;
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .assay-cell small {
+      display: block;
+      color: var(--muted);
+      line-height: 1.25;
+      margin-top: 3px;
+    }
+    .mineral-tray {
+      grid-area: tray;
+      padding: 13px;
+      background:
+        linear-gradient(180deg, rgba(14, 22, 22, .9), rgba(6, 10, 12, .72)),
+        rgba(17, 24, 25, .86);
+    }
+    .tray-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .tray-heading strong { color: var(--text); font-size: 17px; }
+    .tray-heading span { color: var(--amber); font-size: 12px; font-weight: 800; }
+    .mineral-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+      gap: 10px;
+    }
+    .mineral-card {
+      --sample-accent: var(--cyan);
+      display: grid;
+      grid-template-columns: 78px minmax(0, 1fr);
+      gap: 10px;
+      position: relative;
+      min-width: 0;
+      border: 1px solid color-mix(in srgb, var(--sample-accent) 42%, rgba(63, 85, 80, .82));
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, color-mix(in srgb, var(--sample-accent) 14%, transparent), transparent 48%),
+        rgba(8, 13, 15, .74);
+      padding: 10px;
+      overflow: hidden;
+    }
+    .mineral-card.is-empty {
+      border-style: dashed;
+      opacity: .78;
+      min-height: 118px;
+      align-items: center;
+    }
+    .mineral-card.is-empty .specimen-image-frame {
+      opacity: .58;
+    }
+    .mineral-card.is-empty strong {
+      color: var(--muted);
+    }
+    .mineral-card::before,
+    .mineral-card::after {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      border-color: color-mix(in srgb, var(--sample-accent) 72%, var(--amber));
+      opacity: .7;
+    }
+    .mineral-card::before { top: 6px; left: 6px; border-top: 2px solid; border-left: 2px solid; }
+    .mineral-card::after { right: 6px; bottom: 6px; border-right: 2px solid; border-bottom: 2px solid; }
+    .specimen-image-frame {
+      --sample-accent: var(--cyan);
+      display: grid;
+      place-items: center;
+      position: relative;
+      border: 1px solid color-mix(in srgb, var(--sample-accent) 54%, rgba(63, 85, 80, .82));
+      border-radius: 8px;
+      background:
+        radial-gradient(circle at 45% 34%, color-mix(in srgb, var(--sample-accent) 18%, transparent), transparent 42%),
+        linear-gradient(180deg, rgba(237, 244, 239, .07), rgba(5, 9, 11, .42));
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .025);
+      overflow: hidden;
+      flex: 0 0 auto;
+    }
+    .specimen-image-frame::before {
+      content: "";
+      position: absolute;
+      inset: 7px;
+      border: 1px dashed rgba(237, 244, 239, .12);
+      border-radius: 6px;
+    }
+    .specimen-image-frame.ore-image {
+      width: 100%;
+      min-height: 162px;
+    }
+    .specimen-image-frame.mineral-image {
+      width: 78px;
+      height: 78px;
+    }
+    .specimen-image-frame img {
+      position: relative;
+      z-index: 1;
+      width: 72%;
+      height: 72%;
+      object-fit: contain;
+      filter: drop-shadow(0 10px 13px rgba(0, 0, 0, .45)) saturate(1.12) contrast(1.06);
+    }
+    .specimen-image-frame.ore-image img {
+      width: min(132px, 76%);
+      height: min(132px, 76%);
+    }
+    .specimen-image-frame.image-missing::after {
+      content: "No image";
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      z-index: 1;
+    }
+    .ore-copy { display: grid; gap: 5px; min-width: 0; }
+    .ore-copy strong { color: var(--text); font-size: 20px; line-height: 1.15; overflow-wrap: anywhere; }
+    .ore-copy p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.35; }
+    .ore-readouts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+    .ore-readouts .assay-cell { min-height: 54px; padding: 7px; }
+    .mineral-copy {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+    }
+    .mineral-card-head { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+    .mineral-card-head strong {
+      color: var(--text);
+      font-size: 16px;
+      line-height: 1.18;
+      overflow-wrap: anywhere;
+    }
+    .sample-qty {
+      border: 1px solid color-mix(in srgb, var(--sample-accent) 55%, rgba(63, 85, 80, .8));
+      background: color-mix(in srgb, var(--sample-accent) 16%, rgba(8, 13, 15, .74));
+      color: var(--text);
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+    .sample-ledger {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .sample-ledger .decision-metric {
+      min-height: 50px;
+      padding: 7px;
+      background: rgba(17, 24, 25, .56);
+    }
+    .sample-ledger .decision-metric b { font-size: 12px; }
+    .sample-flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.3;
+    }
+    .sample-flow span {
+      border: 1px solid rgba(63, 85, 80, .5);
+      border-radius: 999px;
+      padding: 2px 7px;
+      background: rgba(5, 9, 11, .36);
+    }
+    .reprocess-notes {
+      position: relative;
+      z-index: 1;
+      margin-bottom: 10px;
+      border: 1px solid rgba(224, 168, 74, .34);
+      border-radius: 7px;
+      background: rgba(224, 168, 74, .08);
+      padding: 9px 10px;
+    }
     .profit-details {
       border-top: 1px solid rgba(63, 85, 80, .52);
       margin-top: 10px;
@@ -8903,6 +9158,14 @@ def _render_flight_attendant_dashboard() -> str:
       .market-grid, .flight-grid, .briefing { grid-template-columns: 1fr; }
       .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .profit-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .reprocess-field-desk {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "sample"
+          "ledger"
+          "tray";
+      }
+      .assay-ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
       .shell { width: auto; margin: 0 10px; }
@@ -8918,6 +9181,9 @@ def _render_flight_attendant_dashboard() -> str:
       .offer, .note-card { grid-template-columns: 1fr; }
       .profit-panel { min-height: 360px; }
       .profit-actions { display: grid; grid-template-columns: 1fr; }
+      .assay-ledger, .ore-readouts, .sample-ledger, .mineral-grid { grid-template-columns: 1fr; }
+      .mineral-card { grid-template-columns: 66px minmax(0, 1fr); }
+      .specimen-image-frame.mineral-image { width: 66px; height: 66px; }
       .actions { justify-content: stretch; max-width: none; }
       .actions a, .actions button { flex: 1; }
     }
@@ -11541,7 +11807,7 @@ def _render_flight_attendant_dashboard() -> str:
     function resetReprocessing(message) {
       reprocessSummary.textContent = message;
       reprocessLocationDetail.textContent = "";
-      reprocessResults.textContent = "";
+      reprocessResults.innerHTML = renderReprocessingEmptyWorkbench(message);
       reprocessLocationStatus.textContent = message;
       reprocessCalculateButton.disabled = false;
       reprocessRefreshLocations.disabled = false;
@@ -11640,7 +11906,7 @@ def _render_flight_attendant_dashboard() -> str:
       reprocessCalculateButton.disabled = true;
       reprocessSummary.textContent = `Calculating ${formatNumber(settings.quantity)} ore units...`;
       reprocessLocationDetail.textContent = "";
-      reprocessResults.innerHTML = `<div class="decision-empty">Mineral output will appear here when the calculation finishes.</div>`;
+      reprocessResults.innerHTML = renderReprocessingEmptyWorkbench("Mineral output will appear here when the calculation finishes.");
       const params = new URLSearchParams({
         ore_type_id: settings.oreTypeId,
         quantity: String(settings.quantity),
@@ -11660,7 +11926,7 @@ def _render_flight_attendant_dashboard() -> str:
       } catch (error) {
         reprocessSummary.textContent = error.message;
         reprocessLocationDetail.textContent = "";
-        reprocessResults.textContent = "";
+        reprocessResults.innerHTML = renderReprocessingEmptyWorkbench(error.message);
       } finally {
         reprocessCalculateButton.disabled = false;
       }
@@ -11700,7 +11966,7 @@ def _render_flight_attendant_dashboard() -> str:
         <br>${renderReprocessingStandingRow(facility)}
         <br>Static reprocessing cache: ${cache.available ? `build ${escapeHtml(cache.build_number || "unknown")}` : escapeHtml(cache.error || "missing")}.
       `;
-      reprocessResults.innerHTML = renderReprocessingMaterials(data.materials || [], notes.concat(valuationNotes));
+      reprocessResults.innerHTML = renderReprocessingMaterials(data, notes.concat(valuationNotes));
     }
 
     function formatMultiplier(value) {
@@ -11795,30 +12061,175 @@ def _render_flight_attendant_dashboard() -> str:
       return `${materialCoverage}; ${oreCoverage}`;
     }
 
-    function renderReprocessingMaterials(materials, notes) {
+    function eveTypeIconUrl(typeId, size = 64) {
+      const cleanTypeId = Number(typeId || 0);
+      const cleanSize = [32, 64, 128, 256].includes(Number(size)) ? Number(size) : 64;
+      if (!Number.isFinite(cleanTypeId) || cleanTypeId <= 0) return "";
+      return `https://images.evetech.net/types/${cleanTypeId}/icon?size=${cleanSize}`;
+    }
+
+    function reprocessingSampleAccent(typeId) {
+      const accents = {
+        34: "#c8ac78",
+        35: "#d9865f",
+        36: "#d56f86",
+        37: "#7fcca1",
+        38: "#b78be6",
+        39: "#65d5c7",
+        40: "#e3d383",
+        11399: "#9fb2ff",
+      };
+      const cleanTypeId = Number(typeId || 0);
+      if (accents[cleanTypeId]) return accents[cleanTypeId];
+      const palette = ["#61c7d9", "#e0a84a", "#64c47d", "#d56f86", "#b78be6"];
+      return palette[Math.abs(cleanTypeId || 0) % palette.length];
+    }
+
+    function renderEveTypeIcon(typeId, name, className, size = 64) {
+      const url = eveTypeIconUrl(typeId, size);
+      const accent = reprocessingSampleAccent(typeId);
+      const safeName = escapeHtml(name || "EVE item");
+      const missing = `<span class="specimen-image-frame ${escapeHtml(className)} image-missing" style="--sample-accent: ${escapeHtml(accent)}"></span>`;
+      if (!url) return missing;
+      return `
+        <span class="specimen-image-frame ${escapeHtml(className)}" style="--sample-accent: ${escapeHtml(accent)}">
+          <img src="${escapeHtml(url)}" alt="${safeName}" loading="lazy" decoding="async" onerror="this.closest('.specimen-image-frame').classList.add('image-missing'); this.remove();">
+        </span>
+      `;
+    }
+
+    function selectedReprocessingOreSummary() {
+      const selected = reprocessOre.options[reprocessOre.selectedIndex];
+      const label = selected ? String(selected.textContent || "").trim() : "";
+      const oreName = label ? label.split(" - ")[0].trim() : "Ore sample";
+      return {
+        typeId: Number(reprocessOre.value || 0),
+        name: oreName || "Ore sample",
+      };
+    }
+
+    function renderReprocessingEmptyWorkbench(message) {
+      const ore = selectedReprocessingOreSummary();
+      const accents = ["#61c7d9", "#e0a84a", "#64c47d"];
+      const emptyCards = ["Crush", "Separate", "Assay"].map((label, index) => `
+        <article class="mineral-card is-empty" style="--sample-accent: ${escapeHtml(accents[index])}">
+          <span class="specimen-image-frame mineral-image image-missing" style="--sample-accent: ${escapeHtml(accents[index])}"></span>
+          <div class="mineral-copy">
+            <div class="mineral-card-head">
+              <strong>${escapeHtml(label)}</strong>
+              <span class="sample-qty">Pending</span>
+            </div>
+            <div class="sample-flow"><span>Awaiting calculation</span></div>
+          </div>
+        </article>
+      `).join("");
+      return `
+        <div class="reprocess-field-desk">
+          <aside class="ore-specimen">
+            ${renderEveTypeIcon(ore.typeId, ore.name, "ore-image", 128)}
+            <div class="ore-copy">
+              <span class="bench-label">Selected Ore</span>
+              <strong>${escapeHtml(ore.name)}</strong>
+              <p>${escapeHtml(message || "Run the calculation to inspect recovered minerals.")}</p>
+            </div>
+          </aside>
+          <div class="assay-ledger">
+            <div class="assay-cell"><span>Output</span><b>Pending</b><small>Full portions only</small></div>
+            <div class="assay-cell"><span>Jita Buy</span><b>Pending</b><small>Public buy orders</small></div>
+            <div class="assay-cell"><span>EVE Est.</span><b>Pending</b><small>ESI market prices</small></div>
+          </div>
+          <div class="mineral-tray">
+            <div class="tray-heading">
+              <strong>Recovered Minerals</strong>
+              <span>waiting</span>
+            </div>
+            <div class="mineral-grid">${emptyCards}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderReprocessingOreSpecimen(data) {
+      const ore = data.ore || {};
+      const input = data.input || {};
+      const yieldData = data.yield || {};
+      const valuation = data.jita_valuation || {};
+      const eveEstimate = valuation.eve_estimate || {};
+      return `
+        <aside class="ore-specimen">
+          ${renderEveTypeIcon(ore.type_id, ore.name || "Ore", "ore-image", 128)}
+          <div class="ore-copy">
+            <span class="bench-label">Input Sample</span>
+            <strong>${escapeHtml(ore.name || "Ore")}</strong>
+            <p>${escapeHtml(ore.group_name || "Ore")} assay; ${formatNumber(input.portions)} full portion${Number(input.portions || 0) === 1 ? "" : "s"} processed.</p>
+          </div>
+          <div class="ore-readouts">
+            <div class="assay-cell"><span>Units</span><b>${formatNumber(input.quantity)}</b><small>${formatNumber(input.leftover_units)} leftover</small></div>
+            <div class="assay-cell"><span>Net Yield</span><b>${formatPercent(yieldData.net_yield_percent)}</b><small>${formatPercent(yieldData.station_tax_percent)} fee</small></div>
+            <div class="assay-cell"><span>Ore Jita Buy</span><b>${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)}</b><small>${formatNumber(valuation.ore_priced_quantity || 0)} priced</small></div>
+            <div class="assay-cell"><span>Ore EVE Est.</span><b>${renderReprocessingJitaValue(eveEstimate.ore_value, null)}</b><small>${escapeHtml(eveEstimate.ore_price_source || "estimate")}</small></div>
+          </div>
+        </aside>
+      `;
+    }
+
+    function renderReprocessingAssayLedger(data) {
+      const materials = data.materials || [];
+      const valuation = data.jita_valuation || {};
+      const eveEstimate = valuation.eve_estimate || {};
+      const totalNet = materials.reduce((sum, material) => sum + Number(material.net_quantity || 0), 0);
+      return `
+        <div class="assay-ledger">
+          <div class="assay-cell"><span>Recovered Stacks</span><b>${formatNumber(materials.length)}</b><small>${formatNumber(totalNet)} total units</small></div>
+          <div class="assay-cell"><span>Jita Buy Output</span><b>${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)}</b><small>${renderReprocessingJitaDelta(valuation)}</small></div>
+          <div class="assay-cell"><span>EVE Est. Output</span><b>${renderReprocessingJitaValue(eveEstimate.processed_material_value, eveEstimate.processed_partial_material_value)}</b><small>${renderReprocessingEveEstimateDelta(eveEstimate)}</small></div>
+        </div>
+      `;
+    }
+
+    function renderReprocessingMaterials(data, notes) {
+      const materials = data.materials || [];
       const noteBlock = notes.length
-        ? `<div class="meta">${notes.slice(0, 8).map((note) => escapeHtml(note)).join("<br>")}</div>`
+        ? `<div class="meta reprocess-notes">${notes.slice(0, 8).map((note) => escapeHtml(note)).join("<br>")}</div>`
         : "";
       if (!materials.length) {
         return `${noteBlock}<div class="decision-empty">No output materials were calculated.</div>`;
       }
       const rows = materials.map((material) => `
-        <div class="decision-row">
-          <div class="decision-head">
-            <strong>${escapeHtml(material.name)}</strong>
-            <span class="pill decision-build">${formatNumber(material.net_quantity)}</span>
+        <article class="mineral-card" style="--sample-accent: ${escapeHtml(reprocessingSampleAccent(material.type_id))}">
+          ${renderEveTypeIcon(material.type_id, material.name, "mineral-image", 64)}
+          <div class="mineral-copy">
+            <div class="mineral-card-head">
+              <strong>${escapeHtml(material.name)}</strong>
+              <span class="sample-qty">${formatNumber(material.net_quantity)}</span>
+            </div>
+            <div class="sample-ledger">
+              <div class="decision-metric"><span>EVE Est.</span><b>${renderReprocessingJitaValue(material.eve_estimate_value, null)}</b><small>${renderReprocessingEveMaterialEstimate(material)}</small></div>
+              <div class="decision-metric"><span>Jita Buy</span><b>${renderReprocessingJitaValue(material.jita_value, null)}</b><small>${renderReprocessingMaterialJitaDepth(material)}</small></div>
+            </div>
+            <div class="sample-flow">
+              <span>Base ${formatNumber(material.base_quantity)}</span>
+              <span>Gross ${formatNumber(material.gross_quantity)}</span>
+              <span>Fee ${formatNumber(material.station_tax_quantity)}</span>
+              <span>Net ${formatNumber(material.net_quantity)}</span>
+            </div>
           </div>
-          <div class="decision-metrics">
-            <div class="decision-metric"><span>Base 100%</span><b>${formatNumber(material.base_quantity)}</b></div>
-            <div class="decision-metric"><span>Gross</span><b>${formatNumber(material.gross_quantity)}</b></div>
-            <div class="decision-metric"><span>Processing Fee</span><b>${formatNumber(material.station_tax_quantity)}</b></div>
-            <div class="decision-metric"><span>Net</span><b>${formatNumber(material.net_quantity)}</b></div>
-            <div class="decision-metric"><span>EVE Est. Value</span><b>${renderReprocessingJitaValue(material.eve_estimate_value, null)}</b><small>${renderReprocessingEveMaterialEstimate(material)}</small></div>
-            <div class="decision-metric"><span>Jita Buy Value</span><b>${renderReprocessingJitaValue(material.jita_value, null)}</b><small>${renderReprocessingMaterialJitaDepth(material)}</small></div>
+        </article>
+      `).join("");
+      return `
+        ${noteBlock}
+        <div class="reprocess-field-desk">
+          ${renderReprocessingOreSpecimen(data)}
+          ${renderReprocessingAssayLedger(data)}
+          <div class="mineral-tray">
+            <div class="tray-heading">
+              <strong>Recovered Minerals</strong>
+              <span>${formatNumber(materials.length)} stack${materials.length === 1 ? "" : "s"}</span>
+            </div>
+            <div class="mineral-grid">${rows}</div>
           </div>
         </div>
-      `).join("");
-      return `${noteBlock}<div class="decision-list">${rows}</div>`;
+      `;
     }
 
     function renderReprocessingMaterialJitaDepth(material) {
