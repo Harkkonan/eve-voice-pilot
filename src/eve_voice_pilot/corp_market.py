@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 import uuid
 import webbrowser
+import zipfile
 
 from eve_voice_pilot.corp_intel import (
     AuthStateStore,
@@ -38,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
 DEFAULT_INDUSTRY_RECIPE_CACHE_PATH = ROOT / "cache" / "eve_industry_recipes.json"
 DEFAULT_ROUTE_GRAPH_CACHE_PATH = ROOT / "cache" / "eve_route_graph.json"
+DEFAULT_STATIC_DATA_ZIP_PATH = ROOT / "cache" / "eve-online-static-data-3374020-jsonl.zip"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
@@ -47,6 +49,8 @@ MAX_FLIGHT_BUYER_SCAN_PRODUCTS = 40
 MAX_FLIGHT_BUYER_SCAN_REGIONS = 8
 MAX_FLIGHT_PROFIT_MATERIAL_TYPES = 120
 MAX_FLIGHT_HAUL_MATERIAL_TYPES = 80
+MAX_FLIGHT_HAUL_SCAN_TYPES = 240
+MAX_HAUL_MARKET_GROUP_IDS = 32
 MAX_FLIGHT_HAUL_OPPORTUNITIES = 20
 DEFAULT_HAUL_DESTINATION_SYSTEM = "Jita"
 DEFAULT_HAUL_DETOUR_JUMPS = 1
@@ -93,6 +97,194 @@ LISTING_CATEGORIES = {
     "blueprints": "Blueprints",
     "hauling": "Hauling",
 }
+HAUL_MARKET_GROUP_ROOTS = (
+    (11, "Ammunition & Charges"),
+    (1396, "Apparel"),
+    (2, "Blueprints & Reactions"),
+    (157, "Drones"),
+    (24, "Implants & Boosters"),
+    (475, "Manufacture & Research"),
+    (3628, "Personalization"),
+    (1922, "Pilot's Services"),
+    (1320, "Planetary Infrastructure"),
+    (9, "Ship Equipment"),
+    (1954, "Ship SKINs"),
+    (955, "Ship and Module Modifications"),
+    (4, "Ships"),
+    (150, "Skills"),
+    (1659, "Special Edition Assets"),
+    (2202, "Structure Equipment"),
+    (2203, "Structure Modifications"),
+    (477, "Structures"),
+    (19, "Trade Goods"),
+)
+HAUL_MARKET_GROUP_CHILDREN = {
+    11: (
+        (1015, "Bombs"),
+        (3725, "Breacher Pods"),
+        (139, "Cap Booster Charges"),
+        (2297, "Command Burst Charges"),
+        (2728, "Condenser Packs"),
+        (2462, "Exotic Plasma Charges"),
+        (101, "Frequency Crystals"),
+        (100, "Hybrid Charges"),
+        (593, "Mining Crystals"),
+        (114, "Missiles"),
+        (1103, "Nanite Repair Paste"),
+        (120, "Probes"),
+        (99, "Projectile Ammo"),
+        (1094, "Scripts"),
+        (2820, "Structure Area Denial Ammunition"),
+        (2198, "Structure Guided Bombs"),
+    ),
+    1396: ((1407, "Accessories"), (1397, "Men's Clothing"), (3846, "Portrait Backgrounds"), (1402, "Women's Clothing")),
+    2: (
+        (211, "Ammunition & Charges"),
+        (357, "Drones"),
+        (1041, "Manufacture & Research"),
+        (1849, "Reaction Formulas"),
+        (209, "Ship Equipment"),
+        (943, "Ship Modifications"),
+        (204, "Ships"),
+        (2158, "Structure Equipment"),
+        (2157, "Structure Modifications"),
+        (1338, "Structures"),
+    ),
+    157: (
+        (159, "Combat Drones"),
+        (843, "Combat Utility Drones"),
+        (841, "Electronic Warfare Drones"),
+        (2236, "Fighters"),
+        (842, "Logistic Drones"),
+        (158, "Mining Drones"),
+        (1646, "Salvage Drones"),
+    ),
+    24: ((977, "Booster"), (2487, "Cerebral Accelerators"), (27, "Implants")),
+    475: ((1035, "Components"), (533, "Materials"), (1872, "Research Equipment")),
+    3628: ((3630, "Design Elements"), (3629, "Sequencing Binders")),
+    1922: ((3745, "Expert Systems"), (2701, "HyperNet Relay"), (1923, "PLEX"), (1942, "Pilot's Services"), (2358, "Skill Trading")),
+    1320: ((1322, "Command Centers"), (1410, "Orbital Infrastructure")),
+    9: (
+        (2815, "Compressors"),
+        (938, "Drone Upgrades"),
+        (657, "Electronic Warfare"),
+        (656, "Electronics and Sensor Upgrades"),
+        (655, "Engineering Equipment"),
+        (779, "Fleet Assistance Modules"),
+        (1713, "Harvest Equipment"),
+        (14, "Hull & Armor"),
+        (52, "Propulsion"),
+        (1708, "Scanning Equipment"),
+        (554, "Shield"),
+        (141, "Smartbombs"),
+        (10, "Turrets & Launchers"),
+    ),
+    1954: (
+        (1955, "Battlecruisers"),
+        (1960, "Battleships"),
+        (1968, "Capital Ships"),
+        (2283, "Capsules"),
+        (2306, "Corvettes"),
+        (1988, "Cruisers"),
+        (1989, "Destroyers"),
+        (1998, "Frigates"),
+        (2006, "Haulers and Industrial Ships"),
+        (2011, "Mining Barges"),
+        (2119, "Multiple Hull SKINs"),
+        (2315, "Shuttles"),
+    ),
+    955: ((2436, "Mutaplasmids"), (1111, "Rigs"), (1112, "Subsystems")),
+    4: (
+        (1374, "Battlecruisers"),
+        (1376, "Battleships"),
+        (1381, "Capital Ships"),
+        (1815, "Corvettes"),
+        (1367, "Cruisers"),
+        (1372, "Destroyers"),
+        (1361, "Frigates"),
+        (1382, "Haulers and Industrial Ships"),
+        (1384, "Mining Barges"),
+        (391, "Shuttles"),
+        (1612, "Special Edition Ships"),
+    ),
+    150: (
+        (1745, "Armor"),
+        (365, "Corporation Management"),
+        (366, "Drones"),
+        (367, "Electronic Systems"),
+        (368, "Engineering"),
+        (370, "Fleet Support"),
+        (364, "Gunnery"),
+        (373, "Missiles"),
+        (374, "Navigation"),
+        (1746, "Neural Enhancement"),
+        (1823, "Planet Management"),
+        (369, "Production"),
+        (1323, "Resource Processing"),
+        (372, "Rigging"),
+        (1110, "Scanning"),
+        (375, "Science"),
+        (3656, "Sequencing"),
+        (1747, "Shields"),
+        (376, "Social"),
+        (377, "Spaceship Command"),
+        (2152, "Structure Management"),
+        (1824, "Subsystems"),
+        (1748, "Targeting"),
+        (378, "Trade"),
+    ),
+    1659: (
+        (1662, "Special Edition Apparel"),
+        (1661, "Special Edition Commodities"),
+        (1663, "Special Edition Festival Assets"),
+        (1814, "Special Edition Implants"),
+        (1660, "Special Edition Tournament Cards"),
+    ),
+    2202: (
+        (2206, "Electronic Warfare"),
+        (2207, "Electronics and Sensor Upgrades"),
+        (2208, "Engineering Equipment"),
+        (2749, "Quantum Cores"),
+        (2210, "Service Modules"),
+        (2209, "Structure Weapons"),
+    ),
+    2203: ((2205, "Structure Combat Rigs"), (2340, "Structure Engineering Rigs"), (2204, "Structure Resource Processing Rigs")),
+    477: (
+        (2199, "Citadels"),
+        (404, "Deployable Structures"),
+        (2324, "Engineering Complexes"),
+        (3624, "FLEX Structures"),
+        (2327, "Refineries"),
+        (1272, "Sovereignty Structures"),
+        (1285, "Starbase Structures"),
+    ),
+    19: (
+        (2801, "AEGIS Databases"),
+        (3732, "Acceleration Gate Keys"),
+        (1427, "Aurum Tokens"),
+        (1846, "Bounty Encrypted Bonds"),
+        (492, "Consumer Products"),
+        (1840, "Covert Research Tools"),
+        (739, "Criminal Dog Tags"),
+        (614, "Criminal Evidence"),
+        (2456, "Filaments"),
+        (20, "Industrial Goods"),
+        (616, "Insignias"),
+        (3737, "Limited Rarities"),
+        (491, "Narcotics"),
+        (738, "Nexus Chips"),
+        (23, "Passengers"),
+        (754, "Political Paraphernalia"),
+        (22, "Radioactive Goods"),
+        (2799, "Rogue Drone Data"),
+        (1700, "Security Tags"),
+        (1109, "Sleeper Components"),
+        (940, "Starbase Charters"),
+        (2317, "Strong Boxes"),
+        (2480, "Triglavian Data"),
+        (2013, "Unknown Components"),
+    ),
+}
 SPACE_RE = re.compile(r"\s+")
 ISK_AMOUNT_RE = re.compile(r"^\s*(?P<number>\d+(?:\.\d+)?)\s*(?P<suffix>[kKmMbB]?)\s*$")
 DISCORD_WEBHOOK_PATH_RE = re.compile(r"^/api/(?:v\d+/)?webhooks/\d+/[^/]+/?$")
@@ -103,6 +295,12 @@ MARKET_ORDER_CACHE_LOCK = threading.Lock()
 MARKET_ORDER_CACHE: dict[tuple[str, int, int, str], tuple[float, list[dict[str, Any]]]] = {}
 SYSTEM_KILLS_CACHE_LOCK = threading.Lock()
 SYSTEM_KILLS_CACHE: dict[str, tuple[float, tuple[int, ...]]] = {}
+STATIC_MARKET_DATA_LOCK = threading.Lock()
+STATIC_MARKET_DATA_CACHE: dict[tuple[str, float, int], "StaticMarketData"] = {}
+MARKET_GROUP_DETAIL_CACHE_LOCK = threading.Lock()
+MARKET_GROUP_DETAIL_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
+MARKET_TYPE_DETAIL_CACHE_LOCK = threading.Lock()
+MARKET_TYPE_DETAIL_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
 
 
 class CorpMarketError(RuntimeError):
@@ -451,6 +649,14 @@ class RouteGraphCache:
             "edge_count": self.edge_count,
             "error": self.error,
         }
+
+
+@dataclass(frozen=True)
+class StaticMarketData:
+    path: Path
+    groups: dict[int, dict[str, Any]]
+    children: dict[int, tuple[int, ...]]
+    types_by_group: dict[int, tuple[dict[str, Any], ...]]
 
 
 @dataclass(frozen=True)
@@ -1227,6 +1433,273 @@ def fetch_flight_skills(config: EveSsoConfig, session: FlightEsiSession) -> dict
     return payload
 
 
+def localized_name(payload: Any, fallback: str = "") -> str:
+    if isinstance(payload, dict):
+        return str(payload.get("en") or payload.get("en-us") or next(iter(payload.values()), fallback) or fallback)
+    if payload is None:
+        return fallback
+    return str(payload)
+
+
+def clean_haul_market_group_ids(raw_values: Iterable[Any]) -> tuple[int, ...]:
+    group_ids: list[int] = []
+    for raw_value in raw_values:
+        if raw_value is None:
+            continue
+        for part in re.split(r"[,|\s]+", str(raw_value)):
+            if not part:
+                continue
+            try:
+                group_id = int(part)
+            except (TypeError, ValueError):
+                continue
+            if group_id > 0 and group_id not in group_ids:
+                group_ids.append(group_id)
+            if len(group_ids) >= MAX_HAUL_MARKET_GROUP_IDS:
+                return tuple(group_ids)
+    return tuple(group_ids)
+
+
+def load_static_market_data(path: Path = DEFAULT_STATIC_DATA_ZIP_PATH) -> StaticMarketData | None:
+    if not path.exists():
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    cache_key = (str(path.resolve()), stat.st_mtime, stat.st_size)
+    with STATIC_MARKET_DATA_LOCK:
+        cached = STATIC_MARKET_DATA_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    groups: dict[int, dict[str, Any]] = {}
+    children: dict[int, list[int]] = {}
+    types_by_group: dict[int, list[dict[str, Any]]] = {}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            with archive.open("marketGroups.jsonl") as market_groups:
+                for raw_line in market_groups:
+                    payload = json.loads(raw_line)
+                    group_id = int(payload.get("_key") or 0)
+                    if group_id <= 0:
+                        continue
+                    parent_id = clean_optional_int(payload.get("parentGroupID"))
+                    groups[group_id] = {
+                        "market_group_id": group_id,
+                        "name": localized_name(payload.get("name"), f"Market Group {group_id}"),
+                        "parent_group_id": parent_id,
+                    }
+                    if parent_id is not None and parent_id > 0:
+                        children.setdefault(parent_id, []).append(group_id)
+            with archive.open("types.jsonl") as types:
+                for raw_line in types:
+                    payload = json.loads(raw_line)
+                    market_group_id = clean_optional_int(payload.get("marketGroupID"))
+                    if market_group_id is None or market_group_id <= 0:
+                        continue
+                    if payload.get("published") is False:
+                        continue
+                    type_id = int(payload.get("_key") or 0)
+                    if type_id <= 0:
+                        continue
+                    volume_m3 = clean_optional_float(payload.get("volume"))
+                    if volume_m3 is not None and volume_m3 <= 0:
+                        volume_m3 = None
+                    types_by_group.setdefault(market_group_id, []).append(
+                        {
+                            "type_id": type_id,
+                            "name": localized_name(payload.get("name"), f"Type {type_id}"),
+                            "volume_m3": volume_m3,
+                            "market_group_id": market_group_id,
+                            "market_group_name": groups.get(market_group_id, {}).get(
+                                "name",
+                                f"Market Group {market_group_id}",
+                            ),
+                        }
+                    )
+    except (OSError, KeyError, ValueError, json.JSONDecodeError, zipfile.BadZipFile):
+        return None
+    static_data = StaticMarketData(
+        path=path,
+        groups=groups,
+        children={group_id: tuple(sorted(child_ids)) for group_id, child_ids in children.items()},
+        types_by_group={
+            group_id: tuple(sorted(type_infos, key=lambda item: (str(item["name"]), int(item["type_id"]))))
+            for group_id, type_infos in types_by_group.items()
+        },
+    )
+    with STATIC_MARKET_DATA_LOCK:
+        STATIC_MARKET_DATA_CACHE.clear()
+        STATIC_MARKET_DATA_CACHE[cache_key] = static_data
+    return static_data
+
+
+def market_group_descendant_ids(static_data: StaticMarketData, group_ids: Iterable[int]) -> set[int]:
+    selected: set[int] = set()
+    stack = [int(group_id) for group_id in group_ids if int(group_id) > 0]
+    while stack:
+        group_id = stack.pop()
+        if group_id in selected:
+            continue
+        selected.add(group_id)
+        stack.extend(static_data.children.get(group_id, ()))
+    return selected
+
+
+def fetch_market_group_detail(config: EveSsoConfig, market_group_id: int) -> dict[str, Any]:
+    base_url = config.esi_base_url.rstrip("/")
+    cache_key = (base_url, int(market_group_id))
+    with MARKET_GROUP_DETAIL_CACHE_LOCK:
+        cached = MARKET_GROUP_DETAIL_CACHE.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+    url = add_query_params(f"{base_url}/markets/groups/{int(market_group_id)}/", {"datasource": "tranquility"})
+    try:
+        payload = get_json(url, timeout_seconds=30.0, headers=flight_esi_headers())
+    except (CorpIntelError, ValueError) as exc:
+        raise CorpMarketError(f"ESI market group {market_group_id} lookup failed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CorpMarketError(f"ESI market group {market_group_id} returned unexpected data.")
+    with MARKET_GROUP_DETAIL_CACHE_LOCK:
+        MARKET_GROUP_DETAIL_CACHE[cache_key] = dict(payload)
+    return payload
+
+
+def fetch_universe_type_detail(config: EveSsoConfig, type_id: int) -> dict[str, Any]:
+    base_url = config.esi_base_url.rstrip("/")
+    cache_key = (base_url, int(type_id))
+    with MARKET_TYPE_DETAIL_CACHE_LOCK:
+        cached = MARKET_TYPE_DETAIL_CACHE.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+    url = add_query_params(f"{base_url}/universe/types/{int(type_id)}/", {"datasource": "tranquility"})
+    try:
+        payload = get_json(url, timeout_seconds=30.0, headers=flight_esi_headers())
+    except (CorpIntelError, ValueError) as exc:
+        raise CorpMarketError(f"ESI type {type_id} lookup failed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CorpMarketError(f"ESI type {type_id} returned unexpected data.")
+    with MARKET_TYPE_DETAIL_CACHE_LOCK:
+        MARKET_TYPE_DETAIL_CACHE[cache_key] = dict(payload)
+    return payload
+
+
+def build_market_group_targets_from_static(group_ids: Iterable[int]) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    static_data = load_static_market_data()
+    if static_data is None:
+        return None
+    clean_group_ids = clean_haul_market_group_ids(group_ids)
+    descendant_group_ids = market_group_descendant_ids(static_data, clean_group_ids)
+    targets_by_type_id: dict[int, dict[str, Any]] = {}
+    for group_id in sorted(descendant_group_ids):
+        group_name = str(static_data.groups.get(group_id, {}).get("name") or f"Market Group {group_id}")
+        for type_info in static_data.types_by_group.get(group_id, ()):
+            type_id = int(type_info["type_id"])
+            targets_by_type_id.setdefault(
+                type_id,
+                {
+                    "type_id": type_id,
+                    "name": str(type_info["name"]),
+                    "recipe_count": 0,
+                    "volume_m3": type_info.get("volume_m3"),
+                    "source": "market_group",
+                    "source_label": group_name,
+                    "market_group_id": group_id,
+                    "market_group_name": group_name,
+                },
+            )
+    selected_groups = [
+        {
+            "market_group_id": group_id,
+            "name": str(static_data.groups.get(group_id, {}).get("name") or f"Market Group {group_id}"),
+        }
+        for group_id in clean_group_ids
+    ]
+    return (
+        sorted(targets_by_type_id.values(), key=lambda item: (str(item["name"]), int(item["type_id"]))),
+        {
+            "source": "static-sde",
+            "selected_market_groups": selected_groups,
+            "selected_market_group_ids": list(clean_group_ids),
+            "selected_market_group_count": len(clean_group_ids),
+            "market_group_item_types": len(targets_by_type_id),
+        },
+    )
+
+
+def build_market_group_targets_from_esi(
+    config: EveSsoConfig,
+    group_ids: Iterable[int],
+    *,
+    detail_limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    clean_group_ids = clean_haul_market_group_ids(group_ids)
+    visited_group_ids: set[int] = set()
+    type_group_names: dict[int, str] = {}
+    selected_groups = []
+    stack = list(reversed(clean_group_ids))
+    while stack:
+        group_id = stack.pop()
+        if group_id in visited_group_ids:
+            continue
+        detail = fetch_market_group_detail(config, group_id)
+        visited_group_ids.add(group_id)
+        group_name = str(detail.get("name") or f"Market Group {group_id}")
+        if group_id in clean_group_ids:
+            selected_groups.append({"market_group_id": group_id, "name": group_name})
+        for raw_type_id in detail.get("types") or []:
+            try:
+                type_id = int(raw_type_id)
+            except (TypeError, ValueError):
+                continue
+            if type_id > 0:
+                type_group_names.setdefault(type_id, group_name)
+        child_ids = []
+        for raw_child_id in detail.get("child_market_group_ids") or []:
+            try:
+                child_id = int(raw_child_id)
+            except (TypeError, ValueError):
+                continue
+            if child_id > 0 and child_id not in visited_group_ids:
+                child_ids.append(child_id)
+        stack.extend(reversed(sorted(child_ids)))
+    targets = []
+    for type_id in sorted(type_group_names)[: max(0, detail_limit)]:
+        detail = fetch_universe_type_detail(config, type_id)
+        volume_m3 = clean_optional_float(detail.get("volume"))
+        if volume_m3 is not None and volume_m3 <= 0:
+            volume_m3 = None
+        targets.append(
+            {
+                "type_id": type_id,
+                "name": str(detail.get("name") or f"Type {type_id}"),
+                "recipe_count": 0,
+                "volume_m3": volume_m3,
+                "source": "market_group",
+                "source_label": type_group_names[type_id],
+                "market_group_id": None,
+                "market_group_name": type_group_names[type_id],
+            }
+        )
+    return (
+        sorted(targets, key=lambda item: (str(item["name"]), int(item["type_id"]))),
+        {
+            "source": "esi-market-groups",
+            "selected_market_groups": selected_groups,
+            "selected_market_group_ids": list(clean_group_ids),
+            "selected_market_group_count": len(clean_group_ids),
+            "market_group_item_types": len(type_group_names),
+        },
+    )
+
+
+def build_market_group_targets(config: EveSsoConfig, group_ids: Iterable[int]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    static_result = build_market_group_targets_from_static(group_ids)
+    if static_result is not None:
+        return static_result
+    return build_market_group_targets_from_esi(config, group_ids, detail_limit=MAX_FLIGHT_HAUL_SCAN_TYPES)
+
+
 def fetch_market_orders(
     config: EveSsoConfig,
     *,
@@ -1928,6 +2401,8 @@ def build_flight_hauling_payload(
     min_detour_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT,
     route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE,
     avoid_recent_pod_kills: bool = DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
+    include_common_materials: bool = True,
+    market_group_ids: Iterable[int] = (),
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
@@ -1971,6 +2446,8 @@ def build_flight_hauling_payload(
         cargo_capacity_m3=cargo_capacity_m3,
         min_detour_margin_percent=min_detour_margin_percent,
         sales_tax=sales_tax,
+        include_common_materials=include_common_materials,
+        market_group_ids=market_group_ids,
         progress=progress,
     )
     route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
@@ -2347,6 +2824,8 @@ def scan_route_hauling_opportunities(
     cargo_capacity_m3: float,
     min_detour_margin_percent: float,
     sales_tax: dict[str, Any],
+    include_common_materials: bool,
+    market_group_ids: Iterable[int],
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     systems = route_cache.systems or {}
@@ -2394,9 +2873,16 @@ def scan_route_hauling_opportunities(
     if destination is None or destination.region_id is None:
         raise CorpMarketError("Destination system does not have a usable market region in the route graph cache.")
 
-    material_targets = industry_material_trade_targets(recipe_cache.recipes or {})
-    material_truncated = len(material_targets) > MAX_FLIGHT_HAUL_MATERIAL_TYPES
-    scan_targets = material_targets[:MAX_FLIGHT_HAUL_MATERIAL_TYPES]
+    item_targets, item_scope = build_haul_item_targets(
+        config=config,
+        recipe_cache=recipe_cache,
+        include_common_materials=include_common_materials,
+        market_group_ids=market_group_ids,
+    )
+    item_truncated = len(item_targets) > MAX_FLIGHT_HAUL_SCAN_TYPES
+    scan_targets = item_targets[:MAX_FLIGHT_HAUL_SCAN_TYPES]
+    if not scan_targets:
+        raise CorpMarketError("Choose Common materials or at least one market category before scanning hauler routes.")
     sales_tax_rate = clean_optional_float(sales_tax.get("rate")) or 0.0
 
     opportunities = []
@@ -2502,7 +2988,8 @@ def scan_route_hauling_opportunities(
             {
                 "type_id": type_id,
                 "item_name": target["name"],
-                "recipe_count": target["recipe_count"],
+                "recipe_count": int(target.get("recipe_count") or 0),
+                "source_labels": target.get("source_labels", []),
                 "volume_m3": volume_m3,
                 "units": units,
                 "cargo_limited": cargo_limited,
@@ -2540,8 +3027,17 @@ def scan_route_hauling_opportunities(
         "pickup_region_truncated": pickup_region_truncated,
         "destination_region_id": destination.region_id,
         "scanned_materials": len(scan_targets),
-        "total_materials": len(material_targets),
-        "material_truncated": material_truncated,
+        "total_materials": len(item_targets),
+        "material_truncated": item_truncated,
+        "scanned_item_types": len(scan_targets),
+        "total_item_types": len(item_targets),
+        "item_truncated": item_truncated,
+        "item_scope": {
+            **item_scope,
+            "scanned_item_types": len(scan_targets),
+            "total_item_types": len(item_targets),
+            "item_truncated": item_truncated,
+        },
         "sell_order_count": total_sell_order_count,
         "buy_order_count": total_buy_order_count,
         "detour_margin_rejected_count": detour_margin_rejected_count,
@@ -2585,7 +3081,7 @@ def emit_haul_route_progress(
             "min_detour_margin_percent": min_detour_margin_percent,
             "message": (
                 f"Walking {len(route_systems)} route stops and {len(pickup_jump_distances)} pickup systems "
-                f"before pricing {scanned_materials} materials."
+                f"before pricing {scanned_materials} item types."
             ),
         },
     )
@@ -2957,6 +3453,81 @@ def industry_material_trade_targets(recipes: dict[int, IndustryRecipe]) -> list[
         for type_id, count in material_counts.items()
     ]
     return sorted(targets, key=lambda item: (-int(item["recipe_count"]), str(item["name"]), int(item["type_id"])))
+
+
+def build_haul_item_targets(
+    *,
+    config: EveSsoConfig,
+    recipe_cache: IndustryRecipeCache,
+    include_common_materials: bool,
+    market_group_ids: Iterable[int],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    selected_market_group_ids = clean_haul_market_group_ids(market_group_ids)
+    common_targets = []
+    if include_common_materials:
+        common_targets = industry_material_trade_targets(recipe_cache.recipes or {})[:MAX_FLIGHT_HAUL_MATERIAL_TYPES]
+        for target in common_targets:
+            target["source"] = "common_material"
+            target["source_label"] = "Common materials"
+    market_group_targets: list[dict[str, Any]] = []
+    market_group_meta: dict[str, Any] = {
+        "source": "",
+        "selected_market_groups": [],
+        "selected_market_group_ids": list(selected_market_group_ids),
+        "selected_market_group_count": len(selected_market_group_ids),
+        "market_group_item_types": 0,
+    }
+    if selected_market_group_ids:
+        market_group_targets, market_group_meta = build_market_group_targets(config, selected_market_group_ids)
+
+    targets_by_type_id: dict[int, dict[str, Any]] = {}
+    for target in common_targets:
+        type_id = int(target["type_id"])
+        targets_by_type_id[type_id] = {
+            **target,
+            "recipe_count": int(target.get("recipe_count") or 0),
+            "source_rank": 0,
+            "source_labels": ["Common materials"],
+        }
+    for target in market_group_targets:
+        type_id = int(target["type_id"])
+        existing = targets_by_type_id.get(type_id)
+        if existing is None:
+            targets_by_type_id[type_id] = {
+                **target,
+                "recipe_count": int(target.get("recipe_count") or 0),
+                "source_rank": 1,
+                "source_labels": [str(target.get("source_label") or "Market category")],
+            }
+            continue
+        source_label = str(target.get("source_label") or "Market category")
+        if source_label not in existing["source_labels"]:
+            existing["source_labels"].append(source_label)
+        if not existing.get("volume_m3") and target.get("volume_m3"):
+            existing["volume_m3"] = target.get("volume_m3")
+        existing["market_group_id"] = target.get("market_group_id")
+        existing["market_group_name"] = target.get("market_group_name")
+
+    targets = sorted(
+        targets_by_type_id.values(),
+        key=lambda item: (
+            int(item["source_rank"]) if item.get("source_rank") is not None else 9,
+            str(item.get("name") or ""),
+            int(item.get("type_id") or 0),
+        ),
+    )
+    return targets, {
+        "include_common_materials": bool(include_common_materials),
+        "common_material_scan_limit": MAX_FLIGHT_HAUL_MATERIAL_TYPES,
+        "common_material_item_types": len(common_targets),
+        "selected_market_group_ids": market_group_meta.get("selected_market_group_ids", list(selected_market_group_ids)),
+        "selected_market_groups": market_group_meta.get("selected_market_groups", []),
+        "selected_market_group_count": int(market_group_meta.get("selected_market_group_count") or 0),
+        "market_group_source": market_group_meta.get("source") or "",
+        "market_group_item_types": int(market_group_meta.get("market_group_item_types") or 0),
+        "total_item_types": len(targets),
+        "scan_type_limit": MAX_FLIGHT_HAUL_SCAN_TYPES,
+    }
 
 
 def resolve_route_system(route_cache: RouteGraphCache, name: str) -> RouteSystem | None:
@@ -3619,6 +4190,11 @@ def build_http_server(
                 (query.get("avoid_recent_pod_kills") or [str(int(DEFAULT_HAUL_AVOID_RECENT_POD_KILLS))])[0],
                 default=DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
             )
+            include_common_materials = query_bool(
+                (query.get("common_materials") or ["1"])[0],
+                default=True,
+            )
+            market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
@@ -3629,6 +4205,8 @@ def build_http_server(
                     min_detour_margin_percent=min_detour_margin,
                     route_preference=route_preference,
                     avoid_recent_pod_kills=avoid_recent_pod_kills,
+                    include_common_materials=include_common_materials,
+                    market_group_ids=market_group_ids,
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -3662,6 +4240,11 @@ def build_http_server(
                 (query.get("avoid_recent_pod_kills") or [str(int(DEFAULT_HAUL_AVOID_RECENT_POD_KILLS))])[0],
                 default=DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
             )
+            include_common_materials = query_bool(
+                (query.get("common_materials") or ["1"])[0],
+                default=True,
+            )
+            market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
@@ -3672,6 +4255,8 @@ def build_http_server(
                     min_detour_margin_percent=min_detour_margin,
                     route_preference=route_preference,
                     avoid_recent_pod_kills=avoid_recent_pod_kills,
+                    include_common_materials=include_common_materials,
+                    market_group_ids=market_group_ids,
                     progress=emit,
                 )
             except (BrokenPipeError, ConnectionResetError):
@@ -4297,6 +4882,25 @@ def _render_flight_attendant_dashboard() -> str:
         f'                    <option value="{html.escape(key)}">{html.escape(label)}</option>'
         for key, label in LISTING_CATEGORIES.items()
     )
+    haul_market_group_options = "\n".join(
+        f"""
+                  <details class="haul-market-group">
+                    <summary>
+                      <span>{html.escape(root_name)}</span>
+                      <label class="mini-check" title="Scan this whole market category">
+                        <input type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
+                        All
+                      </label>
+                    </summary>
+                    <div class="haul-market-children">
+{chr(10).join(
+    f'                      <label class="checkline compact"><input type="checkbox" data-haul-market-group="{child_id}" data-haul-market-parent="{root_id}"><span>{html.escape(child_name)}</span></label>'
+    for child_id, child_name in HAUL_MARKET_GROUP_CHILDREN.get(root_id, ())
+)}
+                    </div>
+                  </details>"""
+        for root_id, root_name in HAUL_MARKET_GROUP_ROOTS
+    )
     markup = """
 <!doctype html>
 <html lang="en">
@@ -4420,6 +5024,42 @@ def _render_flight_attendant_dashboard() -> str:
     .checkline input { margin-top: 3px; }
     .checkline span { color: var(--muted); }
     .checkline small { display: block; color: var(--amber); font-size: 12px; line-height: 1.35; margin-top: 3px; }
+    .checkline.compact { min-height: 28px; font-size: 13px; }
+    .haul-item-filter {
+      border: 1px solid rgba(63, 85, 80, .68);
+      background: rgba(8, 13, 15, .36);
+      border-radius: 7px;
+      padding: 10px;
+      margin: 4px 0 10px;
+    }
+    .haul-filter-head { display: flex; align-items: start; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+    .haul-filter-head strong { color: var(--text); }
+    .haul-market-groups {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .haul-market-group {
+      border: 1px solid rgba(63, 85, 80, .52);
+      border-radius: 6px;
+      background: rgba(17, 24, 25, .48);
+      overflow: hidden;
+    }
+    .haul-market-group summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      padding: 8px;
+      color: var(--text);
+      font-weight: 800;
+    }
+    .haul-market-children { display: grid; gap: 4px; padding: 0 8px 8px; }
+    .mini-check { display: inline-flex; align-items: center; gap: 5px; color: var(--amber); font-size: 12px; font-weight: 800; }
+    .mini-check input { margin: 0; }
+    .scope-warning { color: var(--amber); }
     textarea { min-height: 150px; resize: vertical; }
     button {
       border: 0;
@@ -5011,6 +5651,26 @@ def _render_flight_attendant_dashboard() -> str:
                   <span class="range-readout"><span class="meta">Minimum after-tax margin</span><strong id="haul-min-margin-value">10%</strong></span>
                 </label>
               </div>
+              <div class="haul-item-filter" aria-label="Hauling item search filter">
+                <div class="haul-filter-head">
+                  <strong>Items to search</strong>
+                  <span class="meta scope-warning">Scanning more item types increases route calculation time.</span>
+                </div>
+                <label class="checkline">
+                  <input id="haul-common-materials" name="common_materials" type="checkbox" checked>
+                  <span>
+                    Common materials
+                    <small>Default: the current top 80 industry materials used by blueprint profit checks.</small>
+                  </span>
+                </label>
+                <details>
+                  <summary>Market categories</summary>
+                  <div id="haul-market-groups" class="haul-market-groups">
+@@HAUL_MARKET_GROUP_OPTIONS@@
+                  </div>
+                </details>
+                <div id="haul-item-scope-summary" class="meta">Scanning common materials only.</div>
+              </div>
               <div id="haul-hub-buttons" class="filters" aria-label="Hub shortcuts">
                 <button class="secondary" type="button" data-haul-destination="Jita">Jita</button>
                 <button class="secondary" type="button" data-haul-destination="Amarr">Amarr</button>
@@ -5098,6 +5758,10 @@ def _render_flight_attendant_dashboard() -> str:
     const haulDetourJumps = document.querySelector("#haul-detour-jumps");
     const haulMinMargin = document.querySelector("#haul-min-margin");
     const haulMinMarginValue = document.querySelector("#haul-min-margin-value");
+    const haulCommonMaterials = document.querySelector("#haul-common-materials");
+    const haulMarketGroups = document.querySelector("#haul-market-groups");
+    const haulMarketGroupInputs = Array.from(document.querySelectorAll("input[data-haul-market-group]"));
+    const haulItemScopeSummary = document.querySelector("#haul-item-scope-summary");
     const haulHubButtons = document.querySelector("#haul-hub-buttons");
     const haulScanButton = document.querySelector("#haul-scan");
     const haulRouteSummary = document.querySelector("#haul-route-summary");
@@ -5116,6 +5780,8 @@ def _render_flight_attendant_dashboard() -> str:
     const haulMinMarginKey = "eve-flight-haul-min-margin-v1";
     const haulRoutePreferenceKey = "eve-flight-haul-route-preference-v1";
     const haulAvoidPodKillsKey = "eve-flight-haul-avoid-pod-kills-v1";
+    const haulCommonMaterialsKey = "eve-flight-haul-common-materials-v1";
+    const haulMarketGroupIdsKey = "eve-flight-haul-market-group-ids-v1";
     const validTabs = new Set(["market", "flight", "hauling"]);
     let filterType = "";
     let includeClosed = false;
@@ -5339,6 +6005,47 @@ def _render_flight_attendant_dashboard() -> str:
       return "safer";
     }
 
+    function readStoredHaulMarketGroupIds() {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(haulMarketGroupIdsKey) || "[]");
+        if (!Array.isArray(parsed)) return [];
+        return parsed.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    function readHaulMarketGroupIdsFromInputs() {
+      return haulMarketGroupInputs
+        .filter((input) => input.checked)
+        .map((input) => Number(input.dataset.haulMarketGroup))
+        .filter((value) => Number.isFinite(value) && value > 0);
+    }
+
+    function applyHaulMarketGroupIds(groupIds) {
+      const selected = new Set((groupIds || []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0));
+      haulMarketGroupInputs.forEach((input) => {
+        input.checked = selected.has(Number(input.dataset.haulMarketGroup));
+      });
+    }
+
+    function haulItemScopeLabel(settings) {
+      const parts = [];
+      if (settings.includeCommonMaterials) parts.push("common materials");
+      const groupCount = (settings.marketGroupIds || []).length;
+      if (groupCount) parts.push(`${formatNumber(groupCount)} market categor${groupCount === 1 ? "y" : "ies"}`);
+      return parts.length ? parts.join(" + ") : "no item scope selected";
+    }
+
+    function updateHaulItemScopeSummary(settings = null) {
+      const activeSettings = settings || {
+        includeCommonMaterials: haulCommonMaterials.checked,
+        marketGroupIds: readHaulMarketGroupIdsFromInputs(),
+      };
+      const scopeLabel = haulItemScopeLabel(activeSettings);
+      haulItemScopeSummary.textContent = `${scopeLabel}. More item types means a longer route calculation.`;
+    }
+
     function readHaulSettings() {
       const destination = String(window.localStorage.getItem(haulDestinationKey) || haulDestination.value || "Jita").trim() || "Jita";
       const cargo = Number(window.localStorage.getItem(haulCargoKey) || haulCargoM3.value || 10000);
@@ -5346,6 +6053,7 @@ def _render_flight_attendant_dashboard() -> str:
       const minMargin = Number(window.localStorage.getItem(haulMinMarginKey) || haulMinMargin.value || 10);
       const routePreference = normalizeHaulRoutePreference(window.localStorage.getItem(haulRoutePreferenceKey) || haulRoutePreference.value || "safer");
       const avoidStored = window.localStorage.getItem(haulAvoidPodKillsKey);
+      const commonStored = window.localStorage.getItem(haulCommonMaterialsKey);
       return {
         destination,
         cargoM3: clampHaulCargoM3(Number.isFinite(cargo) ? cargo : 10000),
@@ -5353,6 +6061,8 @@ def _render_flight_attendant_dashboard() -> str:
         minDetourMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
         routePreference,
         avoidRecentPodKills: avoidStored == null ? haulAvoidPodKills.checked : avoidStored !== "0",
+        includeCommonMaterials: commonStored == null ? haulCommonMaterials.checked : commonStored !== "0",
+        marketGroupIds: readStoredHaulMarketGroupIds(),
       };
     }
 
@@ -5363,20 +6073,27 @@ def _render_flight_attendant_dashboard() -> str:
       const minDetourMarginPercent = clampHaulMinMargin(settings.minDetourMarginPercent);
       const routePreference = normalizeHaulRoutePreference(settings.routePreference || haulRoutePreference.value || "safer");
       const avoidRecentPodKills = settings.avoidRecentPodKills == null ? haulAvoidPodKills.checked : Boolean(settings.avoidRecentPodKills);
+      const includeCommonMaterials = settings.includeCommonMaterials == null ? haulCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
+      const marketGroupIds = Array.isArray(settings.marketGroupIds) ? settings.marketGroupIds : readHaulMarketGroupIdsFromInputs();
       haulDestination.value = destination;
       haulCargoM3.value = String(cargoM3);
       haulDetourJumps.value = String(detourJumps);
       haulMinMargin.value = String(minDetourMarginPercent);
       haulRoutePreference.value = routePreference;
       haulAvoidPodKills.checked = avoidRecentPodKills;
+      haulCommonMaterials.checked = includeCommonMaterials;
+      applyHaulMarketGroupIds(marketGroupIds);
       haulMinMarginValue.textContent = `${formatNumber(minDetourMarginPercent)}%`;
+      updateHaulItemScopeSummary({includeCommonMaterials, marketGroupIds});
       window.localStorage.setItem(haulDestinationKey, destination);
       window.localStorage.setItem(haulCargoKey, String(cargoM3));
       window.localStorage.setItem(haulDetourKey, String(detourJumps));
       window.localStorage.setItem(haulMinMarginKey, String(minDetourMarginPercent));
       window.localStorage.setItem(haulRoutePreferenceKey, routePreference);
       window.localStorage.setItem(haulAvoidPodKillsKey, avoidRecentPodKills ? "1" : "0");
-      return {destination, cargoM3, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills};
+      window.localStorage.setItem(haulCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
+      window.localStorage.setItem(haulMarketGroupIdsKey, JSON.stringify(marketGroupIds));
+      return {destination, cargoM3, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills, includeCommonMaterials, marketGroupIds};
     }
 
     async function loadFlightStatus() {
@@ -5781,12 +6498,13 @@ def _render_flight_attendant_dashboard() -> str:
 
     function renderHaulProgressSummary(settings, routeRule, podRule) {
       const elapsed = formatElapsedDuration(currentHaulElapsedSeconds());
+      const itemScope = haulItemScopeLabel(settings);
       haulOpportunitySummary.innerHTML = `
         <div class="progress-status" aria-live="polite">
           <span class="progress-spinner" aria-hidden="true"></span>
           <div class="progress-copy">
             <strong>Comparing corridor sell orders and destination buy orders</strong>
-            <span><strong>Elapsed ${escapeHtml(elapsed)}</strong> &middot; Cargo ${formatVolume(settings.cargoM3)}; destination ${escapeHtml(settings.destination)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
+            <span><strong>Elapsed ${escapeHtml(elapsed)}</strong> &middot; ${escapeHtml(itemScope)}; cargo ${formatVolume(settings.cargoM3)}; destination ${escapeHtml(settings.destination)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
           </div>
         </div>
         <div class="progress-bar" aria-hidden="true"><span></span></div>
@@ -5810,6 +6528,8 @@ def _render_flight_attendant_dashboard() -> str:
         avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
         minDetourMarginPercent: haulMinMargin.value,
+        includeCommonMaterials: haulCommonMaterials.checked,
+        marketGroupIds: readHaulMarketGroupIdsFromInputs(),
       });
       closeHaulEventSource();
       stopHaulProgressTimer();
@@ -5817,7 +6537,8 @@ def _render_flight_attendant_dashboard() -> str:
       haulScanButton.disabled = true;
       const routeRule = settings.routePreference === "shorter" ? "Prefer shorter" : settings.routePreference === "less_secure" ? "Prefer less secure" : "Prefer safer";
       const podRule = settings.avoidRecentPodKills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
-      haulRouteSummary.textContent = `Scanning ${routeRule.toLowerCase()} route to ${settings.destination}, ${podRule}, with ${formatNumber(settings.detourJumps)} detour jumps...`;
+      const itemScope = haulItemScopeLabel(settings);
+      haulRouteSummary.textContent = `Scanning ${routeRule.toLowerCase()} route to ${settings.destination}, ${podRule}, with ${formatNumber(settings.detourJumps)} detour jumps and ${itemScope}...`;
       haulRoutePath.textContent = "";
       haulProgressLog.hidden = false;
       haulProgressLog.innerHTML = "";
@@ -5828,6 +6549,8 @@ def _render_flight_attendant_dashboard() -> str:
         cargo_m3: String(settings.cargoM3),
         route_preference: settings.routePreference,
         avoid_recent_pod_kills: settings.avoidRecentPodKills ? "1" : "0",
+        common_materials: settings.includeCommonMaterials ? "1" : "0",
+        market_group_ids: settings.marketGroupIds.join(","),
         detour_jumps: String(settings.detourJumps),
         min_detour_margin_percent: String(settings.minDetourMarginPercent),
       });
@@ -5844,7 +6567,7 @@ def _render_flight_attendant_dashboard() -> str:
       });
       haulEventSource.addEventListener("orders", (event) => {
         const payload = parseHaulProgressEvent(event);
-        appendHaulProgress(`Material ${formatNumber(payload.material_index)}/${formatNumber(payload.scanned_materials)}`, payload);
+        appendHaulProgress(`Item ${formatNumber(payload.material_index)}/${formatNumber(payload.scanned_materials)}`, payload);
       });
       haulEventSource.addEventListener("scan_error", (event) => {
         const payload = parseHaulProgressEvent(event);
@@ -5908,8 +6631,12 @@ def _render_flight_attendant_dashboard() -> str:
       const destination = route.destination || {};
       const salesTax = hauling.sales_tax || {};
       const marketCache = hauling.market_cache || {};
-      const materialLimit = hauling.material_truncated ? ` Limited to ${formatNumber(hauling.scanned_materials)} of ${formatNumber(hauling.total_materials)} materials.` : "";
+      const itemScope = hauling.item_scope || {};
+      const materialLimit = hauling.item_truncated ? ` Limited to ${formatNumber(hauling.scanned_item_types || hauling.scanned_materials)} of ${formatNumber(hauling.total_item_types || hauling.total_materials)} selected item types.` : "";
       const regionLimit = hauling.pickup_region_truncated ? ` Limited to ${formatNumber(hauling.pickup_regions_scanned)} of ${formatNumber(hauling.pickup_regions_total)} pickup regions.` : "";
+      const selectedGroups = (itemScope.selected_market_groups || []).map((group) => group.name).filter(Boolean);
+      const groupText = selectedGroups.length ? ` Market categories: ${selectedGroups.slice(0, 4).map((name) => escapeHtml(name)).join(", ")}${selectedGroups.length > 4 ? `, +${formatNumber(selectedGroups.length - 4)} more` : ""}.` : "";
+      const commonText = itemScope.include_common_materials ? "Common materials included." : "Common materials not included.";
       const routeLabel = route.route_preference_label || "Safer";
       const avoidLabel = route.avoid_recent_pod_kills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
       const sourceLabel = route.route_source === "local-shortest-fallback" ? "local fallback" : "ESI route planner";
@@ -5930,12 +6657,13 @@ def _render_flight_attendant_dashboard() -> str:
           <div class="profit-stat"><span>Profitable</span><b>${formatNumber(hauling.profitable_opportunities)}</b></div>
           <div class="profit-stat"><span>Sell Orders</span><b>${formatNumber(hauling.sell_order_count)}</b></div>
           <div class="profit-stat"><span>Buy Orders</span><b>${formatNumber(hauling.buy_order_count)}</b></div>
-          <div class="profit-stat"><span>Materials</span><b>${formatNumber(hauling.scanned_materials)}</b></div>
+          <div class="profit-stat"><span>Item Types</span><b>${formatNumber(hauling.scanned_item_types || hauling.scanned_materials)}</b></div>
         </div>
         <div class="meta">
           Pickup detour ${formatNumber(hauling.detour_jumps)} jumps; scanned ${formatNumber(hauling.pickup_regions_scanned)}
           pickup regions; detour threshold ${formatNumber(hauling.min_detour_margin_percent)}%.${escapeHtml(materialLimit + regionLimit)}
         </div>
+        <div class="meta">${escapeHtml(commonText)}${groupText}</div>
         <div class="meta">${formatNumber(hauling.detour_margin_rejected_count)} detour candidates were below the selected profit threshold.</div>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on destination buy-order sales.</div>
         <div class="meta">Market cache: ${formatNumber(marketCache.entries)} entries, ${formatNumber(marketCache.ttl_seconds || 300)}s reuse window.</div>
@@ -6289,6 +7017,31 @@ def _render_flight_attendant_dashboard() -> str:
       resetFlightHauling(`Ready to scan route hauling opportunities to ${readHaulSettings().destination}.`);
     });
 
+    function updateHaulScopeAndReset() {
+      writeHaulSettings({
+        destination: haulDestination.value,
+        cargoM3: haulCargoM3.value,
+        routePreference: haulRoutePreference.value,
+        avoidRecentPodKills: haulAvoidPodKills.checked,
+        detourJumps: haulDetourJumps.value,
+        minDetourMarginPercent: haulMinMargin.value,
+        includeCommonMaterials: haulCommonMaterials.checked,
+        marketGroupIds: readHaulMarketGroupIdsFromInputs(),
+      });
+      resetFlightHauling(`Ready to scan route hauling opportunities to ${readHaulSettings().destination}.`);
+    }
+
+    haulCommonMaterials.addEventListener("change", updateHaulScopeAndReset);
+    haulMarketGroups.addEventListener("click", (event) => {
+      if (event.target.closest("input[data-haul-market-group], .mini-check")) {
+        event.stopPropagation();
+      }
+    });
+    haulMarketGroups.addEventListener("change", (event) => {
+      if (!event.target.closest("input[data-haul-market-group]")) return;
+      updateHaulScopeAndReset();
+    });
+
     flightProfitFilters.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-profit-filter]");
       if (!button) return;
@@ -6324,7 +7077,10 @@ def _render_flight_attendant_dashboard() -> str:
 </body>
 </html>
 """
-    return markup.replace("@@CATEGORY_OPTIONS@@", category_options)
+    return markup.replace("@@CATEGORY_OPTIONS@@", category_options).replace(
+        "@@HAUL_MARKET_GROUP_OPTIONS@@",
+        haul_market_group_options,
+    )
 
 
 def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:

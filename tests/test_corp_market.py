@@ -246,6 +246,15 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Warning: if no route can avoid recent pod kills, the scan falls back to the shortest route." in page
     assert "id=\"haul-min-margin\"" in page
     assert "id=\"haul-min-margin-value\"" in page
+    assert "id=\"haul-common-materials\"" in page
+    assert "id=\"haul-market-groups\"" in page
+    assert "Items to search" in page
+    assert "Common materials" in page
+    assert "Market categories" in page
+    assert "Ships" in page
+    assert "Blueprints &amp; Reactions" in page
+    assert "Ammunition &amp; Charges" in page
+    assert "Scanning more item types increases route calculation time." in page
     assert "id=\"haul-progress-log\"" in page
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page
@@ -444,6 +453,71 @@ def test_haul_route_preference_normalizes_eve_route_terms():
     assert corp_market.normalize_haul_route_preference("shortest") == "shorter"
     assert corp_market.normalize_haul_route_preference("LessSecure") == "less_secure"
     assert corp_market.normalize_haul_route_preference("???") == "safer"
+
+
+def test_haul_market_group_ids_parse_and_dedupe():
+    assert corp_market.clean_haul_market_group_ids(["4,11", "4", "bad", " 19 "]) == (4, 11, 19)
+
+
+def test_haul_item_targets_combine_common_materials_and_market_groups(monkeypatch, tmp_path):
+    recipe_cache = IndustryRecipeCache(
+        path=tmp_path / "recipes.json",
+        available=True,
+        recipes={
+            681: IndustryRecipe(
+                blueprint_type_id=681,
+                blueprint_name="Hobgoblin I Blueprint",
+                product_type_id=165,
+                product_name="Hobgoblin I",
+                product_quantity=1,
+                materials=(IndustryMaterial(type_id=34, name="Tritanium", quantity=1000, volume_m3=0.01),),
+            )
+        },
+    )
+
+    def fake_market_group_targets(config, group_ids):
+        assert tuple(group_ids) == (4,)
+        return (
+            [
+                {
+                    "type_id": 34,
+                    "name": "Tritanium",
+                    "recipe_count": 0,
+                    "volume_m3": 0.01,
+                    "source_label": "Ships",
+                },
+                {
+                    "type_id": 603,
+                    "name": "Merlin",
+                    "recipe_count": 0,
+                    "volume_m3": 2500.0,
+                    "source_label": "Ships",
+                },
+            ],
+            {
+                "source": "test-market-groups",
+                "selected_market_group_ids": [4],
+                "selected_market_groups": [{"market_group_id": 4, "name": "Ships"}],
+                "selected_market_group_count": 1,
+                "market_group_item_types": 2,
+            },
+        )
+
+    monkeypatch.setattr(corp_market, "build_market_group_targets", fake_market_group_targets)
+
+    targets, scope = corp_market.build_haul_item_targets(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        recipe_cache=recipe_cache,
+        include_common_materials=True,
+        market_group_ids=(4,),
+    )
+
+    assert [target["type_id"] for target in targets] == [34, 603]
+    assert targets[0]["source_labels"] == ["Common materials", "Ships"]
+    assert scope["include_common_materials"] is True
+    assert scope["selected_market_group_ids"] == [4]
+    assert scope["market_group_item_types"] == 2
+    assert scope["total_item_types"] == 2
 
 
 def test_haul_route_plan_retries_to_avoid_recent_pod_kills(monkeypatch):
@@ -1273,6 +1347,49 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
 
     assert filtered["hauling"]["profitable_opportunities"] == 0
     assert filtered["hauling"]["detour_margin_rejected_count"] == 1
+
+    def fake_build_market_group_targets(config, group_ids):
+        assert tuple(group_ids) == (4,)
+        return (
+            [
+                {
+                    "type_id": 34,
+                    "name": "Tritanium",
+                    "recipe_count": 0,
+                    "volume_m3": 0.01,
+                    "source_label": "Ships",
+                }
+            ],
+            {
+                "source": "test-market-groups",
+                "selected_market_group_ids": [4],
+                "selected_market_groups": [{"market_group_id": 4, "name": "Ships"}],
+                "selected_market_group_count": 1,
+                "market_group_item_types": 1,
+            },
+        )
+
+    monkeypatch.setattr(corp_market, "build_market_group_targets", fake_build_market_group_targets)
+    sell_calls.clear()
+    buy_calls.clear()
+
+    category_only = build_flight_hauling_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        destination_name="Jita",
+        detour_jumps=1,
+        cargo_capacity_m3=10,
+        min_detour_margin_percent=10,
+        include_common_materials=False,
+        market_group_ids=(4,),
+    )
+
+    assert sorted(sell_calls) == [(100, 34)]
+    assert sorted(buy_calls) == [(200, 34)]
+    assert category_only["hauling"]["item_scope"]["include_common_materials"] is False
+    assert category_only["hauling"]["item_scope"]["selected_market_group_ids"] == [4]
+    assert category_only["hauling"]["scanned_item_types"] == 1
+    assert category_only["hauling"]["opportunities"][0]["item_name"] == "Tritanium"
 
 
 def test_fetch_market_buy_orders_uses_public_market_endpoint(monkeypatch):
