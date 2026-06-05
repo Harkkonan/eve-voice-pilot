@@ -14,7 +14,7 @@ import sqlite3
 import sys
 import threading
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -53,6 +53,8 @@ DEFAULT_HAUL_DETOUR_JUMPS = 1
 MAX_HAUL_DETOUR_JUMPS = 5
 DEFAULT_HAUL_CARGO_M3 = 10_000.0
 MAX_HAUL_CARGO_M3 = 10_000_000.0
+DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT = 10.0
+MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT = 500.0
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
@@ -1741,6 +1743,8 @@ def build_flight_hauling_payload(
     destination_name: str = DEFAULT_HAUL_DESTINATION_SYSTEM,
     detour_jumps: int = DEFAULT_HAUL_DETOUR_JUMPS,
     cargo_capacity_m3: float = DEFAULT_HAUL_CARGO_M3,
+    min_detour_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT,
+    progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
     location = fetch_flight_location(config, session)
@@ -1777,7 +1781,9 @@ def build_flight_hauling_payload(
         route_path=route_path,
         detour_jumps=detour_jumps,
         cargo_capacity_m3=cargo_capacity_m3,
+        min_detour_margin_percent=min_detour_margin_percent,
         sales_tax=sales_tax,
+        progress=progress,
     )
     route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
     return {
@@ -1792,6 +1798,7 @@ def build_flight_hauling_payload(
             "route_jumps": max(0, len(route_path) - 1),
             "detour_jumps": clamp_haul_detour_jumps(detour_jumps),
             "cargo_capacity_m3": clamp_haul_cargo_m3(cargo_capacity_m3),
+            "min_detour_margin_percent": clamp_haul_min_detour_margin_percent(min_detour_margin_percent),
             "systems": route_systems,
         },
         "hauling": opportunities,
@@ -2125,12 +2132,15 @@ def scan_route_hauling_opportunities(
     route_path: list[int],
     detour_jumps: int,
     cargo_capacity_m3: float,
+    min_detour_margin_percent: float,
     sales_tax: dict[str, Any],
+    progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     systems = route_cache.systems or {}
     adjacency = route_cache.adjacency or {}
     clean_detour_jumps = clamp_haul_detour_jumps(detour_jumps)
     clean_cargo_capacity_m3 = clamp_haul_cargo_m3(cargo_capacity_m3)
+    clean_min_detour_margin_percent = clamp_haul_min_detour_margin_percent(min_detour_margin_percent)
     pickup_detours = route_corridor_systems(
         route_path=route_path,
         adjacency=adjacency,
@@ -2179,9 +2189,33 @@ def scan_route_hauling_opportunities(
     opportunities = []
     total_sell_order_count = 0
     total_buy_order_count = 0
+    detour_margin_rejected_count = 0
     errors = []
-    for target in scan_targets:
+    emit_haul_route_progress(
+        progress=progress,
+        route_path=route_path,
+        pickup_detours=pickup_detours,
+        systems=systems,
+        adjacency=adjacency,
+        detour_jumps=clean_detour_jumps,
+        destination_system_id=destination_solar_system_id,
+        pickup_jump_distances=pickup_jump_distances,
+        scanned_materials=len(scan_targets),
+        min_detour_margin_percent=clean_min_detour_margin_percent,
+    )
+    for target_index, target in enumerate(scan_targets, start=1):
         type_id = int(target["type_id"])
+        if progress is not None:
+            progress(
+                "orders",
+                {
+                    "type_id": type_id,
+                    "item_name": target["name"],
+                    "material_index": target_index,
+                    "scanned_materials": len(scan_targets),
+                    "message": f"Pricing {target['name']}",
+                },
+            )
         sell_orders = []
         for region_id in scan_pickup_region_ids:
             try:
@@ -2246,6 +2280,11 @@ def scan_route_hauling_opportunities(
         extra_route_jumps = None
         if origin_to_pickup is not None and pickup_to_destination is not None:
             extra_route_jumps = max(0, origin_to_pickup + pickup_to_destination - route_jumps)
+        margin_percent = profit_margin_percent(net_profit_per_unit, float(sell_order["price"]))
+        pickup_detour_jumps = pickup_detours.get(pickup_system_id, 0)
+        if pickup_detour_jumps > 0 and (margin_percent is None or margin_percent < clean_min_detour_margin_percent):
+            detour_margin_rejected_count += 1
+            continue
         opportunities.append(
             {
                 "type_id": type_id,
@@ -2258,11 +2297,11 @@ def scan_route_hauling_opportunities(
                 "gross_spread_per_unit": gross_spread_per_unit,
                 "net_profit_per_unit": net_profit_per_unit,
                 "net_profit": total_net_profit,
-                "margin_percent": profit_margin_percent(net_profit_per_unit, float(sell_order["price"])),
+                "margin_percent": margin_percent,
                 "sales_tax_rate": sales_tax_rate,
                 "pickup_order": sell_order,
                 "destination_order": buy_order,
-                "pickup_detour_jumps": pickup_detours.get(pickup_system_id, 0),
+                "pickup_detour_jumps": pickup_detour_jumps,
                 "origin_to_pickup_jumps": origin_to_pickup,
                 "pickup_to_destination_jumps": pickup_to_destination,
                 "extra_route_jumps": extra_route_jumps,
@@ -2281,6 +2320,7 @@ def scan_route_hauling_opportunities(
         "route_jumps": route_jumps,
         "detour_jumps": clean_detour_jumps,
         "cargo_capacity_m3": clean_cargo_capacity_m3,
+        "min_detour_margin_percent": clean_min_detour_margin_percent,
         "pickup_system_count": len(pickup_jump_distances),
         "pickup_regions_scanned": len(scan_pickup_region_ids),
         "pickup_regions_total": len(pickup_region_ids),
@@ -2291,6 +2331,7 @@ def scan_route_hauling_opportunities(
         "material_truncated": material_truncated,
         "sell_order_count": total_sell_order_count,
         "buy_order_count": total_buy_order_count,
+        "detour_margin_rejected_count": detour_margin_rejected_count,
         "profitable_opportunities": len(opportunities),
         "opportunities": opportunities[:MAX_FLIGHT_HAUL_OPPORTUNITIES],
         "errors": errors[:12],
@@ -2301,6 +2342,90 @@ def scan_route_hauling_opportunities(
             "orders or verify station docking access."
         ),
     }
+
+
+def emit_haul_route_progress(
+    *,
+    progress: Callable[[str, dict[str, Any]], None] | None,
+    route_path: list[int],
+    pickup_detours: dict[int, int],
+    systems: dict[int, RouteSystem],
+    adjacency: dict[int, tuple[int, ...]],
+    detour_jumps: int,
+    destination_system_id: int,
+    pickup_jump_distances: dict[int, int],
+    scanned_materials: int,
+    min_detour_margin_percent: float,
+) -> None:
+    if progress is None:
+        return
+    route_systems = [systems[system_id] for system_id in route_path if system_id in systems]
+    progress(
+        "scan_start",
+        {
+            "route_stop_count": len(route_systems),
+            "route_jumps": max(0, len(route_path) - 1),
+            "detour_jumps": detour_jumps,
+            "pickup_system_count": len(pickup_jump_distances),
+            "scanned_materials": scanned_materials,
+            "min_detour_margin_percent": min_detour_margin_percent,
+            "message": (
+                f"Walking {len(route_systems)} route stops and {len(pickup_jump_distances)} pickup systems "
+                f"before pricing {scanned_materials} materials."
+            ),
+        },
+    )
+    route_stop_count = len(route_systems)
+    for route_index, route_system in enumerate(route_systems, start=1):
+        nearby_distances = jump_distances_within(
+            start_system_id=route_system.solar_system_id,
+            max_jumps=detour_jumps,
+            adjacency=adjacency,
+        )
+        nearby = []
+        for system_id, jumps_from_route in sorted(
+            nearby_distances.items(),
+            key=lambda item: (item[1], systems.get(item[0], route_system).name),
+        ):
+            if system_id == destination_system_id:
+                continue
+            system = systems.get(system_id)
+            if system is None or system_id not in pickup_detours:
+                continue
+            nearby.append(
+                {
+                    **system.to_dict(jumps=pickup_jump_distances.get(system_id, 0)),
+                    "jumps_from_route": jumps_from_route,
+                }
+            )
+        progress(
+            "route_step",
+            {
+                "route_index": route_index,
+                "route_stop_count": route_stop_count,
+                "system": route_system.to_dict(jumps=route_index - 1),
+                "nearby_system_count": len(nearby),
+                "nearby_systems": nearby[:12],
+                "nearby_truncated": len(nearby) > 12,
+                "message": f"Scanning route stop {route_index}/{route_stop_count}: {route_system.name}",
+            },
+        )
+        for nearby_system in nearby[:12]:
+            if int(nearby_system.get("solar_system_id") or 0) == route_system.solar_system_id:
+                continue
+            progress(
+                "nearby_system",
+                {
+                    "route_index": route_index,
+                    "route_stop_count": route_stop_count,
+                    "route_system_name": route_system.name,
+                    "system": nearby_system,
+                    "message": (
+                        f"Checking nearby {nearby_system['name']} "
+                        f"({nearby_system['jumps_from_route']}j from {route_system.name})"
+                    ),
+                },
+            )
 
 
 def scan_best_reachable_market_orders(
@@ -2744,6 +2869,14 @@ def clamp_haul_cargo_m3(value: Any) -> float:
     return max(1.0, min(MAX_HAUL_CARGO_M3, cargo_m3))
 
 
+def clamp_haul_min_detour_margin_percent(value: Any) -> float:
+    try:
+        margin = float(value)
+    except (TypeError, ValueError):
+        margin = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT
+    return max(0.0, min(MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT, margin))
+
+
 def clean_optional_int(value: Any) -> int | None:
     try:
         result = int(value)
@@ -2991,6 +3124,9 @@ def build_http_server(
             if path == "/api/flight/hauling":
                 self._handle_flight_hauling()
                 return
+            if path == "/api/flight/hauling/progress":
+                self._handle_flight_hauling_progress()
+                return
             if path == "/flight/login":
                 self._handle_flight_login()
                 return
@@ -3125,6 +3261,9 @@ def build_http_server(
             destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
             detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
             cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
+            min_detour_margin = clamp_haul_min_detour_margin_percent(
+                (query.get("min_detour_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
+            )
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
@@ -3132,11 +3271,50 @@ def build_http_server(
                     destination_name=destination,
                     detour_jumps=detour_jumps,
                     cargo_capacity_m3=cargo_m3,
+                    min_detour_margin_percent=min_detour_margin,
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
             self._send_json(payload)
+
+        def _handle_flight_hauling_progress(self) -> None:
+            self._send_sse_headers()
+
+            def emit(event: str, payload: dict[str, Any]) -> None:
+                self._send_sse_event(event, payload)
+
+            if not sso_config.enabled:
+                emit("scan_error", {"ok": False, "error": "EVE SSO is not configured."})
+                return
+            session = self._flight_session()
+            if session is None:
+                emit("scan_error", {"ok": False, "error": "Connect ESI before scanning hauler routes."})
+                return
+            query = parse_qs(urlparse(self.path).query)
+            destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
+            detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
+            cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
+            min_detour_margin = clamp_haul_min_detour_margin_percent(
+                (query.get("min_detour_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
+            )
+            try:
+                payload = build_flight_hauling_payload(
+                    config=sso_config,
+                    session=session,
+                    destination_name=destination,
+                    detour_jumps=detour_jumps,
+                    cargo_capacity_m3=cargo_m3,
+                    min_detour_margin_percent=min_detour_margin,
+                    progress=emit,
+                )
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except CorpMarketError as exc:
+                emit("scan_error", {"ok": False, "error": str(exc)})
+                return
+            emit("result", payload)
+            emit("done", {"ok": True, "generated_at": now_iso()})
 
         def _handle_flight_login(self) -> None:
             if not sso_config.enabled:
@@ -3375,6 +3553,24 @@ def build_http_server(
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _send_sse_headers(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+        def _send_sse_event(self, event: str, payload: dict[str, Any]) -> None:
+            body = (
+                f"event: {event}\n"
+                f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+            ).encode("utf-8")
+            try:
+                self.wfile.write(body)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                raise
 
         def _send_html(self, markup: str, *, status: int = 200) -> None:
             body = markup.encode("utf-8")
@@ -3982,6 +4178,32 @@ def _render_flight_attendant_dashboard() -> str:
     .progress-copy { display: grid; gap: 2px; min-width: 0; }
     .progress-copy strong { color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
     .progress-copy span { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .progress-log {
+      display: grid;
+      gap: 6px;
+      max-height: 240px;
+      overflow: auto;
+      margin-top: 10px;
+      border: 1px solid rgba(63, 85, 80, .58);
+      border-radius: 7px;
+      background: rgba(8, 13, 15, .34);
+      padding: 8px;
+    }
+    .progress-entry {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      border-bottom: 1px solid rgba(63, 85, 80, .28);
+      padding-bottom: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .progress-entry:last-child { border-bottom: 0; padding-bottom: 0; }
+    .progress-entry b { color: var(--cyan); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+    .progress-entry span { overflow-wrap: anywhere; }
+    .range-readout { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    input[type="range"] { padding: 0; accent-color: var(--cyan); }
     .progress-bar {
       position: relative;
       overflow: hidden;
@@ -4380,10 +4602,9 @@ def _render_flight_attendant_dashboard() -> str:
                 <label>Pickup detour jumps
                   <input id="haul-detour-jumps" name="detour_jumps" type="number" min="0" max="5" step="1" value="1">
                 </label>
-                <label>Scan mode
-                  <select disabled>
-                    <option>Common build materials</option>
-                  </select>
+                <label>Profit to allow detour
+                  <input id="haul-min-margin" name="min_detour_margin_percent" type="range" min="0" max="100" step="1" value="10">
+                  <span class="range-readout"><span class="meta">Minimum after-tax margin</span><strong id="haul-min-margin-value">10%</strong></span>
                 </label>
               </div>
               <div id="haul-hub-buttons" class="filters" aria-label="Hub shortcuts">
@@ -4398,6 +4619,7 @@ def _render_flight_attendant_dashboard() -> str:
             </form>
             <div id="haul-route-summary" class="profit-summary">Connect ESI to scan route hauling opportunities.</div>
             <div id="haul-route-path" class="meta"></div>
+            <div id="haul-progress-log" class="progress-log" hidden></div>
           </section>
 
           <section class="panel">
@@ -4468,10 +4690,13 @@ def _render_flight_attendant_dashboard() -> str:
     const haulDestination = document.querySelector("#haul-destination");
     const haulCargoM3 = document.querySelector("#haul-cargo-m3");
     const haulDetourJumps = document.querySelector("#haul-detour-jumps");
+    const haulMinMargin = document.querySelector("#haul-min-margin");
+    const haulMinMarginValue = document.querySelector("#haul-min-margin-value");
     const haulHubButtons = document.querySelector("#haul-hub-buttons");
     const haulScanButton = document.querySelector("#haul-scan");
     const haulRouteSummary = document.querySelector("#haul-route-summary");
     const haulRoutePath = document.querySelector("#haul-route-path");
+    const haulProgressLog = document.querySelector("#haul-progress-log");
     const haulOpportunitySummary = document.querySelector("#haul-opportunity-summary");
     const haulOpportunityTop = document.querySelector("#haul-opportunity-top");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
@@ -4482,12 +4707,15 @@ def _render_flight_attendant_dashboard() -> str:
     const haulDestinationKey = "eve-flight-haul-destination-v1";
     const haulCargoKey = "eve-flight-haul-cargo-m3-v1";
     const haulDetourKey = "eve-flight-haul-detour-jumps-v1";
+    const haulMinMarginKey = "eve-flight-haul-min-margin-v1";
     const validTabs = new Set(["market", "flight", "hauling"]);
     let filterType = "";
     let includeClosed = false;
     let flightProfitFilter = "all";
     let flightProfitProducts = [];
     let flightProfitProgressTimer = null;
+    let haulEventSource = null;
+    let haulScanFinished = false;
 
     function escapeHtml(value) {
       const replacements = {
@@ -4660,14 +4888,22 @@ def _render_flight_attendant_dashboard() -> str:
       return Math.max(1, Math.min(10000000, cargo));
     }
 
+    function clampHaulMinMargin(value) {
+      const margin = Number(value);
+      if (!Number.isFinite(margin)) return 10;
+      return Math.max(0, Math.min(500, margin));
+    }
+
     function readHaulSettings() {
       const destination = String(window.localStorage.getItem(haulDestinationKey) || haulDestination.value || "Jita").trim() || "Jita";
       const cargo = Number(window.localStorage.getItem(haulCargoKey) || haulCargoM3.value || 10000);
       const detour = Number(window.localStorage.getItem(haulDetourKey) || haulDetourJumps.value || 1);
+      const minMargin = Number(window.localStorage.getItem(haulMinMarginKey) || haulMinMargin.value || 10);
       return {
         destination,
         cargoM3: clampHaulCargoM3(Number.isFinite(cargo) ? cargo : 10000),
         detourJumps: Math.max(0, Math.min(5, Math.round(Number.isFinite(detour) ? detour : 1))),
+        minDetourMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
       };
     }
 
@@ -4675,13 +4911,17 @@ def _render_flight_attendant_dashboard() -> str:
       const destination = String(settings.destination || "Jita").trim() || "Jita";
       const cargoM3 = clampHaulCargoM3(settings.cargoM3);
       const detourJumps = Math.max(0, Math.min(5, Math.round(Number(settings.detourJumps) || 0)));
+      const minDetourMarginPercent = clampHaulMinMargin(settings.minDetourMarginPercent);
       haulDestination.value = destination;
       haulCargoM3.value = String(cargoM3);
       haulDetourJumps.value = String(detourJumps);
+      haulMinMargin.value = String(minDetourMarginPercent);
+      haulMinMarginValue.textContent = `${formatNumber(minDetourMarginPercent)}%`;
       window.localStorage.setItem(haulDestinationKey, destination);
       window.localStorage.setItem(haulCargoKey, String(cargoM3));
       window.localStorage.setItem(haulDetourKey, String(detourJumps));
-      return {destination, cargoM3, detourJumps};
+      window.localStorage.setItem(haulMinMarginKey, String(minDetourMarginPercent));
+      return {destination, cargoM3, detourJumps, minDetourMarginPercent};
     }
 
     async function loadFlightStatus() {
@@ -5038,11 +5278,21 @@ def _render_flight_attendant_dashboard() -> str:
     }
 
     function resetFlightHauling(message) {
+      closeHaulEventSource();
       haulRouteSummary.textContent = message;
       haulRoutePath.textContent = "";
+      haulProgressLog.hidden = true;
+      haulProgressLog.innerHTML = "";
       haulOpportunitySummary.textContent = "No route scan has run yet.";
       haulOpportunityTop.textContent = "";
       haulScanButton.disabled = false;
+    }
+
+    function closeHaulEventSource() {
+      if (haulEventSource) {
+        haulEventSource.close();
+        haulEventSource = null;
+      }
     }
 
     async function loadFlightHauling() {
@@ -5050,39 +5300,94 @@ def _render_flight_attendant_dashboard() -> str:
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
         detourJumps: haulDetourJumps.value,
+        minDetourMarginPercent: haulMinMargin.value,
       });
+      closeHaulEventSource();
+      haulScanFinished = false;
       haulScanButton.disabled = true;
       haulRouteSummary.textContent = `Scanning route to ${settings.destination} with ${formatNumber(settings.detourJumps)} detour jumps...`;
       haulRoutePath.textContent = "";
+      haulProgressLog.hidden = false;
+      haulProgressLog.innerHTML = "";
       haulOpportunitySummary.innerHTML = `
         <div class="progress-status" aria-live="polite">
           <span class="progress-spinner" aria-hidden="true"></span>
           <div class="progress-copy">
             <strong>Comparing corridor sell orders and destination buy orders</strong>
-            <span>Cargo ${formatVolume(settings.cargoM3)}; destination ${escapeHtml(settings.destination)}.</span>
+            <span>Cargo ${formatVolume(settings.cargoM3)}; destination ${escapeHtml(settings.destination)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
           </div>
         </div>
         <div class="progress-bar" aria-hidden="true"><span></span></div>
       `;
       haulOpportunityTop.innerHTML = `<div class="decision-empty">Route opportunities will appear here when the scan finishes.</div>`;
-      try {
-        const params = new URLSearchParams({
-          destination: settings.destination,
-          cargo_m3: String(settings.cargoM3),
-          detour_jumps: String(settings.detourJumps),
-        });
-        const response = await fetch(`/api/flight/hauling?${params}`);
-        const data = await response.json();
-        if (!data.ok) throw new Error(data.error || "Could not scan hauler route");
-        renderFlightHauling(data);
-      } catch (error) {
-        haulRouteSummary.textContent = error.message;
-        haulRoutePath.textContent = "";
+      const params = new URLSearchParams({
+        destination: settings.destination,
+        cargo_m3: String(settings.cargoM3),
+        detour_jumps: String(settings.detourJumps),
+        min_detour_margin_percent: String(settings.minDetourMarginPercent),
+      });
+      haulEventSource = new EventSource(`/api/flight/hauling/progress?${params}`);
+      haulEventSource.addEventListener("scan_start", (event) => {
+        appendHaulProgress("Start", parseHaulProgressEvent(event));
+      });
+      haulEventSource.addEventListener("route_step", (event) => {
+        const payload = parseHaulProgressEvent(event);
+        appendHaulProgress(`Stop ${formatNumber(payload.route_index)}`, payload);
+      });
+      haulEventSource.addEventListener("nearby_system", (event) => {
+        appendHaulProgress("Nearby", parseHaulProgressEvent(event));
+      });
+      haulEventSource.addEventListener("orders", (event) => {
+        const payload = parseHaulProgressEvent(event);
+        appendHaulProgress(`Material ${formatNumber(payload.material_index)}/${formatNumber(payload.scanned_materials)}`, payload);
+      });
+      haulEventSource.addEventListener("scan_error", (event) => {
+        const payload = parseHaulProgressEvent(event);
+        haulScanFinished = true;
+        closeHaulEventSource();
+        haulRouteSummary.textContent = payload.error || "Route scan failed.";
         haulOpportunitySummary.textContent = "Route scan failed.";
         haulOpportunityTop.textContent = "";
-      } finally {
         haulScanButton.disabled = false;
+      });
+      haulEventSource.addEventListener("result", (event) => {
+        haulScanFinished = true;
+        const data = parseHaulProgressEvent(event);
+        renderFlightHauling(data);
+        appendHaulProgress("Done", {message: "Route opportunity scan complete."});
+        closeHaulEventSource();
+        haulScanButton.disabled = false;
+      });
+      haulEventSource.onerror = () => {
+        if (haulScanFinished) return;
+        closeHaulEventSource();
+        haulRouteSummary.textContent = "Route scan connection closed before results arrived.";
+        haulOpportunitySummary.textContent = "Route scan failed.";
+        haulOpportunityTop.textContent = "";
+        haulScanButton.disabled = false;
+      };
+    }
+
+    function parseHaulProgressEvent(event) {
+      try {
+        return JSON.parse(event.data || "{}");
+      } catch (_error) {
+        return {message: "Unreadable progress update."};
       }
+    }
+
+    function appendHaulProgress(label, payload) {
+      const message = payload.message || "";
+      if (!message) return;
+      haulProgressLog.hidden = false;
+      const entry = document.createElement("div");
+      entry.className = "progress-entry";
+      entry.innerHTML = `<b>${escapeHtml(label)}</b><span>${escapeHtml(message)}</span>`;
+      haulProgressLog.appendChild(entry);
+      while (haulProgressLog.children.length > 80) {
+        haulProgressLog.removeChild(haulProgressLog.firstElementChild);
+      }
+      haulProgressLog.scrollTop = haulProgressLog.scrollHeight;
     }
 
     function renderFlightHauling(data) {
@@ -5109,8 +5414,9 @@ def _render_flight_attendant_dashboard() -> str:
         </div>
         <div class="meta">
           Pickup detour ${formatNumber(hauling.detour_jumps)} jumps; scanned ${formatNumber(hauling.pickup_regions_scanned)}
-          pickup regions.${escapeHtml(materialLimit + regionLimit)}
+          pickup regions; detour threshold ${formatNumber(hauling.min_detour_margin_percent)}%.${escapeHtml(materialLimit + regionLimit)}
         </div>
+        <div class="meta">${formatNumber(hauling.detour_margin_rejected_count)} detour candidates were below the selected profit threshold.</div>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on destination buy-order sales.</div>
         <div class="meta">${escapeHtml(hauling.pricing_note || "Public market order route scan.")}</div>
       `;
@@ -5390,6 +5696,16 @@ def _render_flight_attendant_dashboard() -> str:
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
         detourJumps: haulDetourJumps.value,
+        minDetourMarginPercent: haulMinMargin.value,
+      });
+    });
+
+    haulMinMargin.addEventListener("input", () => {
+      writeHaulSettings({
+        destination: haulDestination.value,
+        cargoM3: haulCargoM3.value,
+        detourJumps: haulDetourJumps.value,
+        minDetourMarginPercent: haulMinMargin.value,
       });
     });
 

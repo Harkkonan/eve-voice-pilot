@@ -218,6 +218,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/buyers" in page
     assert "/api/flight/profitability" in page
     assert "/api/flight/hauling" in page
+    assert "/api/flight/hauling/progress" in page
     assert "/flight/login" in page
     assert "id=\"flight-system-name\"" in page
     assert "id=\"flight-login-link\"" in page
@@ -237,6 +238,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-route-form\"" in page
     assert "id=\"haul-destination\"" in page
     assert "id=\"haul-cargo-m3\" name=\"cargo_m3\" type=\"number\" min=\"1\" max=\"10000000\" step=\"any\"" in page
+    assert "id=\"haul-min-margin\"" in page
+    assert "id=\"haul-min-margin-value\"" in page
+    assert "id=\"haul-progress-log\"" in page
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
@@ -392,6 +396,12 @@ def test_haul_cargo_capacity_preserves_decimal_values():
     assert corp_market.clamp_haul_cargo_m3("1234.56") == pytest.approx(1234.56)
     assert corp_market.clamp_haul_cargo_m3("0") == 1.0
     assert corp_market.clamp_haul_cargo_m3("20000000") == 10_000_000.0
+
+
+def test_haul_detour_margin_clamps_to_slider_range():
+    assert corp_market.clamp_haul_min_detour_margin_percent("12.5") == pytest.approx(12.5)
+    assert corp_market.clamp_haul_min_detour_margin_percent("-1") == 0.0
+    assert corp_market.clamp_haul_min_detour_margin_percent("999") == 500.0
 
 
 def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch, tmp_path):
@@ -1089,12 +1099,15 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     monkeypatch.setattr(corp_market, "fetch_market_sell_orders", fake_fetch_market_sell_orders)
     monkeypatch.setattr(corp_market, "fetch_market_buy_orders", fake_fetch_market_buy_orders)
 
+    progress_events = []
     payload = build_flight_hauling_payload(
         config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
         session=session,
         destination_name="Jita",
         detour_jumps=1,
         cargo_capacity_m3=10,
+        min_detour_margin_percent=10,
+        progress=lambda event, progress_payload: progress_events.append((event, progress_payload)),
     )
 
     assert payload["ok"] is True
@@ -1106,6 +1119,8 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     hauling = payload["hauling"]
     assert hauling["profitable_opportunities"] == 1
     assert hauling["sales_tax"]["accounting_level"] == 5
+    assert hauling["min_detour_margin_percent"] == 10
+    assert hauling["detour_margin_rejected_count"] == 0
     opportunity = hauling["opportunities"][0]
     assert opportunity["item_name"] == "Tritanium"
     assert opportunity["units"] == 1000
@@ -1117,6 +1132,25 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert opportunity["gross_spread_per_unit"] == 6.0
     assert opportunity["net_profit_per_unit"] == pytest.approx(5.73)
     assert opportunity["net_profit"] == pytest.approx(5730.0)
+    event_names = [event for event, _payload in progress_events]
+    assert "scan_start" in event_names
+    assert "route_step" in event_names
+    assert "nearby_system" in event_names
+    assert "orders" in event_names
+    assert any(payload["message"].startswith("Scanning route stop") for event, payload in progress_events if event == "route_step")
+    assert any(payload["message"].startswith("Checking nearby") for event, payload in progress_events if event == "nearby_system")
+
+    filtered = build_flight_hauling_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        destination_name="Jita",
+        detour_jumps=1,
+        cargo_capacity_m3=10,
+        min_detour_margin_percent=500,
+    )
+
+    assert filtered["hauling"]["profitable_opportunities"] == 0
+    assert filtered["hauling"]["detour_margin_rejected_count"] == 1
 
 
 def test_fetch_market_buy_orders_uses_public_market_endpoint(monkeypatch):
