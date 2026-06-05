@@ -18,6 +18,7 @@ Build as if the repository may be published publicly.
 - Do not commit secrets, API keys, Discord webhooks, SSO client secrets, access tokens, private chat logs, generated chat-log artifacts, local archives, generated caches, local SQLite databases, local settings, downloaded models, or personal EVE profile files.
 - Treat `docs/eve_developer_license_review.md` as a review checklist, not as the source of truth.
 - Re-open the live CCP/EVE policy pages before each meaningful release, public hosting change, monetization change, new ESI/SSO scope, new client-input capability, or feature that changes privacy behavior.
+- Record meaningful policy checks in `docs/eve_developer_license_review.md` with the review date and reason.
 - Preserve notices and avoid implying CCP endorsement when using EVE, CCP, or related names, data, marks, or imagery.
 
 Useful official references:
