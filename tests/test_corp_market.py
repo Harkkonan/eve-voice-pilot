@@ -239,6 +239,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-route-form\"" in page
     assert "id=\"haul-destination\"" in page
     assert "id=\"haul-cargo-m3\" name=\"cargo_m3\" type=\"number\" min=\"1\" max=\"10000000\" step=\"any\"" in page
+    assert "id=\"haul-route-preference\"" in page
+    assert "Prefer safer" in page
+    assert "id=\"haul-avoid-pod-kills\"" in page
+    assert "Avoid recent pod kills" in page
     assert "id=\"haul-min-margin\"" in page
     assert "id=\"haul-min-margin-value\"" in page
     assert "id=\"haul-progress-log\"" in page
@@ -427,6 +431,45 @@ def test_haul_detour_margin_clamps_to_slider_range():
     assert corp_market.clamp_haul_min_detour_margin_percent("12.5") == pytest.approx(12.5)
     assert corp_market.clamp_haul_min_detour_margin_percent("-1") == 0.0
     assert corp_market.clamp_haul_min_detour_margin_percent("999") == 500.0
+
+
+def test_haul_route_preference_normalizes_eve_route_terms():
+    assert corp_market.normalize_haul_route_preference("Prefer safer") == "safer"
+    assert corp_market.normalize_haul_route_preference("secure") == "safer"
+    assert corp_market.normalize_haul_route_preference("shortest") == "shorter"
+    assert corp_market.normalize_haul_route_preference("LessSecure") == "less_secure"
+    assert corp_market.normalize_haul_route_preference("???") == "safer"
+
+
+def test_haul_route_plan_retries_to_avoid_recent_pod_kills(monkeypatch):
+    route_calls = []
+
+    def fake_recent_pods(config):
+        return (2,)
+
+    def fake_route(config, *, origin_solar_system_id, destination_solar_system_id, route_preference, avoid_system_ids=()):
+        avoid_tuple = tuple(sorted(avoid_system_ids))
+        route_calls.append((route_preference, avoid_tuple))
+        return [1, 4, 3] if 2 in avoid_tuple else [1, 2, 3]
+
+    monkeypatch.setattr(corp_market, "fetch_recent_pod_kill_system_ids", fake_recent_pods)
+    monkeypatch.setattr(corp_market, "fetch_esi_route_path", fake_route)
+
+    plan = corp_market.build_haul_route_plan(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        origin_solar_system_id=1,
+        destination_solar_system_id=3,
+        route_preference="Prefer safer",
+        avoid_recent_pod_kills=True,
+        adjacency={1: (2, 4), 2: (1, 3), 3: (2, 4), 4: (1, 3)},
+    )
+
+    assert plan["path"] == [1, 4, 3]
+    assert plan["preference"] == "safer"
+    assert plan["avoid_recent_pod_kills"] is True
+    assert plan["avoided_pod_kill_system_ids"] == [2]
+    assert plan["route_pod_kill_system_ids"] == []
+    assert route_calls == [("safer", ()), ("safer", (2,))]
 
 
 def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch, tmp_path):
@@ -1147,6 +1190,28 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
 
     monkeypatch.setattr(corp_market, "fetch_market_sell_orders", fake_fetch_market_sell_orders)
     monkeypatch.setattr(corp_market, "fetch_market_buy_orders", fake_fetch_market_buy_orders)
+    route_calls = []
+
+    def fake_fetch_esi_route_path(
+        config,
+        *,
+        origin_solar_system_id,
+        destination_solar_system_id,
+        route_preference,
+        avoid_system_ids=(),
+    ):
+        route_calls.append(
+            (
+                origin_solar_system_id,
+                destination_solar_system_id,
+                route_preference,
+                tuple(sorted(avoid_system_ids)),
+            )
+        )
+        return [1, 2, 3]
+
+    monkeypatch.setattr(corp_market, "fetch_esi_route_path", fake_fetch_esi_route_path)
+    monkeypatch.setattr(corp_market, "fetch_recent_pod_kill_system_ids", lambda config: ())
 
     progress_events = []
     payload = build_flight_hauling_payload(
@@ -1163,6 +1228,9 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert payload["route"]["origin"]["name"] == "Start"
     assert payload["route"]["destination"]["name"] == "Jita"
     assert payload["route"]["route_jumps"] == 2
+    assert payload["route"]["route_preference"] == "safer"
+    assert payload["route"]["avoid_recent_pod_kills"] is False
+    assert route_calls[0] == (1, 3, "safer", ())
     assert sorted(sell_calls) == [(100, 34), (100, 35)]
     assert sorted(buy_calls) == [(200, 34), (200, 35)]
     hauling = payload["hauling"]

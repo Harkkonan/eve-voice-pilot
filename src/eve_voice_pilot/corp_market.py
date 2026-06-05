@@ -55,7 +55,13 @@ DEFAULT_HAUL_CARGO_M3 = 10_000.0
 MAX_HAUL_CARGO_M3 = 10_000_000.0
 DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT = 10.0
 MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT = 500.0
+DEFAULT_HAUL_ROUTE_PREFERENCE = "safer"
+HAUL_ROUTE_PREFERENCES = {"shorter", "safer", "less_secure"}
+HAUL_ROUTE_ESI_PREFERENCES = {"shorter": "Shorter", "safer": "Safer", "less_secure": "LessSecure"}
+DEFAULT_HAUL_AVOID_RECENT_POD_KILLS = False
+MAX_HAUL_ROUTE_AVOID_SYSTEMS = 100
 MARKET_ORDER_CACHE_TTL_SECONDS = 300.0
+SYSTEM_KILLS_CACHE_TTL_SECONDS = 300.0
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
@@ -95,6 +101,8 @@ FIT_HEADER_RE = re.compile(r"^\[(?P<hull>[^,\]]+),\s*(?P<name>[^\]]+)\]\s*$")
 FIT_QUANTITY_RE = re.compile(r"\sx[\d,]+\s*$", re.IGNORECASE)
 MARKET_ORDER_CACHE_LOCK = threading.Lock()
 MARKET_ORDER_CACHE: dict[tuple[str, int, int, str], tuple[float, list[dict[str, Any]]]] = {}
+SYSTEM_KILLS_CACHE_LOCK = threading.Lock()
+SYSTEM_KILLS_CACHE: dict[str, tuple[float, tuple[int, ...]]] = {}
 
 
 class CorpMarketError(RuntimeError):
@@ -1274,6 +1282,91 @@ def market_order_cache_status() -> dict[str, Any]:
     }
 
 
+def fetch_esi_route_path(
+    config: EveSsoConfig,
+    *,
+    origin_solar_system_id: int,
+    destination_solar_system_id: int,
+    route_preference: str,
+    avoid_system_ids: Iterable[int] = (),
+) -> list[int]:
+    clean_preference = normalize_haul_route_preference(route_preference)
+    flag = {
+        "shorter": "shortest",
+        "safer": "secure",
+        "less_secure": "insecure",
+    }[clean_preference]
+    avoid_ids_set: set[int] = set()
+    for raw_system_id in avoid_system_ids:
+        try:
+            system_id = int(raw_system_id)
+        except (TypeError, ValueError):
+            continue
+        if system_id > 0 and system_id not in {origin_solar_system_id, destination_solar_system_id}:
+            avoid_ids_set.add(system_id)
+    avoid_ids = sorted(avoid_ids_set)[:MAX_HAUL_ROUTE_AVOID_SYSTEMS]
+    params = {
+        "datasource": "tranquility",
+        "flag": flag,
+    }
+    if avoid_ids:
+        params["avoid"] = ",".join(str(system_id) for system_id in avoid_ids)
+    base_url = config.esi_base_url.rstrip("/")
+    url = add_query_params(f"{base_url}/route/{origin_solar_system_id}/{destination_solar_system_id}/", params)
+    try:
+        payload = get_json(url, timeout_seconds=30.0, headers=flight_esi_headers())
+    except (CorpIntelError, ValueError) as exc:
+        raise CorpMarketError(f"ESI route planner failed: {exc}") from exc
+    route_payload = payload.get("route") if isinstance(payload, dict) else payload
+    if not isinstance(route_payload, list):
+        raise CorpMarketError("ESI route planner returned unexpected data.")
+    route_path = []
+    for value in route_payload:
+        try:
+            system_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if system_id > 0:
+            route_path.append(system_id)
+    if not route_path:
+        raise CorpMarketError("ESI route planner returned no route.")
+    return route_path
+
+
+def fetch_recent_pod_kill_system_ids(config: EveSsoConfig) -> tuple[int, ...]:
+    base_url = config.esi_base_url.rstrip("/")
+    now = time.monotonic()
+    with SYSTEM_KILLS_CACHE_LOCK:
+        cached = SYSTEM_KILLS_CACHE.get(base_url)
+        if cached is not None:
+            cached_at, cached_system_ids = cached
+            if now - cached_at < SYSTEM_KILLS_CACHE_TTL_SECONDS:
+                return cached_system_ids
+            SYSTEM_KILLS_CACHE.pop(base_url, None)
+    url = add_query_params(f"{base_url}/universe/system_kills/", {"datasource": "tranquility"})
+    try:
+        payload = get_json(url, timeout_seconds=30.0, headers=flight_esi_headers())
+    except (CorpIntelError, ValueError) as exc:
+        raise CorpMarketError(f"Recent pod-kill lookup failed: {exc}") from exc
+    if not isinstance(payload, list):
+        raise CorpMarketError("Recent pod-kill lookup returned unexpected data.")
+    system_ids = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        try:
+            system_id = int(item.get("system_id") or 0)
+            pod_kills = int(item.get("pod_kills") or 0)
+        except (TypeError, ValueError):
+            continue
+        if system_id > 0 and pod_kills > 0:
+            system_ids.append(system_id)
+    cached_system_ids = tuple(sorted(set(system_ids)))
+    with SYSTEM_KILLS_CACHE_LOCK:
+        SYSTEM_KILLS_CACHE[base_url] = (time.monotonic(), cached_system_ids)
+    return cached_system_ids
+
+
 def fetch_market_buy_orders(config: EveSsoConfig, *, region_id: int, type_id: int) -> list[dict[str, Any]]:
     return fetch_market_orders(config, region_id=region_id, type_id=type_id, order_type="buy")
 
@@ -1833,6 +1926,8 @@ def build_flight_hauling_payload(
     detour_jumps: int = DEFAULT_HAUL_DETOUR_JUMPS,
     cargo_capacity_m3: float = DEFAULT_HAUL_CARGO_M3,
     min_detour_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT,
+    route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE,
+    avoid_recent_pod_kills: bool = DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
@@ -1852,11 +1947,15 @@ def build_flight_hauling_payload(
     destination = resolve_route_system(route_cache, destination_name)
     if destination is None:
         raise CorpMarketError(f"Destination system {destination_name!r} was not found in the route graph cache.")
-    route_path = shortest_route_path(
-        start_system_id=origin.solar_system_id,
-        destination_system_id=destination.solar_system_id,
+    route_plan = build_haul_route_plan(
+        config=config,
+        origin_solar_system_id=origin.solar_system_id,
+        destination_solar_system_id=destination.solar_system_id,
+        route_preference=route_preference,
+        avoid_recent_pod_kills=bool(avoid_recent_pod_kills),
         adjacency=adjacency,
     )
+    route_path = route_plan["path"]
     if not route_path:
         raise CorpMarketError(f"No stargate route from {origin.name} to {destination.name} was found.")
     skills = fetch_flight_skills(config, session)
@@ -1888,6 +1987,14 @@ def build_flight_hauling_payload(
             "detour_jumps": clamp_haul_detour_jumps(detour_jumps),
             "cargo_capacity_m3": clamp_haul_cargo_m3(cargo_capacity_m3),
             "min_detour_margin_percent": clamp_haul_min_detour_margin_percent(min_detour_margin_percent),
+            "route_preference": route_plan["preference"],
+            "route_preference_label": route_plan["preference_label"],
+            "route_source": route_plan["source"],
+            "avoid_recent_pod_kills": route_plan["avoid_recent_pod_kills"],
+            "recent_pod_kill_system_count": route_plan["recent_pod_kill_system_count"],
+            "avoided_pod_kill_system_count": len(route_plan["avoided_pod_kill_system_ids"]),
+            "route_pod_kill_system_count": len(route_plan["route_pod_kill_system_ids"]),
+            "route_warning": route_plan["warning"],
             "systems": route_systems,
         },
         "hauling": opportunities,
@@ -2873,6 +2980,88 @@ def normalize_system_name(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
 
 
+def build_haul_route_plan(
+    *,
+    config: EveSsoConfig,
+    origin_solar_system_id: int,
+    destination_solar_system_id: int,
+    route_preference: str,
+    avoid_recent_pod_kills: bool,
+    adjacency: dict[int, tuple[int, ...]],
+) -> dict[str, Any]:
+    clean_preference = normalize_haul_route_preference(route_preference)
+    recent_pod_kill_system_ids: tuple[int, ...] = ()
+    warning = ""
+    if avoid_recent_pod_kills:
+        try:
+            recent_pod_kill_system_ids = fetch_recent_pod_kill_system_ids(config)
+        except CorpMarketError as exc:
+            warning = str(exc)
+    recent_pod_kill_set = set(recent_pod_kill_system_ids)
+    avoided_system_ids: set[int] = set()
+    route_path: list[int] = []
+    source = "esi-route"
+    route_error = ""
+    for _attempt in range(4):
+        try:
+            candidate_path = fetch_esi_route_path(
+                config,
+                origin_solar_system_id=origin_solar_system_id,
+                destination_solar_system_id=destination_solar_system_id,
+                route_preference=clean_preference,
+                avoid_system_ids=avoided_system_ids,
+            )
+        except CorpMarketError as exc:
+            route_error = str(exc)
+            break
+        route_path = candidate_path
+        if not avoid_recent_pod_kills or not recent_pod_kill_set:
+            break
+        route_pod_kill_ids = [
+            system_id
+            for system_id in route_path
+            if system_id in recent_pod_kill_set
+            and system_id not in {origin_solar_system_id, destination_solar_system_id}
+        ]
+        new_avoids = [system_id for system_id in route_pod_kill_ids if system_id not in avoided_system_ids]
+        if not new_avoids:
+            break
+        remaining_slots = MAX_HAUL_ROUTE_AVOID_SYSTEMS - len(avoided_system_ids)
+        if remaining_slots <= 0:
+            warning = warning or f"Route avoid list reached {MAX_HAUL_ROUTE_AVOID_SYSTEMS} systems."
+            break
+        avoided_system_ids.update(new_avoids[:remaining_slots])
+        if len(new_avoids) > remaining_slots:
+            warning = warning or f"Route avoid list reached {MAX_HAUL_ROUTE_AVOID_SYSTEMS} systems."
+            break
+    if not route_path:
+        route_path = shortest_route_path(
+            start_system_id=origin_solar_system_id,
+            destination_system_id=destination_solar_system_id,
+            adjacency=adjacency,
+        )
+        source = "local-shortest-fallback"
+        warning = warning or route_error or "ESI route planner was unavailable; using local shortest route."
+    route_pod_kill_ids = [
+        system_id
+        for system_id in route_path
+        if system_id in recent_pod_kill_set and system_id not in {origin_solar_system_id, destination_solar_system_id}
+    ]
+    if avoid_recent_pod_kills and route_pod_kill_ids and not warning:
+        warning = "Some recent pod-kill systems could not be avoided without losing the route."
+    return {
+        "path": route_path,
+        "source": source,
+        "preference": clean_preference,
+        "preference_label": HAUL_ROUTE_ESI_PREFERENCES[clean_preference],
+        "avoid_recent_pod_kills": bool(avoid_recent_pod_kills),
+        "recent_pod_kill_system_count": len(recent_pod_kill_system_ids),
+        "avoided_pod_kill_system_ids": sorted(avoided_system_ids),
+        "route_pod_kill_system_ids": route_pod_kill_ids,
+        "warning": warning,
+    }
+
+
 def shortest_route_path(
     *,
     start_system_id: int,
@@ -3004,6 +3193,36 @@ def clamp_haul_min_detour_margin_percent(value: Any) -> float:
     except (TypeError, ValueError):
         margin = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT
     return max(0.0, min(MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT, margin))
+
+
+def normalize_haul_route_preference(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    aliases = {
+        "shortest": "shorter",
+        "short": "shorter",
+        "prefer_shorter": "shorter",
+        "secure": "safer",
+        "safe": "safer",
+        "prefer_safer": "safer",
+        "lesssecure": "less_secure",
+        "insecure": "less_secure",
+        "prefer_less_secure": "less_secure",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in HAUL_ROUTE_PREFERENCES:
+        return DEFAULT_HAUL_ROUTE_PREFERENCE
+    return normalized
+
+
+def query_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def clean_optional_int(value: Any) -> int | None:
@@ -3393,6 +3612,13 @@ def build_http_server(
             min_detour_margin = clamp_haul_min_detour_margin_percent(
                 (query.get("min_detour_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
             )
+            route_preference = normalize_haul_route_preference(
+                (query.get("route_preference") or [DEFAULT_HAUL_ROUTE_PREFERENCE])[0]
+            )
+            avoid_recent_pod_kills = query_bool(
+                (query.get("avoid_recent_pod_kills") or [str(int(DEFAULT_HAUL_AVOID_RECENT_POD_KILLS))])[0],
+                default=DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
+            )
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
@@ -3401,6 +3627,8 @@ def build_http_server(
                     detour_jumps=detour_jumps,
                     cargo_capacity_m3=cargo_m3,
                     min_detour_margin_percent=min_detour_margin,
+                    route_preference=route_preference,
+                    avoid_recent_pod_kills=avoid_recent_pod_kills,
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -3427,6 +3655,13 @@ def build_http_server(
             min_detour_margin = clamp_haul_min_detour_margin_percent(
                 (query.get("min_detour_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
             )
+            route_preference = normalize_haul_route_preference(
+                (query.get("route_preference") or [DEFAULT_HAUL_ROUTE_PREFERENCE])[0]
+            )
+            avoid_recent_pod_kills = query_bool(
+                (query.get("avoid_recent_pod_kills") or [str(int(DEFAULT_HAUL_AVOID_RECENT_POD_KILLS))])[0],
+                default=DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
+            )
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
@@ -3435,6 +3670,8 @@ def build_http_server(
                     detour_jumps=detour_jumps,
                     cargo_capacity_m3=cargo_m3,
                     min_detour_margin_percent=min_detour_margin,
+                    route_preference=route_preference,
+                    avoid_recent_pod_kills=avoid_recent_pod_kills,
                     progress=emit,
                 )
             except (BrokenPipeError, ConnectionResetError):
@@ -4178,6 +4415,9 @@ def _render_flight_attendant_dashboard() -> str:
       outline: 2px solid rgba(97, 199, 217, .28);
       border-color: rgba(97, 199, 217, .72);
     }
+    input[type="checkbox"] { width: auto; accent-color: var(--cyan); }
+    .checkline { display: flex; align-items: center; gap: 10px; min-height: 42px; }
+    .checkline span { color: var(--muted); }
     textarea { min-height: 150px; resize: vertical; }
     button {
       border: 0;
@@ -4743,6 +4983,19 @@ def _render_flight_attendant_dashboard() -> str:
                 </label>
               </div>
               <div class="row">
+                <label>Route preference
+                  <select id="haul-route-preference" name="route_preference">
+                    <option value="safer" selected>Prefer safer</option>
+                    <option value="shorter">Prefer shorter</option>
+                    <option value="less_secure">Prefer less secure</option>
+                  </select>
+                </label>
+                <label class="checkline">
+                  <input id="haul-avoid-pod-kills" name="avoid_recent_pod_kills" type="checkbox">
+                  <span>Avoid recent pod kills</span>
+                </label>
+              </div>
+              <div class="row">
                 <label>Pickup detour jumps
                   <input id="haul-detour-jumps" name="detour_jumps" type="number" min="0" max="5" step="1" value="1">
                 </label>
@@ -4833,6 +5086,8 @@ def _render_flight_attendant_dashboard() -> str:
     const haulRouteForm = document.querySelector("#haul-route-form");
     const haulDestination = document.querySelector("#haul-destination");
     const haulCargoM3 = document.querySelector("#haul-cargo-m3");
+    const haulRoutePreference = document.querySelector("#haul-route-preference");
+    const haulAvoidPodKills = document.querySelector("#haul-avoid-pod-kills");
     const haulDetourJumps = document.querySelector("#haul-detour-jumps");
     const haulMinMargin = document.querySelector("#haul-min-margin");
     const haulMinMarginValue = document.querySelector("#haul-min-margin-value");
@@ -4852,6 +5107,8 @@ def _render_flight_attendant_dashboard() -> str:
     const haulCargoKey = "eve-flight-haul-cargo-m3-v1";
     const haulDetourKey = "eve-flight-haul-detour-jumps-v1";
     const haulMinMarginKey = "eve-flight-haul-min-margin-v1";
+    const haulRoutePreferenceKey = "eve-flight-haul-route-preference-v1";
+    const haulAvoidPodKillsKey = "eve-flight-haul-avoid-pod-kills-v1";
     const validTabs = new Set(["market", "flight", "hauling"]);
     let filterType = "";
     let includeClosed = false;
@@ -5054,16 +5311,29 @@ def _render_flight_attendant_dashboard() -> str:
       return Math.max(0, Math.min(500, margin));
     }
 
+    function normalizeHaulRoutePreference(value) {
+      const preference = String(value || "").trim();
+      if (["shorter", "safer", "less_secure"].includes(preference)) return preference;
+      if (preference === "shortest") return "shorter";
+      if (preference === "secure") return "safer";
+      if (preference === "insecure" || preference === "lesssecure") return "less_secure";
+      return "safer";
+    }
+
     function readHaulSettings() {
       const destination = String(window.localStorage.getItem(haulDestinationKey) || haulDestination.value || "Jita").trim() || "Jita";
       const cargo = Number(window.localStorage.getItem(haulCargoKey) || haulCargoM3.value || 10000);
       const detour = Number(window.localStorage.getItem(haulDetourKey) || haulDetourJumps.value || 1);
       const minMargin = Number(window.localStorage.getItem(haulMinMarginKey) || haulMinMargin.value || 10);
+      const routePreference = normalizeHaulRoutePreference(window.localStorage.getItem(haulRoutePreferenceKey) || haulRoutePreference.value || "safer");
+      const avoidStored = window.localStorage.getItem(haulAvoidPodKillsKey);
       return {
         destination,
         cargoM3: clampHaulCargoM3(Number.isFinite(cargo) ? cargo : 10000),
         detourJumps: Math.max(0, Math.min(5, Math.round(Number.isFinite(detour) ? detour : 1))),
         minDetourMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
+        routePreference,
+        avoidRecentPodKills: avoidStored == null ? haulAvoidPodKills.checked : avoidStored !== "0",
       };
     }
 
@@ -5072,16 +5342,22 @@ def _render_flight_attendant_dashboard() -> str:
       const cargoM3 = clampHaulCargoM3(settings.cargoM3);
       const detourJumps = Math.max(0, Math.min(5, Math.round(Number(settings.detourJumps) || 0)));
       const minDetourMarginPercent = clampHaulMinMargin(settings.minDetourMarginPercent);
+      const routePreference = normalizeHaulRoutePreference(settings.routePreference || haulRoutePreference.value || "safer");
+      const avoidRecentPodKills = settings.avoidRecentPodKills == null ? haulAvoidPodKills.checked : Boolean(settings.avoidRecentPodKills);
       haulDestination.value = destination;
       haulCargoM3.value = String(cargoM3);
       haulDetourJumps.value = String(detourJumps);
       haulMinMargin.value = String(minDetourMarginPercent);
+      haulRoutePreference.value = routePreference;
+      haulAvoidPodKills.checked = avoidRecentPodKills;
       haulMinMarginValue.textContent = `${formatNumber(minDetourMarginPercent)}%`;
       window.localStorage.setItem(haulDestinationKey, destination);
       window.localStorage.setItem(haulCargoKey, String(cargoM3));
       window.localStorage.setItem(haulDetourKey, String(detourJumps));
       window.localStorage.setItem(haulMinMarginKey, String(minDetourMarginPercent));
-      return {destination, cargoM3, detourJumps, minDetourMarginPercent};
+      window.localStorage.setItem(haulRoutePreferenceKey, routePreference);
+      window.localStorage.setItem(haulAvoidPodKillsKey, avoidRecentPodKills ? "1" : "0");
+      return {destination, cargoM3, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills};
     }
 
     async function loadFlightStatus() {
@@ -5472,13 +5748,17 @@ def _render_flight_attendant_dashboard() -> str:
       const settings = writeHaulSettings({
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
+        routePreference: haulRoutePreference.value,
+        avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
         minDetourMarginPercent: haulMinMargin.value,
       });
       closeHaulEventSource();
       haulScanFinished = false;
       haulScanButton.disabled = true;
-      haulRouteSummary.textContent = `Scanning route to ${settings.destination} with ${formatNumber(settings.detourJumps)} detour jumps...`;
+      const routeRule = settings.routePreference === "shorter" ? "Prefer shorter" : settings.routePreference === "less_secure" ? "Prefer less secure" : "Prefer safer";
+      const podRule = settings.avoidRecentPodKills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
+      haulRouteSummary.textContent = `Scanning ${routeRule.toLowerCase()} route to ${settings.destination}, ${podRule}, with ${formatNumber(settings.detourJumps)} detour jumps...`;
       haulRoutePath.textContent = "";
       haulProgressLog.hidden = false;
       haulProgressLog.innerHTML = "";
@@ -5487,7 +5767,7 @@ def _render_flight_attendant_dashboard() -> str:
           <span class="progress-spinner" aria-hidden="true"></span>
           <div class="progress-copy">
             <strong>Comparing corridor sell orders and destination buy orders</strong>
-            <span>Cargo ${formatVolume(settings.cargoM3)}; destination ${escapeHtml(settings.destination)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
+            <span>Cargo ${formatVolume(settings.cargoM3)}; destination ${escapeHtml(settings.destination)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
           </div>
         </div>
         <div class="progress-bar" aria-hidden="true"><span></span></div>
@@ -5496,6 +5776,8 @@ def _render_flight_attendant_dashboard() -> str:
       const params = new URLSearchParams({
         destination: settings.destination,
         cargo_m3: String(settings.cargoM3),
+        route_preference: settings.routePreference,
+        avoid_recent_pod_kills: settings.avoidRecentPodKills ? "1" : "0",
         detour_jumps: String(settings.detourJumps),
         min_detour_margin_percent: String(settings.minDetourMarginPercent),
       });
@@ -5574,11 +5856,17 @@ def _render_flight_attendant_dashboard() -> str:
       const marketCache = hauling.market_cache || {};
       const materialLimit = hauling.material_truncated ? ` Limited to ${formatNumber(hauling.scanned_materials)} of ${formatNumber(hauling.total_materials)} materials.` : "";
       const regionLimit = hauling.pickup_region_truncated ? ` Limited to ${formatNumber(hauling.pickup_regions_scanned)} of ${formatNumber(hauling.pickup_regions_total)} pickup regions.` : "";
+      const routeLabel = route.route_preference_label || "Safer";
+      const avoidLabel = route.avoid_recent_pod_kills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
+      const sourceLabel = route.route_source === "local-shortest-fallback" ? "local fallback" : "ESI route planner";
+      const routeWarning = route.route_warning ? `<div class="meta">${escapeHtml(route.route_warning)}</div>` : "";
       haulRouteSummary.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> to
         <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>:
         ${formatNumber(route.route_jumps)} jumps, ${formatNumber(hauling.pickup_system_count)} pickup systems,
         ${formatVolume(route.cargo_capacity_m3)} cargo.
+        <div class="meta">${escapeHtml(routeLabel)} route from ${escapeHtml(sourceLabel)}; ${escapeHtml(avoidLabel)}. Avoided ${formatNumber(route.avoided_pod_kill_system_count)} recent pod-kill systems; ${formatNumber(route.route_pod_kill_system_count)} remain on this path.</div>
+        ${routeWarning}
       `;
       haulRoutePath.innerHTML = renderHaulRoutePath(route.systems || []);
       haulOpportunitySummary.innerHTML = `
@@ -5903,6 +6191,8 @@ def _render_flight_attendant_dashboard() -> str:
       writeHaulSettings({
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
+        routePreference: haulRoutePreference.value,
+        avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
         minDetourMarginPercent: haulMinMargin.value,
       });
@@ -5912,9 +6202,35 @@ def _render_flight_attendant_dashboard() -> str:
       writeHaulSettings({
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
+        routePreference: haulRoutePreference.value,
+        avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
         minDetourMarginPercent: haulMinMargin.value,
       });
+    });
+
+    haulRoutePreference.addEventListener("change", () => {
+      writeHaulSettings({
+        destination: haulDestination.value,
+        cargoM3: haulCargoM3.value,
+        routePreference: haulRoutePreference.value,
+        avoidRecentPodKills: haulAvoidPodKills.checked,
+        detourJumps: haulDetourJumps.value,
+        minDetourMarginPercent: haulMinMargin.value,
+      });
+      resetFlightHauling(`Ready to scan route hauling opportunities to ${readHaulSettings().destination}.`);
+    });
+
+    haulAvoidPodKills.addEventListener("change", () => {
+      writeHaulSettings({
+        destination: haulDestination.value,
+        cargoM3: haulCargoM3.value,
+        routePreference: haulRoutePreference.value,
+        avoidRecentPodKills: haulAvoidPodKills.checked,
+        detourJumps: haulDetourJumps.value,
+        minDetourMarginPercent: haulMinMargin.value,
+      });
+      resetFlightHauling(`Ready to scan route hauling opportunities to ${readHaulSettings().destination}.`);
     });
 
     flightProfitFilters.addEventListener("click", (event) => {
