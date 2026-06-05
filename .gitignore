@@ -4,6 +4,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 cache/
 models/
@@ -20,9 +23,19 @@ logs/
 *.log
 *.dmp
 crash_dumps/
+*.tmp
+*.bak
+*.orig
+*.rej
+Thumbs.db
+Desktop.ini
 
+profiles/*.sqlite
+profiles/*.sqlite-*
 profiles/*.sqlite3
 profiles/*.sqlite3-*
+profiles/*.db
+profiles/*.db-*
 profiles/my_eve_commands.json
 profiles/my_ocr_watcher_settings.json
 profiles/corp_intel_watchlist.json
