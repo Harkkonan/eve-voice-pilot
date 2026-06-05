@@ -112,6 +112,7 @@ The profitability board uses:
 - SDE manufacturing product, material, max copy run, skill, and base job-time data;
 - public market buy orders for expected sale value;
 - public market sell orders for missing-material and replacement pricing;
+- public Jita buy orders for the raw resource value if the required materials were liquidated instead of built;
 - Accounting skill for sales-tax estimates.
 
 Profit cards show after-tax true profit first, then wallet gain, TE-adjusted one-run job time, and estimated profit per hour. Math details keep the before-tax values and the underlying blueprint, material, skill, and job-time assumptions visible.

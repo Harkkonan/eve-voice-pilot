@@ -281,6 +281,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Math details" in page
     assert "Expected after tax and fees" in page
     assert "ME-adjusted all materials value" in page
+    assert "Jita raw materials value" in page
+    assert "Jita raw value coverage" in page
     assert "ME-adjusted one-run materials covered" in page
 
 
@@ -957,6 +959,7 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
             1: RouteSystem(solar_system_id=1, name="Start", region_id=100, security_status=0.9),
             2: RouteSystem(solar_system_id=2, name="One Jump", region_id=100, security_status=0.8),
             3: RouteSystem(solar_system_id=3, name="Too Far", region_id=100, security_status=0.7),
+            30000142: RouteSystem(solar_system_id=30000142, name="Jita", region_id=200, security_status=0.9),
         },
         adjacency={1: (2,), 2: (1, 3), 3: (2,)},
     )
@@ -1032,6 +1035,22 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
 
     def fake_fetch_market_buy_orders(config, *, region_id, type_id):
         buy_calls.append((region_id, type_id))
+        if region_id == 200:
+            jita_prices = {34: 1.5, 35: 4.0}
+            price = jita_prices.get(type_id)
+            if price is None:
+                return []
+            return [
+                {
+                    "order_id": type_id + 1000,
+                    "is_buy_order": True,
+                    "system_id": 30000142,
+                    "location_id": 60003760,
+                    "price": price,
+                    "volume_remain": 100000,
+                    "min_volume": 1,
+                }
+            ]
         return [
             {
                 "order_id": 10,
@@ -1078,7 +1097,7 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
     )
 
     assert payload["ok"] is True
-    assert buy_calls == [(100, 165)]
+    assert buy_calls == [(100, 165), (200, 34), (200, 35)]
     assert sell_calls == [(100, 34), (100, 35)]
     profitability = payload["profitability"]
     assert profitability["ranked_products"] == 1
@@ -1107,6 +1126,16 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
     assert product["wallet_gain_per_hour"] == pytest.approx(59343.75)
     assert product["max_production_limit"] == 1500
     assert product["required_skills"][0]["name"] == "Industry"
+    assert profitability["jita_material_order_count"] == 2
+    assert profitability["jita_raw_system"]["name"] == "Jita"
+    assert product["jita_raw_system_name"] == "Jita"
+    assert product["jita_raw_material_value"] == pytest.approx(3150.0)
+    assert product["jita_partial_raw_material_value"] == pytest.approx(3150.0)
+    assert product["jita_raw_material_types"] == 2
+    assert product["jita_partial_raw_material_types"] == 2
+    assert product["jita_raw_required_material_types"] == 2
+    assert product["materials"][0]["jita_raw_value"] == pytest.approx(1350.0)
+    assert product["materials"][1]["jita_raw_value"] == pytest.approx(1800.0)
     assert product["replacement_cost"] == 4050.0
     assert product["replacement_profit"] == 5950.0
     assert product["replacement_margin_percent"] == 59.5

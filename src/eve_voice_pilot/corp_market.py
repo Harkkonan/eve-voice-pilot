@@ -67,6 +67,9 @@ DEFAULT_HAUL_AVOID_RECENT_POD_KILLS = False
 MAX_HAUL_ROUTE_AVOID_SYSTEMS = 100
 MARKET_ORDER_CACHE_TTL_SECONDS = 300.0
 SYSTEM_KILLS_CACHE_TTL_SECONDS = 300.0
+JITA_SYSTEM_NAME = "Jita"
+JITA_SOLAR_SYSTEM_ID = 30000142
+JITA_REGION_ID = 10000002
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
@@ -2644,6 +2647,13 @@ def rank_profitability_for_owned_blueprints(
         jump_distances=jump_distances,
         order_type="sell",
     )
+    jita_system = resolve_jita_market_system(systems)
+    jita_material_buys, jita_material_order_count, jita_material_errors = scan_system_market_orders(
+        config=config,
+        type_ids=scan_material_type_ids,
+        system=jita_system,
+        order_type="buy",
+    )
 
     products = []
     for target in scan_targets:
@@ -2660,6 +2670,9 @@ def rank_profitability_for_owned_blueprints(
         missing_priced_material_types = 0
         replacement_cost = 0.0
         missing_replacement_cost = 0.0
+        jita_raw_partial_value = 0.0
+        jita_raw_full_material_types = 0
+        jita_raw_partial_material_types = 0
         recipe_materials = adjusted_recipe_materials(
             recipe,
             material_efficiency=int(target.get("blueprint_material_efficiency") or 0),
@@ -2674,6 +2687,15 @@ def rank_profitability_for_owned_blueprints(
             unit_price = float(sell_order["price"]) if sell_order else None
             material_replacement_cost = required * unit_price if unit_price is not None else None
             material_missing_cost = missing * unit_price if unit_price is not None else None
+            jita_liquidation = liquidation_value_from_orders(
+                jita_material_buys.get(material_type_id, ()),
+                quantity=required,
+            )
+            if jita_liquidation["priced_quantity"] > 0:
+                jita_raw_partial_value += float(jita_liquidation["value"])
+                jita_raw_partial_material_types += 1
+                if jita_liquidation["complete"]:
+                    jita_raw_full_material_types += 1
             if unit_price is not None:
                 priced_material_types += 1
                 replacement_cost += material_replacement_cost or 0.0
@@ -2691,6 +2713,16 @@ def rank_profitability_for_owned_blueprints(
                 "replacement_cost": material_replacement_cost,
                 "missing_cost": material_missing_cost,
                 "sell_order": sell_order,
+                "jita_buy_price": (
+                    float(jita_material_buys[material_type_id][0]["price"])
+                    if jita_material_buys.get(material_type_id)
+                    else None
+                ),
+                "jita_raw_value": jita_liquidation["value"] if jita_liquidation["priced_quantity"] > 0 else None,
+                "jita_raw_priced_quantity": jita_liquidation["priced_quantity"],
+                "jita_raw_required_quantity": jita_liquidation["required_quantity"],
+                "jita_raw_complete": jita_liquidation["complete"],
+                "jita_buy_order": jita_material_buys[material_type_id][0] if jita_material_buys.get(material_type_id) else None,
             }
             material_rows.append(material_row)
             if missing > 0:
@@ -2704,6 +2736,7 @@ def rank_profitability_for_owned_blueprints(
             int(item["missing"]) <= 0 or item["unit_sell_price"] is not None
             for item in material_rows
         )
+        jita_raw_value_known = jita_raw_full_material_types == required_material_types
         replacement_profit = revenue - replacement_cost if revenue is not None and all_material_prices_known else None
         cash_profit = revenue - missing_replacement_cost if revenue is not None and missing_prices_known else None
         sales_tax_rate = clean_optional_float(sales_tax.get("rate")) or 0.0
@@ -2755,6 +2788,12 @@ def rank_profitability_for_owned_blueprints(
                 "wallet_gain_per_hour": isk_per_hour(taxed_cash_profit, adjusted_time_seconds),
                 "max_production_limit": target.get("max_production_limit", 0),
                 "required_skills": target.get("required_skills", []),
+                "jita_raw_system_name": jita_system.name,
+                "jita_raw_material_value": jita_raw_partial_value if jita_raw_value_known else None,
+                "jita_partial_raw_material_value": jita_raw_partial_value if jita_raw_partial_material_types > 0 else None,
+                "jita_raw_material_types": jita_raw_full_material_types,
+                "jita_partial_raw_material_types": jita_raw_partial_material_types,
+                "jita_raw_required_material_types": required_material_types,
                 "profitable": taxed_replacement_profit is not None and taxed_replacement_profit > 0,
                 "can_build_one_run": can_build,
                 "required_material_types": required_material_types,
@@ -2782,7 +2821,7 @@ def rank_profitability_for_owned_blueprints(
             item["product_name"],
         )
     )
-    errors = product_errors + material_errors
+    errors = product_errors + material_errors + jita_material_errors
     decision_counts: dict[str, int] = {}
     for item in products:
         decision_code = str((item.get("decision") or {}).get("code") or "unknown")
@@ -2801,6 +2840,8 @@ def rank_profitability_for_owned_blueprints(
         "material_truncated": material_truncated,
         "product_order_count": product_order_count,
         "material_order_count": material_order_count,
+        "jita_material_order_count": jita_material_order_count,
+        "jita_raw_system": jita_system.to_dict(jumps=0),
         "ranked_products": len(products),
         "products_with_buyers": sum(1 for item in products if item["best_buyer"]),
         "profitable_products": sum(1 for item in products if item["profitable"]),
@@ -2816,7 +2857,7 @@ def rank_profitability_for_owned_blueprints(
         "market_cache": market_order_cache_status(),
         "pricing_note": (
             "Visible profit subtracts sales tax from the buyer revenue using your Accounting skill. "
-            "Details show the before-tax true profit, wallet gain, and TE-adjusted profit per hour. "
+            "Details show the before-tax true profit, wallet gain, TE-adjusted profit per hour, and Jita raw material value. "
             "Public market orders are cached locally for 5 minutes; ESI market orders do not expose buyer character names."
         ),
     }
@@ -3185,6 +3226,88 @@ def scan_best_reachable_market_orders(
         if reachable_orders:
             best_orders[type_id] = reachable_orders[0]
     return best_orders, total_order_count, errors
+
+
+def resolve_jita_market_system(systems: dict[int, RouteSystem]) -> RouteSystem:
+    for system in systems.values():
+        if normalize_system_name(system.name) == normalize_system_name(JITA_SYSTEM_NAME) and system.region_id is not None:
+            return system
+    return RouteSystem(
+        solar_system_id=JITA_SOLAR_SYSTEM_ID,
+        name=JITA_SYSTEM_NAME,
+        region_id=JITA_REGION_ID,
+        security_status=0.9,
+    )
+
+
+def scan_system_market_orders(
+    *,
+    config: EveSsoConfig,
+    type_ids: Iterable[int],
+    system: RouteSystem,
+    order_type: str,
+) -> tuple[dict[int, list[dict[str, Any]]], int, list[dict[str, Any]]]:
+    if system.region_id is None:
+        return {}, 0, [{"order_type": order_type, "system_id": system.solar_system_id, "error": "System region is unknown."}]
+    orders_by_type: dict[int, list[dict[str, Any]]] = {}
+    total_order_count = 0
+    errors = []
+    fetcher = fetch_market_buy_orders if order_type == "buy" else fetch_market_sell_orders
+    market_systems = {system.solar_system_id: system}
+    jump_distances = {system.solar_system_id: 0}
+    for type_id in [int(type_id) for type_id in type_ids if int(type_id) > 0]:
+        system_orders = []
+        try:
+            raw_orders = fetcher(config, region_id=system.region_id, type_id=type_id)
+        except CorpMarketError as exc:
+            errors.append({"order_type": order_type, "type_id": type_id, "region_id": system.region_id, "error": str(exc)})
+            continue
+        for order in raw_orders:
+            record = build_reachable_market_order_record(
+                order,
+                systems=market_systems,
+                jump_distances=jump_distances,
+                region_id=system.region_id,
+                order_type=order_type,
+            )
+            if record is not None:
+                system_orders.append(record)
+        system_orders.sort(key=lambda item: market_order_sort_key(item, order_type=order_type))
+        total_order_count += len(system_orders)
+        if system_orders:
+            orders_by_type[type_id] = system_orders
+    return orders_by_type, total_order_count, errors
+
+
+def liquidation_value_from_orders(orders: Iterable[dict[str, Any]], *, quantity: int) -> dict[str, Any]:
+    required_quantity = max(0, int(quantity))
+    remaining = required_quantity
+    value = 0.0
+    priced_quantity = 0
+    used_orders = 0
+    for order in orders:
+        if remaining <= 0:
+            break
+        try:
+            price = float(order.get("price") or 0.0)
+            volume = int(order.get("volume_remain") or 0)
+            min_volume = int(order.get("min_volume") or 1)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0 or volume <= 0 or required_quantity < max(1, min_volume):
+            continue
+        filled = min(remaining, volume)
+        value += filled * price
+        priced_quantity += filled
+        remaining -= filled
+        used_orders += 1
+    return {
+        "value": round(value, 4),
+        "priced_quantity": priced_quantity,
+        "required_quantity": required_quantity,
+        "complete": required_quantity == 0 or priced_quantity >= required_quantity,
+        "order_count": used_orders,
+    }
 
 
 def market_order_sort_key(order: dict[str, Any], *, order_type: str) -> tuple[float, int, int]:
@@ -6051,6 +6174,29 @@ def _render_flight_attendant_dashboard() -> str:
       return `${formatSignedIsk(value)}/h`;
     }
 
+    function renderJitaRawValue(product) {
+      const systemName = product.jita_raw_system_name || "Jita";
+      if (product.jita_raw_material_value != null) {
+        return `${formatIsk(product.jita_raw_material_value)} in ${systemName}`;
+      }
+      if (product.jita_partial_raw_material_value != null) {
+        return `${formatIsk(product.jita_partial_raw_material_value)} partial in ${systemName}`;
+      }
+      return `unknown in ${systemName}`;
+    }
+
+    function renderJitaRawCoverage(product) {
+      const total = Number(product.jita_raw_required_material_types || product.required_material_types || 0);
+      const full = Number(product.jita_raw_material_types || 0);
+      const partial = Number(product.jita_partial_raw_material_types || 0);
+      if (!total) return "unknown";
+      if (full >= total) return `${formatNumber(full)}/${formatNumber(total)} material types fully covered`;
+      if (partial > full) {
+        return `${formatNumber(full)}/${formatNumber(total)} fully covered; ${formatNumber(partial)} have some Jita buy depth`;
+      }
+      return `${formatNumber(full)}/${formatNumber(total)} material types covered`;
+    }
+
     function readMaxJumps() {
       const value = Number(window.localStorage.getItem(jumpsKey) || flightMaxJumps.value || 5);
       if (!Number.isFinite(value)) return 5;
@@ -6508,6 +6654,8 @@ def _render_flight_attendant_dashboard() -> str:
         ["Immediate-sale broker fee", formatIsk(product.broker_fee)],
         ["Net revenue after tax and fees", formatIsk(product.net_revenue)],
         ["ME-adjusted all materials value", `-${formatIsk(product.replacement_cost)}`],
+        ["Jita raw materials value", renderJitaRawValue(product)],
+        ["Jita raw value coverage", renderJitaRawCoverage(product)],
         ["ME-adjusted missing materials", `-${formatIsk(product.missing_replacement_cost)}`],
         ["Before-tax true profit", formatSignedIsk(product.replacement_profit)],
         ["Before-tax wallet gain", formatSignedIsk(product.cash_profit)],
