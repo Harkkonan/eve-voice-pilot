@@ -317,6 +317,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "reprocess-setup-panel" in page
     assert "reprocess-knowledge-panel" in page
     assert "reprocess-summary-panel" in page
+    assert "assay-status-ledger" in page
+    assert "assay-status-sheet" in page
+    assert "assay-status-facility-card" in page
+    assert "Facility Row" in page
     assert "reprocess-output-panel" in page
     assert "reprocess-field-desk" in page
     assert "reprocess-status-rail" in page

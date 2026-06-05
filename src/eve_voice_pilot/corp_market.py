@@ -9372,15 +9372,19 @@ def _render_flight_attendant_dashboard() -> str:
     body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel {
       padding: 0;
       overflow: hidden;
-      border-color: rgba(63, 85, 80, .88);
+      border-color: rgba(224, 168, 74, .44);
       background:
-        linear-gradient(180deg, rgba(17, 24, 25, .97), rgba(7, 11, 13, .9)),
+        radial-gradient(circle at 92% 0%, rgba(224, 168, 74, .12), transparent 30%),
+        linear-gradient(90deg, rgba(224, 168, 74, .05) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(97, 199, 217, .035) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(17, 24, 25, .97), rgba(7, 11, 13, .92)),
         rgba(8, 13, 15, .92);
+      background-size: auto, 28px 28px, 28px 28px, auto, auto;
     }
     body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel .panel-header {
       margin: 0;
       padding: 12px 14px;
-      border-bottom-color: rgba(63, 85, 80, .68);
+      border-bottom-color: rgba(224, 168, 74, .28);
     }
     body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel .output-details {
       border: 0;
@@ -9395,17 +9399,137 @@ def _render_flight_attendant_dashboard() -> str:
       gap: 10px;
       padding: 12px 14px 14px;
     }
-    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel .profit-summary,
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel .profit-summary {
+      min-width: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      padding: 0;
+    }
     body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel #reprocess-location-detail {
       min-width: 0;
-      border: 1px solid rgba(63, 85, 80, .64);
-      border-radius: 6px;
-      background: rgba(5, 9, 11, .46);
-      padding: 10px;
+      color: inherit;
     }
     body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel #reprocess-location-detail:empty {
       display: none;
     }
+    .assay-status-ledger {
+      display: grid;
+      gap: 10px;
+    }
+    .assay-status-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .assay-status-metric {
+      min-width: 0;
+      min-height: 74px;
+      border: 1px solid rgba(85, 111, 103, .74);
+      border-radius: 7px;
+      background:
+        linear-gradient(135deg, rgba(224, 168, 74, .08), transparent 42%),
+        rgba(5, 9, 11, .58);
+      padding: 10px 11px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+    }
+    .assay-status-metric span,
+    .assay-status-row > span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .assay-status-metric b {
+      display: block;
+      color: var(--text);
+      font-size: 22px;
+      line-height: 1.12;
+      margin-top: 5px;
+      overflow-wrap: anywhere;
+    }
+    .assay-status-metric small {
+      display: block;
+      color: var(--muted);
+      line-height: 1.25;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+    .assay-status-metric.is-green b { color: var(--green); }
+    .assay-status-metric.is-amber b { color: var(--amber); }
+    .assay-status-metric.is-pending b { color: var(--muted); }
+    .assay-status-sheet,
+    .assay-status-facility-card {
+      position: relative;
+      display: grid;
+      gap: 8px;
+      color: #25281f;
+      border: 1px solid rgba(224, 168, 74, .5);
+      border-radius: 7px;
+      padding: 13px 14px 13px 36px;
+      background:
+        repeating-linear-gradient(0deg, rgba(88, 74, 50, .17) 0 1px, transparent 1px 26px),
+        repeating-linear-gradient(90deg, rgba(88, 74, 50, .1) 0 1px, transparent 1px 26px),
+        linear-gradient(180deg, #d8ceb3, #bfb191);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), 0 12px 30px rgba(0, 0, 0, .24);
+    }
+    .assay-status-sheet::before,
+    .assay-status-facility-card::before {
+      content: "";
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      bottom: 12px;
+      width: 10px;
+      border-left: 2px solid rgba(50, 39, 24, .35);
+      background:
+        radial-gradient(circle, rgba(35, 29, 20, .82) 0 3px, transparent 4px) 0 9px / 10px 28px repeat-y;
+      opacity: .72;
+    }
+    .assay-status-sheet > *,
+    .assay-status-facility-card > * {
+      position: relative;
+      z-index: 1;
+    }
+    .assay-status-sheet > .notebook-ribbon,
+    .assay-status-facility-card > .notebook-ribbon {
+      justify-self: start;
+      width: fit-content;
+      max-width: 100%;
+    }
+    .assay-status-row {
+      display: grid;
+      grid-template-columns: minmax(118px, .26fr) minmax(0, 1fr);
+      gap: 8px 13px;
+      align-items: baseline;
+      border-top: 1px solid rgba(61, 51, 34, .24);
+      padding-top: 7px;
+      color: #25281f;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .assay-status-row:first-of-type {
+      border-top: 0;
+      padding-top: 0;
+    }
+    .assay-status-row > span { color: #514735; }
+    .assay-status-row b {
+      color: #1b1d17;
+      font-size: 14px;
+      font-weight: 850;
+      overflow-wrap: anywhere;
+    }
+    .assay-status-row strong { color: #1b1d17; }
+    .assay-status-row small {
+      grid-column: 2;
+      color: #453c2c;
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .assay-status-row.is-total b { color: #2d6b34; }
     body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-output-panel {
       padding: 14px;
       border-color: rgba(224, 168, 74, .54);
@@ -9960,6 +10084,7 @@ def _render_flight_attendant_dashboard() -> str:
           "footer";
       }
       .reprocess-status-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .assay-status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .status-rail-cell { border-bottom: 1px solid rgba(63, 85, 80, .5); }
     }
     @media (max-width: 720px) {
@@ -9977,7 +10102,10 @@ def _render_flight_attendant_dashboard() -> str:
       .offer, .note-card { grid-template-columns: 1fr; }
       .profit-panel { min-height: 360px; }
       .profit-actions { display: grid; grid-template-columns: 1fr; }
-      .reprocess-status-rail, .ore-readouts, .sample-ledger, .mineral-grid { grid-template-columns: 1fr; }
+      .reprocess-status-rail, .assay-status-strip, .ore-readouts, .sample-ledger, .mineral-grid { grid-template-columns: 1fr; }
+      .assay-status-sheet, .assay-status-facility-card { padding-left: 32px; }
+      .assay-status-row { grid-template-columns: 1fr; }
+      .assay-status-row small { grid-column: 1; }
       .field-notebook { padding-left: 32px; }
       .notebook-fee-card { grid-template-columns: 1fr; }
       .notebook-fee-card .fee-arrow { transform: rotate(90deg); }
@@ -12922,8 +13050,8 @@ def _render_flight_attendant_dashboard() -> str:
     }
 
     function resetReprocessing(message) {
-      reprocessSummary.textContent = message;
-      reprocessLocationDetail.textContent = "";
+      reprocessSummary.innerHTML = renderReprocessingPendingAssay(message);
+      reprocessLocationDetail.innerHTML = "";
       reprocessResults.innerHTML = renderReprocessingEmptyWorkbench(message);
       reprocessLocationStatus.textContent = message;
       reprocessCalculateButton.disabled = false;
@@ -13021,8 +13149,8 @@ def _render_flight_attendant_dashboard() -> str:
         return;
       }
       reprocessCalculateButton.disabled = true;
-      reprocessSummary.textContent = `Calculating ${formatNumber(settings.quantity)} ore units...`;
-      reprocessLocationDetail.textContent = "";
+      reprocessSummary.innerHTML = renderReprocessingPendingAssay(`Calculating ${formatNumber(settings.quantity)} ore units...`);
+      reprocessLocationDetail.innerHTML = "";
       reprocessResults.innerHTML = renderReprocessingEmptyWorkbench("Mineral output will appear here when the calculation finishes.");
       const params = new URLSearchParams({
         ore_type_id: settings.oreTypeId,
@@ -13041,49 +13169,141 @@ def _render_flight_attendant_dashboard() -> str:
         if (!data.ok) throw new Error(data.error || "Could not calculate ore reprocessing");
         renderReprocessingCalculation(data);
       } catch (error) {
-        reprocessSummary.textContent = error.message;
-        reprocessLocationDetail.textContent = "";
+        reprocessSummary.innerHTML = renderReprocessingPendingAssay(error.message);
+        reprocessLocationDetail.innerHTML = "";
         reprocessResults.innerHTML = renderReprocessingEmptyWorkbench(error.message);
       } finally {
         reprocessCalculateButton.disabled = false;
       }
     }
 
+    function renderAssayStatusMetric(label, valueHtml, note, className = "") {
+      return `
+        <div class="assay-status-metric ${escapeHtml(className)}">
+          <span>${escapeHtml(label)}</span>
+          <b>${valueHtml}</b>
+          ${note ? `<small>${escapeHtml(note)}</small>` : ""}
+        </div>
+      `;
+    }
+
+    function renderAssayStatusRow(label, valueHtml, noteHtml = "") {
+      return `
+        <div class="assay-status-row">
+          <span>${escapeHtml(label)}</span>
+          <b>${valueHtml}</b>
+          ${noteHtml ? `<small>${noteHtml}</small>` : ""}
+        </div>
+      `;
+    }
+
+    function renderReprocessingPendingAssay(message) {
+      const ore = selectedReprocessingOreSummary();
+      const cleanMessage = message || "Connect ESI, choose ore, and enter the amount to calculate.";
+      return `
+        <div class="assay-status-ledger is-pending">
+          <div class="assay-status-strip">
+            ${renderAssayStatusMetric("Net Yield", "Pending", "Awaiting assay", "is-pending")}
+            ${renderAssayStatusMetric("Processing Fee", "Pending", "Standing not checked yet", "is-pending")}
+            ${renderAssayStatusMetric("Jita Buy Delta", "Pending", "Live buy-order value", "is-pending")}
+            ${renderAssayStatusMetric("EVE Est. Delta", "Pending", "Cluster estimate value", "is-pending")}
+          </div>
+          <div class="assay-status-sheet">
+            <span class="notebook-ribbon">Assay Log</span>
+            ${renderAssayStatusRow("Sample", escapeHtml(ore.name || "Ore sample"), escapeHtml(cleanMessage))}
+            ${renderAssayStatusRow("Skills", "Pending ESI character data", "The calculator reads reprocessing skills when the connected session has the needed scopes.")}
+            ${renderAssayStatusRow("Values", "Pending market check", "Jita buy-order and EVE estimated-price comparisons appear after calculation.")}
+          </div>
+        </div>
+      `;
+    }
+
     function renderReprocessingCalculation(data) {
+      const valuation = data.jita_valuation || {};
+      const notes = Array.isArray(data.notes) ? data.notes : [];
+      const valuationNotes = Array.isArray(valuation.notes) ? valuation.notes : [];
+      reprocessSummary.innerHTML = renderReprocessingAssayStatus(data);
+      reprocessLocationDetail.innerHTML = renderReprocessingFacilityStatus(data);
+      reprocessResults.innerHTML = renderReprocessingMaterials(data, notes.concat(valuationNotes));
+    }
+
+    function renderReprocessingAssayStatus(data) {
       const ore = data.ore || {};
       const input = data.input || {};
       const skills = data.skills || {};
-      const facility = data.facility || {};
-      const implant = data.implant || {};
       const yieldData = data.yield || {};
-      const cache = data.cache || {};
       const valuation = data.jita_valuation || {};
       const eveEstimate = valuation.eve_estimate || {};
-      const notes = Array.isArray(data.notes) ? data.notes : [];
-      const valuationNotes = Array.isArray(valuation.notes) ? valuation.notes : [];
-      reprocessSummary.innerHTML = `
-        <div class="profit-stats">
-          <div class="profit-stat"><span>Net Yield</span><b>${formatPercent(yieldData.net_yield_percent)}</b></div>
-          <div class="profit-stat"><span>Processing Fee</span><b>${formatPercent(yieldData.station_tax_percent)}</b></div>
-          <div class="profit-stat"><span>Jita Buy Delta</span><b>${renderReprocessingJitaDelta(valuation)}</b></div>
-          <div class="profit-stat"><span>EVE Est. Delta</span><b>${renderReprocessingEveEstimateDelta(eveEstimate)}</b></div>
+      const specializationName = skills.specialization_skill_name || "specialization";
+      const oreName = ore.name || "Ore";
+      const sampleLine = `${escapeHtml(oreName)} x${formatNumber(input.quantity)}`;
+      const sampleNote = `Portion ${formatNumber(input.portion_size)}; leftovers ${formatNumber(input.leftover_units)}; ${formatNumber(input.portions)} full portion${Number(input.portions || 0) === 1 ? "" : "s"} processed.`;
+      const skillsLine = `Reprocessing ${formatNumber(skills.reprocessing_level)}, Reprocessing Efficiency ${formatNumber(skills.reprocessing_efficiency_level)}, ${escapeHtml(specializationName)} ${formatNumber(skills.specialization_level)}`;
+      const systemName = escapeHtml((valuation.system || {}).name || "Jita");
+      return `
+        <div class="assay-status-ledger">
+          <div class="assay-status-strip">
+            ${renderAssayStatusMetric("Net Yield", formatPercent(yieldData.net_yield_percent), "after processing fee", "is-green")}
+            ${renderAssayStatusMetric("Processing Fee", formatPercent(yieldData.station_tax_percent), "station tax taken as minerals", "is-amber")}
+            ${renderAssayStatusMetric("Jita Buy Delta", renderReprocessingJitaDelta(valuation), "liquidation value", "is-amber")}
+            ${renderAssayStatusMetric("EVE Est. Delta", renderReprocessingEveEstimateDelta(eveEstimate), "cluster estimate", "")}
+          </div>
+          <div class="assay-status-sheet">
+            <span class="notebook-ribbon">Assay Log</span>
+            ${renderAssayStatusRow("Sample", sampleLine, escapeHtml(sampleNote))}
+            ${renderAssayStatusRow("Skills", skillsLine, "ESI character skills plus any manual override values used for this calculation.")}
+            ${renderAssayStatusRow("Why this number", renderReprocessingYieldSentence(yieldData))}
+            ${renderAssayStatusRow(
+              "EVE estimated price",
+              `processed ${renderReprocessingJitaValue(eveEstimate.processed_material_value, eveEstimate.processed_partial_material_value)}; ore ${renderReprocessingJitaValue(eveEstimate.ore_value, null)}; delta ${renderReprocessingEveEstimateDelta(eveEstimate)}.`,
+              escapeHtml(eveEstimate.note || "This is a cluster market estimate, not Jita buy-order liquidation value.")
+            )}
+            ${renderAssayStatusRow(
+              "Jita buy-order value",
+              `processed ${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)}; ore ${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)}; delta ${renderReprocessingJitaDelta(valuation)}.`,
+              `Public buy orders in ${systemName}; ${escapeHtml(renderReprocessingJitaCoverage(valuation))}.`
+            )}
+          </div>
         </div>
-        <div class="meta">${escapeHtml(ore.name || "Ore")} x${formatNumber(input.quantity)}; portion ${formatNumber(input.portion_size)}; leftovers ${formatNumber(input.leftover_units)}.</div>
-        <div class="meta">Skills: Reprocessing ${formatNumber(skills.reprocessing_level)}, Reprocessing Efficiency ${formatNumber(skills.reprocessing_efficiency_level)}, ${escapeHtml(skills.specialization_skill_name || "specialization")} ${formatNumber(skills.specialization_level)}.</div>
-        ${renderReprocessingYieldBreakdown(yieldData)}
-        ${renderReprocessingPriceComparison(valuation)}
       `;
+    }
+
+    function renderReprocessingFacilityStatus(data) {
+      const facility = data.facility || {};
+      const yieldData = data.yield || {};
+      const cache = data.cache || {};
       const owner = facility.owner_name || (facility.owner_id ? `Owner ${facility.owner_id}` : "unknown owner");
-      reprocessLocationDetail.innerHTML = `
-        Location: <strong>${escapeHtml(facility.location_name || "current location")}</strong>
-        (${escapeHtml(facility.location_kind || "unknown")}); owner ${escapeHtml(owner)}; standing
-        ${facility.standing == null ? "unknown" : Number(facility.standing).toFixed(2)}
-        ${facility.standing_source ? `(${escapeHtml(facility.standing_source)})` : ""}.
-        <br>${renderReprocessingFeeBreakdown(facility, yieldData)}
-        <br>${renderReprocessingStandingRow(facility)}
-        <br>Static reprocessing cache: ${cache.available ? `build ${escapeHtml(cache.build_number || "unknown")}` : escapeHtml(cache.error || "missing")}.
+      const standing = facility.standing == null ? "unknown" : Number(facility.standing).toFixed(2);
+      const standingSource = facility.standing_source ? ` (${escapeHtml(facility.standing_source)})` : "";
+      const cacheValue = cache.available ? `build ${escapeHtml(cache.build_number || "unknown")}` : escapeHtml(cache.error || "missing");
+      return `
+        <div class="assay-status-facility-card">
+          <span class="notebook-ribbon">Facility Row</span>
+          ${renderAssayStatusRow(
+            "Location",
+            `<strong>${escapeHtml(facility.location_name || "current location")}</strong> (${escapeHtml(facility.location_kind || "unknown")})`,
+            `Owner ${escapeHtml(owner)}; standing ${escapeHtml(standing)}${standingSource}.`
+          )}
+          ${renderAssayStatusRow("Processing fee", renderReprocessingFeeBreakdown(facility, yieldData))}
+          ${renderAssayStatusRow("Standing row used", renderReprocessingStandingRow(facility))}
+          ${renderAssayStatusRow("Static cache", cacheValue)}
+        </div>
       `;
-      reprocessResults.innerHTML = renderReprocessingMaterials(data, notes.concat(valuationNotes));
+    }
+
+    function renderReprocessingYieldSentence(yieldData) {
+      const breakdown = yieldData.breakdown || {};
+      const specializationName = breakdown.specialization_skill_name || "ore specialization";
+      return `
+        ${formatPercent(breakdown.facility_yield_percent)} facility
+        ${formatMultiplier(breakdown.reprocessing_multiplier)} Reprocessing
+        ${formatMultiplier(breakdown.reprocessing_efficiency_multiplier)} Reprocessing Efficiency
+        ${formatMultiplier(breakdown.specialization_multiplier)} ${escapeHtml(specializationName)}
+        ${formatMultiplier(breakdown.implant_multiplier)} implant
+        ${formatMultiplier(breakdown.structure_multiplier)} structure
+        = ${formatPercent(breakdown.gross_yield_percent)} gross; after
+        ${formatPercent(breakdown.processing_fee_percent)} processing fee = ${formatPercent(breakdown.net_yield_percent)} net.
+      `;
     }
 
     function formatMultiplier(value) {
