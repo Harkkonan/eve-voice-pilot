@@ -259,6 +259,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
+    assert "/static/corp-market/hauler-background.png" in page
+    assert "document.body.dataset.activeTab = targetTab" in page
     assert "formatElapsedDuration" in page
     assert "startHaulProgressTimer" in page
     assert "Elapsed ${escapeHtml(elapsed)}" in page
@@ -280,6 +282,16 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Expected after tax and fees" in page
     assert "ME-adjusted all materials value" in page
     assert "ME-adjusted one-run materials covered" in page
+
+
+def test_static_asset_resolver_serves_only_tracked_static_files():
+    asset_path = corp_market.resolve_static_asset_path("/static/corp-market/hauler-background.png")
+
+    assert asset_path == corp_market.STATIC_ASSET_ROOT / "corp-market" / "hauler-background.png"
+    assert asset_path.is_file()
+    assert asset_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert corp_market.resolve_static_asset_path("/static/../AGENTS.md") is None
+    assert corp_market.resolve_static_asset_path("/static/") is None
 
 
 def test_flight_status_reports_missing_sso_configuration():

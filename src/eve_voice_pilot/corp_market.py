@@ -40,6 +40,7 @@ DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
 DEFAULT_INDUSTRY_RECIPE_CACHE_PATH = ROOT / "cache" / "eve_industry_recipes.json"
 DEFAULT_ROUTE_GRAPH_CACHE_PATH = ROOT / "cache" / "eve_route_graph.json"
 DEFAULT_STATIC_DATA_ZIP_PATH = ROOT / "cache" / "eve-online-static-data-3374020-jsonl.zip"
+STATIC_ASSET_ROOT = ROOT / "src" / "eve_voice_pilot" / "static"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
@@ -284,6 +285,15 @@ HAUL_MARKET_GROUP_CHILDREN = {
         (2480, "Triglavian Data"),
         (2013, "Unknown Components"),
     ),
+}
+STATIC_CONTENT_TYPES = {
+    ".css": "text/css; charset=utf-8",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".js": "application/javascript; charset=utf-8",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".webp": "image/webp",
 }
 SPACE_RE = re.compile(r"\s+")
 ISK_AMOUNT_RE = re.compile(r"^\s*(?P<number>\d+(?:\.\d+)?)\s*(?P<suffix>[kKmMbB]?)\s*$")
@@ -3996,6 +4006,21 @@ def esi_compatibility_date() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=11)).date().isoformat()
 
 
+def resolve_static_asset_path(request_path: str) -> Path | None:
+    relative_path = request_path.removeprefix("/static/").strip("/")
+    if not relative_path or "\\" in relative_path:
+        return None
+    asset_root = STATIC_ASSET_ROOT.resolve()
+    asset_path = (asset_root / relative_path).resolve()
+    try:
+        asset_path.relative_to(asset_root)
+    except ValueError:
+        return None
+    if not asset_path.is_file():
+        return None
+    return asset_path
+
+
 def build_http_server(
     host: str,
     port: int,
@@ -4024,6 +4049,9 @@ def build_http_server(
             path = urlparse(self.path).path
             if path in {"/", "/index.html"}:
                 self._send_html(render_dashboard())
+                return
+            if path.startswith("/static/"):
+                self._handle_static_asset(path)
                 return
             if path == "/api/offers":
                 self._handle_offer_list()
@@ -4534,6 +4562,20 @@ def build_http_server(
             self.end_headers()
             self.wfile.write(body)
 
+        def _handle_static_asset(self, path: str) -> None:
+            asset_path = resolve_static_asset_path(path)
+            if asset_path is None:
+                self.send_error(404, "Not found")
+                return
+            body = asset_path.read_bytes()
+            content_type = STATIC_CONTENT_TYPES.get(asset_path.suffix.lower(), "application/octet-stream")
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            self.wfile.write(body)
+
         def _redirect(self, url: str) -> None:
             self.send_response(302)
             self.send_header("Location", url)
@@ -4937,6 +4979,13 @@ def _render_flight_attendant_dashboard() -> str:
       line-height: 1.45;
       overflow-x: hidden;
     }
+    body[data-active-tab="hauling"] {
+      background:
+        linear-gradient(90deg, rgba(5, 9, 11, .9) 0%, rgba(5, 9, 11, .72) 42%, rgba(5, 9, 11, .34) 100%),
+        linear-gradient(180deg, rgba(8, 14, 16, .48), rgba(6, 9, 12, .86) 78%),
+        url("/static/corp-market/hauler-background.png") center top / cover no-repeat fixed,
+        var(--bg);
+    }
     .shell { width: min(1360px, calc(100vw - 32px)); margin: 0 auto; padding-bottom: 34px; min-width: 0; }
     header { padding: 24px 0 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: end; }
     h1 { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: 0; }
@@ -5001,6 +5050,15 @@ def _render_flight_attendant_dashboard() -> str:
       padding: 16px;
       box-shadow: 0 18px 44px rgba(0, 0, 0, .22);
       min-width: 0;
+    }
+    body[data-active-tab="hauling"] #tab-hauling .panel {
+      background: linear-gradient(180deg, rgba(11, 18, 20, .91), rgba(7, 11, 13, .88));
+      border-color: rgba(97, 199, 217, .23);
+      box-shadow: 0 22px 58px rgba(0, 0, 0, .34);
+      backdrop-filter: blur(2px);
+    }
+    body[data-active-tab="hauling"] #tab-hauling .panel:first-child {
+      background: linear-gradient(180deg, rgba(11, 18, 20, .94), rgba(7, 11, 13, .9));
     }
     .panel-header { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .panel-header > div { min-width: 0; max-width: 100%; }
@@ -5806,6 +5864,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     function showTab(tabName) {
       const targetTab = validTabs.has(tabName) ? tabName : "market";
+      document.body.dataset.activeTab = targetTab;
       tabButtons.forEach((button) => {
         const selected = button.dataset.tabTarget === targetTab;
         button.setAttribute("aria-selected", selected ? "true" : "false");
