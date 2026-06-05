@@ -1109,6 +1109,7 @@ def test_load_reprocessing_cache_reads_ore_and_station_data(tmp_path):
 
 
 def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(monkeypatch, tmp_path):
+    market_calls = []
     cache = ReprocessingCache(
         path=tmp_path / "eve_reprocessing.json",
         available=True,
@@ -1139,6 +1140,20 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
                 reprocessing_tax_rate=0.05,
             )
         },
+    )
+    route_cache = RouteGraphCache(
+        path=tmp_path / "eve_route_graph.json",
+        available=True,
+        build_number=3374020,
+        systems={
+            30000142: RouteSystem(
+                solar_system_id=30000142,
+                name="Jita",
+                region_id=200,
+                security_status=0.9,
+            )
+        },
+        adjacency={},
     )
     session = FlightEsiSession(
         character_id=123456789,
@@ -1191,6 +1206,27 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
         "fetch_universe_station",
         lambda config, station_id: {"name": "Airaken VI - Moon 1 - CBD Corporation Storage", "owner": 1000002},
     )
+    monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
+
+    def fake_fetch_market_buy_orders(config, *, region_id, type_id):
+        market_calls.append((region_id, type_id))
+        prices = {34: 6.0, 1230: 12.0}
+        price = prices.get(type_id)
+        if price is None:
+            return []
+        return [
+            {
+                "order_id": type_id + 1000,
+                "is_buy_order": True,
+                "system_id": 30000142,
+                "location_id": 60003760,
+                "price": price,
+                "volume_remain": 100000,
+                "min_volume": 1,
+            }
+        ]
+
+    monkeypatch.setattr(corp_market, "fetch_market_buy_orders", fake_fetch_market_buy_orders)
 
     payload = build_flight_reprocessing_payload(
         config=corp_market.EveSsoConfig(
@@ -1217,6 +1253,19 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     assert payload["materials"][0]["gross_quantity"] == 2738
     assert payload["materials"][0]["station_tax_quantity"] == 55
     assert payload["materials"][0]["net_quantity"] == 2683
+    assert market_calls == [(200, 34), (200, 1230)]
+    assert payload["materials"][0]["jita_buy_price"] == 6.0
+    assert payload["materials"][0]["jita_value"] == pytest.approx(16098.0)
+    assert payload["materials"][0]["jita_complete"] is True
+    valuation = payload["jita_valuation"]
+    assert valuation["system"]["name"] == "Jita"
+    assert valuation["processed_material_value"] == pytest.approx(16098.0)
+    assert valuation["processed_partial_material_value"] == pytest.approx(16098.0)
+    assert valuation["ore_value"] == pytest.approx(12000.0)
+    assert valuation["ore_partial_value"] == pytest.approx(12000.0)
+    assert valuation["value_delta"] == pytest.approx(4098.0)
+    assert valuation["processed_complete"] is True
+    assert valuation["ore_complete"] is True
 
 
 def test_nearby_systems_payload_uses_jump_range():

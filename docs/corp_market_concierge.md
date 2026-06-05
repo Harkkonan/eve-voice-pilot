@@ -149,10 +149,13 @@ The `Ore Reprocessing` tab estimates mineral output from an ore type and ore-uni
 - NPC corporation or faction standing from ESI standings for NPC station tax reduction;
 - known Zainou Beancounter reprocessing implants from ESI implants;
 - ore portion size, material outputs, and NPC station base yield/tax from the local SDE cache.
+- public Jita buy orders from ESI to compare the immediate value of the processed materials against the original unprocessed ore stack.
 
 For NPC stations, the calculator applies the station's SDE reprocessing efficiency and station take, then reduces station take by the connected pilot's ESI standing where possible. For Upwell structures, ESI can resolve the current structure name/owner if the pilot has access, but it does not expose the active reprocessing rig, facility tax, service settings, or structure bonus. Use the manual override fields for those structure values.
 
 This tab is advisory only. It never starts a reprocessing job, moves items, presses keys, places orders, or writes to the EVE client.
+
+Jita values are immediate liquidation estimates against visible public buy-order depth in Jita. If buy depth does not cover every output material or the whole ore stack, the tab labels the value as partial.
 
 ### Buyer Order Scanner
 

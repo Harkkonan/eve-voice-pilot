@@ -5757,10 +5757,17 @@ def build_flight_reprocessing_payload(
                 "volume_m3": material.volume_m3,
             }
         )
+    jita_valuation = build_reprocessing_jita_valuation(
+        config=config,
+        ore=ore,
+        input_quantity=clean_quantity,
+        output_materials=output_materials,
+    )
 
     notes = [
         "Uses ESI location, skills, standings, and implants when the connected session has those scopes.",
         "Uses CCP static data for ore portions, material outputs, and NPC station reprocessing values.",
+        "Jita values use public Jita buy orders for immediate liquidation estimates.",
     ]
     notes.extend(location_profile.get("notes", []))
     notes.extend(implant_profile.get("notes", []))
@@ -5808,7 +5815,98 @@ def build_flight_reprocessing_payload(
             "capped": raw_yield_rate > gross_yield_rate,
         },
         "materials": output_materials,
+        "jita_valuation": jita_valuation,
         "notes": notes,
+    }
+
+
+def build_reprocessing_jita_valuation(
+    *,
+    config: EveSsoConfig,
+    ore: ReprocessingOre,
+    input_quantity: int,
+    output_materials: list[dict[str, Any]],
+) -> dict[str, Any]:
+    route_cache = load_route_graph_cache()
+    jita_system = resolve_jita_market_system(route_cache.systems or {} if route_cache.available else {})
+    type_ids = {ore.type_id}
+    type_ids.update(int(material["type_id"]) for material in output_materials if int(material.get("net_quantity") or 0) > 0)
+    orders_by_type, order_count, errors = scan_system_market_orders(
+        config=config,
+        type_ids=sorted(type_ids),
+        system=jita_system,
+        order_type="buy",
+    )
+    ore_orders = orders_by_type.get(ore.type_id, ())
+    ore_liquidation = liquidation_value_from_orders(ore_orders, quantity=input_quantity)
+
+    processed_partial_value = 0.0
+    processed_full_material_types = 0
+    processed_partial_material_types = 0
+    required_material_types = 0
+    for material in output_materials:
+        material_type_id = int(material["type_id"])
+        quantity = int(material.get("net_quantity") or 0)
+        material_orders = orders_by_type.get(material_type_id, ())
+        material_liquidation = liquidation_value_from_orders(material_orders, quantity=quantity)
+        if quantity > 0:
+            required_material_types += 1
+        if material_liquidation["priced_quantity"] > 0:
+            processed_partial_value += float(material_liquidation["value"])
+            processed_partial_material_types += 1
+            if material_liquidation["complete"]:
+                processed_full_material_types += 1
+        material["jita_buy_price"] = float(material_orders[0]["price"]) if material_orders else None
+        material["jita_value"] = (
+            material_liquidation["value"] if material_liquidation["priced_quantity"] > 0 else None
+        )
+        material["jita_priced_quantity"] = material_liquidation["priced_quantity"]
+        material["jita_required_quantity"] = material_liquidation["required_quantity"]
+        material["jita_complete"] = material_liquidation["complete"]
+        material["jita_buy_order"] = material_orders[0] if material_orders else None
+
+    processed_complete = required_material_types == 0 or processed_full_material_types >= required_material_types
+    ore_complete = ore_liquidation["complete"]
+    processed_value = processed_partial_value if processed_complete else None
+    processed_partial_value_payload = processed_partial_value if processed_partial_material_types > 0 else None
+    ore_value = ore_liquidation["value"] if ore_complete else None
+    ore_partial_value = ore_liquidation["value"] if ore_liquidation["priced_quantity"] > 0 else None
+    value_delta = processed_value - ore_value if processed_value is not None and ore_value is not None else None
+    partial_value_delta = (
+        processed_partial_value_payload - ore_partial_value
+        if processed_partial_value_payload is not None and ore_partial_value is not None
+        else None
+    )
+    notes = []
+    if not route_cache.available:
+        notes.append("Route graph cache was unavailable; using the built-in Jita system and region ids.")
+    if errors:
+        notes.append("Some Jita market lookups failed; shown values may be partial.")
+    if not processed_complete:
+        notes.append("Processed-material value is partial because Jita buy depth did not cover every output material.")
+    if not ore_complete:
+        notes.append("Unprocessed ore value is partial because Jita buy depth did not cover the full ore stack.")
+    return {
+        "system": jita_system.to_dict(jumps=0),
+        "order_type": "buy",
+        "order_count": order_count,
+        "processed_material_value": processed_value,
+        "processed_partial_material_value": processed_partial_value_payload,
+        "processed_complete": processed_complete,
+        "processed_material_types": processed_full_material_types,
+        "processed_partial_material_types": processed_partial_material_types,
+        "processed_required_material_types": required_material_types,
+        "ore_value": ore_value,
+        "ore_partial_value": ore_partial_value,
+        "ore_complete": ore_complete,
+        "ore_buy_price": float(ore_orders[0]["price"]) if ore_orders else None,
+        "ore_priced_quantity": ore_liquidation["priced_quantity"],
+        "ore_required_quantity": ore_liquidation["required_quantity"],
+        "value_delta": value_delta,
+        "partial_value_delta": partial_value_delta,
+        "errors": errors[:8],
+        "notes": notes,
+        "market_cache": market_order_cache_status(),
     }
 
 
@@ -10621,17 +10719,20 @@ def _render_flight_attendant_dashboard() -> str:
       const implant = data.implant || {};
       const yieldData = data.yield || {};
       const cache = data.cache || {};
+      const valuation = data.jita_valuation || {};
       const notes = Array.isArray(data.notes) ? data.notes : [];
+      const valuationNotes = Array.isArray(valuation.notes) ? valuation.notes : [];
       reprocessSummary.innerHTML = `
         <div class="profit-stats">
           <div class="profit-stat"><span>Net Yield</span><b>${formatPercent(yieldData.net_yield_percent)}</b></div>
-          <div class="profit-stat"><span>Gross Yield</span><b>${formatPercent(yieldData.gross_yield_percent)}</b></div>
-          <div class="profit-stat"><span>Station Tax</span><b>${formatPercent(yieldData.station_tax_percent)}</b></div>
-          <div class="profit-stat"><span>Portions</span><b>${formatNumber(input.portions)}</b></div>
+          <div class="profit-stat"><span>Processed Jita</span><b>${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)}</b></div>
+          <div class="profit-stat"><span>Ore Jita</span><b>${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)}</b></div>
+          <div class="profit-stat"><span>Jita Delta</span><b>${renderReprocessingJitaDelta(valuation)}</b></div>
         </div>
         <div class="meta">${escapeHtml(ore.name || "Ore")} x${formatNumber(input.quantity)}; portion ${formatNumber(input.portion_size)}; leftovers ${formatNumber(input.leftover_units)}.</div>
         <div class="meta">Skills: Reprocessing ${formatNumber(skills.reprocessing_level)}, Reprocessing Efficiency ${formatNumber(skills.reprocessing_efficiency_level)}, ${escapeHtml(skills.specialization_skill_name || "specialization")} ${formatNumber(skills.specialization_level)}.</div>
         <div class="meta">Implant bonus ${formatNumber(implant.bonus_percent)}% from ${escapeHtml(implant.source || "unknown")}; facility ${formatNumber(facility.facility_yield_percent)}% from ${escapeHtml(facility.source || "unknown")}.</div>
+        <div class="meta">Jita pricing uses public buy orders in ${escapeHtml((valuation.system || {}).name || "Jita")}; ${renderReprocessingJitaCoverage(valuation)}.</div>
       `;
       const owner = facility.owner_name || (facility.owner_id ? `Owner ${facility.owner_id}` : "unknown owner");
       reprocessLocation.innerHTML = `
@@ -10641,7 +10742,35 @@ def _render_flight_attendant_dashboard() -> str:
         ${facility.standing_source ? `(${escapeHtml(facility.standing_source)})` : ""}.
         <br>Static reprocessing cache: ${cache.available ? `build ${escapeHtml(cache.build_number || "unknown")}` : escapeHtml(cache.error || "missing")}.
       `;
-      reprocessResults.innerHTML = renderReprocessingMaterials(data.materials || [], notes);
+      reprocessResults.innerHTML = renderReprocessingMaterials(data.materials || [], notes.concat(valuationNotes));
+    }
+
+    function renderReprocessingJitaValue(value, partialValue) {
+      if (value != null) return formatIsk(value);
+      if (partialValue != null) return `${formatIsk(partialValue)} partial`;
+      return "unknown";
+    }
+
+    function renderReprocessingJitaDelta(valuation) {
+      if (valuation.value_delta != null) return formatSignedIsk(valuation.value_delta);
+      if (valuation.partial_value_delta != null) return `${formatSignedIsk(valuation.partial_value_delta)} partial`;
+      return "unknown";
+    }
+
+    function renderReprocessingJitaCoverage(valuation) {
+      const full = Number(valuation.processed_material_types || 0);
+      const partial = Number(valuation.processed_partial_material_types || 0);
+      const total = Number(valuation.processed_required_material_types || 0);
+      const orePriced = Number(valuation.ore_priced_quantity || 0);
+      const oreRequired = Number(valuation.ore_required_quantity || 0);
+      const materialCoverage = total
+        ? `${formatNumber(full)}/${formatNumber(total)} output material types covered`
+        : "no output materials to price";
+      const oreCoverage = oreRequired
+        ? `${formatNumber(orePriced)}/${formatNumber(oreRequired)} ore units priced`
+        : "ore quantity unknown";
+      if (partial > full) return `${materialCoverage}, ${formatNumber(partial)} with partial depth; ${oreCoverage}`;
+      return `${materialCoverage}; ${oreCoverage}`;
     }
 
     function renderReprocessingMaterials(materials, notes) {
@@ -10662,10 +10791,18 @@ def _render_flight_attendant_dashboard() -> str:
             <div class="decision-metric"><span>Gross</span><b>${formatNumber(material.gross_quantity)}</b></div>
             <div class="decision-metric"><span>Station Take</span><b>${formatNumber(material.station_tax_quantity)}</b></div>
             <div class="decision-metric"><span>Net</span><b>${formatNumber(material.net_quantity)}</b></div>
+            <div class="decision-metric"><span>Jita Buy Value</span><b>${renderReprocessingJitaValue(material.jita_value, null)}</b><small>${renderReprocessingMaterialJitaDepth(material)}</small></div>
           </div>
         </div>
       `).join("");
       return `${noteBlock}<div class="decision-list">${rows}</div>`;
+    }
+
+    function renderReprocessingMaterialJitaDepth(material) {
+      if (material.jita_buy_price == null) return "No Jita buy depth found.";
+      const price = `${formatIsk(material.jita_buy_price)} top buy`;
+      if (material.jita_complete) return price;
+      return `${price}; ${formatNumber(material.jita_priced_quantity)} of ${formatNumber(material.jita_required_quantity)} priced`;
     }
 
     function resetFlightIndustry(message) {

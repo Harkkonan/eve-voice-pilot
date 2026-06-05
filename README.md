@@ -215,4 +215,4 @@ The Flight Attendant tab also includes a `Market Acquisition Planner`. It compar
 
 The `Trade P&L` tab reads recent ESI wallet transactions and market fee journal rows to match visible buys and sells into item-level profit, loss, open stock, and unmatched sells. It is read-only and does not place or edit market orders.
 
-The `Ore Reprocessing` tab estimates mineral output from an ore amount using ESI location, skills, standings, and implants plus local SDE ore/station data. Upwell structure rigs, taxes, and bonuses still need manual overrides because ESI does not expose those settings.
+The `Ore Reprocessing` tab estimates mineral output from an ore amount using ESI location, skills, standings, and implants plus local SDE ore/station data. It also compares the Jita buy-order value of the processed materials with the Jita buy-order value of the unprocessed ore stack. Upwell structure rigs, taxes, and bonuses still need manual overrides because ESI does not expose those settings.
