@@ -16,11 +16,21 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_PATH = ROOT / "cache" / "eve_industry_recipes.json"
 DEFAULT_ROUTE_OUTPUT_PATH = ROOT / "cache" / "eve_route_graph.json"
 DEFAULT_REPROCESSING_OUTPUT_PATH = ROOT / "cache" / "eve_reprocessing.json"
+DEFAULT_PLANETARY_OUTPUT_PATH = ROOT / "cache" / "eve_planetary_industry.json"
 LATEST_SDE_INFO_URL = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl"
 LATEST_JSONL_ZIP_URL = "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
 RECIPE_SCHEMA = "eve_voice_pilot.industry_recipes.v1"
 ROUTE_SCHEMA = "eve_voice_pilot.route_graph.v1"
 REPROCESSING_SCHEMA = "eve_voice_pilot.reprocessing.v1"
+PLANETARY_SCHEMA = "eve_voice_pilot.planetary_industry.v1"
+
+PLANETARY_TAX_BASE_VALUES = {
+    "P0": 5.0,
+    "P1": 400.0,
+    "P2": 7200.0,
+    "P3": 60000.0,
+    "P4": 1200000.0,
+}
 
 REPROCESSING_SKILL_TYPES = {
     "Abyssal Ore Processing": 60381,
@@ -93,9 +103,15 @@ def main(argv: list[str] | None = None) -> int:
         recipe_cache = build_recipe_cache(sde_zip=sde_zip, fallback_info=latest_info, source_url=source_url)
         route_cache = build_route_graph_cache(sde_zip=sde_zip, fallback_info=latest_info, source_url=source_url)
         reprocessing_cache = build_reprocessing_cache(sde_zip=sde_zip, fallback_info=latest_info, source_url=source_url)
+        planetary_cache = build_planetary_industry_cache(
+            sde_zip=sde_zip,
+            fallback_info=latest_info,
+            source_url=source_url,
+        )
         write_json(args.output.expanduser(), recipe_cache)
         write_json(args.route_output.expanduser(), route_cache)
         write_json(args.reprocessing_output.expanduser(), reprocessing_cache)
+        write_json(args.planetary_output.expanduser(), planetary_cache)
     except (CorpRecipeCacheError, OSError, HTTPError, URLError) as exc:
         print(f"Could not update industry static caches: {exc}", file=sys.stderr)
         return 1
@@ -103,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Wrote {recipe_cache['recipe_count']} manufacturing recipes to {args.output}")
     print(f"Wrote {route_cache['system_count']} systems and {route_cache['edge_count']} gates to {args.route_output}")
     print(f"Wrote {reprocessing_cache['ore_count']} reprocessable ore types to {args.reprocessing_output}")
+    print(f"Wrote {planetary_cache['schematic_count']} planetary schematics to {args.planetary_output}")
     print(f"SDE build: {recipe_cache.get('build_number') or 'unknown'}")
     return 0
 
@@ -133,6 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_REPROCESSING_OUTPUT_PATH,
         help="Output ore reprocessing cache path.",
+    )
+    parser.add_argument(
+        "--planetary-output",
+        type=Path,
+        default=DEFAULT_PLANETARY_OUTPUT_PATH,
+        help="Output planetary industry cache path.",
     )
     parser.add_argument(
         "--force-download",
@@ -252,6 +275,50 @@ def build_reprocessing_cache(*, sde_zip: Path, fallback_info: dict[str, Any], so
     }
 
 
+def build_planetary_industry_cache(*, sde_zip: Path, fallback_info: dict[str, Any], source_url: str = "") -> dict[str, Any]:
+    if not sde_zip.exists():
+        raise CorpRecipeCacheError(f"SDE zip does not exist: {sde_zip}")
+    with ZipFile(sde_zip) as archive:
+        type_metadata = read_type_metadata(archive)
+        market_group_metadata = read_market_group_metadata(archive)
+        systems = read_solar_systems(archive)
+        sde_info = read_sde_info(archive) or fallback_info
+        schematic_records = read_planetary_schematic_records(archive)
+        tiers = infer_planetary_tiers(schematic_records)
+        schematics = build_planetary_schematics(
+            schematic_records,
+            type_metadata=type_metadata,
+            market_group_metadata=market_group_metadata,
+            tiers=tiers,
+        )
+        commodities = build_planetary_commodities(
+            schematic_records,
+            type_metadata=type_metadata,
+            market_group_metadata=market_group_metadata,
+            tiers=tiers,
+        )
+        planets = read_planetary_planets(archive, type_metadata=type_metadata, systems=systems)
+
+    sorted_schematics = {str(key): schematics[key] for key in sorted(schematics)}
+    sorted_commodities = {str(key): commodities[key] for key in sorted(commodities)}
+    sorted_planets = {str(key): planets[key] for key in sorted(planets)}
+    return {
+        "schema": PLANETARY_SCHEMA,
+        "source": "eve_sde_jsonl",
+        "source_url": source_url,
+        "build_number": clean_int(sde_info.get("buildNumber")) or None,
+        "release_date": str(sde_info.get("releaseDate") or ""),
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "tax_base_values": PLANETARY_TAX_BASE_VALUES,
+        "schematic_count": len(sorted_schematics),
+        "commodity_count": len(sorted_commodities),
+        "planet_count": len(sorted_planets),
+        "schematics": sorted_schematics,
+        "commodities": sorted_commodities,
+        "planets": sorted_planets,
+    }
+
+
 def read_type_metadata(archive: ZipFile) -> dict[int, dict[str, Any]]:
     metadata: dict[int, dict[str, Any]] = {}
     for record in iter_jsonl_member(archive, "types.jsonl"):
@@ -266,6 +333,20 @@ def read_type_metadata(archive: ZipFile) -> dict[int, dict[str, Any]]:
             "market_group_id": clean_int(record.get("marketGroupID")) or None,
             "portion_size": clean_int(record.get("portionSize")),
             "published": bool(record.get("published")),
+        }
+    return metadata
+
+
+def read_market_group_metadata(archive: ZipFile) -> dict[int, dict[str, Any]]:
+    metadata: dict[int, dict[str, Any]] = {}
+    for record in iter_jsonl_member(archive, "marketGroups.jsonl"):
+        market_group_id = clean_int(record.get("_key"))
+        if market_group_id <= 0:
+            continue
+        metadata[market_group_id] = {
+            "market_group_id": market_group_id,
+            "name": english_name(record.get("name")) or f"Market Group {market_group_id}",
+            "parent_group_id": clean_int(record.get("parentGroupID")) or None,
         }
     return metadata
 
@@ -485,6 +566,276 @@ def read_reprocessing_stations(
             "reprocessing_tax_rate": clean_float(record.get("reprocessingStationsTake")),
         }
     return stations
+
+
+def read_planetary_schematic_records(archive: ZipFile) -> dict[int, dict[str, Any]]:
+    records: dict[int, dict[str, Any]] = {}
+    for record in iter_jsonl_member(archive, "planetSchematics.jsonl"):
+        schematic_id = clean_int(record.get("_key") or record.get("schematicID"))
+        if schematic_id <= 0:
+            continue
+        inputs = []
+        outputs = []
+        for item in clean_records(record.get("types")):
+            type_id = clean_int(item.get("_key") or item.get("typeID") or item.get("type_id"))
+            quantity = clean_int(item.get("quantity"))
+            if type_id <= 0 or quantity <= 0:
+                continue
+            payload = {"type_id": type_id, "quantity": quantity}
+            if bool(item.get("isInput")):
+                inputs.append(payload)
+            else:
+                outputs.append(payload)
+        if not inputs or not outputs:
+            continue
+        pins = [pin_id for pin_id in (clean_int(value) for value in record.get("pins") or []) if pin_id > 0]
+        records[schematic_id] = {
+            "schematic_id": schematic_id,
+            "name": english_name(record.get("name")) or f"Schematic {schematic_id}",
+            "cycle_time_seconds": clean_int(record.get("cycleTime") or record.get("cycle_time")),
+            "pins": pins,
+            "inputs": inputs,
+            "outputs": outputs,
+        }
+    return records
+
+
+def infer_planetary_tiers(schematics: dict[int, dict[str, Any]]) -> dict[int, str]:
+    output_type_ids = {
+        clean_int(output.get("type_id"))
+        for schematic in schematics.values()
+        for output in clean_records(schematic.get("outputs"))
+    }
+    input_type_ids = {
+        clean_int(input_record.get("type_id"))
+        for schematic in schematics.values()
+        for input_record in clean_records(schematic.get("inputs"))
+    }
+    tiers = {type_id: "P0" for type_id in input_type_ids - output_type_ids if type_id > 0}
+
+    changed = True
+    while changed:
+        changed = False
+        for schematic in schematics.values():
+            input_tiers = [
+                planetary_tier_number(tiers.get(clean_int(input_record.get("type_id"))))
+                for input_record in clean_records(schematic.get("inputs"))
+            ]
+            if not input_tiers or any(value is None for value in input_tiers):
+                continue
+            output_tier = f"P{min(4, max(int(value) for value in input_tiers if value is not None) + 1)}"
+            for output in clean_records(schematic.get("outputs")):
+                output_type_id = clean_int(output.get("type_id"))
+                if output_type_id > 0 and tiers.get(output_type_id) != output_tier:
+                    tiers[output_type_id] = output_tier
+                    changed = True
+
+    for schematic in schematics.values():
+        fallback_tier = infer_planetary_output_tier(schematic)
+        for output in clean_records(schematic.get("outputs")):
+            output_type_id = clean_int(output.get("type_id"))
+            if output_type_id > 0 and output_type_id not in tiers and fallback_tier:
+                tiers[output_type_id] = fallback_tier
+    return tiers
+
+
+def infer_planetary_output_tier(schematic: dict[str, Any]) -> str | None:
+    outputs = list(clean_records(schematic.get("outputs")))
+    if not outputs:
+        return None
+    output_quantity = clean_int(outputs[0].get("quantity"))
+    cycle_time = clean_int(schematic.get("cycle_time_seconds"))
+    if cycle_time == 1800 and output_quantity >= 20:
+        return "P1"
+    if output_quantity >= 5:
+        return "P2"
+    if output_quantity >= 3:
+        return "P3"
+    return "P4"
+
+
+def build_planetary_schematics(
+    schematics: dict[int, dict[str, Any]],
+    *,
+    type_metadata: dict[int, dict[str, Any]],
+    market_group_metadata: dict[int, dict[str, Any]],
+    tiers: dict[int, str],
+) -> dict[int, dict[str, Any]]:
+    payload: dict[int, dict[str, Any]] = {}
+    for schematic_id, schematic in schematics.items():
+        inputs = [
+            planetary_schematic_item_payload(
+                item,
+                type_metadata=type_metadata,
+                market_group_metadata=market_group_metadata,
+                tiers=tiers,
+            )
+            for item in clean_records(schematic.get("inputs"))
+        ]
+        outputs = [
+            planetary_schematic_item_payload(
+                item,
+                type_metadata=type_metadata,
+                market_group_metadata=market_group_metadata,
+                tiers=tiers,
+            )
+            for item in clean_records(schematic.get("outputs"))
+        ]
+        output_tiers = [item.get("tier") for item in outputs if item.get("tier")]
+        input_tiers = [item.get("tier") for item in inputs if item.get("tier")]
+        payload[schematic_id] = {
+            "schematic_id": schematic_id,
+            "name": str(schematic.get("name") or f"Schematic {schematic_id}"),
+            "cycle_time_seconds": clean_int(schematic.get("cycle_time_seconds")),
+            "pins": list(schematic.get("pins") or []),
+            "input_tiers": sorted(set(input_tiers)),
+            "output_tiers": sorted(set(output_tiers)),
+            "inputs": inputs,
+            "outputs": outputs,
+        }
+    return payload
+
+
+def build_planetary_commodities(
+    schematics: dict[int, dict[str, Any]],
+    *,
+    type_metadata: dict[int, dict[str, Any]],
+    market_group_metadata: dict[int, dict[str, Any]],
+    tiers: dict[int, str],
+) -> dict[int, dict[str, Any]]:
+    type_ids = {
+        clean_int(item.get("type_id"))
+        for schematic in schematics.values()
+        for side in ("inputs", "outputs")
+        for item in clean_records(schematic.get(side))
+    }
+    commodities = {}
+    for type_id in type_ids:
+        if type_id <= 0:
+            continue
+        tier = tiers.get(type_id)
+        payload = planetary_type_payload(
+            type_metadata,
+            market_group_metadata,
+            type_id,
+            tier=tier,
+        )
+        commodities[type_id] = payload
+    return commodities
+
+
+def planetary_schematic_item_payload(
+    item: dict[str, Any],
+    *,
+    type_metadata: dict[int, dict[str, Any]],
+    market_group_metadata: dict[int, dict[str, Any]],
+    tiers: dict[int, str],
+) -> dict[str, Any]:
+    type_id = clean_int(item.get("type_id"))
+    payload = planetary_type_payload(
+        type_metadata,
+        market_group_metadata,
+        type_id,
+        tier=tiers.get(type_id),
+    )
+    payload["quantity"] = clean_int(item.get("quantity"))
+    volume_m3 = payload.get("volume_m3")
+    if volume_m3 is not None:
+        payload["total_volume_m3"] = round(float(volume_m3) * int(payload["quantity"]), 8)
+    return payload
+
+
+def planetary_type_payload(
+    type_metadata: dict[int, dict[str, Any]],
+    market_group_metadata: dict[int, dict[str, Any]],
+    type_id: int,
+    *,
+    tier: str | None,
+) -> dict[str, Any]:
+    metadata = type_metadata.get(type_id) or {}
+    market_group_id = clean_int(metadata.get("market_group_id")) or None
+    payload: dict[str, Any] = {
+        "type_id": type_id,
+        "name": type_name(type_metadata, type_id),
+        "tier": tier or "Unknown",
+        "group_id": clean_int(metadata.get("group_id")) or None,
+        "market_group_id": market_group_id,
+        "published": bool(metadata.get("published")),
+    }
+    volume_m3 = type_volume(type_metadata, type_id)
+    if volume_m3 is not None:
+        payload["volume_m3"] = volume_m3
+    if market_group_id:
+        market_group = market_group_metadata.get(market_group_id) or {}
+        payload["market_group_name"] = str(market_group.get("name") or "")
+        path = market_group_path(market_group_metadata, market_group_id)
+        if path:
+            payload["market_group_path"] = path
+    tax_base_value = planetary_tax_base_value(tier)
+    if tax_base_value is not None:
+        payload["customs_tax_base_value"] = tax_base_value
+        payload["export_tax_base_per_unit"] = tax_base_value
+        payload["import_tax_base_per_unit"] = tax_base_value * 0.5
+    return payload
+
+
+def read_planetary_planets(
+    archive: ZipFile,
+    *,
+    type_metadata: dict[int, dict[str, Any]],
+    systems: dict[int, dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    planets: dict[int, dict[str, Any]] = {}
+    for record in iter_jsonl_member(archive, "mapPlanets.jsonl"):
+        planet_id = clean_int(record.get("_key") or record.get("planetID"))
+        type_id = clean_int(record.get("typeID") or record.get("type_id"))
+        solar_system_id = clean_int(record.get("solarSystemID") or record.get("solar_system_id"))
+        if planet_id <= 0 or type_id <= 0 or solar_system_id <= 0:
+            continue
+        system = systems.get(solar_system_id) or {}
+        planets[planet_id] = {
+            "planet_id": planet_id,
+            "type_id": type_id,
+            "type_name": type_name(type_metadata, type_id, fallback_prefix="Planet Type"),
+            "solar_system_id": solar_system_id,
+            "solar_system_name": str(system.get("name") or f"System {solar_system_id}"),
+            "region_id": clean_int(system.get("region_id")) or None,
+            "constellation_id": clean_int(system.get("constellation_id")) or None,
+            "celestial_index": clean_int(record.get("celestialIndex")) or None,
+            "radius": clean_int(record.get("radius")) or None,
+        }
+    return planets
+
+
+def market_group_path(metadata: dict[int, dict[str, Any]], market_group_id: int) -> list[str]:
+    path = []
+    current_id = market_group_id
+    seen = set()
+    while current_id > 0 and current_id not in seen:
+        seen.add(current_id)
+        group = metadata.get(current_id)
+        if not group:
+            break
+        name = str(group.get("name") or "")
+        if name:
+            path.append(name)
+        current_id = clean_int(group.get("parent_group_id"))
+    return list(reversed(path))
+
+
+def planetary_tier_number(tier: str | None) -> int | None:
+    if not tier or len(tier) < 2 or tier[0].upper() != "P":
+        return None
+    value = clean_int(tier[1:])
+    if 0 <= value <= 4:
+        return value
+    return None
+
+
+def planetary_tax_base_value(tier: str | None) -> float | None:
+    if not tier:
+        return None
+    return PLANETARY_TAX_BASE_VALUES.get(tier.upper())
 
 
 def type_name(type_metadata: dict[int, dict[str, Any]], type_id: int, *, fallback_prefix: str = "Type") -> str:
