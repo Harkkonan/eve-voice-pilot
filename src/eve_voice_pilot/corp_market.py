@@ -358,6 +358,8 @@ FIT_HEADER_RE = re.compile(r"^\[(?P<hull>[^,\]]+),\s*(?P<name>[^\]]+)\]\s*$")
 FIT_QUANTITY_RE = re.compile(r"\sx[\d,]+\s*$", re.IGNORECASE)
 MARKET_ORDER_CACHE_LOCK = threading.Lock()
 MARKET_ORDER_CACHE: dict[tuple[str, int, int, str], tuple[float, list[dict[str, Any]]]] = {}
+MARKET_PRICE_CACHE_LOCK = threading.Lock()
+MARKET_PRICE_CACHE: dict[str, tuple[float, dict[int, dict[str, Any]]]] = {}
 MARKET_HISTORY_CACHE_LOCK = threading.Lock()
 MARKET_HISTORY_CACHE: dict[tuple[str, int, int], tuple[float, list[dict[str, Any]]]] = {}
 SYSTEM_KILLS_CACHE_LOCK = threading.Lock()
@@ -2651,6 +2653,45 @@ def fetch_market_orders(
 def clear_market_order_cache() -> None:
     with MARKET_ORDER_CACHE_LOCK:
         MARKET_ORDER_CACHE.clear()
+
+
+def fetch_market_prices(config: EveSsoConfig) -> dict[int, dict[str, Any]]:
+    base_url = config.esi_base_url.rstrip("/")
+    now = time.monotonic()
+    with MARKET_PRICE_CACHE_LOCK:
+        cached = MARKET_PRICE_CACHE.get(base_url)
+        if cached is not None:
+            cached_at, cached_prices = cached
+            if now - cached_at < MARKET_ORDER_CACHE_TTL_SECONDS:
+                return {type_id: dict(price) for type_id, price in cached_prices.items()}
+            MARKET_PRICE_CACHE.pop(base_url, None)
+    url = add_query_params(f"{base_url}/markets/prices/", {"datasource": "tranquility"})
+    try:
+        payload = get_json(url, timeout_seconds=45.0, headers=flight_esi_headers())
+    except (CorpIntelError, ValueError) as exc:
+        raise CorpMarketError(f"ESI market prices lookup failed: {exc}") from exc
+    if not isinstance(payload, list):
+        raise CorpMarketError("ESI market prices endpoint returned unexpected data.")
+    prices: dict[int, dict[str, Any]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        type_id = clean_optional_int(item.get("type_id"))
+        if not type_id:
+            continue
+        prices[type_id] = {
+            "type_id": type_id,
+            "average_price": clean_optional_float(item.get("average_price")),
+            "adjusted_price": clean_optional_float(item.get("adjusted_price")),
+        }
+    with MARKET_PRICE_CACHE_LOCK:
+        MARKET_PRICE_CACHE[base_url] = (time.monotonic(), {type_id: dict(price) for type_id, price in prices.items()})
+    return prices
+
+
+def clear_market_price_cache() -> None:
+    with MARKET_PRICE_CACHE_LOCK:
+        MARKET_PRICE_CACHE.clear()
 
 
 def market_order_cache_status() -> dict[str, Any]:
@@ -6004,6 +6045,7 @@ def build_flight_reprocessing_payload(
             "net_yield_rate": net_yield_rate,
             "net_yield_percent": net_yield_rate * 100.0,
             "capped": raw_yield_rate > gross_yield_rate,
+            "breakdown": yield_rates["breakdown"],
         },
         "materials": output_materials,
         "jita_valuation": jita_valuation,
@@ -6104,11 +6146,13 @@ def build_reprocessing_station_options(
     clean_sort_mode = normalize_reprocessing_station_sort(sort_mode)
     options = []
     for station in (cache.stations or {}).values():
-        standing_value, standing_source = reprocessing_station_standing(
+        standing_profile = reprocessing_station_standing_profile(
             standings,
             station=station,
             owner_id=station.owner_id,
         )
+        standing_value = standing_profile["standing"]
+        standing_source = standing_profile["standing_source"]
         if standing_value is None or standing_value <= MIN_REPROCESSING_STATION_STANDING:
             continue
         base_yield_percent = station_reprocessing_yield_percent(station)
@@ -6146,6 +6190,7 @@ def build_reprocessing_station_options(
                 "processing_fee_percent": station_tax_rate * 100.0,
                 "standing": standing_value,
                 "standing_source": standing_source,
+                "standing_row": standing_profile,
                 "gross_yield_percent": rates["gross_yield_percent"],
                 "net_yield_percent": rates["net_yield_percent"],
                 "capped": rates["capped"],
@@ -6235,6 +6280,12 @@ def build_reprocessing_jita_valuation(
     jita_system = resolve_jita_market_system(route_cache.systems or {} if route_cache.available else {})
     type_ids = {ore.type_id}
     type_ids.update(int(material["type_id"]) for material in output_materials if int(material.get("net_quantity") or 0) > 0)
+    market_prices: dict[int, dict[str, Any]] = {}
+    market_price_error = ""
+    try:
+        market_prices = fetch_market_prices(config)
+    except CorpMarketError as exc:
+        market_price_error = str(exc)
     orders_by_type, order_count, errors = scan_system_market_orders(
         config=config,
         type_ids=sorted(type_ids),
@@ -6243,7 +6294,11 @@ def build_reprocessing_jita_valuation(
     )
     ore_orders = orders_by_type.get(ore.type_id, ())
     ore_liquidation = liquidation_value_from_orders(ore_orders, quantity=input_quantity)
+    ore_estimate = eve_market_price_estimate(market_prices, type_id=ore.type_id, quantity=input_quantity)
 
+    processed_estimate_partial_value = 0.0
+    processed_estimate_priced_types = 0
+    processed_estimate_required_types = 0
     processed_partial_value = 0.0
     processed_full_material_types = 0
     processed_partial_material_types = 0
@@ -6253,13 +6308,18 @@ def build_reprocessing_jita_valuation(
         quantity = int(material.get("net_quantity") or 0)
         material_orders = orders_by_type.get(material_type_id, ())
         material_liquidation = liquidation_value_from_orders(material_orders, quantity=quantity)
+        material_estimate = eve_market_price_estimate(market_prices, type_id=material_type_id, quantity=quantity)
         if quantity > 0:
             required_material_types += 1
+            processed_estimate_required_types += 1
         if material_liquidation["priced_quantity"] > 0:
             processed_partial_value += float(material_liquidation["value"])
             processed_partial_material_types += 1
             if material_liquidation["complete"]:
                 processed_full_material_types += 1
+        if material_estimate["value"] is not None:
+            processed_estimate_partial_value += float(material_estimate["value"])
+            processed_estimate_priced_types += 1
         material["jita_buy_price"] = float(material_orders[0]["price"]) if material_orders else None
         material["jita_value"] = (
             material_liquidation["value"] if material_liquidation["priced_quantity"] > 0 else None
@@ -6268,14 +6328,32 @@ def build_reprocessing_jita_valuation(
         material["jita_required_quantity"] = material_liquidation["required_quantity"]
         material["jita_complete"] = material_liquidation["complete"]
         material["jita_buy_order"] = material_orders[0] if material_orders else None
+        material["eve_estimate_unit_price"] = material_estimate["unit_price"]
+        material["eve_estimate_price_source"] = material_estimate["price_source"]
+        material["eve_estimate_value"] = material_estimate["value"]
 
     processed_complete = required_material_types == 0 or processed_full_material_types >= required_material_types
+    processed_estimate_complete = processed_estimate_priced_types >= processed_estimate_required_types
     ore_complete = ore_liquidation["complete"]
     processed_value = processed_partial_value if processed_complete else None
     processed_partial_value_payload = processed_partial_value if processed_partial_material_types > 0 else None
+    processed_estimate_value = processed_estimate_partial_value if processed_estimate_complete else None
+    processed_estimate_partial_value_payload = (
+        processed_estimate_partial_value if processed_estimate_priced_types > 0 else None
+    )
     ore_value = ore_liquidation["value"] if ore_complete else None
     ore_partial_value = ore_liquidation["value"] if ore_liquidation["priced_quantity"] > 0 else None
     value_delta = processed_value - ore_value if processed_value is not None and ore_value is not None else None
+    eve_estimate_value_delta = (
+        processed_estimate_value - ore_estimate["value"]
+        if processed_estimate_value is not None and ore_estimate["value"] is not None
+        else None
+    )
+    eve_estimate_partial_value_delta = (
+        processed_estimate_partial_value_payload - ore_estimate["value"]
+        if processed_estimate_partial_value_payload is not None and ore_estimate["value"] is not None
+        else None
+    )
     partial_value_delta = (
         processed_partial_value_payload - ore_partial_value
         if processed_partial_value_payload is not None and ore_partial_value is not None
@@ -6290,10 +6368,30 @@ def build_reprocessing_jita_valuation(
         notes.append("Processed-material value is partial because Jita buy depth did not cover every output material.")
     if not ore_complete:
         notes.append("Unprocessed ore value is partial because Jita buy depth did not cover the full ore stack.")
+    if market_price_error:
+        notes.append(f"ESI market estimate prices were unavailable: {market_price_error}")
+    elif not processed_estimate_complete or ore_estimate["value"] is None:
+        notes.append("ESI market estimate values are partial because some type prices were missing.")
     return {
         "system": jita_system.to_dict(jumps=0),
         "order_type": "buy",
         "order_count": order_count,
+        "eve_estimate": {
+            "source": "ESI /markets/prices average_price with adjusted_price fallback",
+            "note": "This is a cluster market estimate, not a Jita buy-order liquidation value.",
+            "processed_material_value": processed_estimate_value,
+            "processed_partial_material_value": processed_estimate_partial_value_payload,
+            "processed_complete": processed_estimate_complete,
+            "processed_material_types": processed_estimate_priced_types,
+            "processed_required_material_types": processed_estimate_required_types,
+            "ore_value": ore_estimate["value"],
+            "ore_unit_price": ore_estimate["unit_price"],
+            "ore_price_source": ore_estimate["price_source"],
+            "ore_complete": ore_estimate["value"] is not None,
+            "value_delta": eve_estimate_value_delta,
+            "partial_value_delta": eve_estimate_partial_value_delta,
+            "error": market_price_error,
+        },
         "processed_material_value": processed_value,
         "processed_partial_material_value": processed_partial_value_payload,
         "processed_complete": processed_complete,
@@ -6314,6 +6412,28 @@ def build_reprocessing_jita_valuation(
     }
 
 
+def eve_market_price_estimate(
+    market_prices: dict[int, dict[str, Any]],
+    *,
+    type_id: int,
+    quantity: int,
+) -> dict[str, Any]:
+    record = market_prices.get(int(type_id)) or {}
+    unit_price = clean_optional_float(record.get("average_price"))
+    price_source = "average_price" if unit_price is not None else ""
+    if unit_price is None:
+        unit_price = clean_optional_float(record.get("adjusted_price"))
+        price_source = "adjusted_price" if unit_price is not None else ""
+    clean_quantity = max(0, int(quantity or 0))
+    return {
+        "type_id": int(type_id),
+        "quantity": clean_quantity,
+        "unit_price": unit_price,
+        "price_source": price_source,
+        "value": unit_price * clean_quantity if unit_price is not None else None,
+    }
+
+
 def station_reprocessing_yield_percent(station: ReprocessingStation | None) -> float:
     if station and station.reprocessing_efficiency is not None:
         return station.reprocessing_efficiency * 100.0
@@ -6330,13 +6450,18 @@ def build_reprocessing_yield_rates(
 ) -> dict[str, Any]:
     facility_yield_rate = max(0.0, min(1.0, float(facility_yield_percent or 0.0) / 100.0))
     station_tax_rate = max(0.0, min(1.0, float(station_tax_percent or 0.0) / 100.0))
+    reprocessing_multiplier = float(skill_profile.get("reprocessing_multiplier") or 1.0)
+    reprocessing_efficiency_multiplier = float(skill_profile.get("reprocessing_efficiency_multiplier") or 1.0)
+    specialization_multiplier = float(skill_profile.get("specialization_multiplier") or 1.0)
+    implant_multiplier = 1.0 + float(implant_profile.get("bonus_percent") or 0.0) / 100.0
+    structure_multiplier = 1.0 + float(structure_bonus_percent or 0.0) / 100.0
     raw_yield_rate = (
         facility_yield_rate
-        * float(skill_profile.get("reprocessing_multiplier") or 1.0)
-        * float(skill_profile.get("reprocessing_efficiency_multiplier") or 1.0)
-        * float(skill_profile.get("specialization_multiplier") or 1.0)
-        * (1.0 + float(implant_profile.get("bonus_percent") or 0.0) / 100.0)
-        * (1.0 + float(structure_bonus_percent or 0.0) / 100.0)
+        * reprocessing_multiplier
+        * reprocessing_efficiency_multiplier
+        * specialization_multiplier
+        * implant_multiplier
+        * structure_multiplier
     )
     gross_yield_rate = min(max(raw_yield_rate, 0.0), 1.0)
     net_yield_rate = gross_yield_rate * (1.0 - station_tax_rate)
@@ -6349,6 +6474,25 @@ def build_reprocessing_yield_rates(
         "net_yield_rate": net_yield_rate,
         "net_yield_percent": net_yield_rate * 100.0,
         "capped": raw_yield_rate > gross_yield_rate,
+        "breakdown": {
+            "facility_yield_percent": facility_yield_percent,
+            "facility_multiplier": facility_yield_rate,
+            "reprocessing_level": skill_profile.get("reprocessing_level"),
+            "reprocessing_multiplier": reprocessing_multiplier,
+            "reprocessing_efficiency_level": skill_profile.get("reprocessing_efficiency_level"),
+            "reprocessing_efficiency_multiplier": reprocessing_efficiency_multiplier,
+            "specialization_skill_name": skill_profile.get("specialization_skill_name"),
+            "specialization_level": skill_profile.get("specialization_level"),
+            "specialization_multiplier": specialization_multiplier,
+            "implant_bonus_percent": implant_profile.get("bonus_percent"),
+            "implant_multiplier": implant_multiplier,
+            "structure_bonus_percent": structure_bonus_percent,
+            "structure_multiplier": structure_multiplier,
+            "raw_yield_percent": raw_yield_rate * 100.0,
+            "gross_yield_percent": gross_yield_rate * 100.0,
+            "processing_fee_percent": station_tax_rate * 100.0,
+            "net_yield_percent": net_yield_rate * 100.0,
+        },
     }
 
 
@@ -6440,6 +6584,7 @@ def build_reprocessing_location_profile(
     base_station_tax_rate = 0.0
     standing_value = None
     standing_source = ""
+    standing_profile = reprocessing_empty_standing_profile()
 
     if station_id:
         location_kind = "npc-station"
@@ -6461,7 +6606,9 @@ def build_reprocessing_location_profile(
                 owner_name = fetch_universe_names(config, [owner_id]).get(owner_id, "")
             except CorpMarketError:
                 owner_name = ""
-        standing_value, standing_source = reprocessing_station_standing(standings, station=station, owner_id=owner_id)
+        standing_profile = reprocessing_station_standing_profile(standings, station=station, owner_id=owner_id)
+        standing_value = standing_profile["standing"]
+        standing_source = standing_profile["standing_source"]
         if selected_station_id:
             notes.append("Using the selected NPC station instead of the pilot's current ESI location.")
     elif structure_id:
@@ -6479,7 +6626,10 @@ def build_reprocessing_location_profile(
                 notes.append(f"Could not resolve ESI structure details: {exc}")
         else:
             notes.append(f"Reconnect ESI with {FLIGHT_STRUCTURES_SCOPE} to resolve the current Upwell structure name/owner.")
-        notes.append("ESI does not expose this structure's reprocessing rigs, facility tax, or service settings here.")
+        notes.append(
+            "Warning: ESI does not expose this structure's reprocessing rigs, facility tax, service settings, "
+            "or structure bonus here; set those manual overrides to match the in-game window."
+        )
     else:
         notes.append("ESI location did not report a station or structure; using default facility assumptions.")
 
@@ -6510,6 +6660,10 @@ def build_reprocessing_location_profile(
         tax_rate = npc_reprocessing_station_tax_rate(base_station_tax_rate, standing_value)
         tax_percent = tax_rate * 100.0
         tax_source = "esi-standings-and-sde-station-take"
+        if standing_value is None and base_station_tax_rate > 0:
+            notes.append(
+                "Warning: no ESI npc_corp or faction standing matched this station owner; using the station base processing fee."
+            )
     else:
         tax_percent = 0.0
         tax_source = "default-no-tax"
@@ -6523,10 +6677,12 @@ def build_reprocessing_location_profile(
         "station_tax_percent": tax_percent,
         "station_tax_source": tax_source,
         "base_station_tax_percent": base_station_tax_rate * 100.0,
+        "adjusted_station_tax_percent": tax_percent,
         "owner_id": owner_id,
         "owner_name": owner_name,
         "standing": standing_value,
         "standing_source": standing_source,
+        "standing_row": standing_profile,
         "selected_station_id": selected_station_id,
         "station": station.to_dict() if station else None,
         "structure": {
@@ -6541,36 +6697,73 @@ def build_reprocessing_location_profile(
     }
 
 
+def reprocessing_empty_standing_profile() -> dict[str, Any]:
+    return {
+        "standing": None,
+        "standing_source": "",
+        "from_id": None,
+        "from_type": "",
+        "raw_from_type": "",
+    }
+
+
+def reprocessing_station_standing_profile(
+    standings: Iterable[dict[str, Any]],
+    *,
+    station: ReprocessingStation | None,
+    owner_id: int | None,
+) -> dict[str, Any]:
+    owner_id = owner_id or (station.owner_id if station else None)
+    if owner_id:
+        corporation_row = standing_row_for_entity(standings, from_id=owner_id, from_type="npc_corp")
+        if corporation_row is not None:
+            return {
+                **corporation_row,
+                "standing_source": "owner-corporation",
+            }
+    if station and station.owner_faction_id:
+        faction_row = standing_row_for_entity(standings, from_id=station.owner_faction_id, from_type="faction")
+        if faction_row is not None:
+            return {
+                **faction_row,
+                "standing_source": "owner-faction",
+            }
+    return reprocessing_empty_standing_profile()
+
+
 def reprocessing_station_standing(
     standings: Iterable[dict[str, Any]],
     *,
     station: ReprocessingStation | None,
     owner_id: int | None,
 ) -> tuple[float | None, str]:
-    owner_id = owner_id or (station.owner_id if station else None)
-    if owner_id:
-        corporation_standing = standing_for_entity(standings, from_id=owner_id, from_type="npc_corp")
-        if corporation_standing is not None:
-            return corporation_standing, "owner-corporation"
-    if station and station.owner_faction_id:
-        faction_standing = standing_for_entity(standings, from_id=station.owner_faction_id, from_type="faction")
-        if faction_standing is not None:
-            return faction_standing, "owner-faction"
-    return None, ""
+    profile = reprocessing_station_standing_profile(standings, station=station, owner_id=owner_id)
+    return profile["standing"], profile["standing_source"]
 
 
 def standing_for_entity(standings: Iterable[dict[str, Any]], *, from_id: int, from_type: str) -> float | None:
+    row = standing_row_for_entity(standings, from_id=from_id, from_type=from_type)
+    return clean_optional_float(row.get("standing")) if row else None
+
+
+def standing_row_for_entity(standings: Iterable[dict[str, Any]], *, from_id: int, from_type: str) -> dict[str, Any] | None:
     expected_types = standing_from_type_aliases(from_type)
     for item in standings:
         if not isinstance(item, dict):
             continue
         if clean_optional_int(item.get("from_id")) != int(from_id):
             continue
-        if normalize_standing_from_type(item.get("from_type")) not in expected_types:
+        normalized_type = normalize_standing_from_type(item.get("from_type"))
+        if normalized_type not in expected_types:
             continue
         standing = clean_optional_float(item.get("standing"))
         if standing is not None:
-            return standing
+            return {
+                "standing": standing,
+                "from_id": int(from_id),
+                "from_type": normalized_type,
+                "raw_from_type": str(item.get("from_type") or ""),
+            }
     return None
 
 
@@ -11482,20 +11675,20 @@ def _render_flight_attendant_dashboard() -> str:
       const yieldData = data.yield || {};
       const cache = data.cache || {};
       const valuation = data.jita_valuation || {};
+      const eveEstimate = valuation.eve_estimate || {};
       const notes = Array.isArray(data.notes) ? data.notes : [];
       const valuationNotes = Array.isArray(valuation.notes) ? valuation.notes : [];
       reprocessSummary.innerHTML = `
         <div class="profit-stats">
           <div class="profit-stat"><span>Net Yield</span><b>${formatPercent(yieldData.net_yield_percent)}</b></div>
-          <div class="profit-stat"><span>Processed Jita</span><b>${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)}</b></div>
-          <div class="profit-stat"><span>Ore Jita</span><b>${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)}</b></div>
-          <div class="profit-stat"><span>Jita Delta</span><b>${renderReprocessingJitaDelta(valuation)}</b></div>
           <div class="profit-stat"><span>Processing Fee</span><b>${formatPercent(yieldData.station_tax_percent)}</b></div>
+          <div class="profit-stat"><span>Jita Buy Delta</span><b>${renderReprocessingJitaDelta(valuation)}</b></div>
+          <div class="profit-stat"><span>EVE Est. Delta</span><b>${renderReprocessingEveEstimateDelta(eveEstimate)}</b></div>
         </div>
         <div class="meta">${escapeHtml(ore.name || "Ore")} x${formatNumber(input.quantity)}; portion ${formatNumber(input.portion_size)}; leftovers ${formatNumber(input.leftover_units)}.</div>
         <div class="meta">Skills: Reprocessing ${formatNumber(skills.reprocessing_level)}, Reprocessing Efficiency ${formatNumber(skills.reprocessing_efficiency_level)}, ${escapeHtml(skills.specialization_skill_name || "specialization")} ${formatNumber(skills.specialization_level)}.</div>
-        <div class="meta">Implant bonus ${formatNumber(implant.bonus_percent)}% from ${escapeHtml(implant.source || "unknown")}; facility ${formatNumber(facility.facility_yield_percent)}% from ${escapeHtml(facility.source || "unknown")}; processing fee ${formatPercent(yieldData.station_tax_percent)}.</div>
-        <div class="meta">Jita pricing uses public buy orders in ${escapeHtml((valuation.system || {}).name || "Jita")}; ${renderReprocessingJitaCoverage(valuation)}.</div>
+        ${renderReprocessingYieldBreakdown(yieldData)}
+        ${renderReprocessingPriceComparison(valuation)}
       `;
       const owner = facility.owner_name || (facility.owner_id ? `Owner ${facility.owner_id}` : "unknown owner");
       reprocessLocationDetail.innerHTML = `
@@ -11503,10 +11696,51 @@ def _render_flight_attendant_dashboard() -> str:
         (${escapeHtml(facility.location_kind || "unknown")}); owner ${escapeHtml(owner)}; standing
         ${facility.standing == null ? "unknown" : Number(facility.standing).toFixed(2)}
         ${facility.standing_source ? `(${escapeHtml(facility.standing_source)})` : ""}.
-        <br>Processing fee: <strong>${formatPercent(yieldData.station_tax_percent)}</strong> from ${escapeHtml(facility.station_tax_source || "unknown")}.
+        <br>${renderReprocessingFeeBreakdown(facility, yieldData)}
+        <br>${renderReprocessingStandingRow(facility)}
         <br>Static reprocessing cache: ${cache.available ? `build ${escapeHtml(cache.build_number || "unknown")}` : escapeHtml(cache.error || "missing")}.
       `;
       reprocessResults.innerHTML = renderReprocessingMaterials(data.materials || [], notes.concat(valuationNotes));
+    }
+
+    function formatMultiplier(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "x?";
+      return `x${number.toFixed(4)}`;
+    }
+
+    function renderReprocessingYieldBreakdown(yieldData) {
+      const breakdown = yieldData.breakdown || {};
+      const specializationName = breakdown.specialization_skill_name || "ore specialization";
+      return `
+        <div class="meta"><strong>Why this number:</strong>
+          ${formatPercent(breakdown.facility_yield_percent)} facility
+          ${formatMultiplier(breakdown.reprocessing_multiplier)} Reprocessing
+          ${formatMultiplier(breakdown.reprocessing_efficiency_multiplier)} Reprocessing Efficiency
+          ${formatMultiplier(breakdown.specialization_multiplier)} ${escapeHtml(specializationName)}
+          ${formatMultiplier(breakdown.implant_multiplier)} implant
+          ${formatMultiplier(breakdown.structure_multiplier)} structure
+          = ${formatPercent(breakdown.gross_yield_percent)} gross; after
+          ${formatPercent(breakdown.processing_fee_percent)} processing fee = ${formatPercent(breakdown.net_yield_percent)} net.
+        </div>
+      `;
+    }
+
+    function renderReprocessingFeeBreakdown(facility, yieldData) {
+      const base = Number(facility.base_station_tax_percent);
+      const adjusted = Number(facility.adjusted_station_tax_percent ?? yieldData.station_tax_percent);
+      const reduction = Number.isFinite(base) && Number.isFinite(adjusted) ? Math.max(0, base - adjusted) : null;
+      const reductionText = reduction == null ? "" : `; standing reduction ${formatPercent(reduction)}`;
+      return `Processing fee: <strong>${formatPercent(adjusted)}</strong> adjusted from ${formatPercent(base)} base${reductionText}; source ${escapeHtml(facility.station_tax_source || "unknown")}.`;
+    }
+
+    function renderReprocessingStandingRow(facility) {
+      const row = facility.standing_row || {};
+      const owner = facility.owner_name || (facility.owner_id ? `Owner ${facility.owner_id}` : "unknown owner");
+      if (row.standing == null) {
+        return `Standing row used: none found for owner ${escapeHtml(owner)} (${escapeHtml(facility.owner_id || "unknown")}); base processing fee is used.`;
+      }
+      return `Standing row used: ${escapeHtml(row.from_type || row.raw_from_type || "unknown")} ${escapeHtml(row.from_id || "")} (${escapeHtml(owner)}), standing ${Number(row.standing).toFixed(2)}.`;
     }
 
     function renderReprocessingJitaValue(value, partialValue) {
@@ -11519,6 +11753,30 @@ def _render_flight_attendant_dashboard() -> str:
       if (valuation.value_delta != null) return formatSignedIsk(valuation.value_delta);
       if (valuation.partial_value_delta != null) return `${formatSignedIsk(valuation.partial_value_delta)} partial`;
       return "unknown";
+    }
+
+    function renderReprocessingEveEstimateDelta(eveEstimate) {
+      if (eveEstimate.value_delta != null) return formatSignedIsk(eveEstimate.value_delta);
+      if (eveEstimate.partial_value_delta != null) return `${formatSignedIsk(eveEstimate.partial_value_delta)} partial`;
+      return "unknown";
+    }
+
+    function renderReprocessingPriceComparison(valuation) {
+      const eveEstimate = valuation.eve_estimate || {};
+      return `
+        <div class="meta"><strong>EVE estimated price:</strong>
+          processed ${renderReprocessingJitaValue(eveEstimate.processed_material_value, eveEstimate.processed_partial_material_value)};
+          ore ${renderReprocessingJitaValue(eveEstimate.ore_value, null)};
+          delta ${renderReprocessingEveEstimateDelta(eveEstimate)}.
+          <small>${escapeHtml(eveEstimate.note || "Uses ESI market estimate prices, not live buy orders.")}</small>
+        </div>
+        <div class="meta"><strong>Jita buy-order value:</strong>
+          processed ${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)};
+          ore ${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)};
+          delta ${renderReprocessingJitaDelta(valuation)}.
+          <small>Public buy orders in ${escapeHtml((valuation.system || {}).name || "Jita")}; ${renderReprocessingJitaCoverage(valuation)}.</small>
+        </div>
+      `;
     }
 
     function renderReprocessingJitaCoverage(valuation) {
@@ -11539,7 +11797,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     function renderReprocessingMaterials(materials, notes) {
       const noteBlock = notes.length
-        ? `<div class="meta">${notes.slice(0, 5).map((note) => escapeHtml(note)).join("<br>")}</div>`
+        ? `<div class="meta">${notes.slice(0, 8).map((note) => escapeHtml(note)).join("<br>")}</div>`
         : "";
       if (!materials.length) {
         return `${noteBlock}<div class="decision-empty">No output materials were calculated.</div>`;
@@ -11555,6 +11813,7 @@ def _render_flight_attendant_dashboard() -> str:
             <div class="decision-metric"><span>Gross</span><b>${formatNumber(material.gross_quantity)}</b></div>
             <div class="decision-metric"><span>Processing Fee</span><b>${formatNumber(material.station_tax_quantity)}</b></div>
             <div class="decision-metric"><span>Net</span><b>${formatNumber(material.net_quantity)}</b></div>
+            <div class="decision-metric"><span>EVE Est. Value</span><b>${renderReprocessingJitaValue(material.eve_estimate_value, null)}</b><small>${renderReprocessingEveMaterialEstimate(material)}</small></div>
             <div class="decision-metric"><span>Jita Buy Value</span><b>${renderReprocessingJitaValue(material.jita_value, null)}</b><small>${renderReprocessingMaterialJitaDepth(material)}</small></div>
           </div>
         </div>
@@ -11567,6 +11826,11 @@ def _render_flight_attendant_dashboard() -> str:
       const price = `${formatIsk(material.jita_buy_price)} top buy`;
       if (material.jita_complete) return price;
       return `${price}; ${formatNumber(material.jita_priced_quantity)} of ${formatNumber(material.jita_required_quantity)} priced`;
+    }
+
+    function renderReprocessingEveMaterialEstimate(material) {
+      if (material.eve_estimate_unit_price == null) return "No ESI market estimate found.";
+      return `${formatIsk(material.eve_estimate_unit_price)} ${escapeHtml(material.eve_estimate_price_source || "estimate")} unit price`;
     }
 
     function resetFlightIndustry(message) {

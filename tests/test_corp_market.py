@@ -1321,6 +1321,14 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
         lambda config, station_id: {"name": f"Selected Station {station_id}", "owner": 1000002},
     )
     monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_market_prices",
+        lambda config: {
+            34: {"type_id": 34, "average_price": 5.0, "adjusted_price": 4.0},
+            1230: {"type_id": 1230, "average_price": 11.0, "adjusted_price": 10.0},
+        },
+    )
 
     def fake_fetch_market_buy_orders(config, *, region_id, type_id):
         market_calls.append((region_id, type_id))
@@ -1364,14 +1372,29 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     assert payload["facility"]["location_name"] == "Selected Station 60000007"
     assert payload["facility"]["source"] == "selected-sde-npc-station"
     assert payload["facility"]["facility_yield_percent"] == 50.0
+    assert payload["facility"]["base_station_tax_percent"] == pytest.approx(5.0)
     assert payload["facility"]["station_tax_percent"] == pytest.approx(2.0)
+    assert payload["facility"]["adjusted_station_tax_percent"] == pytest.approx(2.0)
     assert payload["facility"]["standing_source"] == "owner-corporation"
+    assert payload["facility"]["standing_row"]["from_id"] == 1000002
+    assert payload["facility"]["standing_row"]["from_type"] == "npc_corp"
+    assert payload["facility"]["standing_row"]["standing"] == pytest.approx(4.0)
     assert payload["yield"]["gross_yield_percent"] == pytest.approx(68.45904)
     assert payload["yield"]["net_yield_percent"] == pytest.approx(67.0898592)
+    assert payload["yield"]["breakdown"]["facility_yield_percent"] == pytest.approx(50.0)
+    assert payload["yield"]["breakdown"]["reprocessing_multiplier"] == pytest.approx(1.15)
+    assert payload["yield"]["breakdown"]["reprocessing_efficiency_multiplier"] == pytest.approx(1.08)
+    assert payload["yield"]["breakdown"]["specialization_multiplier"] == pytest.approx(1.06)
+    assert payload["yield"]["breakdown"]["implant_multiplier"] == pytest.approx(1.04)
+    assert payload["yield"]["breakdown"]["structure_multiplier"] == pytest.approx(1.0)
+    assert payload["yield"]["breakdown"]["processing_fee_percent"] == pytest.approx(2.0)
     assert payload["materials"][0]["base_quantity"] == 4000
     assert payload["materials"][0]["gross_quantity"] == 2738
     assert payload["materials"][0]["station_tax_quantity"] == 55
     assert payload["materials"][0]["net_quantity"] == 2683
+    assert payload["materials"][0]["eve_estimate_unit_price"] == pytest.approx(5.0)
+    assert payload["materials"][0]["eve_estimate_price_source"] == "average_price"
+    assert payload["materials"][0]["eve_estimate_value"] == pytest.approx(13415.0)
     assert market_calls == [(200, 34), (200, 1230)]
     assert payload["materials"][0]["jita_buy_price"] == 6.0
     assert payload["materials"][0]["jita_value"] == pytest.approx(16098.0)
@@ -1385,6 +1408,118 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     assert valuation["value_delta"] == pytest.approx(4098.0)
     assert valuation["processed_complete"] is True
     assert valuation["ore_complete"] is True
+    assert valuation["eve_estimate"]["source"] == "ESI /markets/prices average_price with adjusted_price fallback"
+    assert valuation["eve_estimate"]["processed_material_value"] == pytest.approx(13415.0)
+    assert valuation["eve_estimate"]["ore_value"] == pytest.approx(11000.0)
+    assert valuation["eve_estimate"]["value_delta"] == pytest.approx(2415.0)
+    assert valuation["eve_estimate"]["processed_complete"] is True
+    assert valuation["eve_estimate"]["ore_price_source"] == "average_price"
+
+
+def test_reprocessing_location_profile_warns_when_standing_missing(monkeypatch, tmp_path):
+    cache = ReprocessingCache(
+        path=tmp_path / "eve_reprocessing.json",
+        available=True,
+        build_number=3374020,
+        ores={},
+        stations={
+            60000004: ReprocessingStation(
+                station_id=60000004,
+                owner_id=1000002,
+                owner_name="CBD Corporation",
+                owner_faction_id=500001,
+                solar_system_id=30002780,
+                reprocessing_efficiency=0.5,
+                reprocessing_tax_rate=0.05,
+            )
+        },
+    )
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Industry Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1", "esi-skills.read_skills.v1", "esi-characters.read_standings.v1"),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_universe_station",
+        lambda config, station_id: {"name": "CBD Station", "owner": 1000002},
+    )
+
+    profile = corp_market.build_reprocessing_location_profile(
+        corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://market.test/flight/callback",
+        ),
+        session,
+        cache=cache,
+        location={"station_id": 60000004},
+        standings=[],
+        selected_station_id=None,
+        facility_yield_percent=None,
+        station_tax_percent=None,
+    )
+
+    assert profile["location_kind"] == "npc-station"
+    assert profile["base_station_tax_percent"] == pytest.approx(5.0)
+    assert profile["adjusted_station_tax_percent"] == pytest.approx(5.0)
+    assert profile["standing"] is None
+    assert profile["standing_row"]["standing"] is None
+    assert any("no ESI npc_corp or faction standing matched" in note for note in profile["notes"])
+
+
+def test_reprocessing_location_profile_warns_for_upwell_manual_overrides(tmp_path):
+    cache = ReprocessingCache(
+        path=tmp_path / "eve_reprocessing.json",
+        available=True,
+        build_number=3374020,
+        ores={},
+        stations={},
+    )
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Industry Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1", "esi-skills.read_skills.v1", "esi-characters.read_standings.v1"),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+    )
+
+    profile = corp_market.build_reprocessing_location_profile(
+        corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://market.test/flight/callback",
+        ),
+        session,
+        cache=cache,
+        location={"structure_id": 1020304050607},
+        standings=[],
+        selected_station_id=None,
+        facility_yield_percent=None,
+        station_tax_percent=None,
+    )
+
+    warning = " ".join(profile["notes"])
+    assert profile["location_kind"] == "structure"
+    assert profile["location_name"] == "Structure 1020304050607"
+    assert profile["station_tax_percent"] == pytest.approx(0.0)
+    assert "reprocessing rigs" in warning
+    assert "facility tax" in warning
+    assert "service settings" in warning
+    assert "structure bonus" in warning
+    assert "manual overrides" in warning
 
 
 def test_build_flight_reprocessing_locations_payload_filters_and_ranks_standing_stations(monkeypatch, tmp_path):
@@ -1587,6 +1722,9 @@ def test_build_flight_reprocessing_locations_payload_filters_and_ranks_standing_
     assert {station["station_id"] for station in payload["stations"]}.isdisjoint({60000004, 60000010, 60000013})
     assert payload["stations"][0]["solar_system_name"] == "Inaro"
     assert payload["stations"][0]["processing_fee_percent"] == pytest.approx(1.25)
+    assert payload["stations"][0]["standing_row"]["from_id"] == 1000003
+    assert payload["stations"][0]["standing_row"]["from_type"] == "npc_corp"
+    assert payload["stations"][0]["standing_row"]["standing"] == pytest.approx(5.0)
     assert "standing 5.00" in payload["stations"][0]["label"]
     assert "processing fee 1.25%" in payload["stations"][0]["label"]
 
@@ -2575,6 +2713,38 @@ def test_fetch_market_buy_orders_uses_public_market_endpoint(monkeypatch):
     assert "Authorization" not in requests[0].headers
     assert "Authorization" not in requests[1].headers
     corp_market.clear_market_order_cache()
+
+
+def test_fetch_market_prices_uses_public_estimate_endpoint_and_cache(monkeypatch):
+    corp_market.clear_market_price_cache()
+    calls = []
+
+    def fake_get_json(url, *, timeout_seconds, headers):
+        calls.append((url, timeout_seconds, dict(headers)))
+        return [
+            {"type_id": 34, "average_price": 5.5, "adjusted_price": 4.4},
+            {"type_id": 1230, "adjusted_price": 10.0},
+            {"type_id": None, "average_price": 99.0},
+        ]
+
+    monkeypatch.setattr(corp_market, "get_json", fake_get_json)
+
+    config = corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest")
+    first = corp_market.fetch_market_prices(config)
+    first[34]["average_price"] = 999.0
+    second = corp_market.fetch_market_prices(config)
+
+    assert len(calls) == 1
+    assert calls[0][0] == "https://esi.test/latest/markets/prices/?datasource=tranquility"
+    assert calls[0][1] == 45.0
+    assert calls[0][2]["User-Agent"] == "EveVoicePilot-FlightAttendant/0.1"
+    assert "Authorization" not in calls[0][2]
+    assert second[34]["average_price"] == pytest.approx(5.5)
+    assert second[34]["adjusted_price"] == pytest.approx(4.4)
+    assert second[1230]["average_price"] is None
+    assert second[1230]["adjusted_price"] == pytest.approx(10.0)
+    assert None not in second
+    corp_market.clear_market_price_cache()
 
 
 def test_fetch_market_orders_reuses_local_cache(monkeypatch):
