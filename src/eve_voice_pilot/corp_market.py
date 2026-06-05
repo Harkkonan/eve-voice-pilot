@@ -49,11 +49,18 @@ MAX_FLIGHT_PROFIT_MATERIAL_TYPES = 120
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
+FLIGHT_SKILLS_SCOPE = "esi-skills.read_skills.v1"
+FLIGHT_STANDINGS_SCOPE = "esi-characters.read_standings.v1"
 DEFAULT_FLIGHT_ESI_SCOPES = (
     FLIGHT_LOCATION_SCOPE,
     FLIGHT_ASSETS_SCOPE,
     FLIGHT_BLUEPRINTS_SCOPE,
+    FLIGHT_SKILLS_SCOPE,
+    FLIGHT_STANDINGS_SCOPE,
 )
+ACCOUNTING_SKILL_TYPE_ID = 16622
+BASE_SALES_TAX_RATE = 0.075
+ACCOUNTING_SALES_TAX_REDUCTION_PER_LEVEL = 0.11
 FLIGHT_SESSION_COOKIE_NAME = "corp_market_flight_session"
 DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
@@ -1113,6 +1120,19 @@ def fetch_flight_assets(config: EveSsoConfig, session: FlightEsiSession) -> list
     )
 
 
+def fetch_flight_skills(config: EveSsoConfig, session: FlightEsiSession) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_SKILLS_SCOPE,))
+    base_url = config.esi_base_url.rstrip("/")
+    payload = get_json(
+        f"{base_url}/characters/{session.character_id}/skills/?datasource=tranquility",
+        timeout_seconds=30.0,
+        headers=flight_esi_headers(session.access_token),
+    )
+    if not isinstance(payload, dict) or not isinstance(payload.get("skills"), list):
+        raise CorpMarketError("ESI skills endpoint returned unexpected data.")
+    return payload
+
+
 def fetch_market_orders(
     config: EveSsoConfig,
     *,
@@ -1598,7 +1618,10 @@ def build_flight_profitability_payload(
     session: FlightEsiSession,
     max_jumps: int = DEFAULT_FLIGHT_MAX_JUMPS,
 ) -> dict[str, Any]:
-    require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_ASSETS_SCOPE, FLIGHT_BLUEPRINTS_SCOPE))
+    require_flight_scopes(
+        session,
+        (FLIGHT_LOCATION_SCOPE, FLIGHT_ASSETS_SCOPE, FLIGHT_BLUEPRINTS_SCOPE, FLIGHT_SKILLS_SCOPE),
+    )
     location = fetch_flight_location(config, session)
     current_solar_system_id = int(location.get("solar_system_id") or 0)
     route_cache = load_route_graph_cache()
@@ -1615,10 +1638,13 @@ def build_flight_profitability_payload(
         raise CorpMarketError(recipe_cache.error or "Recipe cache is not available.")
     blueprints = fetch_flight_blueprints(config, session)
     assets = fetch_flight_assets(config, session)
+    skills = fetch_flight_skills(config, session)
+    sales_tax = build_sales_tax_profile(skills)
     profitability = rank_profitability_for_owned_blueprints(
         config=config,
         blueprints=blueprints,
         assets=assets,
+        sales_tax=sales_tax,
         recipe_cache=recipe_cache,
         route_cache=route_cache,
         current_solar_system_id=current_solar_system_id,
@@ -1730,6 +1756,7 @@ def rank_profitability_for_owned_blueprints(
     config: EveSsoConfig,
     blueprints: Iterable[dict[str, Any]],
     assets: Iterable[dict[str, Any]],
+    sales_tax: dict[str, Any],
     recipe_cache: IndustryRecipeCache,
     route_cache: RouteGraphCache,
     current_solar_system_id: int,
@@ -1838,12 +1865,20 @@ def rank_profitability_for_owned_blueprints(
         )
         replacement_profit = revenue - replacement_cost if revenue is not None and all_material_prices_known else None
         cash_profit = revenue - missing_replacement_cost if revenue is not None and missing_prices_known else None
+        sales_tax_rate = clean_optional_float(sales_tax.get("rate")) or 0.0
+        sales_tax_amount = revenue * sales_tax_rate if revenue is not None else None
+        broker_fee_amount = 0.0 if revenue is not None else None
+        net_revenue = revenue - sales_tax_amount - broker_fee_amount if revenue is not None else None
+        taxed_replacement_profit = (
+            net_revenue - replacement_cost if net_revenue is not None and all_material_prices_known else None
+        )
+        taxed_cash_profit = net_revenue - missing_replacement_cost if net_revenue is not None and missing_prices_known else None
         decision = profitability_decision(
             has_buyer=buyer is not None,
             can_build=can_build,
             missing_material_types=missing_material_types,
-            replacement_profit=replacement_profit,
-            cash_profit=cash_profit,
+            replacement_profit=taxed_replacement_profit,
+            cash_profit=taxed_cash_profit,
             all_material_prices_known=all_material_prices_known,
             missing_prices_known=missing_prices_known,
         )
@@ -1853,13 +1888,21 @@ def rank_profitability_for_owned_blueprints(
                 "decision": decision,
                 "best_buyer": buyer,
                 "product_revenue": revenue,
+                "sales_tax_rate": sales_tax_rate,
+                "sales_tax": sales_tax_amount,
+                "broker_fee": broker_fee_amount,
+                "net_revenue": net_revenue,
                 "replacement_cost": replacement_cost if all_material_prices_known else None,
                 "missing_replacement_cost": missing_replacement_cost if missing_prices_known else None,
                 "replacement_profit": replacement_profit,
                 "cash_profit": cash_profit,
                 "replacement_margin_percent": profit_margin_percent(replacement_profit, revenue),
                 "cash_margin_percent": profit_margin_percent(cash_profit, revenue),
-                "profitable": replacement_profit is not None and replacement_profit > 0,
+                "taxed_replacement_profit": taxed_replacement_profit,
+                "taxed_cash_profit": taxed_cash_profit,
+                "taxed_replacement_margin_percent": profit_margin_percent(taxed_replacement_profit, revenue),
+                "taxed_cash_margin_percent": profit_margin_percent(taxed_cash_profit, revenue),
+                "profitable": taxed_replacement_profit is not None and taxed_replacement_profit > 0,
                 "can_build_one_run": can_build,
                 "required_material_types": required_material_types,
                 "priced_material_types": priced_material_types,
@@ -1880,7 +1923,7 @@ def rank_profitability_for_owned_blueprints(
         key=lambda item: (
             int((item.get("decision") or {}).get("rank") or 99),
             0 if item["best_buyer"] else 1,
-            0 if item["replacement_profit"] is not None else 1,
+            0 if item["taxed_replacement_profit"] is not None else 1,
             -profit_sort_value(item),
             0 if item["can_build_one_run"] else 1,
             item["product_name"],
@@ -1911,11 +1954,15 @@ def rank_profitability_for_owned_blueprints(
         "buildable_now_products": sum(1 for item in products if item["can_build_one_run"]),
         "replacement_priced_products": sum(1 for item in products if item["replacement_profit"] is not None),
         "cash_priced_products": sum(1 for item in products if item["cash_profit"] is not None),
+        "taxed_replacement_priced_products": sum(1 for item in products if item["taxed_replacement_profit"] is not None),
+        "taxed_cash_priced_products": sum(1 for item in products if item["taxed_cash_profit"] is not None),
         "decision_counts": decision_counts,
         "products": products[:20],
         "errors": errors[:12],
+        "sales_tax": sales_tax,
         "pricing_note": (
-            "Replacement profit charges every material at nearby sell prices; cash profit charges only missing materials. "
+            "Visible profit subtracts sales tax from the buyer revenue using your Accounting skill. "
+            "Details show the before-tax true profit and wallet gain. "
             "ESI market orders do not expose buyer character names."
         ),
     }
@@ -1967,6 +2014,12 @@ def market_order_sort_key(order: dict[str, Any], *, order_type: str) -> tuple[fl
 
 
 def profit_sort_value(item: dict[str, Any]) -> float:
+    taxed_replacement_profit = item.get("taxed_replacement_profit")
+    if taxed_replacement_profit is not None:
+        return float(taxed_replacement_profit)
+    taxed_cash_profit = item.get("taxed_cash_profit")
+    if taxed_cash_profit is not None:
+        return float(taxed_cash_profit)
     replacement_profit = item.get("replacement_profit")
     if replacement_profit is not None:
         return float(replacement_profit)
@@ -2018,7 +2071,7 @@ def profitability_decision(
             "label": "Build Now",
             "rank": 10,
             "tone": "build",
-            "reason": "Nearby buyer and current materials support a profitable one-run build.",
+            "reason": "Nearby buyer and current materials support an after-tax profitable one-run build.",
         }
     if replacement_profit is not None and replacement_profit > 0 and missing_material_types > 0 and missing_prices_known:
         return {
@@ -2026,7 +2079,7 @@ def profitability_decision(
             "label": "Buy Missing",
             "rank": 20,
             "tone": "source",
-            "reason": "Still profitable after pricing the missing materials nearby.",
+            "reason": "Still after-tax profitable after pricing the missing materials nearby.",
         }
     if cash_profit is not None and cash_profit > 0 and can_build:
         return {
@@ -2034,7 +2087,7 @@ def profitability_decision(
             "label": "Use Stock",
             "rank": 30,
             "tone": "stock",
-            "reason": "Cash-positive with materials already on hand, but replacement profit is not positive.",
+            "reason": "Wallet-positive after tax with materials already on hand, but true profit is not positive.",
         }
     if has_buyer and not all_material_prices_known:
         return {
@@ -2194,6 +2247,47 @@ def clean_optional_float(value: Any) -> float | None:
         return None
 
 
+def clamp_skill_level(value: Any) -> int:
+    try:
+        level = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(5, level))
+
+
+def skill_level_from_esi(skills_payload: dict[str, Any], skill_type_id: int) -> int:
+    skills = skills_payload.get("skills")
+    if not isinstance(skills, list):
+        return 0
+    for skill in skills:
+        if not isinstance(skill, dict):
+            continue
+        if (clean_optional_int(skill.get("skill_id")) or 0) != int(skill_type_id):
+            continue
+        return clamp_skill_level(skill.get("active_skill_level", skill.get("trained_skill_level")))
+    return 0
+
+
+def sales_tax_rate_for_accounting_level(accounting_level: int) -> float:
+    clean_level = clamp_skill_level(accounting_level)
+    return BASE_SALES_TAX_RATE * (1.0 - ACCOUNTING_SALES_TAX_REDUCTION_PER_LEVEL * clean_level)
+
+
+def build_sales_tax_profile(skills_payload: dict[str, Any]) -> dict[str, Any]:
+    accounting_level = skill_level_from_esi(skills_payload, ACCOUNTING_SKILL_TYPE_ID)
+    rate = sales_tax_rate_for_accounting_level(accounting_level)
+    return {
+        "mode": "esi-accounting",
+        "accounting_skill_type_id": ACCOUNTING_SKILL_TYPE_ID,
+        "accounting_level": accounting_level,
+        "rate": rate,
+        "rate_percent": rate * 100.0,
+        "broker_fee_rate": 0.0,
+        "broker_fee_note": "Immediate sales to existing buy orders do not create a broker fee.",
+        "source": FLIGHT_SKILLS_SCOPE,
+    }
+
+
 def build_flight_status_payload(
     *,
     config: EveSsoConfig,
@@ -2202,11 +2296,15 @@ def build_flight_status_payload(
     max_jumps: int = DEFAULT_FLIGHT_MAX_JUMPS,
 ) -> dict[str, Any]:
     clean_max_jumps = clamp_flight_max_jumps(max_jumps)
+    required_scopes = list(config.scopes or DEFAULT_FLIGHT_ESI_SCOPES)
+    granted_scopes = set(session.scopes) if session else set()
+    missing_required_scopes = [scope for scope in required_scopes if scope not in granted_scopes]
     payload: dict[str, Any] = {
         "ok": True,
         "sso_configured": config.enabled,
         "connected": bool(session),
-        "required_scopes": list(config.scopes or DEFAULT_FLIGHT_ESI_SCOPES),
+        "required_scopes": required_scopes,
+        "missing_required_scopes": missing_required_scopes if session else [],
         "login_url": "/flight/login",
         "logout_url": "/flight/logout",
         "callback_url": callback_url,
@@ -3305,10 +3403,39 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .decision-head { display: flex; align-items: start; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
     .decision-head strong { overflow-wrap: anywhere; font-size: 16px; line-height: 1.25; }
+    .decision-lede {
+      border: 1px solid rgba(224, 168, 74, .34);
+      background: rgba(224, 168, 74, .08);
+      border-radius: 6px;
+      padding: 8px;
+      margin: 8px 0;
+      color: var(--text);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
     .decision-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 9px 0; }
     .decision-metric { border: 1px solid rgba(63, 85, 80, .58); border-radius: 6px; padding: 8px; background: rgba(17, 24, 25, .62); min-height: 56px; }
     .decision-metric span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
     .decision-metric b { display: block; color: var(--text); font-size: 13px; overflow-wrap: anywhere; margin-top: 2px; }
+    .decision-metric small { display: block; color: var(--muted); margin-top: 3px; line-height: 1.25; }
+    .profit-details {
+      border-top: 1px solid rgba(63, 85, 80, .52);
+      margin-top: 10px;
+      padding-top: 9px;
+      color: var(--muted);
+    }
+    .profit-details summary { cursor: pointer; color: var(--cyan); font-weight: 800; }
+    .profit-detail-grid { display: grid; gap: 6px; margin-top: 8px; }
+    .profit-detail-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      border: 1px solid rgba(63, 85, 80, .42);
+      border-radius: 6px;
+      padding: 7px 8px;
+      background: rgba(8, 13, 15, .34);
+    }
+    .profit-detail-row b { color: var(--text); text-align: right; overflow-wrap: anywhere; }
     .decision-empty { border: 1px dashed rgba(63, 85, 80, .85); border-radius: 7px; padding: 24px; color: var(--muted); text-align: center; background: rgba(8, 13, 15, .34); }
     .decision-counts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .decision-build { background: rgba(100, 196, 125, .16); color: var(--green); }
@@ -3796,6 +3923,11 @@ def _render_flight_attendant_dashboard() -> str:
       return `${Number(value || 0).toFixed(1)}%`;
     }
 
+    function formatRatePercent(value) {
+      if (value == null) return "unknown";
+      return `${(Number(value || 0) * 100).toFixed(2)}%`;
+    }
+
     function readMaxJumps() {
       const value = Number(window.localStorage.getItem(jumpsKey) || flightMaxJumps.value || 5);
       if (!Number.isFinite(value)) return 5;
@@ -3829,6 +3961,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     function renderFlightStatus(data) {
       const requiredScopes = data.required_scopes || [];
+      const missingRequiredScopes = data.missing_required_scopes || [];
       const scopeLabel = requiredScopes.join(", ") || "esi-location.read_location.v1";
       flightLoginLink.href = data.login_url || "/flight/login";
       flightLogoutLink.href = data.logout_url || "/flight/logout";
@@ -3874,7 +4007,11 @@ def _render_flight_attendant_dashboard() -> str:
       }
       flightSystemName.textContent = location.solar_system_name || "Unknown System";
       flightLocationLine.textContent = `Live ESI location ${location.updated_at || ""}`;
-      flightMessage.textContent = `${character.character_name || "Pilot"} connected with ${requiredScopes.length} read-only ESI scopes.`;
+      if (missingRequiredScopes.length) {
+        flightMessage.textContent = `${character.character_name || "Pilot"} connected, but reconnect ESI for new scopes: ${missingRequiredScopes.join(", ")}.`;
+      } else {
+        flightMessage.textContent = `${character.character_name || "Pilot"} connected with ${requiredScopes.length} read-only ESI scopes.`;
+      }
       renderFlightRoute(data.nearby_systems || {});
       resetFlightBuyers(`Ready to scan buy orders within ${readMaxJumps()} jumps.`);
       resetFlightProfitability(`Ready to rank profitability within ${readMaxJumps()} jumps.`);
@@ -4022,6 +4159,7 @@ def _render_flight_attendant_dashboard() -> str:
       const materialLimit = profitability.material_truncated ? ` Limited to ${formatNumber(profitability.scanned_material_types)} of ${formatNumber(profitability.total_material_types)} material types.` : "";
       const regionLimit = profitability.region_truncated ? ` Limited to ${formatNumber(profitability.regions_scanned)} of ${formatNumber(profitability.total_regions_in_range)} regions.` : "";
       const decisionCounts = profitability.decision_counts || {};
+      const salesTax = profitability.sales_tax || {};
       flightProfitProducts = Array.isArray(profitability.products) ? profitability.products : [];
       flightProfitSummary.innerHTML = `
         <div class="profit-stats">
@@ -4035,6 +4173,7 @@ def _render_flight_attendant_dashboard() -> str:
           ${escapeHtml(productLimit + materialLimit + regionLimit)}
         </div>
         ${renderDecisionCounts(decisionCounts)}
+        <div class="meta">Visible profits are after sales tax and immediate-sale broker fees. Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax; broker fee is 0% when selling to an existing buy order.</div>
         <div class="meta">${escapeHtml(profitability.pricing_note || "Profit ranking uses nearby public market orders.")}</div>
       `;
       updateProfitFilterButtons();
@@ -4084,6 +4223,8 @@ def _render_flight_attendant_dashboard() -> str:
           : `missing ${formatNumber(product.missing_material_types)} material types`;
         const missing = renderMissingMaterials(product.missing_materials || []);
         const decisionClass = decisionClassName(decision.code);
+        const afterTaxProfit = formatSignedIsk(product.taxed_replacement_profit);
+        const afterTaxWalletGain = formatSignedIsk(product.taxed_cash_profit);
         return `
           <div class="decision-row" data-decision="${escapeHtml(decision.code || "unknown")}">
             <div class="decision-head">
@@ -4091,16 +4232,42 @@ def _render_flight_attendant_dashboard() -> str:
               <span class="pill ${decisionClass}">${escapeHtml(decision.label || "Review")}</span>
             </div>
             <div class="meta">${escapeHtml(decision.reason || "Review current buyer and material pricing.")}</div>
+            <div class="decision-lede">Expected after tax and fees: ${afterTaxProfit} per run</div>
             <div class="decision-metrics">
-              <div class="decision-metric"><span>Replacement</span><b>${formatSignedIsk(product.replacement_profit)} (${formatPercent(product.replacement_margin_percent)})</b></div>
-              <div class="decision-metric"><span>Cash</span><b>${formatSignedIsk(product.cash_profit)} (${formatPercent(product.cash_margin_percent)})</b></div>
+              <div class="decision-metric"><span>True Profit</span><b>${afterTaxProfit} (${formatPercent(product.taxed_replacement_margin_percent)})</b><small>After sales tax; counts all materials as valuable.</small></div>
+              <div class="decision-metric"><span>Wallet Gain</span><b>${afterTaxWalletGain} (${formatPercent(product.taxed_cash_margin_percent)})</b><small>After sales tax; only subtracts missing buys.</small></div>
               <div class="decision-metric"><span>Buyer</span><b>${buyer}</b></div>
               <div class="decision-metric"><span>Materials</span><b>${build}</b></div>
             </div>
             <div class="meta">${missing}</div>
+            ${renderProfitMathDetails(product)}
           </div>
         `;
       }).join("")}</div>`;
+    }
+
+    function renderProfitMathDetails(product) {
+      const detailRows = [
+        ["Buyer revenue", formatIsk(product.product_revenue)],
+        [`Sales tax (${formatRatePercent(product.sales_tax_rate)})`, `-${formatIsk(product.sales_tax)}`],
+        ["Immediate-sale broker fee", formatIsk(product.broker_fee)],
+        ["Net revenue after tax and fees", formatIsk(product.net_revenue)],
+        ["All materials value", `-${formatIsk(product.replacement_cost)}`],
+        ["Missing materials to buy", `-${formatIsk(product.missing_replacement_cost)}`],
+        ["Before-tax true profit", formatSignedIsk(product.replacement_profit)],
+        ["Before-tax wallet gain", formatSignedIsk(product.cash_profit)],
+      ];
+      return `
+        <details class="profit-details">
+          <summary>Math details</summary>
+          <div class="profit-detail-grid">
+            ${detailRows.map(([label, value]) => `
+              <div class="profit-detail-row"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>
+            `).join("")}
+          </div>
+          <div class="meta">Before-tax values are shown here only. The card ranking uses after-tax true profit.</div>
+        </details>
+      `;
     }
 
     function renderMissingMaterials(materials) {

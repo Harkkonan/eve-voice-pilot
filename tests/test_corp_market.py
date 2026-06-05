@@ -27,6 +27,7 @@ from eve_voice_pilot.corp_market import (
     build_mail_draft,
     clean_multiline,
     edit_discord_webhook_message,
+    fetch_flight_skills,
     fetch_flight_location,
     format_isk,
     parse_isk_amount,
@@ -236,6 +237,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "progress-spinner" in page
     assert "flight-progress" in page
     assert "startFlightProfitProgress" in page
+    assert "True Profit" in page
+    assert "Wallet Gain" in page
+    assert "Math details" in page
+    assert "Expected after tax and fees" in page
 
 
 def test_flight_status_reports_missing_sso_configuration():
@@ -249,6 +254,8 @@ def test_flight_status_reports_missing_sso_configuration():
     assert payload["sso_configured"] is False
     assert payload["connected"] is False
     assert payload["callback_url"] == "http://127.0.0.1:8770/flight/callback"
+    assert "esi-skills.read_skills.v1" in payload["required_scopes"]
+    assert "esi-characters.read_standings.v1" in payload["required_scopes"]
 
 
 def test_flight_esi_session_store_keeps_access_token_in_memory():
@@ -307,6 +314,61 @@ def test_fetch_flight_location_uses_read_only_esi_scope(monkeypatch):
     assert "X-Compatibility-Date" in calls[0][1]
 
 
+def test_fetch_flight_skills_uses_read_skills_scope(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Industry Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-skills.read_skills.v1",),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+    calls = []
+
+    def fake_get_json(url, *, timeout_seconds=30.0, headers=None):
+        calls.append((url, headers or {}))
+        return {
+            "skills": [
+                {
+                    "skill_id": corp_market.ACCOUNTING_SKILL_TYPE_ID,
+                    "active_skill_level": 5,
+                    "trained_skill_level": 5,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(corp_market, "get_json", fake_get_json)
+
+    skills = fetch_flight_skills(corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"), session)
+
+    assert skills["skills"][0]["skill_id"] == corp_market.ACCOUNTING_SKILL_TYPE_ID
+    assert calls[0][0] == "https://esi.test/latest/characters/123456789/skills/?datasource=tranquility"
+    assert calls[0][1]["Authorization"] == "Bearer access-token"
+    assert "X-Compatibility-Date" in calls[0][1]
+
+
+def test_sales_tax_profile_uses_accounting_skill_level():
+    profile = corp_market.build_sales_tax_profile(
+        {
+            "skills": [
+                {
+                    "skill_id": corp_market.ACCOUNTING_SKILL_TYPE_ID,
+                    "active_skill_level": 5,
+                    "trained_skill_level": 5,
+                }
+            ]
+        }
+    )
+
+    assert profile["accounting_level"] == 5
+    assert profile["rate"] == pytest.approx(0.03375)
+    assert profile["broker_fee_rate"] == 0.0
+
+
 def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch, tmp_path):
     session = FlightEsiSession(
         character_id=123456789,
@@ -319,6 +381,8 @@ def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypa
             "esi-location.read_location.v1",
             "esi-assets.read_assets.v1",
             "esi-characters.read_blueprints.v1",
+            "esi-skills.read_skills.v1",
+            "esi-characters.read_standings.v1",
         ),
         access_token="access-token",
         connected_at="2026-06-04T00:00:00Z",
@@ -654,6 +718,8 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
             "esi-location.read_location.v1",
             "esi-assets.read_assets.v1",
             "esi-characters.read_blueprints.v1",
+            "esi-skills.read_skills.v1",
+            "esi-characters.read_standings.v1",
         ),
         access_token="access-token",
         connected_at="2026-06-04T00:00:00Z",
@@ -708,6 +774,19 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
             {"type_id": 34, "quantity": 1000, "location_id": 60008494},
             {"type_id": 35, "quantity": 100, "location_id": 60008494},
         ],
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_skills",
+        lambda config, session: {
+            "skills": [
+                {
+                    "skill_id": corp_market.ACCOUNTING_SKILL_TYPE_ID,
+                    "active_skill_level": 5,
+                    "trained_skill_level": 5,
+                }
+            ]
+        },
     )
     monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
     monkeypatch.setattr(corp_market, "load_industry_recipe_cache", lambda: recipe_cache)
@@ -767,18 +846,28 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
     assert profitability["profitable_products"] == 1
     assert profitability["buildable_now_products"] == 0
     assert profitability["decision_counts"] == {"source-missing": 1}
+    assert profitability["sales_tax"]["accounting_level"] == 5
+    assert profitability["sales_tax"]["rate"] == pytest.approx(0.03375)
     product = profitability["products"][0]
     assert product["product_name"] == "Hobgoblin I"
     assert product["decision"]["code"] == "source-missing"
     assert product["decision"]["label"] == "Buy Missing"
     assert product["best_buyer"]["system_name"] == "One Jump"
     assert product["product_revenue"] == 10000.0
+    assert product["sales_tax_rate"] == pytest.approx(0.03375)
+    assert product["sales_tax"] == pytest.approx(337.5)
+    assert product["broker_fee"] == 0.0
+    assert product["net_revenue"] == pytest.approx(9662.5)
     assert product["replacement_cost"] == 4500.0
     assert product["replacement_profit"] == 5500.0
     assert product["replacement_margin_percent"] == 55.0
+    assert product["taxed_replacement_profit"] == pytest.approx(5162.5)
+    assert product["taxed_replacement_margin_percent"] == pytest.approx(51.625)
     assert product["missing_replacement_cost"] == 2000.0
     assert product["cash_profit"] == 8000.0
     assert product["cash_margin_percent"] == 80.0
+    assert product["taxed_cash_profit"] == pytest.approx(7662.5)
+    assert product["taxed_cash_margin_percent"] == pytest.approx(76.625)
     assert product["can_build_one_run"] is False
     assert product["missing_material_types"] == 1
     assert product["missing_materials"][0]["name"] == "Pyerite"
