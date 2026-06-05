@@ -4981,8 +4981,8 @@ def _render_flight_attendant_dashboard() -> str:
     }
     body[data-active-tab="hauling"] {
       background:
-        linear-gradient(90deg, rgba(5, 9, 11, .9) 0%, rgba(5, 9, 11, .72) 42%, rgba(5, 9, 11, .34) 100%),
-        linear-gradient(180deg, rgba(8, 14, 16, .48), rgba(6, 9, 12, .86) 78%),
+        linear-gradient(90deg, rgba(5, 9, 11, .78) 0%, rgba(5, 9, 11, .48) 44%, rgba(5, 9, 11, .1) 100%),
+        linear-gradient(180deg, rgba(8, 14, 16, .18), rgba(6, 9, 12, .76) 82%),
         url("/static/corp-market/hauler-background.png") center top / cover no-repeat fixed,
         var(--bg);
     }
@@ -5059,13 +5059,18 @@ def _render_flight_attendant_dashboard() -> str:
       min-width: 0;
     }
     body[data-active-tab="hauling"] #tab-hauling .panel {
-      background: linear-gradient(180deg, rgba(11, 18, 20, .91), rgba(7, 11, 13, .88));
-      border-color: rgba(97, 199, 217, .23);
+      background: linear-gradient(180deg, rgba(11, 18, 20, .8), rgba(7, 11, 13, .72));
+      border-color: rgba(97, 199, 217, .34);
       box-shadow: 0 22px 58px rgba(0, 0, 0, .34);
-      backdrop-filter: blur(2px);
+      backdrop-filter: blur(3px);
     }
     body[data-active-tab="hauling"] #tab-hauling .panel:first-child {
-      background: linear-gradient(180deg, rgba(11, 18, 20, .94), rgba(7, 11, 13, .9));
+      background: linear-gradient(180deg, rgba(11, 18, 20, .84), rgba(7, 11, 13, .78));
+    }
+    body[data-active-tab="hauling"] #tab-hauling input,
+    body[data-active-tab="hauling"] #tab-hauling select,
+    body[data-active-tab="hauling"] #tab-hauling textarea {
+      background: rgba(5, 9, 11, .84);
     }
     body[data-active-tab="flight"] #tab-flight .panel {
       background: linear-gradient(180deg, rgba(11, 18, 20, .9), rgba(7, 11, 13, .87));
