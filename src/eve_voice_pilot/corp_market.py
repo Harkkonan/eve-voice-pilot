@@ -55,6 +55,7 @@ DEFAULT_HAUL_CARGO_M3 = 10_000.0
 MAX_HAUL_CARGO_M3 = 10_000_000.0
 DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT = 10.0
 MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT = 500.0
+MARKET_ORDER_CACHE_TTL_SECONDS = 300.0
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
@@ -92,6 +93,8 @@ DISCORD_WEBHOOK_PATH_RE = re.compile(r"^/api/(?:v\d+/)?webhooks/\d+/[^/]+/?$")
 DISCORD_SNOWFLAKE_RE = re.compile(r"^\d{5,25}$")
 FIT_HEADER_RE = re.compile(r"^\[(?P<hull>[^,\]]+),\s*(?P<name>[^\]]+)\]\s*$")
 FIT_QUANTITY_RE = re.compile(r"\sx[\d,]+\s*$", re.IGNORECASE)
+MARKET_ORDER_CACHE_LOCK = threading.Lock()
+MARKET_ORDER_CACHE: dict[tuple[str, int, int, str], tuple[float, list[dict[str, Any]]]] = {}
 
 
 class CorpMarketError(RuntimeError):
@@ -237,6 +240,28 @@ class IndustryMaterial:
 
 
 @dataclass(frozen=True)
+class IndustrySkill:
+    type_id: int
+    name: str
+    level: int
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "IndustrySkill | None":
+        try:
+            type_id = int(payload.get("type_id") or payload.get("typeID") or 0)
+            level = int(payload.get("level") or 0)
+        except (TypeError, ValueError):
+            return None
+        name = str(payload.get("name") or "").strip()
+        if type_id <= 0 or level <= 0:
+            return None
+        return cls(type_id=type_id, name=name or f"Skill {type_id}", level=level)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type_id": self.type_id, "name": self.name, "level": self.level}
+
+
+@dataclass(frozen=True)
 class IndustryRecipe:
     blueprint_type_id: int
     blueprint_name: str
@@ -245,6 +270,8 @@ class IndustryRecipe:
     product_quantity: int
     materials: tuple[IndustryMaterial, ...]
     manufacturing_time_seconds: int = 0
+    max_production_limit: int = 0
+    skills: tuple[IndustrySkill, ...] = ()
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "IndustryRecipe | None":
@@ -253,6 +280,7 @@ class IndustryRecipe:
             product_type_id = int(payload.get("product_type_id") or payload.get("productTypeID") or 0)
             product_quantity = int(payload.get("product_quantity") or payload.get("quantity") or 0)
             manufacturing_time = int(payload.get("manufacturing_time_seconds") or payload.get("time") or 0)
+            max_production_limit = int(payload.get("max_production_limit") or payload.get("maxProductionLimit") or 0)
         except (TypeError, ValueError):
             return None
         materials = tuple(
@@ -261,6 +289,13 @@ class IndustryRecipe:
             if isinstance(item, dict)
             for material in [IndustryMaterial.from_dict(item)]
             if material is not None
+        )
+        skills = tuple(
+            skill
+            for item in payload.get("skills", [])
+            if isinstance(item, dict)
+            for skill in [IndustrySkill.from_dict(item)]
+            if skill is not None
         )
         if blueprint_type_id <= 0 or product_type_id <= 0 or product_quantity <= 0 or not materials:
             return None
@@ -274,6 +309,8 @@ class IndustryRecipe:
             product_quantity=product_quantity,
             materials=materials,
             manufacturing_time_seconds=max(0, manufacturing_time),
+            max_production_limit=max(0, max_production_limit),
+            skills=skills,
         )
 
 
@@ -1193,15 +1230,48 @@ def fetch_market_orders(
     if clean_order_type not in {"buy", "sell"}:
         raise CorpMarketError(f"Unsupported market order type: {order_type}")
     base_url = config.esi_base_url.rstrip("/")
+    cache_key = (base_url, int(region_id), int(type_id), clean_order_type)
+    now = time.monotonic()
+    with MARKET_ORDER_CACHE_LOCK:
+        cached = MARKET_ORDER_CACHE.get(cache_key)
+        if cached is not None:
+            cached_at, cached_orders = cached
+            if now - cached_at < MARKET_ORDER_CACHE_TTL_SECONDS:
+                return [dict(order) for order in cached_orders]
+            MARKET_ORDER_CACHE.pop(cache_key, None)
     url = add_query_params(
         f"{base_url}/markets/{region_id}/orders/?datasource=tranquility",
         {"order_type": clean_order_type, "type_id": str(type_id)},
     )
-    return get_esi_json_pages(
+    orders = get_esi_json_pages(
         url,
         headers=flight_esi_headers(),
         label=f"ESI market {clean_order_type} orders for type {type_id} in region {region_id}",
     )
+    with MARKET_ORDER_CACHE_LOCK:
+        MARKET_ORDER_CACHE[cache_key] = (time.monotonic(), [dict(order) for order in orders])
+    return orders
+
+
+def clear_market_order_cache() -> None:
+    with MARKET_ORDER_CACHE_LOCK:
+        MARKET_ORDER_CACHE.clear()
+
+
+def market_order_cache_status() -> dict[str, Any]:
+    now = time.monotonic()
+    with MARKET_ORDER_CACHE_LOCK:
+        expired_keys = [
+            key for key, (cached_at, _orders) in MARKET_ORDER_CACHE.items() if now - cached_at >= MARKET_ORDER_CACHE_TTL_SECONDS
+        ]
+        for key in expired_keys:
+            MARKET_ORDER_CACHE.pop(key, None)
+        entry_count = len(MARKET_ORDER_CACHE)
+    return {
+        "ttl_seconds": int(MARKET_ORDER_CACHE_TTL_SECONDS),
+        "entries": entry_count,
+        "note": "Public market orders are cached locally for 5 minutes to respect ESI market-order cache and rate limits.",
+    }
 
 
 def fetch_market_buy_orders(config: EveSsoConfig, *, region_id: int, type_id: int) -> list[dict[str, Any]]:
@@ -1323,8 +1393,14 @@ def summarize_flight_industry(
         asset_quantities=asset_quantities,
         recipes=recipes,
     )
-    original_count = sum(1 for item in blueprint_items if int(item.get("quantity") or 0) == -1)
-    copy_count = sum(1 for item in blueprint_items if int(item.get("quantity") or 0) == -2)
+    parsed_blueprints = [
+        blueprint
+        for item in blueprint_items
+        for blueprint in [owned_blueprint_from_esi(item)]
+        if blueprint is not None
+    ]
+    original_count = sum(1 for blueprint in parsed_blueprints if blueprint.is_original)
+    copy_count = sum(1 for blueprint in parsed_blueprints if blueprint.is_copy)
     return {
         "blueprints": {
             "total": len(blueprint_items),
@@ -1340,6 +1416,11 @@ def summarize_flight_industry(
                     "product_name": recipes[type_id].product_name if type_id in recipes else "",
                     "product_quantity": recipes[type_id].product_quantity if type_id in recipes else 0,
                     "material_count": len(recipes[type_id].materials) if type_id in recipes else 0,
+                    "base_time_seconds": recipes[type_id].manufacturing_time_seconds if type_id in recipes else 0,
+                    "max_production_limit": recipes[type_id].max_production_limit if type_id in recipes else 0,
+                    "required_skills": (
+                        [skill.to_dict() for skill in recipes[type_id].skills] if type_id in recipes else []
+                    ),
                     "best_material_efficiency": (
                         best_blueprints_by_type[type_id].material_efficiency if type_id in best_blueprints_by_type else None
                     ),
@@ -1470,6 +1551,14 @@ def build_recipe_buildability(
                 "product_type_id": recipe.product_type_id,
                 "product_name": recipe.product_name,
                 "product_quantity": recipe.product_quantity,
+                "base_time_seconds": recipe.manufacturing_time_seconds,
+                "adjusted_time_seconds": adjusted_job_time_seconds(
+                    recipe.manufacturing_time_seconds,
+                    int(target.get("blueprint_time_efficiency") or 0),
+                    runs=1,
+                ),
+                "max_production_limit": recipe.max_production_limit,
+                "required_skills": [skill.to_dict() for skill in recipe.skills],
                 "owned_blueprints": target["owned_blueprints"],
                 "owned_originals": target.get("owned_originals", 0),
                 "owned_copies": target.get("owned_copies", 0),
@@ -1892,7 +1981,11 @@ def scan_buyers_for_owned_blueprints(
         "products_with_buyers": sum(1 for item in products if item["best_order"]),
         "products": products[:20],
         "errors": scan_errors[:10],
-        "identity_note": "ESI market orders do not expose buyer character names; these are public buy orders.",
+        "market_cache": market_order_cache_status(),
+        "identity_note": (
+            "ESI market orders do not expose buyer character names; these are public buy orders. "
+            "Public market orders are cached locally for 5 minutes."
+        ),
     }
 
 
@@ -2027,6 +2120,12 @@ def rank_profitability_for_owned_blueprints(
             net_revenue - replacement_cost if net_revenue is not None and all_material_prices_known else None
         )
         taxed_cash_profit = net_revenue - missing_replacement_cost if net_revenue is not None and missing_prices_known else None
+        base_time_seconds = int(target.get("manufacturing_time_seconds") or recipe.manufacturing_time_seconds or 0)
+        adjusted_time_seconds = adjusted_job_time_seconds(
+            base_time_seconds,
+            int(target.get("blueprint_time_efficiency") or 0),
+            runs=1,
+        )
         decision = profitability_decision(
             has_buyer=buyer is not None,
             can_build=can_build,
@@ -2056,6 +2155,12 @@ def rank_profitability_for_owned_blueprints(
                 "taxed_cash_profit": taxed_cash_profit,
                 "taxed_replacement_margin_percent": profit_margin_percent(taxed_replacement_profit, revenue),
                 "taxed_cash_margin_percent": profit_margin_percent(taxed_cash_profit, revenue),
+                "base_time_seconds": base_time_seconds,
+                "adjusted_time_seconds": adjusted_time_seconds,
+                "true_profit_per_hour": isk_per_hour(taxed_replacement_profit, adjusted_time_seconds),
+                "wallet_gain_per_hour": isk_per_hour(taxed_cash_profit, adjusted_time_seconds),
+                "max_production_limit": target.get("max_production_limit", 0),
+                "required_skills": target.get("required_skills", []),
                 "profitable": taxed_replacement_profit is not None and taxed_replacement_profit > 0,
                 "can_build_one_run": can_build,
                 "required_material_types": required_material_types,
@@ -2114,10 +2219,11 @@ def rank_profitability_for_owned_blueprints(
         "products": products[:20],
         "errors": errors[:12],
         "sales_tax": sales_tax,
+        "market_cache": market_order_cache_status(),
         "pricing_note": (
             "Visible profit subtracts sales tax from the buyer revenue using your Accounting skill. "
-            "Details show the before-tax true profit and wallet gain. "
-            "ESI market orders do not expose buyer character names."
+            "Details show the before-tax true profit, wallet gain, and TE-adjusted profit per hour. "
+            "Public market orders are cached locally for 5 minutes; ESI market orders do not expose buyer character names."
         ),
     }
 
@@ -2336,10 +2442,11 @@ def scan_route_hauling_opportunities(
         "opportunities": opportunities[:MAX_FLIGHT_HAUL_OPPORTUNITIES],
         "errors": errors[:12],
         "sales_tax": sales_tax,
+        "market_cache": market_order_cache_status(),
         "pricing_note": (
             "This scan compares public sell orders along the route corridor with public buy orders in the destination "
-            "system. Profit is after sales tax for selling into the destination buy order. The page does not place "
-            "orders or verify station docking access."
+            "system. Profit is after sales tax for selling into the destination buy order. Public market orders are "
+            "cached locally for 5 minutes. The page does not place orders or verify station docking access."
         ),
     }
 
@@ -2572,6 +2679,22 @@ def profit_margin_percent(profit: float | None, revenue: float | None) -> float 
     return round((float(profit) / float(revenue)) * 100.0, 4)
 
 
+def adjusted_job_time_seconds(base_seconds: int, time_efficiency: int, runs: int = 1) -> int:
+    clean_base = max(0, int(base_seconds))
+    clean_runs = max(1, int(runs))
+    if clean_base <= 0:
+        return 0
+    efficiency = clean_blueprint_efficiency(time_efficiency)
+    numerator = clean_base * clean_runs * (100 - efficiency)
+    return max(1, -(-numerator // 100))
+
+
+def isk_per_hour(profit: float | None, job_time_seconds: int) -> float | None:
+    if profit is None or job_time_seconds <= 0:
+        return None
+    return round((float(profit) / float(job_time_seconds)) * 3600.0, 4)
+
+
 def owned_blueprint_product_targets(
     *,
     blueprints: Iterable[dict[str, Any]],
@@ -2598,6 +2721,9 @@ def owned_blueprint_product_targets(
                 "product_type_id": recipe.product_type_id,
                 "product_name": recipe.product_name,
                 "product_quantity": recipe.product_quantity,
+                "manufacturing_time_seconds": recipe.manufacturing_time_seconds,
+                "max_production_limit": recipe.max_production_limit,
+                "required_skills": [skill.to_dict() for skill in recipe.skills],
                 "blueprint_type_id": recipe.blueprint_type_id,
                 "blueprint_name": recipe.blueprint_name,
                 "owned_blueprints": 0,
@@ -2623,6 +2749,9 @@ def owned_blueprint_product_targets(
                     "blueprint_type_id": recipe.blueprint_type_id,
                     "blueprint_name": recipe.blueprint_name,
                     "product_quantity": recipe.product_quantity,
+                    "manufacturing_time_seconds": recipe.manufacturing_time_seconds,
+                    "max_production_limit": recipe.max_production_limit,
+                    "required_skills": [skill.to_dict() for skill in recipe.skills],
                     "blueprint_material_efficiency": blueprint.material_efficiency,
                     "blueprint_time_efficiency": blueprint.time_efficiency,
                     "blueprint_runs": blueprint.limited_runs,
@@ -4147,6 +4276,18 @@ def _render_flight_attendant_dashboard() -> str:
     .module-stack { display: grid; gap: 10px; }
     .module { border: 1px solid var(--line); background: rgba(17, 24, 25, .78); border-radius: 7px; padding: 11px; }
     .module h3 { margin-bottom: 5px; }
+    .blueprint-list { display: grid; gap: 8px; margin-top: 6px; }
+    .blueprint-item {
+      display: grid;
+      gap: 2px;
+      border: 1px solid rgba(63, 85, 80, .52);
+      border-radius: 6px;
+      padding: 8px;
+      background: rgba(8, 13, 15, .28);
+    }
+    .blueprint-item strong, .blueprint-item span, .blueprint-item small { overflow-wrap: anywhere; }
+    .blueprint-item span { color: var(--text); }
+    .blueprint-item small { color: var(--muted); line-height: 1.3; }
     .profit-panel {
       grid-column: 1 / -1;
       min-height: 440px;
@@ -4872,6 +5013,22 @@ def _render_flight_attendant_dashboard() -> str:
       return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2})} m3`;
     }
 
+    function formatDuration(seconds) {
+      const total = Math.max(0, Math.round(Number(seconds || 0)));
+      if (!total) return "unknown";
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      if (hours) return `${hours}h ${minutes}m`;
+      if (minutes) return `${minutes}m ${secs}s`;
+      return `${secs}s`;
+    }
+
+    function formatIskPerHour(value) {
+      if (value == null) return "unknown";
+      return `${formatSignedIsk(value)}/h`;
+    }
+
     function readMaxJumps() {
       const value = Number(window.localStorage.getItem(jumpsKey) || flightMaxJumps.value || 5);
       if (!Number.isFinite(value)) return 5;
@@ -5062,10 +5219,12 @@ def _render_flight_attendant_dashboard() -> str:
     function renderFlightBuyers(buyers) {
       const productLimit = buyers.product_truncated ? ` Limited to ${formatNumber(buyers.scanned_products)} of ${formatNumber(buyers.total_known_products)} products.` : "";
       const regionLimit = buyers.region_truncated ? ` Limited to ${formatNumber(buyers.regions_scanned)} of ${formatNumber(buyers.total_regions_in_range)} regions.` : "";
+      const marketCache = buyers.market_cache || {};
       flightBuyerSummary.innerHTML = `
         <strong>${formatNumber(buyers.products_with_buyers)}</strong> products have nearby buy orders.
         <br>Scanned ${formatNumber(buyers.scanned_products)} products across ${formatNumber(buyers.regions_scanned)} regions;
         found ${formatNumber(buyers.order_count)} buy orders.${escapeHtml(productLimit + regionLimit)}
+        <br>Market cache: ${formatNumber(marketCache.entries)} entries, ${formatNumber(marketCache.ttl_seconds || 300)}s reuse window.
         <br>${escapeHtml(buyers.identity_note || "ESI does not expose buyer character names.")}
       `;
       flightBuyerTop.innerHTML = renderBuyerProducts(buyers.products || []);
@@ -5151,6 +5310,7 @@ def _render_flight_attendant_dashboard() -> str:
       const regionLimit = profitability.region_truncated ? ` Limited to ${formatNumber(profitability.regions_scanned)} of ${formatNumber(profitability.total_regions_in_range)} regions.` : "";
       const decisionCounts = profitability.decision_counts || {};
       const salesTax = profitability.sales_tax || {};
+      const marketCache = profitability.market_cache || {};
       flightProfitProducts = Array.isArray(profitability.products) ? profitability.products : [];
       flightProfitSummary.innerHTML = `
         <div class="profit-stats">
@@ -5165,6 +5325,7 @@ def _render_flight_attendant_dashboard() -> str:
         </div>
         ${renderDecisionCounts(decisionCounts)}
         <div class="meta">Visible profits are after sales tax and immediate-sale broker fees. Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax; broker fee is 0% when selling to an existing buy order.</div>
+        <div class="meta">Market cache: ${formatNumber(marketCache.entries)} entries, ${formatNumber(marketCache.ttl_seconds || 300)}s reuse window.</div>
         <div class="meta">${escapeHtml(profitability.pricing_note || "Profit ranking uses nearby public market orders.")}</div>
       `;
       updateProfitFilterButtons();
@@ -5217,6 +5378,7 @@ def _render_flight_attendant_dashboard() -> str:
         const afterTaxProfit = formatSignedIsk(product.taxed_replacement_profit);
         const afterTaxWalletGain = formatSignedIsk(product.taxed_cash_profit);
         const blueprintQuality = renderBlueprintQuality(product);
+        const jobTime = product.adjusted_time_seconds ? formatDuration(product.adjusted_time_seconds) : "unknown";
         return `
           <div class="decision-row" data-decision="${escapeHtml(decision.code || "unknown")}">
             <div class="decision-head">
@@ -5228,6 +5390,8 @@ def _render_flight_attendant_dashboard() -> str:
             <div class="decision-metrics">
               <div class="decision-metric"><span>True Profit</span><b>${afterTaxProfit} (${formatPercent(product.taxed_replacement_margin_percent)})</b><small>After sales tax; counts all materials as valuable.</small></div>
               <div class="decision-metric"><span>Wallet Gain</span><b>${afterTaxWalletGain} (${formatPercent(product.taxed_cash_margin_percent)})</b><small>After sales tax; only subtracts missing buys.</small></div>
+              <div class="decision-metric"><span>True Profit / Hour</span><b>${formatIskPerHour(product.true_profit_per_hour)}</b><small>Uses TE-adjusted one-run job time.</small></div>
+              <div class="decision-metric"><span>Job Time</span><b>${jobTime}</b><small>Base ${formatDuration(product.base_time_seconds)} with selected TE.</small></div>
               <div class="decision-metric"><span>Buyer</span><b>${buyer}</b></div>
               <div class="decision-metric"><span>Materials</span><b>${build}</b><small>${blueprintQuality}</small></div>
             </div>
@@ -5241,6 +5405,12 @@ def _render_flight_attendant_dashboard() -> str:
     function renderProfitMathDetails(product) {
       const detailRows = [
         ["Blueprint quality", renderBlueprintQuality(product)],
+        ["Base manufacturing time", formatDuration(product.base_time_seconds)],
+        ["TE-adjusted job time", formatDuration(product.adjusted_time_seconds)],
+        ["After-tax true profit per hour", formatIskPerHour(product.true_profit_per_hour)],
+        ["After-tax wallet gain per hour", formatIskPerHour(product.wallet_gain_per_hour)],
+        ["Max blueprint copy runs", product.max_production_limit ? formatNumber(product.max_production_limit) : "unknown"],
+        ["Required skills", renderSkillSummary(product.required_skills || [])],
         ["Buyer revenue", formatIsk(product.product_revenue)],
         [`Sales tax (${formatRatePercent(product.sales_tax_rate)})`, `-${formatIsk(product.sales_tax)}`],
         ["Immediate-sale broker fee", formatIsk(product.broker_fee)],
@@ -5401,6 +5571,7 @@ def _render_flight_attendant_dashboard() -> str:
       const origin = route.origin || {};
       const destination = route.destination || {};
       const salesTax = hauling.sales_tax || {};
+      const marketCache = hauling.market_cache || {};
       const materialLimit = hauling.material_truncated ? ` Limited to ${formatNumber(hauling.scanned_materials)} of ${formatNumber(hauling.total_materials)} materials.` : "";
       const regionLimit = hauling.pickup_region_truncated ? ` Limited to ${formatNumber(hauling.pickup_regions_scanned)} of ${formatNumber(hauling.pickup_regions_total)} pickup regions.` : "";
       haulRouteSummary.innerHTML = `
@@ -5423,6 +5594,7 @@ def _render_flight_attendant_dashboard() -> str:
         </div>
         <div class="meta">${formatNumber(hauling.detour_margin_rejected_count)} detour candidates were below the selected profit threshold.</div>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on destination buy-order sales.</div>
+        <div class="meta">Market cache: ${formatNumber(marketCache.entries)} entries, ${formatNumber(marketCache.ttl_seconds || 300)}s reuse window.</div>
         <div class="meta">${escapeHtml(hauling.pricing_note || "Public market order route scan.")}</div>
       `;
       haulOpportunityTop.innerHTML = renderHaulOpportunities(hauling.opportunities || []);
@@ -5513,7 +5685,7 @@ def _render_flight_attendant_dashboard() -> str:
         <strong>${formatNumber(blueprints.unique_types)}</strong> types.
         <br>Originals: ${formatNumber(blueprints.originals)} &middot; Copies: ${formatNumber(blueprints.copies)}
       `;
-      flightBlueprintTop.innerHTML = renderTopList(blueprints.top_types || [], "count");
+      flightBlueprintTop.innerHTML = renderBlueprintList(blueprints.top_types || []);
       flightAssetSummary.innerHTML = `
         <strong>${formatNumber(assets.stacks)}</strong> asset stacks across
         <strong>${formatNumber(assets.unique_types)}</strong> item types.
@@ -5538,6 +5710,34 @@ def _render_flight_attendant_dashboard() -> str:
       }).join("<br>");
     }
 
+    function renderBlueprintList(items) {
+      if (!items.length) return "No top blueprints returned yet.";
+      return `<div class="blueprint-list">${items.map((item) => {
+        const skills = renderSkillSummary(item.required_skills || []);
+        const maxRuns = item.max_production_limit ? `${formatNumber(item.max_production_limit)} max copy runs` : "copy runs unknown";
+        const time = item.base_time_seconds ? `${formatDuration(item.base_time_seconds)} base` : "base time unknown";
+        const product = item.product_name ? `${escapeHtml(item.product_name)} x${formatNumber(item.product_quantity)}` : "recipe product unknown";
+        const quality = item.best_material_efficiency != null
+          ? `ME ${formatNumber(item.best_material_efficiency)} / TE ${formatNumber(item.best_time_efficiency)}`
+          : "ME/TE unknown";
+        return `
+          <div class="blueprint-item">
+            <strong>${escapeHtml(item.name)}</strong>
+            <span>${product}</span>
+            <small>${formatNumber(item.count)} owned &middot; ${quality} &middot; ${time} &middot; ${maxRuns}</small>
+            <small>${skills}</small>
+          </div>
+        `;
+      }).join("")}</div>`;
+    }
+
+    function renderSkillSummary(skills) {
+      if (!skills.length) return "skills not in cache yet";
+      const visible = skills.slice(0, 3).map((skill) => `${escapeHtml(skill.name)} ${formatNumber(skill.level)}`).join(", ");
+      const more = skills.length > 3 ? `, +${formatNumber(skills.length - 3)} more` : "";
+      return `skills: ${visible}${more}`;
+    }
+
     function renderRecipeSummary(recipes, buildability) {
       if (!recipes.available) {
         return `${escapeHtml(recipes.error || "Recipe cache missing.")}`;
@@ -5560,13 +5760,16 @@ def _render_flight_attendant_dashboard() -> str:
       if (!items.length) return "No recipe candidates ready yet.";
       return items.map((item) => {
         const quality = renderBlueprintQuality(item);
+        const timing = item.adjusted_time_seconds
+          ? `; ${formatDuration(item.adjusted_time_seconds)} with TE from ${formatDuration(item.base_time_seconds)} base`
+          : "";
         if (item.can_build_one_run) {
-          return `${escapeHtml(item.product_name)}: ME-adjusted one-run materials covered (${quality})`;
+          return `${escapeHtml(item.product_name)}: ME-adjusted one-run materials covered (${quality}${timing})`;
         }
         const missing = (item.missing_materials || [])
           .map((material) => `${escapeHtml(material.name)} ${formatNumber(material.shortage)}`)
           .join(", ");
-        return `${escapeHtml(item.product_name)}: missing ${missing || "materials"} (${quality})`;
+        return `${escapeHtml(item.product_name)}: missing ${missing || "materials"} (${quality}${timing})`;
       }).join("<br>");
     }
 

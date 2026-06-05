@@ -16,6 +16,7 @@ from eve_voice_pilot.corp_market import (
     IndustryMaterial,
     IndustryRecipe,
     IndustryRecipeCache,
+    IndustrySkill,
     MarketStore,
     RouteGraphCache,
     RouteSystem,
@@ -252,6 +253,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "startFlightProfitProgress" in page
     assert "True Profit" in page
     assert "Wallet Gain" in page
+    assert "True Profit / Hour" in page
+    assert "TE-adjusted job time" in page
+    assert "max copy runs" in page
+    assert "skills not in cache yet" in page
+    assert "Market cache" in page
     assert "Math details" in page
     assert "Expected after tax and fees" in page
     assert "ME-adjusted all materials value" in page
@@ -392,6 +398,13 @@ def test_adjusted_material_quantity_applies_blueprint_me_to_whole_job():
     assert corp_market.adjusted_material_quantity(1000, -2) == 1020
 
 
+def test_adjusted_job_time_uses_blueprint_te():
+    assert corp_market.adjusted_job_time_seconds(600, 20) == 480
+    assert corp_market.adjusted_job_time_seconds(333, 20) == 267
+    assert corp_market.adjusted_job_time_seconds(600, 20, runs=3) == 1440
+    assert corp_market.isk_per_hour(5600, 480) == pytest.approx(42000)
+
+
 def test_owned_blueprint_parser_treats_unlimited_runs_as_original():
     blueprint = corp_market.owned_blueprint_from_esi(
         {"type_id": 681, "quantity": 1, "runs": -1, "material_efficiency": 10, "time_efficiency": 20}
@@ -480,6 +493,8 @@ def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypa
                         IndustryMaterial(type_id=35, name="Pyerite", quantity=500),
                     ),
                     manufacturing_time_seconds=600,
+                    max_production_limit=1500,
+                    skills=(IndustrySkill(type_id=3380, name="Industry", level=1),),
                 )
             },
         ),
@@ -503,8 +518,15 @@ def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypa
     assert payload["industry"]["buildability"]["buildable_one_run_types"] == 1
     assert payload["industry"]["buildability"]["top_candidates"][0]["can_build_one_run"] is True
     assert payload["industry"]["buildability"]["top_candidates"][0]["blueprint_material_efficiency"] == 10
+    assert payload["industry"]["buildability"]["top_candidates"][0]["base_time_seconds"] == 600
+    assert payload["industry"]["buildability"]["top_candidates"][0]["adjusted_time_seconds"] == 480
+    assert payload["industry"]["buildability"]["top_candidates"][0]["max_production_limit"] == 1500
+    assert payload["industry"]["buildability"]["top_candidates"][0]["required_skills"][0]["name"] == "Industry"
     assert payload["industry"]["blueprints"]["top_types"][0]["best_material_efficiency"] == 10
     assert payload["industry"]["blueprints"]["top_types"][0]["best_time_efficiency"] == 20
+    assert payload["industry"]["blueprints"]["top_types"][0]["base_time_seconds"] == 600
+    assert payload["industry"]["blueprints"]["top_types"][0]["max_production_limit"] == 1500
+    assert payload["industry"]["blueprints"]["top_types"][0]["required_skills"][0]["level"] == 1
     assert payload["industry"]["assets"]["stacks"] == 3
     assert payload["industry"]["assets"]["unique_types"] == 2
     assert payload["industry"]["assets"]["total_units"] == 9000
@@ -528,7 +550,10 @@ def test_load_industry_recipe_cache_reads_compact_cache(tmp_path):
                         "product_type_id": 165,
                         "product_name": "Hobgoblin I",
                         "product_quantity": 1,
+                        "max_production_limit": 1500,
+                        "manufacturing_time_seconds": 600,
                         "materials": [{"type_id": 34, "name": "Tritanium", "quantity": 5000}],
+                        "skills": [{"type_id": 3380, "name": "Industry", "level": 1}],
                     }
                 },
             }
@@ -542,7 +567,10 @@ def test_load_industry_recipe_cache_reads_compact_cache(tmp_path):
     assert cache.build_number == 3374020
     assert cache.recipe_count == 1
     assert cache.recipes[681].product_name == "Hobgoblin I"
+    assert cache.recipes[681].max_production_limit == 1500
+    assert cache.recipes[681].manufacturing_time_seconds == 600
     assert cache.recipes[681].materials[0].name == "Tritanium"
+    assert cache.recipes[681].skills[0].name == "Industry"
 
 
 def test_load_route_graph_cache_reads_compact_cache(tmp_path):
@@ -813,6 +841,9 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
                     IndustryMaterial(type_id=34, name="Tritanium", quantity=1000),
                     IndustryMaterial(type_id=35, name="Pyerite", quantity=500),
                 ),
+                manufacturing_time_seconds=600,
+                max_production_limit=1500,
+                skills=(IndustrySkill(type_id=3380, name="Industry", level=1),),
             )
         },
     )
@@ -936,6 +967,12 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
     assert product["blueprint_time_efficiency"] == 20
     assert product["blueprint_kind"] == "Original"
     assert product["blueprint_runs"] is None
+    assert product["base_time_seconds"] == 600
+    assert product["adjusted_time_seconds"] == 480
+    assert product["true_profit_per_hour"] == pytest.approx(42093.75)
+    assert product["wallet_gain_per_hour"] == pytest.approx(59343.75)
+    assert product["max_production_limit"] == 1500
+    assert product["required_skills"][0]["name"] == "Industry"
     assert product["replacement_cost"] == 4050.0
     assert product["replacement_profit"] == 5950.0
     assert product["replacement_margin_percent"] == 59.5
@@ -1166,6 +1203,7 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
 
 
 def test_fetch_market_buy_orders_uses_public_market_endpoint(monkeypatch):
+    corp_market.clear_market_order_cache()
     requests = []
 
     class FakeResponse:
@@ -1212,6 +1250,47 @@ def test_fetch_market_buy_orders_uses_public_market_endpoint(monkeypatch):
     assert requests[0].headers["Accept"] == "application/json"
     assert "Authorization" not in requests[0].headers
     assert "Authorization" not in requests[1].headers
+    corp_market.clear_market_order_cache()
+
+
+def test_fetch_market_orders_reuses_local_cache(monkeypatch):
+    corp_market.clear_market_order_cache()
+    requests = []
+
+    class FakeResponse:
+        headers = {"X-Pages": "1"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps([{"order_id": 10, "is_buy_order": True}]).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        requests.append(request)
+        return FakeResponse()
+
+    monkeypatch.setattr(corp_market, "urlopen", fake_urlopen)
+
+    first = corp_market.fetch_market_buy_orders(
+        corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        region_id=10000002,
+        type_id=165,
+    )
+    first[0]["order_id"] = 999
+    second = corp_market.fetch_market_buy_orders(
+        corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        region_id=10000002,
+        type_id=165,
+    )
+
+    assert len(requests) == 1
+    assert second == [{"order_id": 10, "is_buy_order": True}]
+    assert corp_market.market_order_cache_status()["ttl_seconds"] == 300
+    corp_market.clear_market_order_cache()
 
 
 def test_flight_industry_payload_requires_blueprint_and_asset_scopes(monkeypatch):

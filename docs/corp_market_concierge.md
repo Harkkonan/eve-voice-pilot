@@ -93,11 +93,35 @@ cache\eve_industry_recipes.json
 cache\eve_route_graph.json
 ```
 
-If these caches are missing, the Flight Attendant tab still requires ESI and will show the data it can safely fetch, but recipe matching, buildability previews, and jump-aware nearby system coverage will stay unavailable.
+If these caches are missing, the Flight Attendant tab still requires ESI and will show the data it can safely fetch, but recipe matching, buildability previews, and jump-aware nearby system coverage will stay unavailable. Refresh the cache after updates that add static fields such as `volume_m3`, `max_production_limit`, required skills, or job time.
 
 ### Buyer Order Scanner
 
 The Flight Attendant buyer scanner uses your connected ESI location and blueprint list, the local recipe cache, the local route graph, and public ESI market orders. It does not reveal buyer character names because public ESI market orders do not expose those identities. It shows public buy orders by product, price, remaining volume, system, and jumps from your current location.
+
+Public ESI market orders are cached in the local server process for 5 minutes. This keeps repeated buyer, profitability, and hauling scans from hammering the same market-order endpoint and lines up with CCP's market-order cache/rate-limit direction.
+
+### Blueprint Profitability
+
+Version 1 is intentionally focused on manufacturing recipes. It does not yet rank reactions, invention, copying, or research jobs.
+
+The profitability board uses:
+
+- owned character blueprints from ESI, including BPO/BPC, runs, ME, and TE;
+- owned materials from ESI assets;
+- SDE manufacturing product, material, max copy run, skill, and base job-time data;
+- public market buy orders for expected sale value;
+- public market sell orders for missing-material and replacement pricing;
+- Accounting skill for sales-tax estimates.
+
+Profit cards show after-tax true profit first, then wallet gain, TE-adjusted one-run job time, and estimated profit per hour. Math details keep the before-tax values and the underlying blueprint, material, skill, and job-time assumptions visible.
+
+Future modules should be added one calculator at a time:
+
+- reactions;
+- invention, including probability and output BPC assumptions;
+- copying and research decisions;
+- facility, rig, system-cost-index, and broader industry-skill modifiers.
 
 ### Hauler Route Scanner
 

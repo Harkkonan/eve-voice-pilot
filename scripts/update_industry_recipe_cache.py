@@ -226,6 +226,7 @@ def read_manufacturing_recipes(archive: ZipFile, type_metadata: dict[int, dict[s
             continue
         product_records = list(clean_records(manufacturing.get("products")))
         material_records = list(clean_records(manufacturing.get("materials")))
+        skill_records = list(clean_records(manufacturing.get("skills")))
         if not product_records or not material_records:
             continue
 
@@ -257,6 +258,18 @@ def read_manufacturing_recipes(archive: ZipFile, type_metadata: dict[int, dict[s
                 if volume_m3 is not None:
                     material_payload["volume_m3"] = volume_m3
                 materials.append(material_payload)
+        skills = []
+        for skill in skill_records:
+            skill_type_id = clean_int(skill.get("typeID") or skill.get("type_id"))
+            level = clean_int(skill.get("level"))
+            if skill_type_id > 0 and level > 0:
+                skills.append(
+                    {
+                        "type_id": skill_type_id,
+                        "name": type_name(type_metadata, skill_type_id, fallback_prefix="Skill"),
+                        "level": level,
+                    }
+                )
         if not products or not materials:
             continue
 
@@ -264,6 +277,7 @@ def read_manufacturing_recipes(archive: ZipFile, type_metadata: dict[int, dict[s
         recipes[blueprint_type_id] = {
             "blueprint_type_id": blueprint_type_id,
             "blueprint_name": type_name(type_metadata, blueprint_type_id, fallback_prefix="Blueprint"),
+            "max_production_limit": clean_int(record.get("maxProductionLimit") or record.get("max_production_limit")),
             "activity": "manufacturing",
             "product_type_id": first_product["type_id"],
             "product_name": first_product["name"],
@@ -271,6 +285,7 @@ def read_manufacturing_recipes(archive: ZipFile, type_metadata: dict[int, dict[s
             "products": products,
             "manufacturing_time_seconds": clean_int(manufacturing.get("time")),
             "materials": materials,
+            "skills": skills,
         }
     return recipes
 
