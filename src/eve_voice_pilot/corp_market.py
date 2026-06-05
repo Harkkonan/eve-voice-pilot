@@ -4986,6 +4986,13 @@ def _render_flight_attendant_dashboard() -> str:
         url("/static/corp-market/hauler-background.png") center top / cover no-repeat fixed,
         var(--bg);
     }
+    body[data-active-tab="flight"] {
+      background:
+        linear-gradient(90deg, rgba(5, 9, 11, .91) 0%, rgba(5, 9, 11, .7) 44%, rgba(5, 9, 11, .36) 100%),
+        linear-gradient(180deg, rgba(8, 14, 16, .5), rgba(6, 9, 12, .86) 78%),
+        url("/static/corp-market/flight-attendant-background.png") center top / cover no-repeat fixed,
+        var(--bg);
+    }
     .shell { width: min(1360px, calc(100vw - 32px)); margin: 0 auto; padding-bottom: 34px; min-width: 0; }
     header { padding: 24px 0 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: end; }
     h1 { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: 0; }
@@ -5059,6 +5066,15 @@ def _render_flight_attendant_dashboard() -> str:
     }
     body[data-active-tab="hauling"] #tab-hauling .panel:first-child {
       background: linear-gradient(180deg, rgba(11, 18, 20, .94), rgba(7, 11, 13, .9));
+    }
+    body[data-active-tab="flight"] #tab-flight .panel {
+      background: linear-gradient(180deg, rgba(11, 18, 20, .9), rgba(7, 11, 13, .87));
+      border-color: rgba(97, 199, 217, .24);
+      box-shadow: 0 22px 58px rgba(0, 0, 0, .32);
+      backdrop-filter: blur(2px);
+    }
+    body[data-active-tab="flight"] #tab-flight .panel:first-child {
+      background: linear-gradient(180deg, rgba(11, 18, 20, .93), rgba(7, 11, 13, .9));
     }
     .panel-header { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .panel-header > div { min-width: 0; max-width: 100%; }
