@@ -39,6 +39,7 @@ The first version is a safe briefing surface:
 - It can scan public ESI buy orders for products made by owned blueprints and filter those buyer orders to the selected jump range.
 - It includes a `Hauler Routes` tab that compares cheap public material sell orders on or near a selected route with higher public buy orders in the destination system.
 - It includes a `Market Acquisition Planner` tab that compares public buy/sell orders with public market history before suggesting public buy-order ceilings, first-order size, and collection range.
+- It includes a `Trade P&L` tab that reads recent wallet transactions and wallet journal fee rows to match visible buys and sells into item-level profit, loss, open stock, and unmatched sells.
 - It includes an `Ore Reprocessing` tab that uses ESI location, skills, standings, and implants plus local SDE ore data to estimate mineral output from a typed ore amount.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
@@ -66,6 +67,8 @@ esi-clones.read_implants.v1
 esi-universe.read_structures.v1
 esi-wallet.read_character_wallet.v1
 ```
+
+The wallet scope is used by `Trade P&L` for recent market transactions and related market fee rows. The server still keeps the access token in memory only, and the tab does not place, edit, cancel, or update any market orders.
 
 Start the market board with your SSO app credentials, either through environment variables:
 

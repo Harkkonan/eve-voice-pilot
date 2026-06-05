@@ -213,4 +213,6 @@ Listings are stored in ignored local SQLite data at `profiles/corp_market.sqlite
 
 The Flight Attendant tab also includes a `Market Acquisition Planner`. It compares public ESI market orders with public market history to suggest cautious public buy-order ceilings, first-order size, and collection range. `Possible trap` warnings mean the current order spread is not well supported by recent history or is too thin to trust without checking in EVE.
 
+The `Trade P&L` tab reads recent ESI wallet transactions and market fee journal rows to match visible buys and sells into item-level profit, loss, open stock, and unmatched sells. It is read-only and does not place or edit market orders.
+
 The `Ore Reprocessing` tab estimates mineral output from an ore amount using ESI location, skills, standings, and implants plus local SDE ore/station data. Upwell structure rigs, taxes, and bonuses still need manual overrides because ESI does not expose those settings.

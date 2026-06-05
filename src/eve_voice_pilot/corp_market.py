@@ -1672,6 +1672,436 @@ def fetch_flight_skills(config: EveSsoConfig, session: FlightEsiSession) -> dict
     return payload
 
 
+def fetch_flight_wallet_transactions(
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    *,
+    max_pages: int = MAX_FLIGHT_TRADE_PNL_PAGES,
+    max_transactions: int = MAX_FLIGHT_TRADE_PNL_TRANSACTIONS,
+) -> list[dict[str, Any]]:
+    require_flight_scopes(session, (FLIGHT_WALLET_SCOPE,))
+    base_url = config.esi_base_url.rstrip("/")
+    transactions: list[dict[str, Any]] = []
+    seen_transaction_ids: set[int] = set()
+    from_id: int | None = None
+    clean_max_pages = max(1, int(max_pages))
+    clean_max_transactions = max(1, int(max_transactions))
+    for _page_index in range(clean_max_pages):
+        params = {"datasource": "tranquility"}
+        if from_id:
+            params["from_id"] = str(from_id)
+        request = Request(
+            add_query_params(f"{base_url}/characters/{session.character_id}/wallet/transactions/", params),
+            headers={"Accept": "application/json", **flight_esi_headers(session.access_token)},
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=45.0) as response:
+                raw = response.read().decode("utf-8")
+        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+            raise CorpMarketError(f"ESI wallet transactions request failed: {exc}") from exc
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise CorpMarketError(f"ESI wallet transactions returned non-JSON data: {raw[:200]!r}") from exc
+        if not isinstance(payload, list):
+            raise CorpMarketError("ESI wallet transactions returned unexpected data.")
+        page_transactions = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            transaction_id = clean_optional_int(item.get("transaction_id"))
+            if transaction_id is None or transaction_id <= 0 or transaction_id in seen_transaction_ids:
+                continue
+            seen_transaction_ids.add(transaction_id)
+            page_transactions.append(item)
+            transactions.append(item)
+            if len(transactions) >= clean_max_transactions:
+                return transactions
+        if not page_transactions or len(payload) < 2500:
+            break
+        next_from_id = clean_optional_int(page_transactions[-1].get("transaction_id"))
+        if next_from_id is None or next_from_id <= 0 or next_from_id == from_id:
+            break
+        from_id = next_from_id
+    return transactions
+
+
+def fetch_flight_wallet_journal(
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    *,
+    max_pages: int = MAX_FLIGHT_TRADE_JOURNAL_PAGES,
+) -> list[dict[str, Any]]:
+    require_flight_scopes(session, (FLIGHT_WALLET_SCOPE,))
+    base_url = config.esi_base_url.rstrip("/")
+    entries: list[dict[str, Any]] = []
+    page = 1
+    page_count = 1
+    clean_max_pages = max(1, int(max_pages))
+    while page <= page_count and page <= clean_max_pages:
+        request = Request(
+            add_query_params(
+                f"{base_url}/characters/{session.character_id}/wallet/journal/",
+                {"datasource": "tranquility", "page": str(page)},
+            ),
+            headers={"Accept": "application/json", **flight_esi_headers(session.access_token)},
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=45.0) as response:
+                raw = response.read().decode("utf-8")
+                page_count = max(1, int(response.headers.get("X-Pages") or "1"))
+        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+            raise CorpMarketError(f"ESI wallet journal request failed: {exc}") from exc
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise CorpMarketError(f"ESI wallet journal returned non-JSON data: {raw[:200]!r}") from exc
+        if not isinstance(payload, list):
+            raise CorpMarketError("ESI wallet journal returned unexpected data.")
+        entries.extend(item for item in payload if isinstance(item, dict))
+        page += 1
+    return entries
+
+
+def build_flight_trade_pnl_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    days: int = DEFAULT_FLIGHT_TRADE_PNL_DAYS,
+) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_WALLET_SCOPE,))
+    clean_days = clamp_trade_pnl_days(days)
+    transactions = fetch_flight_wallet_transactions(config, session)
+    journal_entries = fetch_flight_wallet_journal(config, session)
+    type_ids = {
+        type_id
+        for transaction in transactions
+        for type_id in [clean_optional_int(transaction.get("type_id"))]
+        if type_id is not None and type_id > 0
+    }
+    type_names = resolve_trade_type_names(config, type_ids)
+    trade_pnl = analyze_trade_pnl_transactions(
+        transactions,
+        journal_entries=journal_entries,
+        type_names=type_names,
+        days=clean_days,
+    )
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "trade_pnl": trade_pnl,
+    }
+
+
+def resolve_trade_type_names(config: EveSsoConfig, type_ids: Iterable[int]) -> dict[int, str]:
+    clean_type_ids = sorted({int(type_id) for type_id in type_ids if int(type_id) > 0})
+    if not clean_type_ids:
+        return {}
+    try:
+        return fetch_universe_names(config, clean_type_ids)
+    except CorpMarketError:
+        return {}
+
+
+def analyze_trade_pnl_transactions(
+    transactions: Iterable[dict[str, Any]],
+    *,
+    journal_entries: Iterable[dict[str, Any]] = (),
+    type_names: dict[int, str] | None = None,
+    days: int = DEFAULT_FLIGHT_TRADE_PNL_DAYS,
+    now: datetime | None = None,
+    item_limit: int = MAX_FLIGHT_TRADE_PNL_ITEMS,
+) -> dict[str, Any]:
+    clean_days = clamp_trade_pnl_days(days)
+    current_time = now or datetime.now(timezone.utc)
+    cutoff = current_time - timedelta(days=clean_days)
+    visible_transactions = [
+        transaction
+        for transaction in transactions
+        if trade_record_datetime(transaction.get("date")) is not None
+        and trade_record_datetime(transaction.get("date")) >= cutoff
+    ]
+    visible_journal_entries = [
+        entry
+        for entry in journal_entries
+        if trade_record_datetime(entry.get("date")) is not None and trade_record_datetime(entry.get("date")) >= cutoff
+    ]
+    fee_by_transaction_id: dict[int, float] = {}
+    market_fee_total = 0.0
+    market_transaction_journal_total = 0.0
+    fee_ref_counts: dict[str, int] = {}
+    for entry in visible_journal_entries:
+        ref_type = str(entry.get("ref_type") or "").strip()
+        amount = clean_optional_float(entry.get("amount"))
+        if amount is None:
+            continue
+        if ref_type == "market_transaction":
+            market_transaction_journal_total += amount
+        if ref_type not in TRADE_PNL_MARKET_FEE_REF_TYPES:
+            continue
+        market_fee_total += amount
+        fee_ref_counts[ref_type] = fee_ref_counts.get(ref_type, 0) + 1
+        context_id = clean_optional_int(entry.get("context_id"))
+        context_type = str(entry.get("context_id_type") or "").strip()
+        if context_id is not None and context_type == "market_transaction_id":
+            fee_by_transaction_id[context_id] = fee_by_transaction_id.get(context_id, 0.0) + amount
+
+    names = type_names or {}
+    summaries: dict[int, dict[str, Any]] = {}
+    open_lots: dict[int, list[dict[str, Any]]] = {}
+    ignored_transactions = 0
+    for transaction in sorted(
+        visible_transactions,
+        key=lambda item: (
+            trade_record_datetime(item.get("date")) or datetime.min.replace(tzinfo=timezone.utc),
+            clean_optional_int(item.get("transaction_id")) or 0,
+        ),
+    ):
+        type_id = clean_optional_int(transaction.get("type_id"))
+        transaction_id = clean_optional_int(transaction.get("transaction_id"))
+        quantity = clean_optional_int(transaction.get("quantity"))
+        unit_price = clean_optional_float(transaction.get("unit_price"))
+        if type_id is None or transaction_id is None or quantity is None or quantity <= 0 or unit_price is None or unit_price < 0:
+            ignored_transactions += 1
+            continue
+        summary = trade_pnl_summary_for_type(summaries, type_id=type_id, type_name=names.get(type_id) or f"Type {type_id}")
+        transaction_date = str(transaction.get("date") or "")
+        summary["transaction_count"] += 1
+        summary["first_date"] = min_trade_date(summary.get("first_date"), transaction_date)
+        summary["last_date"] = max_trade_date(summary.get("last_date"), transaction_date)
+        transaction_total = float(quantity) * float(unit_price)
+        transaction_fee = fee_by_transaction_id.get(transaction_id, 0.0)
+        summary["allocated_fee_isk"] += transaction_fee
+        if bool(transaction.get("is_buy")):
+            summary["buy_quantity"] += quantity
+            summary["buy_total_isk"] += transaction_total
+            open_lots.setdefault(type_id, []).append(
+                {
+                    "quantity_remaining": quantity,
+                    "unit_cost": float(unit_price),
+                    "transaction_id": transaction_id,
+                    "date": transaction_date,
+                }
+            )
+            continue
+        summary["sell_quantity"] += quantity
+        summary["sell_total_isk"] += transaction_total
+        remaining_to_match = quantity
+        lots = open_lots.setdefault(type_id, [])
+        while remaining_to_match > 0 and lots:
+            lot = lots[0]
+            lot_quantity = int(lot.get("quantity_remaining") or 0)
+            if lot_quantity <= 0:
+                lots.pop(0)
+                continue
+            matched_quantity = min(remaining_to_match, lot_quantity)
+            buy_cost = float(lot.get("unit_cost") or 0.0) * matched_quantity
+            sell_revenue = float(unit_price) * matched_quantity
+            summary["matched_quantity"] += matched_quantity
+            summary["matched_buy_cost_isk"] += buy_cost
+            summary["matched_sell_revenue_isk"] += sell_revenue
+            lot["quantity_remaining"] = lot_quantity - matched_quantity
+            remaining_to_match -= matched_quantity
+            if int(lot.get("quantity_remaining") or 0) <= 0:
+                lots.pop(0)
+        if remaining_to_match > 0:
+            summary["unmatched_sell_quantity"] += remaining_to_match
+            summary["unmatched_sell_revenue_isk"] += float(unit_price) * remaining_to_match
+
+    for type_id, lots in open_lots.items():
+        summary = summaries.get(type_id)
+        if summary is None:
+            continue
+        for lot in lots:
+            quantity_remaining = int(lot.get("quantity_remaining") or 0)
+            if quantity_remaining <= 0:
+                continue
+            summary["open_quantity"] += quantity_remaining
+            summary["open_inventory_cost_isk"] += quantity_remaining * float(lot.get("unit_cost") or 0.0)
+
+    items = []
+    totals = trade_pnl_empty_totals()
+    for summary in summaries.values():
+        expected_profit = summary["matched_sell_revenue_isk"] - summary["matched_buy_cost_isk"]
+        actual_profit = expected_profit + summary["allocated_fee_isk"]
+        summary["expected_profit_isk"] = round(expected_profit, 4)
+        summary["actual_profit_isk"] = round(actual_profit, 4)
+        summary["fee_gap_isk"] = round(summary["allocated_fee_isk"], 4)
+        summary["net_cashflow_isk"] = round(
+            summary["sell_total_isk"] - summary["buy_total_isk"] + summary["allocated_fee_isk"],
+            4,
+        )
+        summary["margin_percent"] = profit_margin_percent(actual_profit, summary["matched_buy_cost_isk"])
+        summary["status"] = trade_pnl_item_status(summary)
+        for key in totals:
+            totals[key] += float(summary.get(key) or 0.0)
+        items.append(summary)
+
+    allocated_fee_total = sum(float(item.get("allocated_fee_isk") or 0.0) for item in items)
+    unallocated_fee_total = market_fee_total - allocated_fee_total
+    visible_actual_profit = totals["expected_profit_isk"] + allocated_fee_total
+    wallet_fee_adjusted_profit = totals["expected_profit_isk"] + market_fee_total
+    items.sort(key=lambda item: (-abs(float(item.get("actual_profit_isk") or item.get("expected_profit_isk") or 0.0)), str(item["item_name"])))
+    limited_items = items[: max(1, int(item_limit))]
+    return {
+        "days": clean_days,
+        "cutoff": cutoff.isoformat().replace("+00:00", "Z"),
+        "transaction_count": len(visible_transactions),
+        "ignored_transaction_count": ignored_transactions,
+        "journal_entry_count": len(visible_journal_entries),
+        "item_count": len(items),
+        "item_limit": max(1, int(item_limit)),
+        "items_truncated": len(items) > max(1, int(item_limit)),
+        "items": [trade_pnl_public_item(item) for item in limited_items],
+        "totals": {
+            "buy_total_isk": round(totals["buy_total_isk"], 4),
+            "sell_total_isk": round(totals["sell_total_isk"], 4),
+            "matched_quantity": int(totals["matched_quantity"]),
+            "matched_buy_cost_isk": round(totals["matched_buy_cost_isk"], 4),
+            "matched_sell_revenue_isk": round(totals["matched_sell_revenue_isk"], 4),
+            "expected_profit_isk": round(totals["expected_profit_isk"], 4),
+            "allocated_fee_isk": round(allocated_fee_total, 4),
+            "unallocated_fee_isk": round(unallocated_fee_total, 4),
+            "market_fee_isk": round(market_fee_total, 4),
+            "actual_profit_isk": round(visible_actual_profit, 4),
+            "wallet_fee_adjusted_profit_isk": round(wallet_fee_adjusted_profit, 4),
+            "net_cashflow_isk": round(totals["net_cashflow_isk"] + unallocated_fee_total, 4),
+            "open_inventory_cost_isk": round(totals["open_inventory_cost_isk"], 4),
+            "open_quantity": int(totals["open_quantity"]),
+            "unmatched_sell_revenue_isk": round(totals["unmatched_sell_revenue_isk"], 4),
+            "unmatched_sell_quantity": int(totals["unmatched_sell_quantity"]),
+            "market_transaction_journal_total_isk": round(market_transaction_journal_total, 4),
+        },
+        "fee_ref_counts": dict(sorted(fee_ref_counts.items())),
+        "expectation_source": "FIFO buy-vs-sell spread before wallet fees. Saved planner expectation snapshots are not stored yet.",
+        "limits_note": (
+            "Only wallet transactions visible through recent ESI history are matched. "
+            "Sells without visible buy lots are excluded from realized P&L and shown as unmatched."
+        ),
+    }
+
+
+def trade_pnl_summary_for_type(summaries: dict[int, dict[str, Any]], *, type_id: int, type_name: str) -> dict[str, Any]:
+    return summaries.setdefault(
+        type_id,
+        {
+            "type_id": type_id,
+            "item_name": type_name,
+            "transaction_count": 0,
+            "buy_quantity": 0,
+            "sell_quantity": 0,
+            "matched_quantity": 0,
+            "unmatched_sell_quantity": 0,
+            "open_quantity": 0,
+            "buy_total_isk": 0.0,
+            "sell_total_isk": 0.0,
+            "matched_buy_cost_isk": 0.0,
+            "matched_sell_revenue_isk": 0.0,
+            "allocated_fee_isk": 0.0,
+            "unmatched_sell_revenue_isk": 0.0,
+            "open_inventory_cost_isk": 0.0,
+            "expected_profit_isk": 0.0,
+            "actual_profit_isk": 0.0,
+            "net_cashflow_isk": 0.0,
+            "fee_gap_isk": 0.0,
+            "margin_percent": None,
+            "first_date": "",
+            "last_date": "",
+            "status": "no-match",
+        },
+    )
+
+
+def trade_pnl_empty_totals() -> dict[str, float]:
+    return {
+        "buy_total_isk": 0.0,
+        "sell_total_isk": 0.0,
+        "matched_quantity": 0.0,
+        "matched_buy_cost_isk": 0.0,
+        "matched_sell_revenue_isk": 0.0,
+        "expected_profit_isk": 0.0,
+        "net_cashflow_isk": 0.0,
+        "open_inventory_cost_isk": 0.0,
+        "open_quantity": 0.0,
+        "unmatched_sell_revenue_isk": 0.0,
+        "unmatched_sell_quantity": 0.0,
+    }
+
+
+def trade_pnl_public_item(item: dict[str, Any]) -> dict[str, Any]:
+    public_item = dict(item)
+    for key in (
+        "buy_total_isk",
+        "sell_total_isk",
+        "matched_buy_cost_isk",
+        "matched_sell_revenue_isk",
+        "allocated_fee_isk",
+        "unmatched_sell_revenue_isk",
+        "open_inventory_cost_isk",
+        "expected_profit_isk",
+        "actual_profit_isk",
+        "net_cashflow_isk",
+        "fee_gap_isk",
+    ):
+        public_item[key] = round(float(public_item.get(key) or 0.0), 4)
+    return public_item
+
+
+def trade_pnl_item_status(item: dict[str, Any]) -> str:
+    if int(item.get("matched_quantity") or 0) <= 0:
+        if int(item.get("unmatched_sell_quantity") or 0) > 0:
+            return "needs-older-buys"
+        if int(item.get("open_quantity") or 0) > 0:
+            return "open-stock"
+        return "no-match"
+    actual_profit = float(item.get("actual_profit_isk") or 0.0)
+    if actual_profit > 0:
+        return "profit"
+    if actual_profit < 0:
+        return "loss"
+    return "break-even"
+
+
+def trade_record_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def min_trade_date(current: Any, candidate: Any) -> str:
+    if not current:
+        return str(candidate or "")
+    current_dt = trade_record_datetime(current)
+    candidate_dt = trade_record_datetime(candidate)
+    if candidate_dt is None:
+        return str(current or "")
+    if current_dt is None or candidate_dt < current_dt:
+        return str(candidate or "")
+    return str(current or "")
+
+
+def max_trade_date(current: Any, candidate: Any) -> str:
+    if not current:
+        return str(candidate or "")
+    current_dt = trade_record_datetime(current)
+    candidate_dt = trade_record_datetime(candidate)
+    if candidate_dt is None:
+        return str(current or "")
+    if current_dt is None or candidate_dt > current_dt:
+        return str(candidate or "")
+    return str(current or "")
+
+
 def fetch_flight_standings(config: EveSsoConfig, session: FlightEsiSession) -> list[dict[str, Any]]:
     require_flight_scopes(session, (FLIGHT_STANDINGS_SCOPE,))
     base_url = config.esi_base_url.rstrip("/")
@@ -4964,6 +5394,14 @@ def clamp_acquisition_target_days(value: Any) -> int:
     return max(1, min(MAX_ACQUISITION_TARGET_DAYS, days))
 
 
+def clamp_trade_pnl_days(value: Any) -> int:
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        days = DEFAULT_FLIGHT_TRADE_PNL_DAYS
+    return max(1, min(MAX_FLIGHT_TRADE_PNL_DAYS, days))
+
+
 def normalize_haul_route_preference(value: Any) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
     aliases = {
@@ -5842,6 +6280,9 @@ def build_http_server(
             if path == "/api/flight/acquisition":
                 self._handle_flight_acquisition()
                 return
+            if path == "/api/flight/trade-pnl":
+                self._handle_flight_trade_pnl()
+                return
             if path == "/api/flight/reprocessing":
                 self._handle_flight_reprocessing()
                 return
@@ -6121,6 +6562,19 @@ def build_http_server(
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
                 )
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
+        def _handle_flight_trade_pnl(self) -> None:
+            session = self._require_flight_session("analyzing trade profit and loss")
+            if session is None:
+                return
+            query = parse_qs(urlparse(self.path).query)
+            days = clamp_trade_pnl_days((query.get("days") or [DEFAULT_FLIGHT_TRADE_PNL_DAYS])[0])
+            try:
+                payload = build_flight_trade_pnl_payload(config=sso_config, session=session, days=days)
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
@@ -7482,6 +7936,7 @@ def _render_flight_attendant_dashboard() -> str:
       <button type="button" data-tab-target="flight" aria-selected="false">Flight Attendant</button>
       <button type="button" data-tab-target="hauling" aria-selected="false">Hauler Routes</button>
       <button type="button" data-tab-target="acquisition" aria-selected="false">Acquisition Planner</button>
+      <button type="button" data-tab-target="trade-pnl" aria-selected="false">Trade P&amp;L</button>
       <button type="button" data-tab-target="reprocessing" aria-selected="false">Reprocessing</button>
     </nav>
 
@@ -7953,6 +8408,70 @@ def _render_flight_attendant_dashboard() -> str:
         </div>
       </section>
 
+      <section id="tab-trade-pnl" class="tab-panel" data-tab-panel="trade-pnl" hidden>
+        <div class="flight-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Trade Profit And Loss</h2>
+                <div class="meta">Recent wallet transactions matched into visible buy lots, sell lots, and wallet fee drag.</div>
+              </div>
+              <span class="pill reserved">Wallet History</span>
+            </div>
+            <form id="trade-pnl-form" class="note-form">
+              <div class="row">
+                <label>History window
+                  <input id="trade-pnl-days" name="days" type="number" min="1" max="30" step="1" value="30">
+                  <small class="input-note">ESI wallet history is recent history, so older buy lots can be missing.</small>
+                </label>
+              </div>
+              <button id="trade-pnl-analyze" class="ghost" type="submit">Analyze Trade History</button>
+            </form>
+            <details class="output-details" open>
+              <summary>P&L Summary</summary>
+              <div class="output-details-body">
+                <div id="trade-pnl-summary" class="profit-summary">Connect ESI to analyze recent wallet transactions.</div>
+                <div id="trade-pnl-fees" class="meta"></div>
+              </div>
+            </details>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Accounting Boundaries</h2>
+                <div class="meta">This view is honest about the difference between expected spread and actual wallet result.</div>
+              </div>
+            </div>
+            <ul class="charter-list">
+              <li><strong>Expected:</strong> the FIFO buy-vs-sell spread before wallet fees.</li>
+              <li><strong>Actual:</strong> matched spread after wallet fees that ESI can tie to market transactions.</li>
+              <li><strong>Unmatched:</strong> sells whose buys are outside the visible wallet-history window.</li>
+              <li><strong>Open stock:</strong> visible buys that have not been matched to a later sell yet.</li>
+              <li><strong>Manual action:</strong> the tab never places, edits, cancels, or updates market orders.</li>
+            </ul>
+          </section>
+
+          <section class="panel profit-panel" aria-labelledby="trade-pnl-results-title">
+            <div class="panel-header">
+              <div>
+                <div class="profit-title">
+                  <h2 id="trade-pnl-results-title">Item Results</h2>
+                  <span class="pill reserved">Largest Impact</span>
+                </div>
+                <div class="meta">Profit, loss, open inventory, and unmatched sells by item type.</div>
+              </div>
+            </div>
+            <details class="output-details" open>
+              <summary>Item P&L</summary>
+              <div class="output-details-body">
+                <div id="trade-pnl-results" class="decision-output"></div>
+              </div>
+            </details>
+          </section>
+        </div>
+      </section>
+
       <section id="tab-reprocessing" class="tab-panel" data-tab-panel="reprocessing" hidden>
         <div class="flight-grid">
           <section class="panel">
@@ -8110,6 +8629,12 @@ def _render_flight_attendant_dashboard() -> str:
     const acqSummary = document.querySelector("#acq-summary");
     const acqRoute = document.querySelector("#acq-route");
     const acqResults = document.querySelector("#acq-results");
+    const tradePnlForm = document.querySelector("#trade-pnl-form");
+    const tradePnlDays = document.querySelector("#trade-pnl-days");
+    const tradePnlAnalyzeButton = document.querySelector("#trade-pnl-analyze");
+    const tradePnlSummary = document.querySelector("#trade-pnl-summary");
+    const tradePnlFees = document.querySelector("#trade-pnl-fees");
+    const tradePnlResults = document.querySelector("#trade-pnl-results");
     const reprocessingForm = document.querySelector("#reprocessing-form");
     const reprocessOre = document.querySelector("#reprocess-ore");
     const reprocessQuantity = document.querySelector("#reprocess-quantity");
@@ -8144,13 +8669,14 @@ def _render_flight_attendant_dashboard() -> str:
     const acqMinMarginKey = "eve-flight-acq-min-margin-v1";
     const acqCommonMaterialsKey = "eve-flight-acq-common-materials-v1";
     const acqMarketGroupIdsKey = "eve-flight-acq-market-group-ids-v1";
+    const tradePnlDaysKey = "eve-flight-trade-pnl-days-v1";
     const reprocessOreKey = "eve-flight-reprocess-ore-type-v1";
     const reprocessQuantityKey = "eve-flight-reprocess-quantity-v1";
     const reprocessFacilityYieldKey = "eve-flight-reprocess-facility-yield-v1";
     const reprocessStationTaxKey = "eve-flight-reprocess-station-tax-v1";
     const reprocessImplantBonusKey = "eve-flight-reprocess-implant-bonus-v1";
     const reprocessStructureBonusKey = "eve-flight-reprocess-structure-bonus-v1";
-    const validTabs = new Set(["market", "flight", "hauling", "acquisition", "reprocessing"]);
+    const validTabs = new Set(["market", "flight", "hauling", "acquisition", "trade-pnl", "reprocessing"]);
     let filterType = "";
     let includeClosed = false;
     let flightProfitFilter = "all";
@@ -8640,6 +9166,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightProfitability("Flight Attendant profitability ranking is offline.");
         resetFlightHauling("Flight Attendant hauler route scanner is offline.");
         resetMarketAcquisition("Market acquisition planner is offline.");
+        resetTradePnl("Trade P&L analyzer is offline.");
         resetReprocessing("Ore reprocessing calculator is offline.");
         resetFlightIndustry("Flight Attendant ESI status is offline.");
       }
@@ -8664,6 +9191,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightProfitability("Configure EVE SSO before ranking profitability.");
         resetFlightHauling("Configure EVE SSO before scanning hauler routes.");
         resetMarketAcquisition("Configure EVE SSO before planning market acquisitions.");
+        resetTradePnl("Configure EVE SSO before analyzing trade history.");
         resetReprocessing("Configure EVE SSO before calculating ore reprocessing.");
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
         return;
@@ -8679,6 +9207,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightProfitability("Connect ESI to rank owned blueprint profitability.");
         resetFlightHauling("Connect ESI to scan route hauling opportunities.");
         resetMarketAcquisition("Connect ESI to plan public buy orders.");
+        resetTradePnl("Connect ESI to analyze recent wallet transactions.");
         resetReprocessing("Connect ESI to calculate ore reprocessing.");
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
@@ -8697,6 +9226,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightProfitability("Use an allowlisted EVE character before ranking profitability.");
         resetFlightHauling("Use an allowlisted EVE character before scanning hauler routes.");
         resetMarketAcquisition("Use an allowlisted EVE character before planning market acquisitions.");
+        resetTradePnl("Use an allowlisted EVE character before analyzing trade history.");
         resetReprocessing("Use an allowlisted EVE character before calculating ore reprocessing.");
         resetFlightIndustry("Use an allowlisted EVE character before scanning industry data.");
         return;
@@ -8710,6 +9240,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetFlightProfitability("Resolve the ESI error before ranking profitability.");
         resetFlightHauling("Resolve the ESI error before scanning hauler routes.");
         resetMarketAcquisition("Resolve the ESI error before planning market acquisitions.");
+        resetTradePnl("Resolve the ESI error before analyzing trade history.");
         resetReprocessing("Resolve the ESI error before calculating ore reprocessing.");
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
         return;
@@ -8729,6 +9260,8 @@ def _render_flight_attendant_dashboard() -> str:
       resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(haulSettings)} to ${haulSettings.destination}.`);
       const acqSettings = readAcquisitionSettings();
       resetMarketAcquisition(`Ready to plan buy orders from ${acquisitionStartLabel(acqSettings)} toward ${acqSettings.destination}.`);
+      const tradePnlSettings = readTradePnlSettings();
+      resetTradePnl(`Ready to analyze ${formatNumber(tradePnlSettings.days)} days of trade history.`);
       const reprocessSettings = readReprocessingSettings();
       resetReprocessing(`Ready to calculate ${formatNumber(reprocessSettings.quantity)} ore units.`);
       loadFlightIndustry();
@@ -9436,6 +9969,133 @@ def _render_flight_attendant_dashboard() -> str:
       return `${days}d; ${volume}/day; ${orderCount} orders/day; median ${median}`;
     }
 
+    function clampTradePnlDays(value) {
+      const days = Number(value);
+      if (!Number.isFinite(days)) return 30;
+      return Math.max(1, Math.min(30, Math.round(days)));
+    }
+
+    function readTradePnlSettings() {
+      return {
+        days: clampTradePnlDays(window.localStorage.getItem(tradePnlDaysKey) || tradePnlDays.value || 30),
+      };
+    }
+
+    function writeTradePnlSettings(settings) {
+      const days = clampTradePnlDays(settings.days);
+      tradePnlDays.value = String(days);
+      window.localStorage.setItem(tradePnlDaysKey, String(days));
+      return {days};
+    }
+
+    function resetTradePnl(message) {
+      tradePnlSummary.textContent = message;
+      tradePnlFees.textContent = "";
+      tradePnlResults.textContent = "";
+      tradePnlAnalyzeButton.disabled = false;
+    }
+
+    async function loadTradePnl() {
+      const settings = writeTradePnlSettings({days: tradePnlDays.value});
+      tradePnlAnalyzeButton.disabled = true;
+      tradePnlSummary.textContent = `Reading ${formatNumber(settings.days)} days of wallet transactions...`;
+      tradePnlFees.textContent = "";
+      tradePnlResults.innerHTML = `<div class="decision-empty">Item P&L will appear here when the wallet scan finishes.</div>`;
+      const params = new URLSearchParams({days: String(settings.days)});
+      try {
+        const response = await fetch(`/api/flight/trade-pnl?${params}`);
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Could not analyze trade profit and loss");
+        renderTradePnl(data);
+      } catch (error) {
+        tradePnlSummary.textContent = error.message;
+        tradePnlFees.textContent = "";
+        tradePnlResults.textContent = "";
+      } finally {
+        tradePnlAnalyzeButton.disabled = false;
+      }
+    }
+
+    function renderTradePnl(data) {
+      const pnl = data.trade_pnl || {};
+      const totals = pnl.totals || {};
+      const itemLimit = pnl.items_truncated ? ` Showing largest ${formatNumber(pnl.item_limit)} of ${formatNumber(pnl.item_count)} item types.` : "";
+      tradePnlSummary.innerHTML = `
+        <div class="profit-stats">
+          <div class="profit-stat"><span>Actual P&L</span><b>${formatSignedIsk(totals.actual_profit_isk)}</b></div>
+          <div class="profit-stat"><span>Expected Spread</span><b>${formatSignedIsk(totals.expected_profit_isk)}</b></div>
+          <div class="profit-stat"><span>Fee Gap</span><b>${formatSignedIsk(totals.market_fee_isk)}</b></div>
+          <div class="profit-stat"><span>Open Stock Cost</span><b>${formatIsk(totals.open_inventory_cost_isk)}</b></div>
+        </div>
+        <div class="meta">${formatNumber(pnl.transaction_count)} market transactions and ${formatNumber(pnl.journal_entry_count)} wallet journal rows inside ${formatNumber(pnl.days)} days.${escapeHtml(itemLimit)}</div>
+        <div class="meta">${escapeHtml(pnl.expectation_source || "Expected spread is before wallet fees.")}</div>
+        <div class="meta">${escapeHtml(pnl.limits_note || "Unmatched sells can mean the buy happened before the visible ESI history window.")}</div>
+      `;
+      tradePnlFees.innerHTML = `
+        Wallet-level net cashflow ${formatSignedIsk(totals.net_cashflow_isk)}.
+        Unmatched sell revenue ${formatIsk(totals.unmatched_sell_revenue_isk)} across ${formatNumber(totals.unmatched_sell_quantity)} units.
+        Allocated fees ${formatSignedIsk(totals.allocated_fee_isk)}; unallocated fees ${formatSignedIsk(totals.unallocated_fee_isk)}.
+        ${renderTradeFeeRefs(pnl.fee_ref_counts || {})}
+      `;
+      tradePnlResults.innerHTML = renderTradePnlItems(pnl.items || []);
+    }
+
+    function renderTradeFeeRefs(counts) {
+      const entries = Object.entries(counts || {});
+      if (!entries.length) return "";
+      return `Fee rows: ${entries.map(([refType, count]) => `${escapeHtml(refType)} ${formatNumber(count)}`).join(", ")}.`;
+    }
+
+    function tradePnlStatusClass(status) {
+      if (status === "profit") return "decision-build";
+      if (status === "loss") return "decision-skip";
+      if (status === "open-stock") return "decision-stock";
+      if (status === "needs-older-buys") return "decision-price";
+      return "decision-watch";
+    }
+
+    function tradePnlStatusLabel(status) {
+      if (status === "profit") return "Profit";
+      if (status === "loss") return "Loss";
+      if (status === "open-stock") return "Open stock";
+      if (status === "needs-older-buys") return "Needs older buys";
+      if (status === "break-even") return "Break-even";
+      return "No match";
+    }
+
+    function renderTradePnlItems(items) {
+      if (!items.length) return `<div class="decision-empty">No market wallet transactions matched inside the selected history window.</div>`;
+      return `<div class="decision-list">${items.map((item) => {
+        const status = item.status || "no-match";
+        const statusClass = tradePnlStatusClass(status);
+        return `
+          <div class="decision-row">
+            <div class="decision-head">
+              <strong>${escapeHtml(item.item_name)}</strong>
+              <span class="pill ${statusClass}">${escapeHtml(tradePnlStatusLabel(status))}</span>
+            </div>
+            <div class="decision-lede">Actual ${formatSignedIsk(item.actual_profit_isk)} vs expected ${formatSignedIsk(item.expected_profit_isk)}; fee gap ${formatSignedIsk(item.fee_gap_isk)}.</div>
+            <div class="decision-metrics">
+              <div class="decision-metric"><span>Matched Units</span><b>${formatNumber(item.matched_quantity)}</b><small>Bought ${formatNumber(item.buy_quantity)}; sold ${formatNumber(item.sell_quantity)}.</small></div>
+              <div class="decision-metric"><span>Buy Cost</span><b>${formatIsk(item.matched_buy_cost_isk)}</b><small>Total buys ${formatIsk(item.buy_total_isk)}.</small></div>
+              <div class="decision-metric"><span>Sell Revenue</span><b>${formatIsk(item.matched_sell_revenue_isk)}</b><small>Total sells ${formatIsk(item.sell_total_isk)}.</small></div>
+              <div class="decision-metric"><span>Open / Unmatched</span><b>${formatNumber(item.open_quantity)} / ${formatNumber(item.unmatched_sell_quantity)}</b><small>Open cost ${formatIsk(item.open_inventory_cost_isk)}.</small></div>
+            </div>
+            <details class="profit-details">
+              <summary>Accounting details</summary>
+              <div class="profit-detail-grid">
+                <div class="profit-detail-row"><span>Net wallet cashflow</span><b>${formatSignedIsk(item.net_cashflow_isk)}</b></div>
+                <div class="profit-detail-row"><span>Allocated wallet fees</span><b>${formatSignedIsk(item.allocated_fee_isk)}</b></div>
+                <div class="profit-detail-row"><span>Margin on matched cost</span><b>${formatPercent(item.margin_percent)}</b></div>
+                <div class="profit-detail-row"><span>Unmatched sell revenue</span><b>${formatIsk(item.unmatched_sell_revenue_isk)}</b></div>
+                <div class="profit-detail-row"><span>Visible dates</span><b>${escapeHtml(item.first_date || "unknown")} to ${escapeHtml(item.last_date || "unknown")}</b></div>
+              </div>
+            </details>
+          </div>
+        `;
+      }).join("")}</div>`;
+    }
+
     function clampReprocessQuantity(value) {
       const quantity = Number(value);
       if (!Number.isFinite(quantity)) return 100;
@@ -9974,6 +10634,17 @@ def _render_flight_attendant_dashboard() -> str:
       updateAcquisitionScopeAndReset();
     });
 
+    function updateTradePnlAndReset() {
+      const settings = writeTradePnlSettings({days: tradePnlDays.value});
+      resetTradePnl(`Ready to analyze ${formatNumber(settings.days)} days of trade history.`);
+    }
+
+    tradePnlForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadTradePnl();
+    });
+    tradePnlDays.addEventListener("change", updateTradePnlAndReset);
+
     function updateReprocessingAndReset() {
       const settings = writeReprocessingSettings({
         oreTypeId: reprocessOre.value,
@@ -10021,6 +10692,7 @@ def _render_flight_attendant_dashboard() -> str:
     writeMaxJumps(readMaxJumps());
     writeHaulSettings(readHaulSettings());
     writeAcquisitionSettings(readAcquisitionSettings());
+    writeTradePnlSettings(readTradePnlSettings());
     writeReprocessingSettings(readReprocessingSettings());
     showTab(initialTab());
     updateFilterButtons();

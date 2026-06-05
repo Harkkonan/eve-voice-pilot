@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import sys
@@ -24,6 +25,7 @@ from eve_voice_pilot.corp_market import (
     ReprocessingStation,
     RouteGraphCache,
     RouteSystem,
+    analyze_trade_pnl_transactions,
     build_discord_webhook_payload,
     build_flight_reprocessing_payload,
     build_flight_buyers_payload,
@@ -32,6 +34,7 @@ from eve_voice_pilot.corp_market import (
     build_flight_industry_payload,
     build_flight_profitability_payload,
     build_flight_status_payload,
+    build_flight_trade_pnl_payload,
     build_mail_draft,
     clean_multiline,
     edit_discord_webhook_message,
@@ -228,6 +231,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/hauling" in page
     assert "/api/flight/hauling/progress" in page
     assert "/api/flight/acquisition" in page
+    assert "/api/flight/trade-pnl" in page
     assert "/flight/login" in page
     assert "id=\"flight-system-name\"" in page
     assert "id=\"flight-login-link\"" in page
@@ -280,6 +284,14 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Market history can reveal" in page
     assert "writeAcquisitionSettings" in page
     assert "renderAcquisitionOpportunities" in page
+    assert "data-tab-target=\"trade-pnl\"" in page
+    assert "id=\"trade-pnl-form\"" in page
+    assert "id=\"trade-pnl-days\"" in page
+    assert "id=\"trade-pnl-results\" class=\"decision-output\"" in page
+    assert "Trade Profit And Loss" in page
+    assert "renderTradePnlItems" in page
+    assert page.count("id=\"tab-trade-pnl\"") == 1
+    assert page.count("id=\"tab-reprocessing\"") == 1
     assert "/static/corp-market/hauler-background.png" in page
     assert "document.body.dataset.activeTab = targetTab" in page
     assert "formatElapsedDuration" in page
@@ -330,6 +342,7 @@ def test_flight_status_reports_missing_sso_configuration():
     assert payload["callback_url"] == "http://127.0.0.1:8770/flight/callback"
     assert "esi-skills.read_skills.v1" in payload["required_scopes"]
     assert "esi-characters.read_standings.v1" in payload["required_scopes"]
+    assert "esi-wallet.read_character_wallet.v1" in payload["required_scopes"]
     assert payload["membership"]["required"] is False
     assert payload["hosting"]["token_storage"] == "server-memory-only"
 
@@ -392,6 +405,171 @@ def test_flight_esi_session_store_keeps_access_token_in_memory():
     assert session.membership_ok is True
     assert session.to_public_dict()["membership_ok"] is True
     assert session.expires_in_seconds > 0
+
+
+def test_trade_pnl_fifo_matches_expected_spread_and_fee_gap():
+    transactions = [
+        {
+            "transaction_id": 101,
+            "date": "2026-06-02T12:00:00Z",
+            "type_id": 34,
+            "quantity": 60,
+            "unit_price": 15,
+            "is_buy": False,
+        },
+        {
+            "transaction_id": 100,
+            "date": "2026-06-01T12:00:00Z",
+            "type_id": 34,
+            "quantity": 100,
+            "unit_price": 10,
+            "is_buy": True,
+        },
+        {
+            "transaction_id": 102,
+            "date": "2026-06-01T13:00:00Z",
+            "type_id": 35,
+            "quantity": 10,
+            "unit_price": 100,
+            "is_buy": True,
+        },
+        {
+            "transaction_id": 103,
+            "date": "2026-06-03T12:00:00Z",
+            "type_id": 35,
+            "quantity": 10,
+            "unit_price": 80,
+            "is_buy": False,
+        },
+        {
+            "transaction_id": 104,
+            "date": "2026-06-03T13:00:00Z",
+            "type_id": 36,
+            "quantity": 5,
+            "unit_price": 50,
+            "is_buy": False,
+        },
+    ]
+    journal_entries = [
+        {
+            "id": 501,
+            "date": "2026-06-02T12:00:01Z",
+            "ref_type": "transaction_tax",
+            "amount": -5,
+            "context_id": 101,
+            "context_id_type": "market_transaction_id",
+        },
+        {
+            "id": 502,
+            "date": "2026-06-03T12:00:01Z",
+            "ref_type": "brokers_fee",
+            "amount": -3,
+            "context_id": 103,
+            "context_id_type": "market_transaction_id",
+        },
+        {
+            "id": 503,
+            "date": "2026-06-03T12:00:02Z",
+            "ref_type": "transaction_tax",
+            "amount": -2,
+            "context_id": 999999,
+            "context_id_type": "market_transaction_id",
+        },
+    ]
+
+    pnl = analyze_trade_pnl_transactions(
+        transactions,
+        journal_entries=journal_entries,
+        type_names={34: "Tritanium", 35: "Pyerite", 36: "Mexallon"},
+        now=datetime(2026, 6, 5, tzinfo=timezone.utc),
+    )
+
+    totals = pnl["totals"]
+    assert totals["expected_profit_isk"] == pytest.approx(100)
+    assert totals["actual_profit_isk"] == pytest.approx(92)
+    assert totals["market_fee_isk"] == pytest.approx(-10)
+    assert totals["unallocated_fee_isk"] == pytest.approx(-2)
+    assert totals["wallet_fee_adjusted_profit_isk"] == pytest.approx(90)
+    assert totals["open_inventory_cost_isk"] == pytest.approx(400)
+    assert totals["unmatched_sell_revenue_isk"] == pytest.approx(250)
+
+    items = {item["type_id"]: item for item in pnl["items"]}
+    assert items[34]["item_name"] == "Tritanium"
+    assert items[34]["status"] == "profit"
+    assert items[34]["actual_profit_isk"] == pytest.approx(295)
+    assert items[34]["open_quantity"] == 40
+    assert items[35]["status"] == "loss"
+    assert items[35]["actual_profit_isk"] == pytest.approx(-203)
+    assert items[36]["status"] == "needs-older-buys"
+    assert items[36]["unmatched_sell_quantity"] == 5
+
+
+def test_build_flight_trade_pnl_payload_uses_wallet_scope(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Trader Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-wallet.read_character_wallet.v1",),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+    )
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_wallet_transactions",
+        lambda config, session: [
+            {
+                "transaction_id": 100,
+                "date": "2026-06-01T12:00:00Z",
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 100,
+                "is_buy": True,
+            },
+            {
+                "transaction_id": 101,
+                "date": "2026-06-02T12:00:00Z",
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 130,
+                "is_buy": False,
+            },
+        ],
+    )
+    monkeypatch.setattr(corp_market, "fetch_flight_wallet_journal", lambda config, session: [])
+    monkeypatch.setattr(corp_market, "fetch_universe_names", lambda config, type_ids: {34: "Tritanium"})
+
+    payload = build_flight_trade_pnl_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        days=30,
+    )
+
+    assert payload["ok"] is True
+    assert payload["trade_pnl"]["items"][0]["item_name"] == "Tritanium"
+    assert payload["trade_pnl"]["totals"]["actual_profit_isk"] == pytest.approx(300)
+
+    missing_scope_session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Trader Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+    )
+    with pytest.raises(CorpMarketError, match="esi-wallet.read_character_wallet.v1"):
+        build_flight_trade_pnl_payload(
+            config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+            session=missing_scope_session,
+        )
 
 
 def test_public_hosting_config_requires_https_sso_and_member_allowlist():
