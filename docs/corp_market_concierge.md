@@ -148,10 +148,12 @@ The `Ore Reprocessing` tab estimates mineral output from an ore type and ore-uni
 - Reprocessing, Reprocessing Efficiency, and ore-processing skill levels from ESI skills;
 - NPC corporation or faction standing from ESI standings for NPC station tax reduction;
 - known Zainou Beancounter reprocessing implants from ESI implants;
-- ore portion size, material outputs, and NPC station base yield/tax from the local SDE cache.
+- ore portion size, material outputs, and NPC station base yield/tax from the local SDE cache;
 - public Jita buy orders from ESI to compare the immediate value of the processed materials against the original unprocessed ore stack.
 
-For NPC stations, the calculator applies the station's SDE reprocessing efficiency and station take, then reduces station take by the connected pilot's ESI standing where possible. For Upwell structures, ESI can resolve the current structure name/owner if the pilot has access, but it does not expose the active reprocessing rig, facility tax, service settings, or structure bonus. Use the manual override fields for those structure values.
+For NPC stations, the calculator applies the station's SDE reprocessing efficiency and station take, then reduces station take by the connected pilot's ESI standing where possible. The location selector can use the pilot's current ESI location or list NPC stations from the local SDE cache whose owner corporation or faction appears in the pilot's ESI standings. Those station options are ordered by estimated net reprocessing yield after the standings-adjusted station tax. The SDE cache does not include every station display name, so the selector may show the solar system, owner, and station id until a specific station is selected for calculation.
+
+For Upwell structures, ESI can resolve the current structure name/owner if the pilot has access, but it does not expose the active reprocessing rig, facility tax, service settings, or structure bonus. Use the manual override fields for those structure values.
 
 This tab is advisory only. It never starts a reprocessing job, moves items, presses keys, places orders, or writes to the EVE client.
 

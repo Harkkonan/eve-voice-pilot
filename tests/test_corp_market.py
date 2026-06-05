@@ -27,6 +27,7 @@ from eve_voice_pilot.corp_market import (
     RouteSystem,
     analyze_trade_pnl_transactions,
     build_discord_webhook_payload,
+    build_flight_reprocessing_locations_payload,
     build_flight_reprocessing_payload,
     build_flight_buyers_payload,
     build_flight_acquisition_payload,
@@ -1242,7 +1243,16 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
                 solar_system_id=30002780,
                 reprocessing_efficiency=0.5,
                 reprocessing_tax_rate=0.05,
-            )
+            ),
+            60000007: ReprocessingStation(
+                station_id=60000007,
+                owner_id=1000002,
+                owner_name="CBD Corporation",
+                owner_faction_id=500001,
+                solar_system_id=30002779,
+                reprocessing_efficiency=0.5,
+                reprocessing_tax_rate=0.05,
+            ),
         },
     )
     route_cache = RouteGraphCache(
@@ -1308,7 +1318,7 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     monkeypatch.setattr(
         corp_market,
         "fetch_universe_station",
-        lambda config, station_id: {"name": "Airaken VI - Moon 1 - CBD Corporation Storage", "owner": 1000002},
+        lambda config, station_id: {"name": f"Selected Station {station_id}", "owner": 1000002},
     )
     monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
 
@@ -1341,6 +1351,7 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
         session=session,
         ore_type_id=1230,
         quantity=1000,
+        reprocessing_station_id=60000007,
     )
 
     assert payload["ore"]["name"] == "Veldspar"
@@ -1349,6 +1360,9 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     assert payload["skills"]["reprocessing_efficiency_level"] == 4
     assert payload["skills"]["specialization_level"] == 3
     assert payload["implant"]["bonus_percent"] == 4.0
+    assert payload["facility"]["location_id"] == 60000007
+    assert payload["facility"]["location_name"] == "Selected Station 60000007"
+    assert payload["facility"]["source"] == "selected-sde-npc-station"
     assert payload["facility"]["facility_yield_percent"] == 50.0
     assert payload["facility"]["station_tax_percent"] == pytest.approx(2.0)
     assert payload["yield"]["gross_yield_percent"] == pytest.approx(68.45904)
@@ -1370,6 +1384,159 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     assert valuation["value_delta"] == pytest.approx(4098.0)
     assert valuation["processed_complete"] is True
     assert valuation["ore_complete"] is True
+
+
+def test_build_flight_reprocessing_locations_payload_ranks_standing_stations(monkeypatch, tmp_path):
+    cache = ReprocessingCache(
+        path=tmp_path / "eve_reprocessing.json",
+        available=True,
+        build_number=3374020,
+        ores={
+            1230: ReprocessingOre(
+                type_id=1230,
+                name="Veldspar",
+                group_id=462,
+                group_name="Veldspar",
+                portion_size=100,
+                volume_m3=0.1,
+                specialization_skill_type_id=60377,
+                specialization_skill_name="Simple Ore Processing",
+                materials=(
+                    ReprocessingMaterial(type_id=34, name="Tritanium", quantity=400, volume_m3=0.01),
+                ),
+            )
+        },
+        stations={
+            60000004: ReprocessingStation(
+                station_id=60000004,
+                owner_id=1000002,
+                owner_name="CBD Corporation",
+                owner_faction_id=500001,
+                solar_system_id=30002780,
+                reprocessing_efficiency=0.5,
+                reprocessing_tax_rate=0.05,
+            ),
+            60000007: ReprocessingStation(
+                station_id=60000007,
+                owner_id=1000003,
+                owner_name="Expert Distribution",
+                owner_faction_id=500001,
+                solar_system_id=30002779,
+                reprocessing_efficiency=0.5,
+                reprocessing_tax_rate=0.05,
+            ),
+            60000010: ReprocessingStation(
+                station_id=60000010,
+                owner_id=1000004,
+                owner_name="No Standing Corp",
+                owner_faction_id=500002,
+                solar_system_id=30002781,
+                reprocessing_efficiency=0.5,
+                reprocessing_tax_rate=0.05,
+            ),
+        },
+    )
+    route_cache = RouteGraphCache(
+        path=tmp_path / "eve_route_graph.json",
+        available=True,
+        build_number=3374020,
+        systems={
+            30002779: RouteSystem(
+                solar_system_id=30002779,
+                name="Inaro",
+                region_id=200,
+                security_status=0.7,
+            ),
+            30002780: RouteSystem(
+                solar_system_id=30002780,
+                name="Airaken",
+                region_id=200,
+                security_status=0.5,
+            ),
+            30002781: RouteSystem(
+                solar_system_id=30002781,
+                name="Unlisted",
+                region_id=200,
+                security_status=0.6,
+            ),
+        },
+        adjacency={},
+    )
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Industry Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(
+            "esi-location.read_location.v1",
+            "esi-skills.read_skills.v1",
+            "esi-characters.read_standings.v1",
+            "esi-clones.read_implants.v1",
+        ),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+    )
+    monkeypatch.setattr(corp_market, "load_reprocessing_cache", lambda: cache)
+    monkeypatch.setattr(corp_market, "load_route_graph_cache", lambda: route_cache)
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_skills",
+        lambda config, session: {
+            "skills": [
+                {"skill_id": corp_market.REPROCESSING_SKILL_TYPE_ID, "active_skill_level": 5},
+                {"skill_id": corp_market.REPROCESSING_EFFICIENCY_SKILL_TYPE_ID, "active_skill_level": 4},
+                {"skill_id": 60377, "active_skill_level": 3},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_standings",
+        lambda config, session: [
+            {"from_id": 1000002, "from_type": "corporation", "standing": 0.0},
+            {"from_id": 1000003, "from_type": "corporation", "standing": 5.0},
+        ],
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_location",
+        lambda config, session: {
+            "solar_system_id": 30002780,
+            "solar_system_name": "Airaken",
+            "station_id": 60000004,
+            "structure_id": None,
+            "updated_at": "2026-06-05T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(corp_market, "fetch_flight_implants", lambda config, session: [27174])
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_universe_station",
+        lambda config, station_id: {"name": f"Station {station_id}", "owner": 1000002},
+    )
+
+    payload = build_flight_reprocessing_locations_payload(
+        config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://market.test/flight/callback",
+        ),
+        session=session,
+        ore_type_id=1230,
+    )
+
+    assert payload["current_location"]["location_id"] == 60000004
+    assert payload["station_count"] == 2
+    assert payload["total_matching_stations"] == 2
+    assert [station["station_id"] for station in payload["stations"]] == [60000007, 60000004]
+    assert {station["station_id"] for station in payload["stations"]} == {60000004, 60000007}
+    assert payload["stations"][0]["net_yield_percent"] > payload["stations"][1]["net_yield_percent"]
+    assert payload["stations"][0]["solar_system_name"] == "Inaro"
+    assert "standing 5.00" in payload["stations"][0]["label"]
+    assert "tax 1.25%" in payload["stations"][0]["label"]
 
 
 def test_nearby_systems_payload_uses_jump_range():

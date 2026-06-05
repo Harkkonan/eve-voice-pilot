@@ -121,6 +121,7 @@ MAX_REPROCESSING_ORE_UNITS = 1_000_000_000_000
 MAX_REPROCESSING_FACILITY_YIELD_PERCENT = 100.0
 MAX_REPROCESSING_BONUS_PERCENT = 100.0
 MAX_REPROCESSING_TAX_PERCENT = 100.0
+MAX_REPROCESSING_STATION_OPTIONS = 200
 BASE_SALES_TAX_RATE = 0.075
 ACCOUNTING_SALES_TAX_REDUCTION_PER_LEVEL = 0.11
 TRADE_PNL_MARKET_FEE_REF_TYPES = frozenset(
@@ -5875,6 +5876,7 @@ def build_flight_reprocessing_payload(
     session: FlightEsiSession,
     ore_type_id: int,
     quantity: int,
+    reprocessing_station_id: int | None = None,
     facility_yield_percent: float | None = None,
     station_tax_percent: float | None = None,
     implant_bonus_percent: float | None = None,
@@ -5903,6 +5905,7 @@ def build_flight_reprocessing_payload(
         cache=cache,
         location=location,
         standings=standings,
+        selected_station_id=reprocessing_station_id,
         facility_yield_percent=facility_yield_percent,
         station_tax_percent=station_tax_percent,
     )
@@ -5913,18 +5916,17 @@ def build_flight_reprocessing_payload(
         maximum=MAX_REPROCESSING_BONUS_PERCENT,
     )
 
-    facility_yield_rate = location_profile["facility_yield_percent"] / 100.0
-    raw_yield_rate = (
-        facility_yield_rate
-        * (1.0 + 0.03 * skill_profile["reprocessing_level"])
-        * (1.0 + 0.02 * skill_profile["reprocessing_efficiency_level"])
-        * (1.0 + 0.02 * skill_profile["specialization_level"])
-        * (1.0 + implant_profile["bonus_percent"] / 100.0)
-        * (1.0 + clean_structure_bonus_percent / 100.0)
+    yield_rates = build_reprocessing_yield_rates(
+        facility_yield_percent=location_profile["facility_yield_percent"],
+        station_tax_percent=location_profile["station_tax_percent"],
+        skill_profile=skill_profile,
+        implant_profile=implant_profile,
+        structure_bonus_percent=clean_structure_bonus_percent,
     )
-    gross_yield_rate = min(max(raw_yield_rate, 0.0), 1.0)
-    tax_rate = max(0.0, min(1.0, location_profile["station_tax_percent"] / 100.0))
-    net_yield_rate = gross_yield_rate * (1.0 - tax_rate)
+    raw_yield_rate = yield_rates["raw_yield_rate"]
+    gross_yield_rate = yield_rates["gross_yield_rate"]
+    tax_rate = yield_rates["station_tax_rate"]
+    net_yield_rate = yield_rates["net_yield_rate"]
     portions = clean_quantity // ore.portion_size
     leftover_units = clean_quantity % ore.portion_size
     output_materials = []
@@ -6004,6 +6006,165 @@ def build_flight_reprocessing_payload(
         "jita_valuation": jita_valuation,
         "notes": notes,
     }
+
+
+def build_flight_reprocessing_locations_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    ore_type_id: int,
+    implant_bonus_percent: float | None = None,
+    structure_bonus_percent: float = 0.0,
+) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE, FLIGHT_STANDINGS_SCOPE))
+    cache = load_reprocessing_cache()
+    if not cache.available or not cache.ores:
+        raise CorpMarketError(cache.error or "Reprocessing cache is not available.")
+    ore = cache.ores.get(int(ore_type_id))
+    if ore is None:
+        raise CorpMarketError("Choose an ore type from the reprocessing cache.")
+    skills = fetch_flight_skills(config, session)
+    standings = fetch_flight_standings(config, session)
+    location = fetch_flight_location(config, session)
+    implant_profile = build_reprocessing_implant_profile(
+        config,
+        session,
+        implant_bonus_percent=implant_bonus_percent,
+    )
+    skill_profile = build_reprocessing_skill_profile(skills, ore)
+    clean_structure_bonus_percent = clamp_reprocessing_percent(
+        structure_bonus_percent,
+        "structure bonus percent",
+        maximum=MAX_REPROCESSING_BONUS_PERCENT,
+    )
+    current_location = build_reprocessing_location_profile(
+        config,
+        session,
+        cache=cache,
+        location=location,
+        standings=standings,
+        selected_station_id=None,
+        facility_yield_percent=None,
+        station_tax_percent=None,
+    )
+    station_options, total_matching = build_reprocessing_station_options(
+        cache=cache,
+        route_cache=load_route_graph_cache(),
+        standings=standings,
+        skill_profile=skill_profile,
+        implant_profile=implant_profile,
+        structure_bonus_percent=clean_structure_bonus_percent,
+    )
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "ore": {
+            "type_id": ore.type_id,
+            "name": ore.name,
+            "group_name": ore.group_name,
+            "specialization_skill_name": ore.specialization_skill_name,
+        },
+        "implant": implant_profile,
+        "skills": skill_profile,
+        "structure_bonus_percent": clean_structure_bonus_percent,
+        "current_location": current_location,
+        "stations": station_options,
+        "station_count": len(station_options),
+        "total_matching_stations": total_matching,
+        "truncated": total_matching > len(station_options),
+        "limit": MAX_REPROCESSING_STATION_OPTIONS,
+        "notes": [
+            "Station options are NPC stations from the local SDE cache whose owner corporation or faction appears in your ESI standings.",
+            "Options are ranked by estimated net reprocessing yield after standings-adjusted station tax.",
+        ],
+    }
+
+
+def build_reprocessing_station_options(
+    *,
+    cache: ReprocessingCache,
+    route_cache: RouteGraphCache,
+    standings: Iterable[dict[str, Any]],
+    skill_profile: dict[str, Any],
+    implant_profile: dict[str, Any],
+    structure_bonus_percent: float,
+) -> tuple[list[dict[str, Any]], int]:
+    systems = route_cache.systems or {} if route_cache.available else {}
+    options = []
+    for station in (cache.stations or {}).values():
+        standing_value, standing_source = reprocessing_station_standing(
+            standings,
+            station=station,
+            owner_id=station.owner_id,
+        )
+        if standing_value is None:
+            continue
+        base_yield_percent = station_reprocessing_yield_percent(station)
+        base_station_tax_rate = station.reprocessing_tax_rate if station.reprocessing_tax_rate is not None else 0.0
+        station_tax_rate = npc_reprocessing_station_tax_rate(base_station_tax_rate, standing_value)
+        rates = build_reprocessing_yield_rates(
+            facility_yield_percent=base_yield_percent,
+            station_tax_percent=station_tax_rate * 100.0,
+            skill_profile=skill_profile,
+            implant_profile=implant_profile,
+            structure_bonus_percent=structure_bonus_percent,
+        )
+        solar_system_id = station.solar_system_id or 0
+        system = systems.get(solar_system_id)
+        solar_system_name = system.name if system else (f"System {solar_system_id}" if solar_system_id else "")
+        options.append(
+            {
+                "station_id": station.station_id,
+                "label": reprocessing_station_option_label(
+                    station=station,
+                    solar_system_name=solar_system_name,
+                    net_yield_percent=rates["net_yield_percent"],
+                    station_tax_percent=station_tax_rate * 100.0,
+                    standing=standing_value,
+                ),
+                "owner_id": station.owner_id,
+                "owner_name": station.owner_name,
+                "owner_faction_id": station.owner_faction_id,
+                "solar_system_id": station.solar_system_id,
+                "solar_system_name": solar_system_name,
+                "station_type_id": station.type_id,
+                "facility_yield_percent": base_yield_percent,
+                "base_station_tax_percent": base_station_tax_rate * 100.0,
+                "station_tax_percent": station_tax_rate * 100.0,
+                "standing": standing_value,
+                "standing_source": standing_source,
+                "gross_yield_percent": rates["gross_yield_percent"],
+                "net_yield_percent": rates["net_yield_percent"],
+                "capped": rates["capped"],
+            }
+        )
+    options.sort(
+        key=lambda item: (
+            -float(item["net_yield_percent"]),
+            float(item["station_tax_percent"]),
+            str(item.get("solar_system_name") or ""),
+            str(item.get("owner_name") or ""),
+            int(item["station_id"]),
+        )
+    )
+    return options[:MAX_REPROCESSING_STATION_OPTIONS], len(options)
+
+
+def reprocessing_station_option_label(
+    *,
+    station: ReprocessingStation,
+    solar_system_name: str,
+    net_yield_percent: float,
+    station_tax_percent: float,
+    standing: float,
+) -> str:
+    owner = station.owner_name or f"Owner {station.owner_id or 'unknown'}"
+    system = solar_system_name or f"System {station.solar_system_id or 'unknown'}"
+    return (
+        f"{net_yield_percent:.2f}% net - {system} - {owner} "
+        f"(standing {standing:.2f}, tax {station_tax_percent:.2f}%, station {station.station_id})"
+    )
 
 
 def build_reprocessing_jita_valuation(
@@ -6096,6 +6257,44 @@ def build_reprocessing_jita_valuation(
     }
 
 
+def station_reprocessing_yield_percent(station: ReprocessingStation | None) -> float:
+    if station and station.reprocessing_efficiency is not None:
+        return station.reprocessing_efficiency * 100.0
+    return DEFAULT_REPROCESSING_FACILITY_YIELD_PERCENT
+
+
+def build_reprocessing_yield_rates(
+    *,
+    facility_yield_percent: float,
+    station_tax_percent: float,
+    skill_profile: dict[str, Any],
+    implant_profile: dict[str, Any],
+    structure_bonus_percent: float,
+) -> dict[str, Any]:
+    facility_yield_rate = max(0.0, min(1.0, float(facility_yield_percent or 0.0) / 100.0))
+    station_tax_rate = max(0.0, min(1.0, float(station_tax_percent or 0.0) / 100.0))
+    raw_yield_rate = (
+        facility_yield_rate
+        * float(skill_profile.get("reprocessing_multiplier") or 1.0)
+        * float(skill_profile.get("reprocessing_efficiency_multiplier") or 1.0)
+        * float(skill_profile.get("specialization_multiplier") or 1.0)
+        * (1.0 + float(implant_profile.get("bonus_percent") or 0.0) / 100.0)
+        * (1.0 + float(structure_bonus_percent or 0.0) / 100.0)
+    )
+    gross_yield_rate = min(max(raw_yield_rate, 0.0), 1.0)
+    net_yield_rate = gross_yield_rate * (1.0 - station_tax_rate)
+    return {
+        "raw_yield_rate": raw_yield_rate,
+        "gross_yield_rate": gross_yield_rate,
+        "gross_yield_percent": gross_yield_rate * 100.0,
+        "station_tax_rate": station_tax_rate,
+        "station_tax_percent": station_tax_rate * 100.0,
+        "net_yield_rate": net_yield_rate,
+        "net_yield_percent": net_yield_rate * 100.0,
+        "capped": raw_yield_rate > gross_yield_rate,
+    }
+
+
 def build_reprocessing_skill_profile(skills_payload: dict[str, Any], ore: ReprocessingOre) -> dict[str, Any]:
     reprocessing_level = skill_level_from_esi(skills_payload, REPROCESSING_SKILL_TYPE_ID)
     efficiency_level = skill_level_from_esi(skills_payload, REPROCESSING_EFFICIENCY_SKILL_TYPE_ID)
@@ -6163,13 +6362,16 @@ def build_reprocessing_location_profile(
     cache: ReprocessingCache,
     location: dict[str, Any],
     standings: Iterable[dict[str, Any]],
+    selected_station_id: int | None,
     facility_yield_percent: float | None,
     station_tax_percent: float | None,
 ) -> dict[str, Any]:
     notes: list[str] = []
-    station_id = clean_optional_int(location.get("station_id"))
-    structure_id = clean_optional_int(location.get("structure_id"))
+    station_id = selected_station_id if selected_station_id and selected_station_id > 0 else clean_optional_int(location.get("station_id"))
+    structure_id = None if selected_station_id else clean_optional_int(location.get("structure_id"))
     station = (cache.stations or {}).get(station_id or 0)
+    if selected_station_id and station is None:
+        raise CorpMarketError("Selected reprocessing station is not available in the local SDE cache.")
     station_detail: dict[str, Any] = {}
     structure_detail: dict[str, Any] = {}
     owner_id = station.owner_id if station else None
@@ -6184,7 +6386,7 @@ def build_reprocessing_location_profile(
 
     if station_id:
         location_kind = "npc-station"
-        source = "sde-npc-station"
+        source = "selected-sde-npc-station" if selected_station_id else "sde-npc-station"
         try:
             station_detail = fetch_universe_station(config, station_id)
         except CorpMarketError as exc:
@@ -6192,9 +6394,8 @@ def build_reprocessing_location_profile(
         location_name = str(station_detail.get("name") or f"Station {station_id}")
         if owner_id is None:
             owner_id = clean_optional_int(station_detail.get("owner") or station_detail.get("owner_id"))
-        if station and station.reprocessing_efficiency is not None:
-            base_yield_percent = station.reprocessing_efficiency * 100.0
-        else:
+        base_yield_percent = station_reprocessing_yield_percent(station)
+        if not station or station.reprocessing_efficiency is None:
             notes.append("NPC station reprocessing efficiency was not found in the static cache; using 50%.")
         if station and station.reprocessing_tax_rate is not None:
             base_station_tax_rate = station.reprocessing_tax_rate
@@ -6204,6 +6405,8 @@ def build_reprocessing_location_profile(
             except CorpMarketError:
                 owner_name = ""
         standing_value, standing_source = reprocessing_station_standing(standings, station=station, owner_id=owner_id)
+        if selected_station_id:
+            notes.append("Using the selected NPC station instead of the pilot's current ESI location.")
     elif structure_id:
         location_kind = "structure"
         source = "structure-default"
@@ -6267,6 +6470,7 @@ def build_reprocessing_location_profile(
         "owner_name": owner_name,
         "standing": standing_value,
         "standing_source": standing_source,
+        "selected_station_id": selected_station_id,
         "station": station.to_dict() if station else None,
         "structure": {
             "name": structure_detail.get("name"),
@@ -6689,6 +6893,9 @@ def build_http_server(
             if path == "/api/flight/reprocessing":
                 self._handle_flight_reprocessing()
                 return
+            if path == "/api/flight/reprocessing-locations":
+                self._handle_flight_reprocessing_locations()
+                return
             if path == "/flight/login":
                 self._handle_flight_login()
                 return
@@ -7042,6 +7249,10 @@ def build_http_server(
             try:
                 ore_type_id = clean_positive_int(first_query_value(query, "ore_type_id"), "ore_type_id")
                 quantity = clean_reprocessing_quantity(first_query_value(query, "quantity"))
+                reprocessing_station_id = clean_optional_int(
+                    first_query_value(query, "reprocessing_station_id")
+                    or first_query_value(query, "station_id")
+                )
                 facility_yield = parse_optional_reprocessing_percent(
                     first_query_value(query, "facility_yield_percent"),
                     "facility yield percent",
@@ -7067,8 +7278,38 @@ def build_http_server(
                     session=session,
                     ore_type_id=ore_type_id,
                     quantity=quantity,
+                    reprocessing_station_id=reprocessing_station_id,
                     facility_yield_percent=facility_yield,
                     station_tax_percent=station_tax,
+                    implant_bonus_percent=implant_bonus,
+                    structure_bonus_percent=structure_bonus,
+                )
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
+        def _handle_flight_reprocessing_locations(self) -> None:
+            session = self._require_flight_session("loading reprocessing locations")
+            if session is None:
+                return
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                ore_type_id = clean_positive_int(first_query_value(query, "ore_type_id"), "ore_type_id")
+                implant_bonus = parse_optional_reprocessing_percent(
+                    first_query_value(query, "implant_bonus_percent"),
+                    "implant bonus percent",
+                    maximum=MAX_REPROCESSING_BONUS_PERCENT,
+                )
+                structure_bonus = clamp_reprocessing_percent(
+                    first_query_value(query, "structure_bonus_percent") or 0,
+                    "structure bonus percent",
+                    maximum=MAX_REPROCESSING_BONUS_PERCENT,
+                )
+                payload = build_flight_reprocessing_locations_payload(
+                    config=sso_config,
+                    session=session,
+                    ore_type_id=ore_type_id,
                     implant_bonus_percent=implant_bonus,
                     structure_bonus_percent=structure_bonus,
                 )
@@ -9059,32 +9300,49 @@ def _render_flight_attendant_dashboard() -> str:
                 </label>
               </div>
               <div class="row">
-                <label>Facility yield override
-                  <input id="reprocess-facility-yield" name="facility_yield_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto or 50">
-                  <small class="input-note">Leave blank to use NPC station SDE data or a safe 50% default.</small>
+                <label>Reprocessing location
+                  <select id="reprocess-station-select" name="reprocessing_station_id">
+                    <option value="current">Use current ESI location</option>
+                  </select>
+                  <small id="reprocess-location-status" class="input-note">Connect ESI to rank stations you have standing with.</small>
                 </label>
-                <label>Station tax override
-                  <input id="reprocess-station-tax" name="station_tax_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto">
-                  <small class="input-note">Leave blank to estimate NPC tax from ESI standings and station owner.</small>
-                </label>
-              </div>
-              <div class="row">
-                <label>Implant override
-                  <input id="reprocess-implant-bonus" name="implant_bonus_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto">
-                  <small class="input-note">Leave blank to read known RX-801, RX-802, or RX-804 implants from ESI.</small>
-                </label>
-                <label>Structure bonus override
-                  <input id="reprocess-structure-bonus" name="structure_bonus_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="0">
-                  <small class="input-note">Use this for Upwell rigs/security/structure bonuses ESI cannot expose here.</small>
+                <label>Station list
+                  <button id="reprocess-refresh-locations" class="secondary" type="button">Refresh Locations</button>
+                  <small class="input-note">NPC stations are ranked by estimated net yield after standings tax.</small>
                 </label>
               </div>
+              <details class="output-details">
+                <summary>Manual Overrides</summary>
+                <div class="output-details-body">
+                  <div class="row">
+                    <label>Facility yield override
+                      <input id="reprocess-facility-yield" name="facility_yield_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto or selected station">
+                      <small class="input-note">Leave blank to use the selected/current station value.</small>
+                    </label>
+                    <label>Station tax override
+                      <input id="reprocess-station-tax" name="station_tax_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto">
+                      <small class="input-note">Leave blank to estimate NPC tax from ESI standings and station owner.</small>
+                    </label>
+                  </div>
+                  <div class="row">
+                    <label>Implant override
+                      <input id="reprocess-implant-bonus" name="implant_bonus_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto">
+                      <small class="input-note">Leave blank to read known RX-801, RX-802, or RX-804 implants from ESI.</small>
+                    </label>
+                    <label>Structure bonus override
+                      <input id="reprocess-structure-bonus" name="structure_bonus_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="0">
+                      <small class="input-note">Use this for Upwell rigs/security/structure bonuses ESI cannot expose here.</small>
+                    </label>
+                  </div>
+                </div>
+              </details>
               <button id="reprocess-calculate" class="ghost" type="submit">Calculate Reprocessing</button>
             </form>
             <details class="output-details" open>
               <summary>Calculation Summary</summary>
               <div class="output-details-body">
                 <div id="reprocess-summary" class="profit-summary">Connect ESI, choose ore, and enter the amount to calculate.</div>
-                <div id="reprocess-location" class="meta"></div>
+                <div id="reprocess-location-detail" class="meta"></div>
               </div>
             </details>
           </section>
@@ -9206,13 +9464,16 @@ def _render_flight_attendant_dashboard() -> str:
     const reprocessingForm = document.querySelector("#reprocessing-form");
     const reprocessOre = document.querySelector("#reprocess-ore");
     const reprocessQuantity = document.querySelector("#reprocess-quantity");
+    const reprocessStationSelect = document.querySelector("#reprocess-station-select");
+    const reprocessLocationStatus = document.querySelector("#reprocess-location-status");
+    const reprocessRefreshLocations = document.querySelector("#reprocess-refresh-locations");
     const reprocessFacilityYield = document.querySelector("#reprocess-facility-yield");
     const reprocessStationTax = document.querySelector("#reprocess-station-tax");
     const reprocessImplantBonus = document.querySelector("#reprocess-implant-bonus");
     const reprocessStructureBonus = document.querySelector("#reprocess-structure-bonus");
     const reprocessCalculateButton = document.querySelector("#reprocess-calculate");
     const reprocessSummary = document.querySelector("#reprocess-summary");
-    const reprocessLocation = document.querySelector("#reprocess-location");
+    const reprocessLocationDetail = document.querySelector("#reprocess-location-detail");
     const reprocessResults = document.querySelector("#reprocess-results");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
@@ -9243,6 +9504,7 @@ def _render_flight_attendant_dashboard() -> str:
     const tradePnlShowMatchesKey = "eve-flight-trade-pnl-show-matches-v1";
     const reprocessOreKey = "eve-flight-reprocess-ore-type-v1";
     const reprocessQuantityKey = "eve-flight-reprocess-quantity-v1";
+    const reprocessLocationKey = "eve-flight-reprocess-location-v1";
     const reprocessFacilityYieldKey = "eve-flight-reprocess-facility-yield-v1";
     const reprocessStationTaxKey = "eve-flight-reprocess-station-tax-v1";
     const reprocessImplantBonusKey = "eve-flight-reprocess-implant-bonus-v1";
@@ -9746,6 +10008,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetMarketAcquisition("Market acquisition planner is offline.");
         resetTradePnl("Trade P&L analyzer is offline.");
         resetReprocessing("Ore reprocessing calculator is offline.");
+        clearReprocessingLocations("Ore reprocessing calculator is offline.", true);
         resetFlightIndustry("Flight Attendant ESI status is offline.");
       }
     }
@@ -9771,6 +10034,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetMarketAcquisition("Configure EVE SSO before planning market acquisitions.");
         resetTradePnl("Configure EVE SSO before analyzing trade history.");
         resetReprocessing("Configure EVE SSO before calculating ore reprocessing.");
+        clearReprocessingLocations("Configure EVE SSO before ranking reprocessing stations.", true);
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
         return;
       }
@@ -9787,6 +10051,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetMarketAcquisition("Connect ESI to plan public buy orders.");
         resetTradePnl("Connect ESI to analyze recent wallet transactions.");
         resetReprocessing("Connect ESI to calculate ore reprocessing.");
+        clearReprocessingLocations("Connect ESI to rank reprocessing stations.", true);
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
       }
@@ -9806,6 +10071,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetMarketAcquisition("Use an allowlisted EVE character before planning market acquisitions.");
         resetTradePnl("Use an allowlisted EVE character before analyzing trade history.");
         resetReprocessing("Use an allowlisted EVE character before calculating ore reprocessing.");
+        clearReprocessingLocations("Use an allowlisted EVE character before ranking reprocessing stations.", true);
         resetFlightIndustry("Use an allowlisted EVE character before scanning industry data.");
         return;
       }
@@ -9820,6 +10086,7 @@ def _render_flight_attendant_dashboard() -> str:
         resetMarketAcquisition("Resolve the ESI error before planning market acquisitions.");
         resetTradePnl("Resolve the ESI error before analyzing trade history.");
         resetReprocessing("Resolve the ESI error before calculating ore reprocessing.");
+        clearReprocessingLocations("Resolve the ESI error before ranking reprocessing stations.", true);
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
         return;
       }
@@ -9842,6 +10109,7 @@ def _render_flight_attendant_dashboard() -> str:
       resetTradePnl(`Ready to analyze ${tradePnlWindowLabel(tradePnlSettings.windowHours)} of trade history.`);
       const reprocessSettings = readReprocessingSettings();
       resetReprocessing(`Ready to calculate ${formatNumber(reprocessSettings.quantity)} ore units.`);
+      loadReprocessingLocations();
       loadFlightIndustry();
     }
 
@@ -10925,6 +11193,7 @@ def _render_flight_attendant_dashboard() -> str:
       return {
         oreTypeId: String(window.localStorage.getItem(reprocessOreKey) || reprocessOre.value || "").trim(),
         quantity: clampReprocessQuantity(window.localStorage.getItem(reprocessQuantityKey) || reprocessQuantity.value || 100),
+        locationId: String(window.localStorage.getItem(reprocessLocationKey) || reprocessStationSelect.value || "current").trim() || "current",
         facilityYieldPercent: String(window.localStorage.getItem(reprocessFacilityYieldKey) || reprocessFacilityYield.value || "").trim(),
         stationTaxPercent: String(window.localStorage.getItem(reprocessStationTaxKey) || reprocessStationTax.value || "").trim(),
         implantBonusPercent: String(window.localStorage.getItem(reprocessImplantBonusKey) || reprocessImplantBonus.value || "").trim(),
@@ -10938,18 +11207,25 @@ def _render_flight_attendant_dashboard() -> str:
         ? String(settings.oreTypeId || "")
         : String(reprocessOre.value || availableOreValues[0] || "");
       const quantity = clampReprocessQuantity(settings.quantity);
+      const availableLocationValues = Array.from(reprocessStationSelect.options).map((option) => option.value).filter(Boolean);
+      const requestedLocationId = String(settings.locationId || "current").trim() || "current";
+      const locationId = availableLocationValues.includes(requestedLocationId)
+        ? requestedLocationId
+        : (requestedLocationId !== "current" && availableLocationValues.length <= 1 ? requestedLocationId : "current");
       const facilityYieldPercent = String(settings.facilityYieldPercent || "").trim();
       const stationTaxPercent = String(settings.stationTaxPercent || "").trim();
       const implantBonusPercent = String(settings.implantBonusPercent || "").trim();
       const structureBonusPercent = String(settings.structureBonusPercent || "0").trim() || "0";
       reprocessOre.value = oreTypeId;
       reprocessQuantity.value = String(quantity);
+      reprocessStationSelect.value = availableLocationValues.includes(locationId) ? locationId : "current";
       reprocessFacilityYield.value = facilityYieldPercent;
       reprocessStationTax.value = stationTaxPercent;
       reprocessImplantBonus.value = implantBonusPercent;
       reprocessStructureBonus.value = structureBonusPercent;
       window.localStorage.setItem(reprocessOreKey, oreTypeId);
       window.localStorage.setItem(reprocessQuantityKey, String(quantity));
+      window.localStorage.setItem(reprocessLocationKey, locationId);
       window.localStorage.setItem(reprocessFacilityYieldKey, facilityYieldPercent);
       window.localStorage.setItem(reprocessStationTaxKey, stationTaxPercent);
       window.localStorage.setItem(reprocessImplantBonusKey, implantBonusPercent);
@@ -10957,6 +11233,7 @@ def _render_flight_attendant_dashboard() -> str:
       return {
         oreTypeId,
         quantity,
+        locationId,
         facilityYieldPercent,
         stationTaxPercent,
         implantBonusPercent,
@@ -10966,15 +11243,90 @@ def _render_flight_attendant_dashboard() -> str:
 
     function resetReprocessing(message) {
       reprocessSummary.textContent = message;
-      reprocessLocation.textContent = "";
+      reprocessLocationDetail.textContent = "";
       reprocessResults.textContent = "";
+      reprocessLocationStatus.textContent = message;
       reprocessCalculateButton.disabled = false;
+      reprocessRefreshLocations.disabled = false;
+    }
+
+    function clearReprocessingLocations(message, disabled = false) {
+      reprocessStationSelect.innerHTML = `<option value="current">Use current ESI location</option>`;
+      reprocessStationSelect.value = "current";
+      window.localStorage.setItem(reprocessLocationKey, "current");
+      reprocessLocationStatus.textContent = message;
+      reprocessRefreshLocations.disabled = disabled;
+    }
+
+    async function loadReprocessingLocations() {
+      const settings = writeReprocessingSettings({
+        oreTypeId: reprocessOre.value,
+        quantity: reprocessQuantity.value,
+        locationId: String(window.localStorage.getItem(reprocessLocationKey) || reprocessStationSelect.value || "current"),
+        facilityYieldPercent: readOptionalPercentInput(reprocessFacilityYield),
+        stationTaxPercent: readOptionalPercentInput(reprocessStationTax),
+        implantBonusPercent: readOptionalPercentInput(reprocessImplantBonus),
+        structureBonusPercent: readOptionalPercentInput(reprocessStructureBonus) || "0",
+      });
+      if (!settings.oreTypeId) {
+        clearReprocessingLocations("Run the cache refresh before ranking reprocessing stations.");
+        return;
+      }
+      reprocessRefreshLocations.disabled = true;
+      reprocessLocationStatus.textContent = "Loading stations from ESI standings and local SDE data...";
+      const params = new URLSearchParams({
+        ore_type_id: settings.oreTypeId,
+        structure_bonus_percent: settings.structureBonusPercent || "0",
+      });
+      if (settings.implantBonusPercent) params.set("implant_bonus_percent", settings.implantBonusPercent);
+      try {
+        const response = await fetch(`/api/flight/reprocessing-locations?${params}`);
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Could not load reprocessing locations");
+        renderReprocessingLocations(data, settings.locationId);
+      } catch (error) {
+        reprocessLocationStatus.textContent = error.message;
+      } finally {
+        reprocessRefreshLocations.disabled = false;
+      }
+    }
+
+    function renderReprocessingLocations(data, selectedLocationId) {
+      const current = data.current_location || {};
+      const stations = Array.isArray(data.stations) ? data.stations : [];
+      reprocessStationSelect.innerHTML = "";
+      const currentOption = document.createElement("option");
+      currentOption.value = "current";
+      currentOption.textContent = current.location_name
+        ? `Use current ESI location - ${current.location_name}`
+        : "Use current ESI location";
+      reprocessStationSelect.appendChild(currentOption);
+      for (const station of stations) {
+        const option = document.createElement("option");
+        option.value = String(station.station_id || "");
+        option.textContent = station.label || `${formatPercent(station.net_yield_percent)} net - Station ${station.station_id}`;
+        reprocessStationSelect.appendChild(option);
+      }
+      const availableValues = Array.from(reprocessStationSelect.options).map((option) => option.value);
+      reprocessStationSelect.value = availableValues.includes(String(selectedLocationId || "current"))
+        ? String(selectedLocationId || "current")
+        : "current";
+      window.localStorage.setItem(reprocessLocationKey, reprocessStationSelect.value);
+      const total = Number(data.total_matching_stations || stations.length || 0);
+      if (!stations.length) {
+        reprocessLocationStatus.textContent = "No NPC reprocessing stations matched your ESI standings.";
+      } else if (data.truncated) {
+        reprocessLocationStatus.textContent = `Showing top ${formatNumber(stations.length)} of ${formatNumber(total)} standing-matched NPC stations.`;
+      } else {
+        reprocessLocationStatus.textContent = `Loaded ${formatNumber(stations.length)} standing-matched NPC stations, ranked by net yield.`;
+      }
     }
 
     async function loadReprocessingCalculation() {
       const settings = writeReprocessingSettings({
         oreTypeId: reprocessOre.value,
         quantity: reprocessQuantity.value,
+        locationId: String(window.localStorage.getItem(reprocessLocationKey) || reprocessStationSelect.value || "current"),
         facilityYieldPercent: readOptionalPercentInput(reprocessFacilityYield),
         stationTaxPercent: readOptionalPercentInput(reprocessStationTax),
         implantBonusPercent: readOptionalPercentInput(reprocessImplantBonus),
@@ -10986,13 +11338,16 @@ def _render_flight_attendant_dashboard() -> str:
       }
       reprocessCalculateButton.disabled = true;
       reprocessSummary.textContent = `Calculating ${formatNumber(settings.quantity)} ore units...`;
-      reprocessLocation.textContent = "";
+      reprocessLocationDetail.textContent = "";
       reprocessResults.innerHTML = `<div class="decision-empty">Mineral output will appear here when the calculation finishes.</div>`;
       const params = new URLSearchParams({
         ore_type_id: settings.oreTypeId,
         quantity: String(settings.quantity),
         structure_bonus_percent: settings.structureBonusPercent || "0",
       });
+      if (settings.locationId && settings.locationId !== "current") {
+        params.set("reprocessing_station_id", settings.locationId);
+      }
       if (settings.facilityYieldPercent) params.set("facility_yield_percent", settings.facilityYieldPercent);
       if (settings.stationTaxPercent) params.set("station_tax_percent", settings.stationTaxPercent);
       if (settings.implantBonusPercent) params.set("implant_bonus_percent", settings.implantBonusPercent);
@@ -11003,7 +11358,7 @@ def _render_flight_attendant_dashboard() -> str:
         renderReprocessingCalculation(data);
       } catch (error) {
         reprocessSummary.textContent = error.message;
-        reprocessLocation.textContent = "";
+        reprocessLocationDetail.textContent = "";
         reprocessResults.textContent = "";
       } finally {
         reprocessCalculateButton.disabled = false;
@@ -11034,7 +11389,7 @@ def _render_flight_attendant_dashboard() -> str:
         <div class="meta">Jita pricing uses public buy orders in ${escapeHtml((valuation.system || {}).name || "Jita")}; ${renderReprocessingJitaCoverage(valuation)}.</div>
       `;
       const owner = facility.owner_name || (facility.owner_id ? `Owner ${facility.owner_id}` : "unknown owner");
-      reprocessLocation.innerHTML = `
+      reprocessLocationDetail.innerHTML = `
         Location: <strong>${escapeHtml(facility.location_name || "current location")}</strong>
         (${escapeHtml(facility.location_kind || "unknown")}); owner ${escapeHtml(owner)}; standing
         ${facility.standing == null ? "unknown" : Number(facility.standing).toFixed(2)}
@@ -11507,6 +11862,7 @@ def _render_flight_attendant_dashboard() -> str:
       const settings = writeReprocessingSettings({
         oreTypeId: reprocessOre.value,
         quantity: reprocessQuantity.value,
+        locationId: reprocessStationSelect.value,
         facilityYieldPercent: readOptionalPercentInput(reprocessFacilityYield),
         stationTaxPercent: readOptionalPercentInput(reprocessStationTax),
         implantBonusPercent: readOptionalPercentInput(reprocessImplantBonus),
@@ -11515,16 +11871,23 @@ def _render_flight_attendant_dashboard() -> str:
       resetReprocessing(`Ready to calculate ${formatNumber(settings.quantity)} ore units.`);
     }
 
+    function updateReprocessingStationsAndReset() {
+      updateReprocessingAndReset();
+      loadReprocessingLocations();
+    }
+
     reprocessingForm.addEventListener("submit", (event) => {
       event.preventDefault();
       loadReprocessingCalculation();
     });
-    reprocessOre.addEventListener("change", updateReprocessingAndReset);
+    reprocessOre.addEventListener("change", updateReprocessingStationsAndReset);
     reprocessQuantity.addEventListener("change", updateReprocessingAndReset);
+    reprocessStationSelect.addEventListener("change", updateReprocessingAndReset);
+    reprocessRefreshLocations.addEventListener("click", loadReprocessingLocations);
     reprocessFacilityYield.addEventListener("change", updateReprocessingAndReset);
     reprocessStationTax.addEventListener("change", updateReprocessingAndReset);
-    reprocessImplantBonus.addEventListener("change", updateReprocessingAndReset);
-    reprocessStructureBonus.addEventListener("change", updateReprocessingAndReset);
+    reprocessImplantBonus.addEventListener("change", updateReprocessingStationsAndReset);
+    reprocessStructureBonus.addEventListener("change", updateReprocessingStationsAndReset);
 
     flightProfitFilters.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-profit-filter]");
