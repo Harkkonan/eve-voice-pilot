@@ -3252,6 +3252,42 @@ def _render_flight_attendant_dashboard() -> str:
       color: var(--muted);
       min-width: min(100%, 560px);
     }
+    .progress-status { display: flex; align-items: center; gap: 12px; }
+    .progress-spinner {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      border: 3px solid rgba(97, 199, 217, .22);
+      border-top-color: var(--cyan);
+      animation: flight-spin .9s linear infinite;
+      flex: 0 0 auto;
+    }
+    .progress-copy { display: grid; gap: 2px; min-width: 0; }
+    .progress-copy strong { color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
+    .progress-copy span { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .progress-bar {
+      position: relative;
+      overflow: hidden;
+      height: 7px;
+      margin-top: 10px;
+      border-radius: 999px;
+      background: rgba(63, 85, 80, .46);
+    }
+    .progress-bar span {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 38%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, rgba(97, 199, 217, .18), var(--cyan), rgba(224, 168, 74, .76));
+      animation: flight-progress 1.35s ease-in-out infinite;
+    }
+    @keyframes flight-spin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes flight-progress {
+      0% { transform: translateX(-110%); }
+      100% { transform: translateX(265%); }
+    }
     .profit-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 9px; }
     .profit-stat { border: 1px solid rgba(63, 85, 80, .68); background: rgba(17, 24, 25, .7); border-radius: 6px; padding: 8px; min-height: 58px; }
     .profit-stat span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
@@ -3308,6 +3344,10 @@ def _render_flight_attendant_dashboard() -> str:
     .charter-list strong { color: var(--text); }
     .empty, .error { color: var(--muted); padding: 18px 0; }
     .error { color: var(--red); }
+    @media (prefers-reduced-motion: reduce) {
+      .progress-spinner, .progress-bar span { animation: none; }
+      .progress-bar span { width: 100%; opacity: .72; }
+    }
     @media (max-width: 1040px) {
       .market-grid, .flight-grid, .briefing { grid-template-columns: 1fr; }
       .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -3612,6 +3652,7 @@ def _render_flight_attendant_dashboard() -> str:
     let includeClosed = false;
     let flightProfitFilter = "all";
     let flightProfitProducts = [];
+    let flightProfitProgressTimer = null;
 
     function escapeHtml(value) {
       const replacements = {
@@ -3914,6 +3955,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
 
     function resetFlightProfitability(message) {
+      stopFlightProfitProgress();
       flightProfitSummary.textContent = message;
       flightProfitTop.textContent = "";
       flightProfitScanButton.disabled = false;
@@ -3921,17 +3963,53 @@ def _render_flight_attendant_dashboard() -> str:
       updateProfitFilterButtons();
     }
 
+    function stopFlightProfitProgress() {
+      if (flightProfitProgressTimer) {
+        window.clearInterval(flightProfitProgressTimer);
+        flightProfitProgressTimer = null;
+      }
+    }
+
+    function startFlightProfitProgress(maxJumps) {
+      stopFlightProfitProgress();
+      const startedAt = Date.now();
+      const phases = [
+        "Reading ESI blueprints and materials",
+        "Scanning nearby buyer and material orders",
+        "Pricing build inputs",
+        "Ranking blueprint decisions",
+      ];
+      const renderProgress = () => {
+        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        const phaseIndex = Math.min(phases.length - 1, Math.floor(elapsedSeconds / 15));
+        flightProfitSummary.innerHTML = `
+          <div class="progress-status" aria-live="polite">
+            <span class="progress-spinner" aria-hidden="true"></span>
+            <div class="progress-copy">
+              <strong>${escapeHtml(phases[phaseIndex])}</strong>
+              <span>Working within ${formatNumber(maxJumps)} jumps; ${formatNumber(elapsedSeconds)}s elapsed.</span>
+            </div>
+          </div>
+          <div class="progress-bar" aria-hidden="true"><span></span></div>
+        `;
+      };
+      renderProgress();
+      flightProfitProgressTimer = window.setInterval(renderProgress, 1000);
+    }
+
     async function loadFlightProfitability() {
       const maxJumps = writeMaxJumps(readMaxJumps());
       flightProfitScanButton.disabled = true;
-      flightProfitSummary.textContent = `Ranking profitability within ${maxJumps} jumps...`;
-      flightProfitTop.textContent = "";
+      startFlightProfitProgress(maxJumps);
+      flightProfitTop.innerHTML = `<div class="decision-empty">Ranking profitability. Results will appear here when the scan finishes.</div>`;
       try {
         const response = await fetch(`/api/flight/profitability?max_jumps=${encodeURIComponent(maxJumps)}`);
         const data = await response.json();
         if (!data.ok) throw new Error(data.error || "Could not rank profitability");
+        stopFlightProfitProgress();
         renderFlightProfitability(data.profitability || {});
       } catch (error) {
+        stopFlightProfitProgress();
         flightProfitSummary.textContent = error.message;
         flightProfitTop.textContent = "";
       } finally {

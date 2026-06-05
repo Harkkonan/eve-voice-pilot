@@ -233,6 +233,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-profit-filter=\"build-now\"" in page
     assert "data-profit-filter=\"source-missing\"" in page
     assert "data-profit-filter=\"price-check\"" in page
+    assert "progress-spinner" in page
+    assert "flight-progress" in page
+    assert "startFlightProfitProgress" in page
 
 
 def test_flight_status_reports_missing_sso_configuration():
