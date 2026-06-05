@@ -392,6 +392,18 @@ def test_adjusted_material_quantity_applies_blueprint_me_to_whole_job():
     assert corp_market.adjusted_material_quantity(1000, -2) == 1020
 
 
+def test_owned_blueprint_parser_treats_unlimited_runs_as_original():
+    blueprint = corp_market.owned_blueprint_from_esi(
+        {"type_id": 681, "quantity": 1, "runs": -1, "material_efficiency": 10, "time_efficiency": 20}
+    )
+
+    assert blueprint is not None
+    assert blueprint.is_original is True
+    assert blueprint.usable_for_one_run is True
+    assert blueprint.kind == "Original"
+    assert blueprint.limited_runs is None
+
+
 def test_haul_cargo_capacity_preserves_decimal_values():
     assert corp_market.clamp_haul_cargo_m3("1234.56") == pytest.approx(1234.56)
     assert corp_market.clamp_haul_cargo_m3("0") == 1.0

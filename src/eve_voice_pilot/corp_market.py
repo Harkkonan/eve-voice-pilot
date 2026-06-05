@@ -287,7 +287,7 @@ class OwnedBlueprint:
 
     @property
     def is_original(self) -> bool:
-        return self.quantity == -1
+        return self.quantity == -1 or self.runs == -1
 
     @property
     def is_copy(self) -> bool:
