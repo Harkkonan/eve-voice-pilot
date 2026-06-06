@@ -149,7 +149,7 @@ Double-click `Start-EveIntelPet.bat` for a local-only always-on-top alert overla
 .\scripts\run_intel_pet.ps1 --pilot-name "Your Character Name"
 ```
 
-Use the `Options` button in the overlay to add, change, or remove pilot-name mention alerts, help phrases, and local alert keywords while it is running. The Options window also has an in-memory history tab for recent pet alerts.
+When idle, the overlay shows only the ship and a small `Options` button. Alert bubbles show only the message text, then hide again. Use `Options` to add, change, or remove pilot-name mention alerts, help phrases, and local alert keywords while it is running. The Options window also has an in-memory history tab for recent pet alerts.
 
 Optional `--enable-location-cheer` uses read-only ESI location with `esi-location.read_location.v1` so the ship flies happily when you reach Dihra, Amarr, or Jita. The pet keeps the access token in memory only while running and does not share your location.
 

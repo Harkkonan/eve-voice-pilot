@@ -15,6 +15,8 @@ from eve_voice_pilot.intel_pet import (
     IntelPetEngine,
     IntelPetSettings,
     clean_user_terms,
+    display_message_from_alert,
+    display_message_from_cheer,
     fetch_pet_location,
     history_item_from_alert,
     history_item_from_cheer,
@@ -267,6 +269,20 @@ def test_history_item_from_cheer_records_location_arrival():
     assert item.detail == "Scout Pilot reached Amarr."
     assert LOCATION_SCOPE in item.meta
     assert item.recorded_at == "2026-06-06T10:45:00Z"
+
+
+def test_display_message_from_alert_is_message_only():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)))
+    alert = engine.analyze(make_message("gate camp on the Amarr undock", speaker="Scout Pilot"))
+
+    assert alert is not None
+    assert display_message_from_alert(alert) == "gate camp on the Amarr undock"
+
+
+def test_display_message_from_cheer_is_short_arrival_text():
+    cheer = IntelPetLocationCheer(system_name="Amarr", character_name="Scout Pilot", updated_at="2026-06-06T10:45:00Z")
+
+    assert display_message_from_cheer(cheer) == "Arrived in Amarr."
 
 
 def test_trim_history_keeps_most_recent_items():

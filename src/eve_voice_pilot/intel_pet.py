@@ -368,6 +368,14 @@ def trim_history(items: Iterable[IntelPetHistoryItem], limit: int = DEFAULT_HIST
     return tuple(items)[-clean_limit:]
 
 
+def display_message_from_alert(alert: IntelPetAlert) -> str:
+    return alert.message or "Message text hidden by settings."
+
+
+def display_message_from_cheer(cheer: IntelPetLocationCheer) -> str:
+    return f"Arrived in {cheer.system_name}."
+
+
 def ship_sprite_frame_paths(asset_dir: Path = DEFAULT_SPRITE_DIR) -> tuple[Path, ...]:
     return tuple(asset_dir / f"ship-frame-{index:02d}.png" for index in range(SHIP_FRAME_COUNT))
 
@@ -615,7 +623,7 @@ def run_overlay(
 
     root = tk.Tk()
     root.title("EVE Intel Pet")
-    root.geometry("430x170+40+40")
+    root.geometry("430x176+40+40")
     root.attributes("-topmost", True)
     root.overrideredirect(True)
     try:
@@ -651,7 +659,7 @@ def run_overlay(
     sprite_canvas.place(x=0, y=32)
     sprite_image_id = None
     if sprite_frames:
-        sprite_image_id = sprite_canvas.create_image(80, 64, image=sprite_frames[0])
+        sprite_image_id = sprite_canvas.create_image(80, 64, image=sprite_frames[0], tags=("drag_handle",))
 
     bubble_canvas = tk.Canvas(pet_frame, width=300, height=152, bg=transparent_color, highlightthickness=0)
     bubble_canvas.place(x=128, y=6)
@@ -746,7 +754,7 @@ def run_overlay(
         8,
         4,
         294,
-        148,
+        112,
         radius=18,
         fill=bubble_fill,
         outline=colors["idle"],
@@ -755,56 +763,31 @@ def run_overlay(
     )
     bubble_tail_id = bubble_canvas.create_polygon(
         12,
-        76,
+        48,
         0,
-        86,
+        58,
         12,
-        96,
+        68,
         fill=bubble_fill,
         outline=colors["idle"],
         width=2,
         tags=("bubble",),
     )
 
-    title_id = bubble_canvas.create_text(
-        24,
-        22,
-        anchor="w",
-        fill="#f8fafc",
-        font=("Segoe UI", 12, "bold"),
-        text="Intel Pet",
-    )
     message_id = bubble_canvas.create_text(
         24,
-        52,
+        22,
         anchor="nw",
         fill="#f8fafc",
         font=("Segoe UI", 10),
-        text="Quiet. Waiting for new chat lines.",
+        text="",
         width=250,
-    )
-    meta_id = bubble_canvas.create_text(
-        24,
-        106,
-        anchor="w",
-        fill="#cbd5e1",
-        font=("Segoe UI", 8),
-        text="Local only. No Discord or server connection.",
-        width=180,
-    )
-    status_id = bubble_canvas.create_text(
-        24,
-        130,
-        anchor="w",
-        fill="#94a3b8",
-        font=("Segoe UI", 8),
-        text=f"Watching {channel_filter.describe()}",
-        width=185,
+        tags=("bubble",),
     )
     options_rect_id = bubble_canvas.create_rectangle(
-        204,
+        10,
         116,
-        268,
+        76,
         140,
         fill="#1f2937",
         outline="#64748b",
@@ -812,31 +795,16 @@ def run_overlay(
         tags=("options_button",),
     )
     options_text_id = bubble_canvas.create_text(
-        236,
+        43,
         128,
         fill="#f8fafc",
         font=("Segoe UI", 8, "bold"),
         text="Options",
         tags=("options_button",),
     )
-    close_rect_id = bubble_canvas.create_rectangle(
-        272,
-        116,
-        288,
-        140,
-        fill="#1f2937",
-        outline="#64748b",
-        width=1,
-        tags=("quit_button",),
-    )
-    close_text_id = bubble_canvas.create_text(
-        280,
-        128,
-        fill="#f8fafc",
-        font=("Segoe UI", 8, "bold"),
-        text="x",
-        tags=("quit_button",),
-    )
+    bubble_item_ids = (*bubble_border_items, bubble_tail_id, message_id)
+    for item_id in bubble_item_ids:
+        bubble_canvas.itemconfigure(item_id, state="hidden")
 
     class CanvasTextVar:
         def __init__(self, canvas: Any, item_id: int, value: str = "") -> None:
@@ -851,10 +819,7 @@ def run_overlay(
         def get(self) -> str:
             return self.value
 
-    title_var = CanvasTextVar(bubble_canvas, title_id, "Intel Pet")
-    message_var = CanvasTextVar(bubble_canvas, message_id, "Quiet. Waiting for new chat lines.")
-    meta_var = CanvasTextVar(bubble_canvas, meta_id, "Local only. No Discord or server connection.")
-    status_var = CanvasTextVar(bubble_canvas, status_id, f"Watching {channel_filter.describe()}")
+    message_var = CanvasTextVar(bubble_canvas, message_id, "")
 
     drag_start: dict[str, int] = {"x": 0, "y": 0}
 
@@ -867,11 +832,15 @@ def run_overlay(
         dy = int(event.y_root) - drag_start["y"]
         drag_start["x"] = int(event.x_root)
         drag_start["y"] = int(event.y_root)
-        root.geometry(f"+{root.winfo_x() + dx}+{root.winfo_y() + dy}")
+        root.geometry(f"{root.winfo_width()}x{root.winfo_height()}+{root.winfo_x() + dx}+{root.winfo_y() + dy}")
 
     for widget in (root, pet_frame, sprite_canvas, bubble_canvas):
         widget.bind("<ButtonPress-1>", begin_drag)
         widget.bind("<B1-Motion>", drag_overlay)
+    sprite_canvas.tag_bind("drag_handle", "<ButtonPress-1>", begin_drag)
+    sprite_canvas.tag_bind("drag_handle", "<B1-Motion>", drag_overlay)
+    bubble_canvas.tag_bind("bubble", "<ButtonPress-1>", begin_drag)
+    bubble_canvas.tag_bind("bubble", "<B1-Motion>", drag_overlay)
 
     def open_options() -> None:
         editor = tk.Toplevel(root)
@@ -933,7 +902,6 @@ def run_overlay(
                 f"{len(settings.extra_keywords)} keyword{'s' if len(settings.extra_keywords) != 1 else ''}",
             )
             editor_status_var.set(f"{action}. {', '.join(counts)} saved.")
-            meta_var.set(f"Alerts active: {', '.join(counts)}.")
 
         def add_term(name: str) -> None:
             term_var = term_vars[name]
@@ -1081,12 +1049,12 @@ def run_overlay(
         footer = ttk.Frame(editor_frame)
         footer.pack(fill="x")
         ttk.Label(footer, textvariable=editor_status_var, wraplength=380).pack(side="left", anchor="w")
+        ttk.Button(footer, text="Quit Pet", command=on_close).pack(side="right", padx=(6, 0))
         ttk.Button(footer, text="Close", command=editor.destroy).pack(side="right")
         if first_entry is not None:
             first_entry.focus_set()
 
     bubble_canvas.tag_bind("options_button", "<Button-1>", lambda _event: open_options())
-    bubble_canvas.tag_bind("quit_button", "<Button-1>", lambda _event: on_close())
 
     idle_after_id: str | None = None
 
@@ -1170,7 +1138,18 @@ def run_overlay(
             bubble_canvas.itemconfigure(item_id, outline=color)
         bubble_canvas.itemconfigure(bubble_tail_id, outline=color)
         bubble_canvas.itemconfigure(options_rect_id, outline=color)
-        bubble_canvas.itemconfigure(close_rect_id, outline=color)
+
+    def show_message_bubble(message: str, *, severity: str) -> None:
+        apply_severity(severity)
+        message_var.set(message)
+        for item_id in bubble_item_ids:
+            bubble_canvas.itemconfigure(item_id, state="normal")
+
+    def hide_message_bubble() -> None:
+        message_var.set("")
+        for item_id in bubble_item_ids:
+            bubble_canvas.itemconfigure(item_id, state="hidden")
+        apply_severity("idle")
 
     def remember_history(item: IntelPetHistoryItem) -> None:
         history_items.append(item)
@@ -1184,20 +1163,13 @@ def run_overlay(
         cancel_sprite_cycle()
         set_sprite_frame(0)
         schedule_idle_sprite_cycle()
-        apply_severity("idle")
-        title_var.set("Intel Pet")
-        message_var.set("Quiet. Waiting for new chat lines.")
-        meta_var.set("Local only. No Discord or server connection.")
+        hide_message_bubble()
 
     def show_alert(alert: IntelPetAlert) -> None:
         nonlocal idle_after_id
         if idle_after_id is not None:
             root.after_cancel(idle_after_id)
-        apply_severity(alert.severity)
-        title_var.set(alert.title)
-        message = alert.message or "Message text hidden by settings."
-        message_var.set(f"{alert.speaker}: {message}")
-        meta_var.set(f"{alert.severity.upper()} | {', '.join(alert.keywords) or 'matched chat'}")
+        show_message_bubble(display_message_from_alert(alert), severity=alert.severity)
         remember_history(history_item_from_alert(alert))
         start_sprite_cycle(ALERT_SPRITE_SEQUENCE)
         idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
@@ -1206,10 +1178,7 @@ def run_overlay(
         nonlocal idle_after_id
         if idle_after_id is not None:
             root.after_cancel(idle_after_id)
-        apply_severity("info")
-        title_var.set(f"Happy arrival: {cheer.system_name}")
-        message_var.set(f"{cheer.character_name} reached {cheer.system_name}.")
-        meta_var.set(f"ESI location cheer | {LOCATION_SCOPE}")
+        show_message_bubble(display_message_from_cheer(cheer), severity="info")
         remember_history(history_item_from_cheer(cheer))
         start_sprite_motion_cycle(HAPPY_SPRITE_STEPS)
         idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
@@ -1224,8 +1193,6 @@ def run_overlay(
                 show_alert(item)
             elif isinstance(item, IntelPetLocationCheer):
                 show_location_cheer(item)
-            else:
-                status_var.set(item)
         root.after(250, poll_queue)
 
     def on_close() -> None:
