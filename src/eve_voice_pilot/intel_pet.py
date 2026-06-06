@@ -30,7 +30,13 @@ from eve_voice_pilot.corp_intel import (
 
 
 DEFAULT_SETTINGS_PATH = ROOT / "profiles" / "intel_pet_settings.json"
+DEFAULT_SPRITE_DIR = ROOT / "src" / "eve_voice_pilot" / "static" / "intel-pet"
 DEFAULT_ALERT_SECONDS = 18.0
+SHIP_FRAME_COUNT = 8
+SHIP_FRAME_MS = 150
+IDLE_ANIMATION_MS = 5 * 60 * 1000
+IDLE_SPRITE_SEQUENCE = (0, 1, 2, 3, 4, 5, 6, 7, 0)
+ALERT_SPRITE_SEQUENCE = (0, 7, 6, 5, 4, 3, 2, 1, 0)
 
 
 @dataclass(frozen=True)
@@ -249,6 +255,10 @@ def format_alert(alert: IntelPetAlert) -> str:
     return f"[{alert.severity.upper()}] {alert.title} | {alert.speaker}{message}{keywords}"
 
 
+def ship_sprite_frame_paths(asset_dir: Path = DEFAULT_SPRITE_DIR) -> tuple[Path, ...]:
+    return tuple(asset_dir / f"ship-frame-{index:02d}.png" for index in range(SHIP_FRAME_COUNT))
+
+
 def run_console(args: argparse.Namespace, engine: IntelPetEngine) -> None:
     channel_filter = channel_filter_from_args(args)
 
@@ -299,8 +309,8 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
 
     root = tk.Tk()
     root.title("EVE Intel Pet")
-    root.geometry("420x190+40+40")
-    root.minsize(360, 160)
+    root.geometry("460x300+40+40")
+    root.minsize(380, 260)
     root.attributes("-topmost", True)
     try:
         root.attributes("-alpha", 0.95)
@@ -325,10 +335,20 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
     style.configure("PetMeta.TLabel", background=colors["idle"], foreground="#d7e0ea", font=("Segoe UI", 9))
     frame.configure(style="Pet.TFrame")
 
+    sprite_frames = load_sprite_frames(tk, root)
+    sprite_after_id: str | None = None
+    idle_cycle_after_id: str | None = None
+
     title_var = tk.StringVar(value="Intel Pet")
     status_var = tk.StringVar(value=f"Watching {channel_filter.describe()}")
     message_var = tk.StringVar(value="Quiet. Waiting for new chat lines.")
     meta_var = tk.StringVar(value="Local only. No Discord or server connection.")
+
+    sprite_canvas = tk.Canvas(frame, width=128, height=96, bg=colors["idle"], highlightthickness=0)
+    sprite_image_id = None
+    if sprite_frames:
+        sprite_image_id = sprite_canvas.create_image(64, 48, image=sprite_frames[0])
+        sprite_canvas.pack(anchor="center", pady=(0, 8))
 
     ttk.Label(frame, textvariable=title_var, style="PetTitle.TLabel").pack(anchor="w")
     ttk.Label(frame, textvariable=status_var, style="PetMeta.TLabel").pack(anchor="w", pady=(2, 8))
@@ -456,21 +476,76 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
     buttons.pack(anchor="e", fill="x", pady=(10, 0))
     ttk.Button(buttons, text="Keywords", command=open_keyword_manager).pack(side="left")
     ttk.Button(buttons, text="Clear", command=lambda: set_idle()).pack(side="right")
-    ttk.Button(buttons, text="Quit", command=root.destroy).pack(side="right", padx=(0, 8))
+    ttk.Button(buttons, text="Quit", command=lambda: on_close()).pack(side="right", padx=(0, 8))
 
     idle_after_id: str | None = None
+
+    def set_sprite_frame(index: int) -> None:
+        if not sprite_frames or sprite_image_id is None:
+            return
+        clean_index = max(0, min(index, len(sprite_frames) - 1))
+        sprite_canvas.itemconfigure(sprite_image_id, image=sprite_frames[clean_index])
+
+    def cancel_sprite_cycle() -> None:
+        nonlocal sprite_after_id
+        if sprite_after_id is not None:
+            root.after_cancel(sprite_after_id)
+            sprite_after_id = None
+
+    def cancel_idle_sprite_cycle() -> None:
+        nonlocal idle_cycle_after_id
+        if idle_cycle_after_id is not None:
+            root.after_cancel(idle_cycle_after_id)
+            idle_cycle_after_id = None
+
+    def schedule_idle_sprite_cycle() -> None:
+        nonlocal idle_cycle_after_id
+        if not sprite_frames:
+            return
+        cancel_idle_sprite_cycle()
+        idle_cycle_after_id = root.after(IDLE_ANIMATION_MS, run_idle_sprite_cycle)
+
+    def start_sprite_cycle(sequence: tuple[int, ...], *, reschedule_idle: bool = True) -> None:
+        nonlocal sprite_after_id
+        if not sprite_frames:
+            return
+        cancel_sprite_cycle()
+        cancel_idle_sprite_cycle()
+
+        def advance(position: int = 0) -> None:
+            nonlocal sprite_after_id
+            set_sprite_frame(sequence[position])
+            next_position = position + 1
+            if next_position < len(sequence):
+                sprite_after_id = root.after(SHIP_FRAME_MS, lambda: advance(next_position))
+            else:
+                sprite_after_id = None
+                set_sprite_frame(0)
+                if reschedule_idle:
+                    schedule_idle_sprite_cycle()
+
+        advance()
+
+    def run_idle_sprite_cycle() -> None:
+        nonlocal idle_cycle_after_id
+        idle_cycle_after_id = None
+        start_sprite_cycle(IDLE_SPRITE_SEQUENCE)
 
     def apply_severity(severity: str) -> None:
         color = colors.get(severity, colors["info"])
         root.configure(bg=color)
         for stylename in ("Pet.TFrame", "PetTitle.TLabel", "PetBody.TLabel", "PetMeta.TLabel"):
             style.configure(stylename, background=color)
+        sprite_canvas.configure(bg=color)
 
     def set_idle() -> None:
         nonlocal idle_after_id
         if idle_after_id is not None:
             root.after_cancel(idle_after_id)
             idle_after_id = None
+        cancel_sprite_cycle()
+        set_sprite_frame(0)
+        schedule_idle_sprite_cycle()
         apply_severity("idle")
         title_var.set("Intel Pet")
         message_var.set("Quiet. Waiting for new chat lines.")
@@ -485,7 +560,8 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
         message = alert.message or "Message text hidden by settings."
         message_var.set(f"{alert.speaker}: {message}")
         meta_var.set(f"{alert.severity.upper()} | {', '.join(alert.keywords) or 'matched chat'}")
-        idle_after_id = root.after(int(engine.settings.alert_seconds * 1000), set_idle)
+        start_sprite_cycle(ALERT_SPRITE_SEQUENCE)
+        idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
 
     def poll_queue() -> None:
         while True:
@@ -501,12 +577,24 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
 
     def on_close() -> None:
         stop_event.set()
+        cancel_sprite_cycle()
+        cancel_idle_sprite_cycle()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
+    schedule_idle_sprite_cycle()
     poll_queue()
     root.mainloop()
     stop_event.set()
+
+
+def load_sprite_frames(tk_module: Any, root: Any, paths: Iterable[Path] | None = None) -> tuple[Any, ...]:
+    frames: list[Any] = []
+    for path in paths or ship_sprite_frame_paths():
+        if not path.exists():
+            return ()
+        frames.append(tk_module.PhotoImage(file=str(path), master=root))
+    return tuple(frames)
 
 
 def channel_filter_from_args(args: argparse.Namespace) -> ChannelFilter:

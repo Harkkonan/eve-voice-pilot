@@ -8,6 +8,7 @@ It is intentionally personal and local-first:
 - It starts at the end of existing files by default, so old chat is not replayed.
 - It does not connect to Discord, ESI, or the corp intel board in the first version.
 - It does not control the EVE client, read memory, inspect packets, or automate gameplay.
+- Its ship pet is original generated pixel art, not extracted EVE client art or a copied official ship.
 
 ## Start It
 
@@ -24,6 +25,16 @@ Or run it with your character name so it can alert when someone mentions you:
 ```
 
 By default it watches `Corp`, `Corporation`, `Fleet`, `Alliance`, `Local`, and `*Intel*` channel names.
+
+## Ship Animation
+
+The pet includes a small original pixel-art spaceship. It uses eight transparent PNG frames under:
+
+```text
+src/eve_voice_pilot/static/intel-pet/
+```
+
+The overlay swaps those frames with Tkinter only. Turrets and engines animate when an alert appears, and the ship runs a short idle cycle every five minutes.
 
 ## Add Extra Local Alerts
 

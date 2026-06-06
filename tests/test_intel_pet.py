@@ -6,12 +6,17 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from eve_voice_pilot.corp_intel import ChatMessage
 from eve_voice_pilot.intel_pet import (
+    ALERT_SPRITE_SEQUENCE,
+    IDLE_SPRITE_SEQUENCE,
+    SHIP_FRAME_COUNT,
     IntelPetEngine,
     IntelPetSettings,
     clean_user_terms,
+    load_sprite_frames,
     load_settings,
     replace_extra_keywords,
     save_settings,
+    ship_sprite_frame_paths,
 )
 
 
@@ -148,3 +153,31 @@ def test_engine_update_settings_changes_keyword_matches_without_restarting():
     assert alert is not None
     assert alert.title == "Keyword match in Corp"
     assert alert.keywords == ("keyword: contract alert",)
+
+
+def test_ship_sprite_frame_paths_point_to_committed_assets():
+    paths = ship_sprite_frame_paths()
+
+    assert len(paths) == SHIP_FRAME_COUNT
+    assert all(path.exists() for path in paths)
+    assert all(path.name == f"ship-frame-{index:02d}.png" for index, path in enumerate(paths))
+
+
+def test_sprite_sequences_only_reference_existing_frames():
+    valid_indexes = set(range(SHIP_FRAME_COUNT))
+
+    assert set(IDLE_SPRITE_SEQUENCE) <= valid_indexes
+    assert set(ALERT_SPRITE_SEQUENCE) <= valid_indexes
+    assert IDLE_SPRITE_SEQUENCE[-1] == 0
+    assert ALERT_SPRITE_SEQUENCE[-1] == 0
+
+
+def test_load_sprite_frames_returns_empty_when_any_frame_is_missing(tmp_path):
+    class FakeTk:
+        class PhotoImage:
+            def __init__(self, *, file, master):
+                self.file = file
+                self.master = master
+
+    assert len(load_sprite_frames(FakeTk, object())) == SHIP_FRAME_COUNT
+    assert load_sprite_frames(FakeTk, object(), paths=ship_sprite_frame_paths(tmp_path)) == ()
