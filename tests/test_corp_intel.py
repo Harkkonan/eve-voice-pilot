@@ -27,6 +27,7 @@ from eve_voice_pilot.corp_intel import (
     build_sso_authorization_url,
     dashboard_access_status,
     decode_eve_access_token,
+    discover_chat_log_files,
     eve_timestamp_to_iso,
     fetch_remote_watchlist,
     hash_agent_token,
@@ -34,6 +35,7 @@ from eve_voice_pilot.corp_intel import (
     membership_allowed,
     parse_channel_name_from_text,
     parse_chat_line,
+    parse_listener_name_from_text,
     request_has_watchlist_read_token,
     verify_sso_character,
 )
@@ -103,11 +105,62 @@ def test_parse_channel_name_from_header_text():
     assert parse_channel_name_from_text(text) == "Fleet"
 
 
+def test_parse_listener_name_from_header_text():
+    text = """
+------------------------------------------------------------
+  Channel ID: 123
+  Channel Name: Fleet
+  Listener: Alice Example
+------------------------------------------------------------
+"""
+    assert parse_listener_name_from_text(text) == "Alice Example"
+
+
 def test_channel_filter_allows_exact_and_wildcard_names():
     channel_filter = ChannelFilter(["Corp", "*Intel*"])
     assert channel_filter.allows("Corp")
     assert channel_filter.allows("Standing Intel")
     assert not channel_filter.allows("Private Chat")
+
+
+def test_discover_chat_log_files_can_filter_by_listener(tmp_path):
+    dandin_log = tmp_path / "Local_20260606_200141_1.txt"
+    dandin_log.write_text(
+        """
+------------------------------------------------------------
+  Channel ID: local
+  Channel Name: Local
+  Listener: Dandin Ridderston
+------------------------------------------------------------
+""".lstrip(),
+        encoding="utf-8",
+    )
+    other_log = tmp_path / "Local_20260606_200141_2.txt"
+    other_log.write_text(
+        """
+------------------------------------------------------------
+  Channel ID: local
+  Channel Name: Local
+  Listener: Other Pilot
+------------------------------------------------------------
+""".lstrip(),
+        encoding="utf-8",
+    )
+    states = {}
+    log_lines = []
+
+    discover_chat_log_files(
+        tmp_path,
+        states,
+        ChannelFilter(("Local",)),
+        read_existing=True,
+        listener_filter=("Dandin Ridderston",),
+        log=log_lines.append,
+    )
+
+    assert list(states) == [dandin_log]
+    assert states[dandin_log].listener == "Dandin Ridderston"
+    assert log_lines == ["Sharing channel 'Local' for Dandin Ridderston from Local_20260606_200141_1.txt"]
 
 
 def test_build_sso_authorization_url_uses_state_callback_and_scopes():

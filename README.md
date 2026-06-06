@@ -153,6 +153,8 @@ When idle, the overlay shows only the ship and a small `Options` button. Drag th
 
 Optional `--enable-location-cheer` uses read-only ESI location with `esi-location.read_location.v1` so the ship flies happily when you reach Dihra, Amarr, or Jita. The pet keeps the access token in memory only while running and does not share your location.
 
+Chat alerts still come from local EVE `Chatlogs`, not ESI. When location cheer is enabled, the SSO character name is used as the default local chat-log `Listener` filter; pass `--all-listeners` to watch matching channels for every local character log.
+
 Local settings can live in ignored profile data at `profiles/intel_pet_settings.json`. More detail is in `docs/intel_pet.md`.
 
 ## Notes

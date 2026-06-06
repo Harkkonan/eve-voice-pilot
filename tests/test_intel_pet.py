@@ -44,6 +44,7 @@ from eve_voice_pilot.intel_pet import (
     history_item_from_status,
     is_kill_event_text,
     is_happy_system,
+    listener_filter_from_args,
     load_sprite_frames,
     load_settings,
     read_new_combat_cheers,
@@ -354,6 +355,46 @@ def test_fetch_pet_location_requires_location_scope():
         assert LOCATION_SCOPE in str(exc)
     else:
         raise AssertionError("expected missing location scope to fail")
+
+
+def test_listener_filter_defaults_to_location_sso_character():
+    class Args:
+        listener_name = ()
+        all_listeners = False
+
+    session = IntelPetLocationSession(
+        character_id=123456789,
+        character_name="Dandin Ridderston",
+        scopes=(LOCATION_SCOPE,),
+        access_token="access-token",
+        expires_at=9999999999,
+    )
+
+    assert listener_filter_from_args(Args(), location_session=session) == ("Dandin Ridderston",)
+
+
+def test_listener_filter_all_listeners_overrides_sso_character():
+    class Args:
+        listener_name = ()
+        all_listeners = True
+
+    session = IntelPetLocationSession(
+        character_id=123456789,
+        character_name="Dandin Ridderston",
+        scopes=(LOCATION_SCOPE,),
+        access_token="access-token",
+        expires_at=9999999999,
+    )
+
+    assert listener_filter_from_args(Args(), location_session=session) == ()
+
+
+def test_listener_filter_explicit_names_work_without_sso():
+    class Args:
+        listener_name = ("Dandin Ridderston", "Other Pilot")
+        all_listeners = False
+
+    assert listener_filter_from_args(Args(), location_session=None) == ("Dandin Ridderston", "Other Pilot")
 
 
 def test_history_item_from_alert_keeps_message_context():

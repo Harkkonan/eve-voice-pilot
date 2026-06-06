@@ -27,6 +27,24 @@ Or run it with your character name so it can alert when someone mentions you:
 
 By default it watches `Corp`, `Corporation`, `Fleet`, `Alliance`, `Local`, and `*Intel*` channel names.
 
+The pet reads local EVE chat-log files from the `Chatlogs` folder. EVE SSO does not provide chat messages. When optional location cheer is enabled, the pet uses the SSO character name as a local chat-log `Listener` filter, so signing in as Dandin watches Dandin's matching local chat logs by default.
+
+To watch every local character's matching channel logs even when location cheer is enabled:
+
+```powershell
+.\scripts\run_intel_pet.ps1 --enable-location-cheer --all-listeners
+```
+
+To force one or more local chat-log listeners without SSO:
+
+```powershell
+.\scripts\run_intel_pet.ps1 `
+  --listener-name "Dandin Ridderston" `
+  --listener-name "Liet-kynes Ridderston"
+```
+
+Channels outside the default allowlist, such as `Rookie Help` or private corp community channels, need `--channels` or `--all-channels`.
+
 ## Ship Animation
 
 The pet includes a small original pixel-art spaceship. It uses eight transparent PNG frames under:
@@ -156,6 +174,8 @@ Each row has a small animated preview next to the selector. Behavior changes are
 ## Alert History
 
 The `History` tab in `Options` shows recent chat alerts and location cheer events from this pet run.
+
+It also shows which local chat-log files are being watched, including the EVE log `Listener` character for each file. The History tab updates live while it is open.
 
 History is local and in-memory only:
 

@@ -330,6 +330,7 @@ class AgentTokenRecord:
 class ChatLogState:
     path: Path
     channel: str
+    listener: str
     encoding: str
     offset: int
 
@@ -1310,6 +1311,14 @@ def parse_channel_name_from_text(text: str) -> str | None:
     return None
 
 
+def parse_listener_name_from_text(text: str) -> str | None:
+    for line in text.splitlines()[:80]:
+        match = re.match(r"^\s*Listener:\s*(?P<listener>.+?)\s*$", line)
+        if match:
+            return match.group("listener").strip()
+    return None
+
+
 def fallback_channel_name(path: Path) -> str:
     name = re.sub(r"_\d{8}.*$", "", path.stem)
     return name.replace("_", " ").strip() or path.stem
@@ -1336,6 +1345,15 @@ def read_channel_name(path: Path, encoding: str) -> str:
     return parse_channel_name_from_text(text) or fallback_channel_name(path)
 
 
+def read_listener_name(path: Path, encoding: str) -> str:
+    try:
+        with path.open("r", encoding=encoding, errors="replace") as handle:
+            text = "".join(handle.readline() for _ in range(80))
+    except OSError:
+        return ""
+    return parse_listener_name_from_text(text) or ""
+
+
 def file_end_offset(path: Path, encoding: str) -> int:
     try:
         with path.open("r", encoding=encoding, errors="replace") as handle:
@@ -1352,23 +1370,34 @@ def watch_chat_logs(
     on_message: Callable[[ChatMessage], None],
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     read_existing: bool = False,
+    listener_filter: Iterable[str] = (),
     stop_event: threading.Event | None = None,
     log: Callable[[str], None] = print,
 ) -> None:
     states: dict[Path, ChatLogState] = {}
     stop_event = stop_event or threading.Event()
     log_dir = log_dir.expanduser()
+    listener_names = tuple(name.strip().casefold() for name in listener_filter if name.strip())
 
     if not log_dir.exists():
         raise CorpIntelError(f"Chat log folder does not exist: {log_dir}")
 
     log(f"Watching EVE chat logs in {log_dir}")
     log(f"Channel allowlist: {channel_filter.describe()}")
+    if listener_names:
+        log(f"Listener allowlist: {', '.join(listener_names)}")
     if not read_existing:
         log("Starting at the end of existing files. New chat lines will be processed.")
 
     while not stop_event.is_set():
-        discover_chat_log_files(log_dir, states, channel_filter, read_existing=read_existing, log=log)
+        discover_chat_log_files(
+            log_dir,
+            states,
+            channel_filter,
+            read_existing=read_existing,
+            listener_filter=listener_names,
+            log=log,
+        )
         for state in list(states.values()):
             for message in read_new_messages(state):
                 on_message(message)
@@ -1381,8 +1410,10 @@ def discover_chat_log_files(
     channel_filter: ChannelFilter,
     *,
     read_existing: bool,
+    listener_filter: Iterable[str] = (),
     log: Callable[[str], None] = print,
 ) -> None:
+    listener_names = tuple(name.strip().casefold() for name in listener_filter if name.strip())
     for path in sorted(log_dir.glob("*.txt")):
         if path in states:
             continue
@@ -1390,9 +1421,13 @@ def discover_chat_log_files(
         channel = read_channel_name(path, encoding)
         if not channel_filter.allows(channel):
             continue
+        listener = read_listener_name(path, encoding)
+        if listener_names and listener.casefold() not in listener_names:
+            continue
         offset = 0 if read_existing else file_end_offset(path, encoding)
-        states[path] = ChatLogState(path=path, channel=channel, encoding=encoding, offset=offset)
-        log(f"Sharing channel {channel!r} from {path.name}")
+        states[path] = ChatLogState(path=path, channel=channel, listener=listener, encoding=encoding, offset=offset)
+        listener_text = f" for {listener}" if listener else ""
+        log(f"Sharing channel {channel!r}{listener_text} from {path.name}")
 
 
 def read_new_messages(state: ChatLogState) -> list[ChatMessage]:

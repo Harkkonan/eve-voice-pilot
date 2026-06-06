@@ -828,6 +828,7 @@ def read_new_combat_cheers(state: GameLogState) -> list[IntelPetCombatCheer]:
 
 def run_console(args: argparse.Namespace, engine: IntelPetEngine) -> None:
     channel_filter = channel_filter_from_args(args)
+    listener_filter = listener_filter_from_args(args, location_session=None)
 
     def on_message(message: ChatMessage) -> None:
         alert = engine.analyze(message)
@@ -840,6 +841,7 @@ def run_console(args: argparse.Namespace, engine: IntelPetEngine) -> None:
         on_message=on_message,
         poll_seconds=args.poll_seconds,
         read_existing=args.read_existing,
+        listener_filter=listener_filter,
     )
 
 
@@ -856,6 +858,7 @@ def run_overlay(
     alert_queue: queue.Queue[IntelPetAlert | IntelPetLocationCheer | IntelPetCombatCheer | str] = queue.Queue()
     stop_event = threading.Event()
     channel_filter = channel_filter_from_args(args)
+    listener_filter = listener_filter_from_args(args, location_session=location_session)
     settings_path = args.settings_path.expanduser()
     happy_systems = clean_user_terms(args.happy_system or DEFAULT_HAPPY_SYSTEMS)
     location_poll_seconds = max(5.0, safe_float(args.location_poll_seconds, DEFAULT_LOCATION_POLL_SECONDS))
@@ -876,6 +879,7 @@ def run_overlay(
                 on_message=on_message,
                 poll_seconds=args.poll_seconds,
                 read_existing=args.read_existing,
+                listener_filter=listener_filter,
                 stop_event=stop_event,
                 log=lambda text: alert_queue.put(text),
             )
@@ -1165,6 +1169,8 @@ def run_overlay(
     control_canvas.tag_bind("options_button", "<ButtonPress-1>", begin_drag)
     control_canvas.tag_bind("options_button", "<B1-Motion>", drag_overlay)
     control_canvas.tag_bind("options_button", "<ButtonRelease-1>", release_options)
+
+    history_refreshers: list[Callable[[], None]] = []
 
     def open_options() -> None:
         editor = tk.Toplevel(root)
@@ -1505,6 +1511,13 @@ def run_overlay(
         ttk.Button(history_buttons, text="Refresh", command=refresh_history_text).pack(side="left")
         ttk.Button(history_buttons, text="Clear History", command=clear_history).pack(side="left", padx=(6, 0))
         refresh_history_text()
+        history_refreshers.append(refresh_history_text)
+
+        def forget_history_refresher(event: Any) -> None:
+            if event.widget is editor and refresh_history_text in history_refreshers:
+                history_refreshers.remove(refresh_history_text)
+
+        editor.bind("<Destroy>", forget_history_refresher, add="+")
 
         footer = ttk.Frame(editor_frame)
         footer.pack(fill="x")
@@ -1684,6 +1697,12 @@ def run_overlay(
     def remember_history(item: IntelPetHistoryItem) -> None:
         history_items.append(item)
         del history_items[:-DEFAULT_HISTORY_LIMIT]
+        for refresh_history_text in tuple(history_refreshers):
+            try:
+                refresh_history_text()
+            except tk.TclError:
+                if refresh_history_text in history_refreshers:
+                    history_refreshers.remove(refresh_history_text)
 
     def set_idle() -> None:
         nonlocal idle_after_id
@@ -1775,6 +1794,21 @@ def channel_filter_from_args(args: argparse.Namespace) -> ChannelFilter:
     return ChannelFilter(channels)
 
 
+def listener_filter_from_args(
+    args: argparse.Namespace,
+    *,
+    location_session: IntelPetLocationSession | None = None,
+) -> tuple[str, ...]:
+    if args.all_listeners:
+        return ()
+    names = clean_user_terms(args.listener_name)
+    if names:
+        return names
+    if location_session is not None and location_session.character_name:
+        return (location_session.character_name,)
+    return ()
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run a local-only EVE chat and combat alert pet overlay.",
@@ -1787,6 +1821,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Comma-separated channel allowlist. Wildcards are allowed, like *Intel*.",
     )
     parser.add_argument("--all-channels", action="store_true", help="Allow all chat log channels. Use carefully.")
+    parser.add_argument(
+        "--listener-name",
+        action="append",
+        default=(),
+        help="Only watch chat logs whose EVE log Listener header matches this character name.",
+    )
+    parser.add_argument(
+        "--all-listeners",
+        action="store_true",
+        help="Watch matching channels for every local EVE character log. With location cheer, the default is the SSO character only.",
+    )
     parser.add_argument("--settings-path", type=Path, default=DEFAULT_SETTINGS_PATH, help="Local intel pet settings JSON.")
     parser.add_argument("--pilot-name", action="append", default=(), help="Your character name for mention alerts.")
     parser.add_argument("--keyword", action="append", default=(), help="Extra keyword to alert on.")
