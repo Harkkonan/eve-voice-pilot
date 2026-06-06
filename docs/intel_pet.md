@@ -97,7 +97,9 @@ To choose different happy systems:
 
 ## Manage Alerts In The Overlay
 
-Click `Alerts` in the pet window to add, change, or remove:
+The overlay itself stays small: just the ship, a speech bubble, and an `Options` button. Click `Options` to open the full settings window.
+
+In the `Alerts` tab, add, change, or remove:
 
 - your pilot names for mention alerts;
 - help phrases for critical calls;
@@ -110,6 +112,16 @@ profiles/intel_pet_settings.json
 ```
 
 The live matcher refreshes as soon as a setting is saved, so you do not need to restart the pet.
+
+## Alert History
+
+The `History` tab in `Options` shows recent chat alerts and location cheer events from this pet run.
+
+History is local and in-memory only:
+
+- it is cleared when the pet closes;
+- it is not written to `profiles/intel_pet_settings.json`;
+- it is not sent to Discord, ESI, or the corp intel board.
 
 ## Optional Local Settings File
 

@@ -48,6 +48,7 @@ DEFAULT_ALERT_SECONDS = 18.0
 DEFAULT_LOCATION_CALLBACK_URL = "http://127.0.0.1:8788/intel-pet/callback"
 DEFAULT_LOCATION_POLL_SECONDS = 15.0
 DEFAULT_HAPPY_SYSTEMS = ("Dihra", "Amarr", "Jita")
+DEFAULT_HISTORY_LIMIT = 25
 LOCATION_SCOPE = "esi-location.read_location.v1"
 SHIP_FRAME_COUNT = 8
 SHIP_FRAME_MS = 150
@@ -141,6 +142,15 @@ class IntelPetLocationCheer:
     system_name: str
     character_name: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class IntelPetHistoryItem:
+    title: str
+    detail: str
+    meta: str
+    severity: str
+    recorded_at: str
 
 
 class IntelPetEngine:
@@ -329,6 +339,33 @@ def format_alert(alert: IntelPetAlert) -> str:
     message = f" | {alert.message}" if alert.message else ""
     keywords = f" | {', '.join(alert.keywords)}" if alert.keywords else ""
     return f"[{alert.severity.upper()}] {alert.title} | {alert.speaker}{message}{keywords}"
+
+
+def history_item_from_alert(alert: IntelPetAlert) -> IntelPetHistoryItem:
+    message = alert.message or "Message text hidden by settings."
+    meta = f"{alert.channel} | {', '.join(alert.keywords) or 'matched chat'}"
+    return IntelPetHistoryItem(
+        title=alert.title,
+        detail=f"{alert.speaker}: {message}",
+        meta=meta,
+        severity=alert.severity,
+        recorded_at=alert.reported_at,
+    )
+
+
+def history_item_from_cheer(cheer: IntelPetLocationCheer) -> IntelPetHistoryItem:
+    return IntelPetHistoryItem(
+        title=f"Happy arrival: {cheer.system_name}",
+        detail=f"{cheer.character_name} reached {cheer.system_name}.",
+        meta=f"ESI location cheer | {LOCATION_SCOPE}",
+        severity="info",
+        recorded_at=cheer.updated_at,
+    )
+
+
+def trim_history(items: Iterable[IntelPetHistoryItem], limit: int = DEFAULT_HISTORY_LIMIT) -> tuple[IntelPetHistoryItem, ...]:
+    clean_limit = max(1, int(limit))
+    return tuple(items)[-clean_limit:]
 
 
 def ship_sprite_frame_paths(asset_dir: Path = DEFAULT_SPRITE_DIR) -> tuple[Path, ...]:
@@ -578,73 +615,286 @@ def run_overlay(
 
     root = tk.Tk()
     root.title("EVE Intel Pet")
-    root.geometry("460x300+40+40")
-    root.minsize(380, 260)
+    root.geometry("430x170+40+40")
     root.attributes("-topmost", True)
+    root.overrideredirect(True)
     try:
-        root.attributes("-alpha", 0.95)
+        root.attributes("-alpha", 0.98)
     except tk.TclError:
         pass
 
+    transparent_color = "#ff00ff"
+    bubble_fill = "#101820"
     colors = {
-        "idle": "#243142",
-        "info": "#2f5f7d",
-        "medium": "#7a5c24",
-        "high": "#8a3f08",
-        "critical": "#8a1f1f",
+        "idle": "#5f7f96",
+        "info": "#4bb4ff",
+        "medium": "#e1a23a",
+        "high": "#ff8c2b",
+        "critical": "#ff5757",
     }
-    root.configure(bg=colors["idle"])
-
-    frame = ttk.Frame(root, padding=12)
-    frame.pack(fill="both", expand=True)
-    style = ttk.Style(root)
-    style.configure("Pet.TFrame", background=colors["idle"])
-    style.configure("PetTitle.TLabel", background=colors["idle"], foreground="#f6f8fb", font=("Segoe UI", 14, "bold"))
-    style.configure("PetBody.TLabel", background=colors["idle"], foreground="#f6f8fb", font=("Segoe UI", 10))
-    style.configure("PetMeta.TLabel", background=colors["idle"], foreground="#d7e0ea", font=("Segoe UI", 9))
-    frame.configure(style="Pet.TFrame")
+    root.configure(bg=transparent_color)
+    try:
+        root.attributes("-transparentcolor", transparent_color)
+    except tk.TclError:
+        transparent_color = "#111827"
+        root.configure(bg=transparent_color)
 
     sprite_frames = load_sprite_frames(tk, root)
     sprite_after_id: str | None = None
     idle_cycle_after_id: str | None = None
+    history_items: list[IntelPetHistoryItem] = []
 
-    title_var = tk.StringVar(value="Intel Pet")
-    status_var = tk.StringVar(value=f"Watching {channel_filter.describe()}")
-    message_var = tk.StringVar(value="Quiet. Waiting for new chat lines.")
-    meta_var = tk.StringVar(value="Local only. No Discord or server connection.")
+    pet_frame = tk.Frame(root, bg=transparent_color)
+    pet_frame.pack(fill="both", expand=True)
 
-    sprite_canvas = tk.Canvas(frame, width=128, height=96, bg=colors["idle"], highlightthickness=0)
+    sprite_canvas = tk.Canvas(pet_frame, width=160, height=128, bg=transparent_color, highlightthickness=0)
+    sprite_canvas.place(x=0, y=32)
     sprite_image_id = None
     if sprite_frames:
-        sprite_image_id = sprite_canvas.create_image(64, 48, image=sprite_frames[0])
-        sprite_canvas.pack(anchor="center", pady=(0, 8))
+        sprite_image_id = sprite_canvas.create_image(80, 64, image=sprite_frames[0])
 
-    ttk.Label(frame, textvariable=title_var, style="PetTitle.TLabel").pack(anchor="w")
-    ttk.Label(frame, textvariable=status_var, style="PetMeta.TLabel").pack(anchor="w", pady=(2, 8))
-    message_label = ttk.Label(frame, textvariable=message_var, style="PetBody.TLabel", wraplength=380, justify="left")
-    message_label.pack(anchor="w", fill="x")
-    ttk.Label(frame, textvariable=meta_var, style="PetMeta.TLabel", wraplength=380, justify="left").pack(
-        anchor="w",
-        fill="x",
-        pady=(8, 0),
+    bubble_canvas = tk.Canvas(pet_frame, width=300, height=152, bg=transparent_color, highlightthickness=0)
+    bubble_canvas.place(x=128, y=6)
+
+    def draw_round_rectangle(
+        canvas: Any,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        *,
+        radius: int,
+        fill: str,
+        outline: str,
+        width: int = 2,
+        tags: tuple[str, ...] = (),
+    ) -> tuple[int, ...]:
+        items = (
+            canvas.create_arc(
+                x1,
+                y1,
+                x1 + radius * 2,
+                y1 + radius * 2,
+                start=90,
+                extent=90,
+                fill=fill,
+                outline=outline,
+                width=width,
+                tags=tags,
+            ),
+            canvas.create_arc(
+                x2 - radius * 2,
+                y1,
+                x2,
+                y1 + radius * 2,
+                start=0,
+                extent=90,
+                fill=fill,
+                outline=outline,
+                width=width,
+                tags=tags,
+            ),
+            canvas.create_arc(
+                x2 - radius * 2,
+                y2 - radius * 2,
+                x2,
+                y2,
+                start=270,
+                extent=90,
+                fill=fill,
+                outline=outline,
+                width=width,
+                tags=tags,
+            ),
+            canvas.create_arc(
+                x1,
+                y2 - radius * 2,
+                x1 + radius * 2,
+                y2,
+                start=180,
+                extent=90,
+                fill=fill,
+                outline=outline,
+                width=width,
+                tags=tags,
+            ),
+            canvas.create_rectangle(
+                x1 + radius,
+                y1,
+                x2 - radius,
+                y2,
+                fill=fill,
+                outline=outline,
+                width=width,
+                tags=tags,
+            ),
+            canvas.create_rectangle(
+                x1,
+                y1 + radius,
+                x2,
+                y2 - radius,
+                fill=fill,
+                outline=outline,
+                width=width,
+                tags=tags,
+            ),
+        )
+        return items
+
+    bubble_border_items = draw_round_rectangle(
+        bubble_canvas,
+        8,
+        4,
+        294,
+        148,
+        radius=18,
+        fill=bubble_fill,
+        outline=colors["idle"],
+        width=2,
+        tags=("bubble",),
+    )
+    bubble_tail_id = bubble_canvas.create_polygon(
+        12,
+        76,
+        0,
+        86,
+        12,
+        96,
+        fill=bubble_fill,
+        outline=colors["idle"],
+        width=2,
+        tags=("bubble",),
     )
 
-    def open_alert_settings() -> None:
+    title_id = bubble_canvas.create_text(
+        24,
+        22,
+        anchor="w",
+        fill="#f8fafc",
+        font=("Segoe UI", 12, "bold"),
+        text="Intel Pet",
+    )
+    message_id = bubble_canvas.create_text(
+        24,
+        52,
+        anchor="nw",
+        fill="#f8fafc",
+        font=("Segoe UI", 10),
+        text="Quiet. Waiting for new chat lines.",
+        width=250,
+    )
+    meta_id = bubble_canvas.create_text(
+        24,
+        106,
+        anchor="w",
+        fill="#cbd5e1",
+        font=("Segoe UI", 8),
+        text="Local only. No Discord or server connection.",
+        width=180,
+    )
+    status_id = bubble_canvas.create_text(
+        24,
+        130,
+        anchor="w",
+        fill="#94a3b8",
+        font=("Segoe UI", 8),
+        text=f"Watching {channel_filter.describe()}",
+        width=185,
+    )
+    options_rect_id = bubble_canvas.create_rectangle(
+        204,
+        116,
+        268,
+        140,
+        fill="#1f2937",
+        outline="#64748b",
+        width=1,
+        tags=("options_button",),
+    )
+    options_text_id = bubble_canvas.create_text(
+        236,
+        128,
+        fill="#f8fafc",
+        font=("Segoe UI", 8, "bold"),
+        text="Options",
+        tags=("options_button",),
+    )
+    close_rect_id = bubble_canvas.create_rectangle(
+        272,
+        116,
+        288,
+        140,
+        fill="#1f2937",
+        outline="#64748b",
+        width=1,
+        tags=("quit_button",),
+    )
+    close_text_id = bubble_canvas.create_text(
+        280,
+        128,
+        fill="#f8fafc",
+        font=("Segoe UI", 8, "bold"),
+        text="x",
+        tags=("quit_button",),
+    )
+
+    class CanvasTextVar:
+        def __init__(self, canvas: Any, item_id: int, value: str = "") -> None:
+            self.canvas = canvas
+            self.item_id = item_id
+            self.value = value
+
+        def set(self, value: str) -> None:
+            self.value = value
+            self.canvas.itemconfigure(self.item_id, text=value)
+
+        def get(self) -> str:
+            return self.value
+
+    title_var = CanvasTextVar(bubble_canvas, title_id, "Intel Pet")
+    message_var = CanvasTextVar(bubble_canvas, message_id, "Quiet. Waiting for new chat lines.")
+    meta_var = CanvasTextVar(bubble_canvas, meta_id, "Local only. No Discord or server connection.")
+    status_var = CanvasTextVar(bubble_canvas, status_id, f"Watching {channel_filter.describe()}")
+
+    drag_start: dict[str, int] = {"x": 0, "y": 0}
+
+    def begin_drag(event: Any) -> None:
+        drag_start["x"] = int(event.x_root)
+        drag_start["y"] = int(event.y_root)
+
+    def drag_overlay(event: Any) -> None:
+        dx = int(event.x_root) - drag_start["x"]
+        dy = int(event.y_root) - drag_start["y"]
+        drag_start["x"] = int(event.x_root)
+        drag_start["y"] = int(event.y_root)
+        root.geometry(f"+{root.winfo_x() + dx}+{root.winfo_y() + dy}")
+
+    for widget in (root, pet_frame, sprite_canvas, bubble_canvas):
+        widget.bind("<ButtonPress-1>", begin_drag)
+        widget.bind("<B1-Motion>", drag_overlay)
+
+    def open_options() -> None:
         editor = tk.Toplevel(root)
-        editor.title("Intel Pet Alerts")
-        editor.geometry("520x620+80+80")
-        editor.minsize(440, 500)
+        editor.title("Intel Pet Options")
+        editor.geometry("620x640+80+80")
+        editor.minsize(500, 520)
         editor.transient(root)
         editor.attributes("-topmost", True)
 
         editor_frame = ttk.Frame(editor, padding=12)
         editor_frame.pack(fill="both", expand=True)
+        notebook = ttk.Notebook(editor_frame)
+        notebook.pack(fill="both", expand=True)
+        settings_frame = ttk.Frame(notebook, padding=12)
+        history_frame = ttk.Frame(notebook, padding=12)
+        notebook.add(settings_frame, text="Alerts")
+        notebook.add(history_frame, text="History")
 
         editor_status_var = tk.StringVar(value="Saved locally only.")
 
-        ttk.Label(editor_frame, text="Local alert settings", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(settings_frame, text="Local alert settings", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(
-            editor_frame,
+            settings_frame,
             text="These match new chat lines on this computer and are saved to your ignored profile settings.",
             wraplength=480,
         ).pack(anchor="w", pady=(2, 8))
@@ -754,7 +1004,7 @@ def run_overlay(
 
         first_entry = None
         for section_name, title, description, initial_terms in sections:
-            section = ttk.LabelFrame(editor_frame, text=title, padding=8)
+            section = ttk.LabelFrame(settings_frame, text=title, padding=8)
             section.pack(fill="both", expand=True, pady=(0, 8))
             ttk.Label(section, text=description, wraplength=460).pack(anchor="w", pady=(0, 6))
 
@@ -792,6 +1042,42 @@ def run_overlay(
                 padx=(6, 0),
             )
 
+        ttk.Label(history_frame, text="Alert history", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(
+            history_frame,
+            text="This keeps the recent alerts in memory only while the pet is running.",
+            wraplength=520,
+        ).pack(anchor="w", pady=(2, 8))
+        history_body = ttk.Frame(history_frame)
+        history_body.pack(fill="both", expand=True)
+        history_text = tk.Text(history_body, height=20, wrap="word", state="disabled")
+        history_text.pack(side="left", fill="both", expand=True)
+        history_scrollbar = ttk.Scrollbar(history_body, orient="vertical", command=history_text.yview)
+        history_scrollbar.pack(side="right", fill="y")
+        history_text.configure(yscrollcommand=history_scrollbar.set)
+
+        def refresh_history_text() -> None:
+            history_text.configure(state="normal")
+            history_text.delete("1.0", tk.END)
+            if not history_items:
+                history_text.insert(tk.END, "No alert history yet.")
+            else:
+                for item in reversed(history_items):
+                    history_text.insert(tk.END, f"[{item.severity.upper()}] {item.title}\n")
+                    history_text.insert(tk.END, f"{item.detail}\n")
+                    history_text.insert(tk.END, f"{item.meta} | {item.recorded_at}\n\n")
+            history_text.configure(state="disabled")
+
+        def clear_history() -> None:
+            history_items.clear()
+            refresh_history_text()
+
+        history_buttons = ttk.Frame(history_frame)
+        history_buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(history_buttons, text="Refresh", command=refresh_history_text).pack(side="left")
+        ttk.Button(history_buttons, text="Clear History", command=clear_history).pack(side="left", padx=(6, 0))
+        refresh_history_text()
+
         footer = ttk.Frame(editor_frame)
         footer.pack(fill="x")
         ttk.Label(footer, textvariable=editor_status_var, wraplength=380).pack(side="left", anchor="w")
@@ -799,11 +1085,8 @@ def run_overlay(
         if first_entry is not None:
             first_entry.focus_set()
 
-    buttons = ttk.Frame(frame)
-    buttons.pack(anchor="e", fill="x", pady=(10, 0))
-    ttk.Button(buttons, text="Alerts", command=open_alert_settings).pack(side="left")
-    ttk.Button(buttons, text="Clear", command=lambda: set_idle()).pack(side="right")
-    ttk.Button(buttons, text="Quit", command=lambda: on_close()).pack(side="right", padx=(0, 8))
+    bubble_canvas.tag_bind("options_button", "<Button-1>", lambda _event: open_options())
+    bubble_canvas.tag_bind("quit_button", "<Button-1>", lambda _event: on_close())
 
     idle_after_id: str | None = None
 
@@ -812,7 +1095,7 @@ def run_overlay(
             return
         clean_index = max(0, min(index, len(sprite_frames) - 1))
         sprite_canvas.itemconfigure(sprite_image_id, image=sprite_frames[clean_index])
-        sprite_canvas.coords(sprite_image_id, 64 + offset_x, 48 + offset_y)
+        sprite_canvas.coords(sprite_image_id, 80 + offset_x, 64 + offset_y)
 
     def cancel_sprite_cycle() -> None:
         nonlocal sprite_after_id
@@ -883,10 +1166,15 @@ def run_overlay(
 
     def apply_severity(severity: str) -> None:
         color = colors.get(severity, colors["info"])
-        root.configure(bg=color)
-        for stylename in ("Pet.TFrame", "PetTitle.TLabel", "PetBody.TLabel", "PetMeta.TLabel"):
-            style.configure(stylename, background=color)
-        sprite_canvas.configure(bg=color)
+        for item_id in bubble_border_items:
+            bubble_canvas.itemconfigure(item_id, outline=color)
+        bubble_canvas.itemconfigure(bubble_tail_id, outline=color)
+        bubble_canvas.itemconfigure(options_rect_id, outline=color)
+        bubble_canvas.itemconfigure(close_rect_id, outline=color)
+
+    def remember_history(item: IntelPetHistoryItem) -> None:
+        history_items.append(item)
+        del history_items[:-DEFAULT_HISTORY_LIMIT]
 
     def set_idle() -> None:
         nonlocal idle_after_id
@@ -910,6 +1198,7 @@ def run_overlay(
         message = alert.message or "Message text hidden by settings."
         message_var.set(f"{alert.speaker}: {message}")
         meta_var.set(f"{alert.severity.upper()} | {', '.join(alert.keywords) or 'matched chat'}")
+        remember_history(history_item_from_alert(alert))
         start_sprite_cycle(ALERT_SPRITE_SEQUENCE)
         idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
 
@@ -921,6 +1210,7 @@ def run_overlay(
         title_var.set(f"Happy arrival: {cheer.system_name}")
         message_var.set(f"{cheer.character_name} reached {cheer.system_name}.")
         meta_var.set(f"ESI location cheer | {LOCATION_SCOPE}")
+        remember_history(history_item_from_cheer(cheer))
         start_sprite_motion_cycle(HAPPY_SPRITE_STEPS)
         idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
 

@@ -10,11 +10,14 @@ from eve_voice_pilot.intel_pet import (
     IDLE_SPRITE_SEQUENCE,
     LOCATION_SCOPE,
     SHIP_FRAME_COUNT,
+    IntelPetLocationCheer,
     IntelPetLocationSession,
     IntelPetEngine,
     IntelPetSettings,
     clean_user_terms,
     fetch_pet_location,
+    history_item_from_alert,
+    history_item_from_cheer,
     is_happy_system,
     load_sprite_frames,
     load_settings,
@@ -22,6 +25,7 @@ from eve_voice_pilot.intel_pet import (
     replace_extra_keywords,
     save_settings,
     ship_sprite_frame_paths,
+    trim_history,
 )
 
 
@@ -239,6 +243,47 @@ def test_fetch_pet_location_requires_location_scope():
         assert LOCATION_SCOPE in str(exc)
     else:
         raise AssertionError("expected missing location scope to fail")
+
+
+def test_history_item_from_alert_keeps_message_context():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)))
+    alert = engine.analyze(make_message("gate camp on the Amarr undock", speaker="Scout Pilot"))
+
+    assert alert is not None
+    item = history_item_from_alert(alert)
+
+    assert item.title == alert.title
+    assert item.detail == "Scout Pilot: gate camp on the Amarr undock"
+    assert "keyword: gate camp" in item.meta
+    assert item.severity == alert.severity
+
+
+def test_history_item_from_cheer_records_location_arrival():
+    cheer = IntelPetLocationCheer(system_name="Amarr", character_name="Scout Pilot", updated_at="2026-06-06T10:45:00Z")
+
+    item = history_item_from_cheer(cheer)
+
+    assert item.title == "Happy arrival: Amarr"
+    assert item.detail == "Scout Pilot reached Amarr."
+    assert LOCATION_SCOPE in item.meta
+    assert item.recorded_at == "2026-06-06T10:45:00Z"
+
+
+def test_trim_history_keeps_most_recent_items():
+    items = tuple(
+        history_item_from_cheer(
+            IntelPetLocationCheer(system_name=f"System {index}", character_name="Scout", updated_at=str(index))
+        )
+        for index in range(5)
+    )
+
+    trimmed = trim_history(items, limit=3)
+
+    assert [item.title for item in trimmed] == [
+        "Happy arrival: System 2",
+        "Happy arrival: System 3",
+        "Happy arrival: System 4",
+    ]
 
 
 def test_ship_sprite_frame_paths_point_to_committed_assets():
