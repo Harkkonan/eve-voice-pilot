@@ -57,6 +57,15 @@ class IntelPetSettings:
             keywords=self.extra_keywords,
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "pilot_names": list(self.pilot_names),
+            "extra_keywords": list(self.extra_keywords),
+            "help_phrases": list(self.help_phrases),
+            "show_message_text": self.show_message_text,
+            "alert_seconds": self.alert_seconds,
+        }
+
 
 @dataclass(frozen=True)
 class IntelPetAlert:
@@ -73,18 +82,21 @@ class IntelPetAlert:
 
 class IntelPetEngine:
     def __init__(self, settings: IntelPetSettings, *, system_names: Iterable[str] = COMMON_SYSTEM_NAMES):
+        self._system_names = tuple(system_names)
+        self._lock = threading.Lock()
         self.settings = settings
-        self.parser = IntelParser(
-            system_names,
-            watchlist_store=WatchlistStore(watchlist=settings.to_watchlist()),
-        )
+        self.parser = self._build_parser(settings)
 
     def analyze(self, message: ChatMessage) -> IntelPetAlert | None:
-        event = self.parser.analyze(message, source="intel pet")
-        mentions = find_matching_terms(self.settings.pilot_names, message.text)
+        with self._lock:
+            settings = self.settings
+            parser = self.parser
+
+        event = parser.analyze(message, source="intel pet")
+        mentions = find_matching_terms(settings.pilot_names, message.text)
         self_mentioned_by_other = bool(mentions) and not speaker_matches_any(
             message.speaker,
-            self.settings.pilot_names,
+            settings.pilot_names,
         )
 
         categories = set(event.categories if event else ())
@@ -106,11 +118,28 @@ class IntelPetEngine:
             severity=severity,
             channel=message.channel,
             speaker=message.speaker,
-            message=message.text if self.settings.show_message_text else "",
+            message=message.text if settings.show_message_text else "",
             observed_at=message.observed_at,
             reported_at=now_iso(),
             categories=tuple(sorted(categories)),
             keywords=tuple(dedupe_preserve_order(keywords)),
+        )
+
+    def current_settings(self) -> IntelPetSettings:
+        with self._lock:
+            return self.settings
+
+    def update_settings(self, settings: IntelPetSettings) -> IntelPetSettings:
+        parser = self._build_parser(settings)
+        with self._lock:
+            self.settings = settings
+            self.parser = parser
+        return settings
+
+    def _build_parser(self, settings: IntelPetSettings) -> IntelParser:
+        return IntelParser(
+            self._system_names,
+            watchlist_store=WatchlistStore(watchlist=settings.to_watchlist()),
         )
 
 
@@ -148,8 +177,28 @@ def load_settings(path: Path | None, *, overrides: argparse.Namespace | None = N
     return settings
 
 
+def save_settings(path: Path, settings: IntelPetSettings) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = json.dumps(settings.to_dict(), indent=2) + "\n"
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(body, encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def replace_extra_keywords(settings: IntelPetSettings, keywords: Iterable[str]) -> IntelPetSettings:
+    return replace(settings, extra_keywords=clean_user_terms(keywords))
+
+
 def merge_terms(existing: tuple[str, ...], additions: Iterable[str]) -> tuple[str, ...]:
-    return tuple(dedupe_preserve_order((*existing, *clean_watchlist_terms(list(additions)))))
+    return tuple(dedupe_preserve_order((*existing, *clean_user_terms(additions))))
+
+
+def clean_user_terms(values: Iterable[str]) -> tuple[str, ...]:
+    terms: list[str] = []
+    for value in values:
+        terms.extend(clean_watchlist_terms(value))
+    return tuple(dedupe_preserve_order(terms))
 
 
 def find_matching_terms(terms: Iterable[str], text: str) -> tuple[str, ...]:
@@ -224,6 +273,7 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
     alert_queue: queue.Queue[IntelPetAlert | str] = queue.Queue()
     stop_event = threading.Event()
     channel_filter = channel_filter_from_args(args)
+    settings_path = args.settings_path.expanduser()
 
     def on_message(message: ChatMessage) -> None:
         alert = engine.analyze(message)
@@ -290,8 +340,121 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
         pady=(8, 0),
     )
 
+    def open_keyword_manager() -> None:
+        editor = tk.Toplevel(root)
+        editor.title("Intel Pet Keywords")
+        editor.geometry("420x360+80+80")
+        editor.minsize(360, 300)
+        editor.transient(root)
+        editor.attributes("-topmost", True)
+
+        editor_frame = ttk.Frame(editor, padding=12)
+        editor_frame.pack(fill="both", expand=True)
+
+        keyword_var = tk.StringVar()
+        editor_status_var = tk.StringVar(value="Saved locally only.")
+
+        ttk.Label(editor_frame, text="Local alert keywords", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(
+            editor_frame,
+            text="These match new chat lines on this computer and are saved to your ignored profile settings.",
+            wraplength=380,
+        ).pack(anchor="w", pady=(2, 8))
+
+        list_frame = ttk.Frame(editor_frame)
+        list_frame.pack(fill="both", expand=True)
+        keyword_list = tk.Listbox(list_frame, height=8, exportselection=False)
+        keyword_list.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=keyword_list.yview)
+        scrollbar.pack(side="right", fill="y")
+        keyword_list.configure(yscrollcommand=scrollbar.set)
+
+        def refresh_list(keywords: Iterable[str]) -> None:
+            keyword_list.delete(0, tk.END)
+            for keyword in keywords:
+                keyword_list.insert(tk.END, keyword)
+
+        def current_keywords() -> tuple[str, ...]:
+            return tuple(str(item) for item in keyword_list.get(0, tk.END))
+
+        def persist_keywords(action: str) -> None:
+            try:
+                settings = replace_extra_keywords(engine.current_settings(), current_keywords())
+                save_settings(settings_path, settings)
+                engine.update_settings(settings)
+            except Exception as exc:
+                editor_status_var.set(f"Save failed: {exc}")
+                return
+            count = len(settings.extra_keywords)
+            editor_status_var.set(f"{action}. {count} keyword{'s' if count != 1 else ''} saved.")
+            meta_var.set(f"{count} local keyword{'s' if count != 1 else ''} active.")
+
+        def add_keyword() -> None:
+            merged = clean_user_terms((*current_keywords(), keyword_var.get()))
+            if not merged:
+                editor_status_var.set("Enter a keyword first.")
+                return
+            refresh_list(merged)
+            keyword_var.set("")
+            persist_keywords("Added")
+
+        def selected_index() -> int | None:
+            selection = keyword_list.curselection()
+            return int(selection[0]) if selection else None
+
+        def change_keyword() -> None:
+            index = selected_index()
+            replacement = keyword_var.get().strip()
+            if index is None:
+                editor_status_var.set("Select a keyword to change.")
+                return
+            if not replacement:
+                editor_status_var.set("Enter the replacement keyword.")
+                return
+            keywords = list(current_keywords())
+            keywords[index] = replacement
+            refresh_list(clean_user_terms(keywords))
+            keyword_var.set("")
+            persist_keywords("Changed")
+
+        def remove_keyword() -> None:
+            index = selected_index()
+            if index is None:
+                editor_status_var.set("Select a keyword to remove.")
+                return
+            keywords = list(current_keywords())
+            del keywords[index]
+            refresh_list(keywords)
+            keyword_var.set("")
+            persist_keywords("Removed")
+
+        def fill_entry(_event: object | None = None) -> None:
+            index = selected_index()
+            if index is not None:
+                keyword_var.set(keyword_list.get(index))
+
+        refresh_list(engine.current_settings().extra_keywords)
+        keyword_list.bind("<<ListboxSelect>>", fill_entry)
+
+        entry_row = ttk.Frame(editor_frame)
+        entry_row.pack(fill="x", pady=(10, 6))
+        keyword_entry = ttk.Entry(entry_row, textvariable=keyword_var)
+        keyword_entry.pack(side="left", fill="x", expand=True)
+        keyword_entry.bind("<Return>", lambda _event: add_keyword())
+
+        action_row = ttk.Frame(editor_frame)
+        action_row.pack(fill="x")
+        ttk.Button(action_row, text="Add", command=add_keyword).pack(side="left")
+        ttk.Button(action_row, text="Change", command=change_keyword).pack(side="left", padx=(6, 0))
+        ttk.Button(action_row, text="Remove", command=remove_keyword).pack(side="left", padx=(6, 0))
+        ttk.Button(action_row, text="Close", command=editor.destroy).pack(side="right")
+
+        ttk.Label(editor_frame, textvariable=editor_status_var, wraplength=380).pack(anchor="w", pady=(10, 0))
+        keyword_entry.focus_set()
+
     buttons = ttk.Frame(frame)
     buttons.pack(anchor="e", fill="x", pady=(10, 0))
+    ttk.Button(buttons, text="Keywords", command=open_keyword_manager).pack(side="left")
     ttk.Button(buttons, text="Clear", command=lambda: set_idle()).pack(side="right")
     ttk.Button(buttons, text="Quit", command=root.destroy).pack(side="right", padx=(0, 8))
 

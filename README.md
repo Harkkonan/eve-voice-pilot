@@ -149,6 +149,8 @@ Double-click `Start-EveIntelPet.bat` for a local-only always-on-top alert overla
 .\scripts\run_intel_pet.ps1 --pilot-name "Your Character Name"
 ```
 
+Use the `Keywords` button in the overlay to add, change, or remove local alert keywords while it is running.
+
 Local settings can live in ignored profile data at `profiles/intel_pet_settings.json`. More detail is in `docs/intel_pet.md`.
 
 ## Notes

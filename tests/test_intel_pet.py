@@ -8,7 +8,10 @@ from eve_voice_pilot.corp_intel import ChatMessage
 from eve_voice_pilot.intel_pet import (
     IntelPetEngine,
     IntelPetSettings,
+    clean_user_terms,
     load_settings,
+    replace_extra_keywords,
+    save_settings,
 )
 
 
@@ -107,3 +110,41 @@ def test_load_settings_merges_local_file_and_cli_overrides(tmp_path):
     assert settings.help_phrases == ("need evac",)
     assert settings.show_message_text is False
     assert settings.alert_seconds == 12
+
+
+def test_clean_user_terms_splits_commas_and_dedupes_case_insensitively():
+    assert clean_user_terms(("buy order, gate camp", "Buy Order", "  need evac  ")) == (
+        "buy order",
+        "gate camp",
+        "need evac",
+    )
+
+
+def test_save_settings_persists_keywords_for_later_load(tmp_path):
+    settings_path = tmp_path / "intel_pet_settings.json"
+    settings = IntelPetSettings(
+        pilot_names=("Dandin Ridderston",),
+        extra_keywords=("buy order", "gate camp"),
+        help_phrases=("need evac",),
+        show_message_text=False,
+        alert_seconds=9,
+    )
+
+    save_settings(settings_path, settings)
+    loaded = load_settings(settings_path)
+
+    assert loaded == settings
+
+
+def test_engine_update_settings_changes_keyword_matches_without_restarting():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("buy order",)))
+    assert engine.analyze(make_message("contract alert")) is None
+
+    updated = replace_extra_keywords(engine.current_settings(), ("contract alert",))
+    engine.update_settings(updated)
+
+    alert = engine.analyze(make_message("contract alert is up"))
+
+    assert alert is not None
+    assert alert.title == "Keyword match in Corp"
+    assert alert.keywords == ("keyword: contract alert",)

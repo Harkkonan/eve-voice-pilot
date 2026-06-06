@@ -38,6 +38,18 @@ You can add extra keywords or help phrases from the command line:
 
 The first version has no Discord push. That keeps the trust boundary simple while we prove the overlay is useful.
 
+## Manage Keywords In The Overlay
+
+Click `Keywords` in the pet window to add, change, or remove local alert keywords while the overlay is running.
+
+Changes are saved immediately to:
+
+```text
+profiles/intel_pet_settings.json
+```
+
+The live matcher refreshes as soon as a keyword is saved, so you do not need to restart the pet.
+
 ## Optional Local Settings File
 
 You can also keep local settings in ignored profile data at:
