@@ -61,7 +61,8 @@ MAX_FLIGHT_BUYER_SCAN_REGIONS = 8
 MAX_FLIGHT_PROFIT_MATERIAL_TYPES = 120
 MAX_FLIGHT_HAUL_MATERIAL_TYPES = 80
 MAX_FLIGHT_HAUL_SCAN_TYPES = 240
-MAX_FLIGHT_ACQUISITION_SCAN_TYPES = 100
+MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES = 30
+MAX_FLIGHT_ACQUISITION_SCAN_TYPES = 50
 MAX_HAUL_MARKET_GROUP_IDS = 32
 MAX_FLIGHT_HAUL_OPPORTUNITIES = 20
 MAX_FLIGHT_ACQUISITION_OPPORTUNITIES = 20
@@ -76,6 +77,8 @@ MAX_FLIGHT_TRADE_PNL_ITEMS = 40
 DEFAULT_PLANETARY_HUB_SYSTEM = "Jita"
 DEFAULT_PLANETARY_OUTPUT_TIER = "P2"
 PLANETARY_OUTPUT_TIERS = frozenset({"P1", "P2", "P3", "P4"})
+DEFAULT_PLANETARY_STRATEGY_FILTER = "all"
+PLANETARY_STRATEGY_FILTERS = frozenset({"all", "profitable", "price-check"})
 MAX_PLANETARY_OPPORTUNITIES = 30
 DEFAULT_PLANETARY_OWNER_TAX_PERCENT = 5.0
 DEFAULT_PLANETARY_NPC_TAX_PERCENT = 10.0
@@ -4237,6 +4240,8 @@ def scan_route_hauling_opportunities(
         recipe_cache=recipe_cache,
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
+        common_material_limit=MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES,
+        scan_type_limit=MAX_FLIGHT_ACQUISITION_SCAN_TYPES,
     )
     item_truncated = len(item_targets) > MAX_FLIGHT_HAUL_SCAN_TYPES
     scan_targets = item_targets[:MAX_FLIGHT_HAUL_SCAN_TYPES]
@@ -5416,11 +5421,15 @@ def build_haul_item_targets(
     recipe_cache: IndustryRecipeCache,
     include_common_materials: bool,
     market_group_ids: Iterable[int],
+    common_material_limit: int = MAX_FLIGHT_HAUL_MATERIAL_TYPES,
+    scan_type_limit: int = MAX_FLIGHT_HAUL_SCAN_TYPES,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     selected_market_group_ids = clean_haul_market_group_ids(market_group_ids)
     common_targets = []
+    clean_common_material_limit = max(0, int(common_material_limit))
+    clean_scan_type_limit = max(1, int(scan_type_limit))
     if include_common_materials:
-        common_targets = industry_material_trade_targets(recipe_cache.recipes or {})[:MAX_FLIGHT_HAUL_MATERIAL_TYPES]
+        common_targets = industry_material_trade_targets(recipe_cache.recipes or {})[:clean_common_material_limit]
         for target in common_targets:
             target["source"] = "common_material"
             target["source_label"] = "Common materials"
@@ -5473,7 +5482,7 @@ def build_haul_item_targets(
     )
     return targets, {
         "include_common_materials": bool(include_common_materials),
-        "common_material_scan_limit": MAX_FLIGHT_HAUL_MATERIAL_TYPES,
+        "common_material_scan_limit": clean_common_material_limit,
         "common_material_item_types": len(common_targets),
         "selected_market_group_ids": market_group_meta.get("selected_market_group_ids", list(selected_market_group_ids)),
         "selected_market_groups": market_group_meta.get("selected_market_groups", []),
@@ -5481,7 +5490,7 @@ def build_haul_item_targets(
         "market_group_source": market_group_meta.get("source") or "",
         "market_group_item_types": int(market_group_meta.get("market_group_item_types") or 0),
         "total_item_types": len(targets),
-        "scan_type_limit": MAX_FLIGHT_HAUL_SCAN_TYPES,
+        "scan_type_limit": clean_scan_type_limit,
     }
 
 
@@ -5939,6 +5948,7 @@ def build_flight_planetary_payload(
     config: EveSsoConfig,
     hub_name: str = DEFAULT_PLANETARY_HUB_SYSTEM,
     output_tier: str = DEFAULT_PLANETARY_OUTPUT_TIER,
+    strategy_filter: str = DEFAULT_PLANETARY_STRATEGY_FILTER,
     owner_tax_percent: float = DEFAULT_PLANETARY_OWNER_TAX_PERCENT,
     npc_tax_percent: float = DEFAULT_PLANETARY_NPC_TAX_PERCENT,
     customs_code_expertise_level: int = DEFAULT_PLANETARY_CUSTOMS_CODE_EXPERTISE_LEVEL,
@@ -5952,6 +5962,7 @@ def build_flight_planetary_payload(
     route_cache = load_route_graph_cache()
     hub_system = resolve_planetary_market_hub(route_cache, hub_name)
     clean_tier = normalize_planetary_output_tier(output_tier)
+    clean_strategy_filter = normalize_planetary_strategy_filter(strategy_filter)
     clean_top = clean_planetary_top(top)
     clean_owner_tax_percent = clamp_planetary_percent(
         owner_tax_percent,
@@ -6008,15 +6019,23 @@ def build_flight_planetary_payload(
         broker_fee_rate=clean_broker_fee_percent / 100.0,
     )
     try:
-        opportunities = rank_planetary_opportunities(
+        all_opportunities = rank_planetary_opportunities(
             cache,
             price_map,
             tax_profile=tax_profile,
             output_tiers=(clean_tier,),
-            top=clean_top,
+            top=len(schematics),
         )
     except PlanetaryIndustryError as exc:
         raise CorpMarketError(str(exc)) from exc
+    filtered_opportunities = filter_planetary_opportunities(all_opportunities, clean_strategy_filter)
+    opportunities = filtered_opportunities[:clean_top]
+    profitable_opportunity_count = sum(1 for opportunity in all_opportunities if opportunity.profitable)
+    priced_opportunity_count = sum(1 for opportunity in all_opportunities if opportunity.price_complete)
+    price_check_opportunity_count = sum(1 for opportunity in all_opportunities if not opportunity.price_complete)
+    below_cost_opportunity_count = sum(
+        1 for opportunity in all_opportunities if opportunity.price_complete and not opportunity.profitable
+    )
     return {
         "ok": True,
         "generated_at": now_iso(),
@@ -6025,6 +6044,7 @@ def build_flight_planetary_payload(
             "hub_name": hub_system.name,
             "requested_hub_name": hub_name,
             "output_tier": clean_tier,
+            "strategy_filter": clean_strategy_filter,
             "top": clean_top,
             "owner_tax_percent": clean_owner_tax_percent,
             "npc_tax_percent": clean_npc_tax_percent,
@@ -6046,7 +6066,27 @@ def build_flight_planetary_payload(
             ),
             "input_sell_order_count": input_order_count,
             "output_buy_order_count": output_order_count,
+            "ranked_opportunity_count": len(all_opportunities),
+            "filtered_opportunity_count": len(filtered_opportunities),
             "opportunity_count": len(opportunities),
+            "profitable_opportunity_count": profitable_opportunity_count,
+            "priced_opportunity_count": priced_opportunity_count,
+            "price_check_opportunity_count": price_check_opportunity_count,
+            "below_cost_opportunity_count": below_cost_opportunity_count,
+            "filter_options": [
+                {"value": "all", "label": "All chains"},
+                {"value": "profitable", "label": "Profitable only"},
+                {"value": "price-check", "label": "Price check"},
+            ],
+            "strategy": build_planetary_strategy_summary(
+                all_opportunities=all_opportunities,
+                shown_opportunities=opportunities,
+                hub_name=hub_system.name,
+                output_tier=clean_tier,
+                strategy_filter=clean_strategy_filter,
+            ),
+            "shopping_list": aggregate_planetary_plan_items(opportunities, "shopping_list"),
+            "sell_targets": aggregate_planetary_plan_items(opportunities, "sell_targets"),
             "opportunities": [planetary_opportunity_to_dict(opportunity) for opportunity in opportunities],
             "errors": (input_errors + output_errors)[:10],
             "pricing_note": (
@@ -6060,6 +6100,131 @@ def build_flight_planetary_payload(
             "Taxes are manual assumptions because customs office owner rates and colony routing are not exposed here.",
         ],
     }
+
+
+def normalize_planetary_strategy_filter(value: Any) -> str:
+    clean = str(value or "").strip().lower()
+    return clean if clean in PLANETARY_STRATEGY_FILTERS else DEFAULT_PLANETARY_STRATEGY_FILTER
+
+
+def filter_planetary_opportunities(opportunities: Iterable[Any], strategy_filter: str) -> list[Any]:
+    clean_filter = normalize_planetary_strategy_filter(strategy_filter)
+    if clean_filter == "profitable":
+        return [opportunity for opportunity in opportunities if opportunity.profitable]
+    if clean_filter == "price-check":
+        return [opportunity for opportunity in opportunities if not opportunity.price_complete]
+    return list(opportunities)
+
+
+def build_planetary_strategy_summary(
+    *,
+    all_opportunities: Iterable[Any],
+    shown_opportunities: Iterable[Any],
+    hub_name: str,
+    output_tier: str,
+    strategy_filter: str,
+) -> dict[str, Any]:
+    all_ranked = list(all_opportunities)
+    shown = list(shown_opportunities)
+    profitable = [opportunity for opportunity in all_ranked if opportunity.profitable]
+    price_check = [opportunity for opportunity in all_ranked if not opportunity.price_complete]
+    best = next((opportunity for opportunity in shown if opportunity.profitable), shown[0] if shown else None)
+    if best is None:
+        headline = f"No {output_tier} PI chains matched this filter in {hub_name}."
+        next_step = "Try All chains, a different tier, or rerun after the market cache refreshes."
+    elif best.profitable:
+        headline = (
+            f"Best shown {output_tier} chain is {best.output_name} at "
+            f"{format_isk(best.profit_per_day)} per day after customs."
+        )
+        next_step = "Check the input sell orders and output buy order in EVE, then start with a small test batch."
+    elif not best.price_complete:
+        headline = f"{len(price_check):,} {output_tier} chain(s) still need a price check in {hub_name}."
+        next_step = "Fill the missing market prices in-game before trusting a profit number."
+    else:
+        headline = f"No shown {output_tier} chains are profitable after customs in {hub_name}."
+        next_step = "Watch only, lower customs assumptions, or compare a different output tier."
+    return {
+        "headline": headline,
+        "plain_language": (
+            f"This assumes you buy every input from current {hub_name} sell orders, import it through customs, "
+            "run one schematic cycle, export the output, and sell to current buy orders. Profit per day scales "
+            "the cycle profit by the schematic cycle time."
+        ),
+        "filter_label": planetary_strategy_filter_label(strategy_filter),
+        "profitable_count": len(profitable),
+        "price_check_count": len(price_check),
+        "shown_count": len(shown),
+        "best": planetary_strategy_best_dict(best),
+        "next_step": next_step,
+        "future_note": (
+            "Buy inputs versus make lower-tier inputs yourself is a later layer; this slice uses buy-input pricing."
+        ),
+    }
+
+
+def planetary_strategy_filter_label(strategy_filter: str) -> str:
+    return {
+        "all": "All chains",
+        "profitable": "Profitable only",
+        "price-check": "Price check",
+    }.get(normalize_planetary_strategy_filter(strategy_filter), "All chains")
+
+
+def planetary_strategy_best_dict(opportunity: Any | None) -> dict[str, Any] | None:
+    if opportunity is None:
+        return None
+    return {
+        "schematic_id": opportunity.schematic_id,
+        "schematic_name": opportunity.schematic_name,
+        "output_name": opportunity.output_name,
+        "output_tier": opportunity.output_tier,
+        "net_profit": opportunity.net_profit,
+        "profit_per_day": opportunity.profit_per_day,
+        "customs_transfer_cost": opportunity.customs_transfer_cost,
+        "price_complete": opportunity.price_complete,
+        "profitable": opportunity.profitable,
+    }
+
+
+def aggregate_planetary_plan_items(opportunities: Iterable[Any], attribute_name: str) -> list[dict[str, Any]]:
+    rows: dict[int, dict[str, Any]] = {}
+    for opportunity in opportunities:
+        for line in getattr(opportunity, attribute_name, ()) or ():
+            row = rows.setdefault(
+                int(line.type_id),
+                {
+                    "type_id": int(line.type_id),
+                    "name": line.name,
+                    "tier": line.tier,
+                    "quantity": 0,
+                    "unit_price": line.unit_price,
+                    "market_value": 0.0,
+                    "missing_price": False,
+                    "import_customs_cost": 0.0,
+                    "export_customs_cost": 0.0,
+                    "customs_transfer_cost": 0.0,
+                    "sales_tax": 0.0,
+                    "broker_fee": 0.0,
+                    "total_volume_m3": 0.0,
+                    "market_side": line.market_side,
+                },
+            )
+            row["quantity"] = int(row["quantity"]) + int(line.quantity)
+            if line.unit_price is not None:
+                row["unit_price"] = line.unit_price
+            if line.market_value is None:
+                row["missing_price"] = True
+            else:
+                row["market_value"] = float(row["market_value"]) + float(line.market_value)
+            row["import_customs_cost"] = float(row["import_customs_cost"]) + float(line.import_customs_cost or 0.0)
+            row["export_customs_cost"] = float(row["export_customs_cost"]) + float(line.export_customs_cost or 0.0)
+            row["customs_transfer_cost"] = float(row["customs_transfer_cost"]) + float(line.customs_transfer_cost or 0.0)
+            row["sales_tax"] = float(row["sales_tax"]) + float(line.sales_tax or 0.0)
+            row["broker_fee"] = float(row["broker_fee"]) + float(line.broker_fee or 0.0)
+            if line.total_volume_m3 is not None:
+                row["total_volume_m3"] = float(row["total_volume_m3"]) + float(line.total_volume_m3)
+    return sorted(rows.values(), key=lambda item: (-float(item.get("market_value") or 0.0), str(item["name"])))
 
 
 def resolve_planetary_market_hub(route_cache: RouteGraphCache, hub_name: str) -> RouteSystem:
@@ -6164,6 +6329,53 @@ def planetary_item_to_dict(item: Any) -> dict[str, Any]:
     }
 
 
+def planetary_plan_item_to_dict(item: Any) -> dict[str, Any]:
+    return {
+        "type_id": item.type_id,
+        "name": item.name,
+        "tier": item.tier,
+        "quantity": item.quantity,
+        "market_side": item.market_side,
+        "unit_price": item.unit_price,
+        "market_value": item.market_value,
+        "price_complete": item.price_complete,
+        "volume_m3": item.volume_m3,
+        "total_volume_m3": item.total_volume_m3,
+        "export_tax_base_per_unit": item.export_tax_base_per_unit,
+        "import_tax_base_per_unit": item.import_tax_base_per_unit,
+        "import_customs_cost": item.import_customs_cost,
+        "export_customs_cost": item.export_customs_cost,
+        "customs_transfer_cost": item.customs_transfer_cost,
+        "sales_tax": item.sales_tax,
+        "broker_fee": item.broker_fee,
+    }
+
+
+def planetary_customs_breakdown_to_dict(opportunity: Any) -> list[dict[str, Any]]:
+    rows = []
+    for item in getattr(opportunity, "shopping_list", ()) or ():
+        rows.append(
+            {
+                **planetary_plan_item_to_dict(item),
+                "role": "Import input",
+                "customs_direction": "import",
+                "customs_tax_base_per_unit": item.import_tax_base_per_unit,
+                "customs_cost": item.import_customs_cost,
+            }
+        )
+    for item in getattr(opportunity, "sell_targets", ()) or ():
+        rows.append(
+            {
+                **planetary_plan_item_to_dict(item),
+                "role": "Export output",
+                "customs_direction": "export",
+                "customs_tax_base_per_unit": item.export_tax_base_per_unit,
+                "customs_cost": item.export_customs_cost,
+            }
+        )
+    return rows
+
+
 def planetary_opportunity_to_dict(opportunity: Any) -> dict[str, Any]:
     break_even_rate = opportunity.break_even_export_tax_rate
     return {
@@ -6189,6 +6401,9 @@ def planetary_opportunity_to_dict(opportunity: Any) -> dict[str, Any]:
         "profitable": opportunity.profitable,
         "inputs": [planetary_item_to_dict(item) for item in opportunity.inputs],
         "outputs": [planetary_item_to_dict(item) for item in opportunity.outputs],
+        "shopping_list": [planetary_plan_item_to_dict(item) for item in opportunity.shopping_list],
+        "sell_targets": [planetary_plan_item_to_dict(item) for item in opportunity.sell_targets],
+        "customs_breakdown": planetary_customs_breakdown_to_dict(opportunity),
     }
 
 
@@ -7941,6 +8156,7 @@ def build_http_server(
                     config=sso_config,
                     hub_name=first_query_value(query, "hub") or DEFAULT_PLANETARY_HUB_SYSTEM,
                     output_tier=first_query_value(query, "output_tier") or DEFAULT_PLANETARY_OUTPUT_TIER,
+                    strategy_filter=first_query_value(query, "strategy_filter") or DEFAULT_PLANETARY_STRATEGY_FILTER,
                     owner_tax_percent=clamp_planetary_percent(
                         first_query_value(query, "owner_tax_percent"),
                         "owner tax percent",
@@ -10392,6 +10608,36 @@ def _render_flight_attendant_dashboard() -> str:
     .decision-source, .decision-stock { background: rgba(97, 199, 217, .16); color: var(--cyan); }
     .decision-price, .decision-watch { background: rgba(224, 168, 74, .16); color: var(--amber); }
     .decision-skip { background: rgba(229, 116, 102, .16); color: var(--red); }
+    .planetary-strategy-grid,
+    .planetary-target-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+      margin: 10px 0;
+    }
+    .planetary-strategy-card,
+    .planetary-plan-box {
+      border: 1px solid rgba(63, 85, 80, .58);
+      border-radius: 7px;
+      background: rgba(8, 13, 15, .34);
+      padding: 10px;
+      min-width: 0;
+    }
+    .planetary-strategy-card strong,
+    .planetary-plan-box strong { display: block; color: var(--text); overflow-wrap: anywhere; }
+    .planetary-plan-list { display: grid; gap: 7px; margin-top: 8px; }
+    .planetary-plan-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      border: 1px solid rgba(63, 85, 80, .42);
+      border-radius: 6px;
+      padding: 8px;
+      background: rgba(17, 24, 25, .56);
+    }
+    .planetary-plan-row b { color: var(--text); text-align: right; overflow-wrap: anywhere; }
+    .planetary-plan-row .meta { margin-top: 2px; }
+    .planetary-line-table { margin-top: 8px; }
     .cache-preflight-panel .profit-summary { margin-bottom: 10px; }
     .cache-list { display: grid; gap: 8px; }
     .cache-row {
@@ -10493,8 +10739,9 @@ def _render_flight_attendant_dashboard() -> str:
       .panel-header .pill { margin-top: 8px; }
       .panel-header .meta { max-width: 100%; }
       h1 { font-size: 24px; }
-      .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics { grid-template-columns: 1fr; }
+      .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid { grid-template-columns: 1fr; }
       .offer, .note-card { grid-template-columns: 1fr; }
+      .planetary-plan-row { grid-template-columns: 1fr; }
       .cache-row { grid-template-columns: 1fr; }
       .profit-panel { min-height: 360px; }
       .profit-actions { display: grid; grid-template-columns: 1fr; }
@@ -11201,6 +11448,11 @@ def _render_flight_attendant_dashboard() -> str:
                   <input id="planetary-broker-fee" name="broker_fee_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="0">
                 </label>
               </div>
+              <div id="planetary-filters" class="decision-filters" aria-label="Planetary strategy filters">
+                <button type="button" data-planetary-filter="all" class="active">All Chains</button>
+                <button type="button" data-planetary-filter="profitable">Profitable Only</button>
+                <button type="button" data-planetary-filter="price-check">Price Check</button>
+              </div>
               <button id="planetary-rank" class="ghost" type="submit">Rank PI Chains</button>
             </form>
           </section>
@@ -11234,6 +11486,19 @@ def _render_flight_attendant_dashboard() -> str:
               <summary>Opportunity Ranking</summary>
               <div class="output-details-body">
                 <div id="planetary-summary" class="profit-summary">Choose PI settings and rank chains.</div>
+                <div id="planetary-strategy" class="planetary-strategy-grid"></div>
+                <div class="planetary-target-grid">
+                  <div class="planetary-plan-box">
+                    <strong>Input Shopping List</strong>
+                    <div class="meta">Shown chains only; assumes buying inputs from hub sell orders.</div>
+                    <div id="planetary-shopping-list" class="planetary-plan-list"></div>
+                  </div>
+                  <div class="planetary-plan-box">
+                    <strong>Output Sell Targets</strong>
+                    <div class="meta">Shown chains only; assumes selling outputs to hub buy orders.</div>
+                    <div id="planetary-sell-targets" class="planetary-plan-list"></div>
+                  </div>
+                </div>
                 <div id="planetary-results" class="decision-output"></div>
               </div>
             </details>
@@ -11453,8 +11718,12 @@ def _render_flight_attendant_dashboard() -> str:
     const planetaryCce = document.querySelector("#planetary-cce");
     const planetarySalesTax = document.querySelector("#planetary-sales-tax");
     const planetaryBrokerFee = document.querySelector("#planetary-broker-fee");
+    const planetaryFilters = document.querySelector("#planetary-filters");
     const planetaryRankButton = document.querySelector("#planetary-rank");
     const planetarySummary = document.querySelector("#planetary-summary");
+    const planetaryStrategy = document.querySelector("#planetary-strategy");
+    const planetaryShoppingList = document.querySelector("#planetary-shopping-list");
+    const planetarySellTargets = document.querySelector("#planetary-sell-targets");
     const planetaryResults = document.querySelector("#planetary-results");
     const reprocessingForm = document.querySelector("#reprocessing-form");
     const reprocessOre = document.querySelector("#reprocess-ore");
@@ -11506,6 +11775,7 @@ def _render_flight_attendant_dashboard() -> str:
     const planetaryCceKey = "eve-flight-planetary-cce-v1";
     const planetarySalesTaxKey = "eve-flight-planetary-sales-tax-v1";
     const planetaryBrokerFeeKey = "eve-flight-planetary-broker-fee-v1";
+    const planetaryStrategyFilterKey = "eve-flight-planetary-strategy-filter-v1";
     const reprocessOreKey = "eve-flight-reprocess-ore-type-v1";
     const reprocessQuantityKey = "eve-flight-reprocess-quantity-v1";
     const reprocessLocationKey = "eve-flight-reprocess-location-v1";
@@ -13304,6 +13574,11 @@ def _render_flight_attendant_dashboard() -> str:
       return ["P1", "P2", "P3", "P4"].includes(tier) ? tier : "P2";
     }
 
+    function normalizePlanetaryStrategyFilter(value) {
+      const filter = String(value || "").trim().toLowerCase();
+      return ["all", "profitable", "price-check"].includes(filter) ? filter : "all";
+    }
+
     function clampPlanetaryCceValue(value) {
       const number = Math.floor(Number(value));
       if (!Number.isFinite(number)) return 0;
@@ -13314,6 +13589,7 @@ def _render_flight_attendant_dashboard() -> str:
       return {
         hub: String(window.localStorage.getItem(planetaryHubKey) || planetaryHub.value || "Jita").trim() || "Jita",
         outputTier: normalizePlanetaryTier(window.localStorage.getItem(planetaryTierKey) || planetaryOutputTier.value),
+        strategyFilter: normalizePlanetaryStrategyFilter(window.localStorage.getItem(planetaryStrategyFilterKey) || "all"),
         top: clampPlanetaryTopValue(window.localStorage.getItem(planetaryTopKey) || planetaryTop.value || 20),
         ownerTaxPercent: clampPlanetaryPercentValue(window.localStorage.getItem(planetaryOwnerTaxKey) || planetaryOwnerTax.value || 5, 5),
         npcTaxPercent: clampPlanetaryPercentValue(window.localStorage.getItem(planetaryNpcTaxKey) || planetaryNpcTax.value || 10, 10),
@@ -13327,6 +13603,7 @@ def _render_flight_attendant_dashboard() -> str:
       const clean = {
         hub: String(settings.hub || "Jita").trim() || "Jita",
         outputTier: normalizePlanetaryTier(settings.outputTier),
+        strategyFilter: normalizePlanetaryStrategyFilter(settings.strategyFilter),
         top: clampPlanetaryTopValue(settings.top),
         ownerTaxPercent: clampPlanetaryPercentValue(settings.ownerTaxPercent, 5),
         npcTaxPercent: clampPlanetaryPercentValue(settings.npcTaxPercent, 10),
@@ -13336,6 +13613,9 @@ def _render_flight_attendant_dashboard() -> str:
       };
       planetaryHub.value = clean.hub;
       planetaryOutputTier.value = clean.outputTier;
+      planetaryFilters.querySelectorAll("button[data-planetary-filter]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.planetaryFilter === clean.strategyFilter);
+      });
       planetaryTop.value = String(clean.top);
       planetaryOwnerTax.value = String(clean.ownerTaxPercent);
       planetaryNpcTax.value = String(clean.npcTaxPercent);
@@ -13344,6 +13624,7 @@ def _render_flight_attendant_dashboard() -> str:
       planetaryBrokerFee.value = String(clean.brokerFeePercent);
       window.localStorage.setItem(planetaryHubKey, clean.hub);
       window.localStorage.setItem(planetaryTierKey, clean.outputTier);
+      window.localStorage.setItem(planetaryStrategyFilterKey, clean.strategyFilter);
       window.localStorage.setItem(planetaryTopKey, String(clean.top));
       window.localStorage.setItem(planetaryOwnerTaxKey, String(clean.ownerTaxPercent));
       window.localStorage.setItem(planetaryNpcTaxKey, String(clean.npcTaxPercent));
@@ -13353,8 +13634,16 @@ def _render_flight_attendant_dashboard() -> str:
       return clean;
     }
 
+    function currentPlanetaryStrategyFilter() {
+      const active = planetaryFilters.querySelector("button[data-planetary-filter].active");
+      return normalizePlanetaryStrategyFilter(active ? active.dataset.planetaryFilter : window.localStorage.getItem(planetaryStrategyFilterKey));
+    }
+
     function resetPlanetary(message) {
       planetarySummary.textContent = message;
+      planetaryStrategy.innerHTML = "";
+      planetaryShoppingList.innerHTML = "";
+      planetarySellTargets.innerHTML = "";
       planetaryResults.innerHTML = "";
       planetaryRankButton.disabled = false;
     }
@@ -13363,6 +13652,7 @@ def _render_flight_attendant_dashboard() -> str:
       const settings = writePlanetarySettings({
         hub: planetaryHub.value,
         outputTier: planetaryOutputTier.value,
+        strategyFilter: currentPlanetaryStrategyFilter(),
         top: planetaryTop.value,
         ownerTaxPercent: planetaryOwnerTax.value,
         npcTaxPercent: planetaryNpcTax.value,
@@ -13376,6 +13666,7 @@ def _render_flight_attendant_dashboard() -> str:
       const params = new URLSearchParams({
         hub: settings.hub,
         output_tier: settings.outputTier,
+        strategy_filter: settings.strategyFilter,
         top: String(settings.top),
         owner_tax_percent: String(settings.ownerTaxPercent),
         npc_tax_percent: String(settings.npcTaxPercent),
@@ -13402,21 +13693,67 @@ def _render_flight_attendant_dashboard() -> str:
       const tax = data.tax_profile || {};
       const cache = planetary.cache || {};
       const opportunities = planetary.opportunities || [];
-      const profitableCount = opportunities.filter((item) => item.profitable).length;
-      const completeCount = opportunities.filter((item) => item.price_complete).length;
+      const strategy = planetary.strategy || {};
       planetarySummary.innerHTML = `
         <div class="profit-stats">
-          <div class="profit-stat"><span>Profitable</span><b>${formatNumber(profitableCount)}</b></div>
-          <div class="profit-stat"><span>Priced</span><b>${formatNumber(completeCount)} / ${formatNumber(opportunities.length)}</b></div>
+          <div class="profit-stat"><span>Profitable</span><b>${formatNumber(planetary.profitable_opportunity_count)}</b></div>
+          <div class="profit-stat"><span>Price Checks</span><b>${formatNumber(planetary.price_check_opportunity_count)}</b></div>
+          <div class="profit-stat"><span>Shown</span><b>${formatNumber(planetary.opportunity_count)} / ${formatNumber(planetary.filtered_opportunity_count)}</b></div>
+          <div class="profit-stat"><span>Ranked By</span><b>Profit / Day</b></div>
           <div class="profit-stat"><span>Input Types</span><b>${formatNumber(planetary.priced_input_type_count)} / ${formatNumber(planetary.input_type_count)}</b></div>
           <div class="profit-stat"><span>Output Types</span><b>${formatNumber(planetary.priced_output_type_count)} / ${formatNumber(planetary.output_type_count)}</b></div>
         </div>
         <div class="meta">Hub ${escapeHtml(hub.name || "Jita")}; output tier ${escapeHtml((data.settings || {}).output_tier || "P2")}; ${formatNumber(planetary.schematic_count)} schematics scanned.</div>
+        <div class="meta">Filter ${escapeHtml(strategy.filter_label || "All chains")}; ${formatNumber(planetary.below_cost_opportunity_count)} priced chain${planetary.below_cost_opportunity_count === 1 ? "" : "s"} are below cost after customs.</div>
         <div class="meta">Customs export rate ${formatPercent(tax.effective_export_tax_percent)} after CCE ${formatNumber(tax.customs_code_expertise_level)}; sales tax ${formatPercent(tax.sales_tax_percent)}; broker fee ${formatPercent(tax.broker_fee_percent)}.</div>
         <div class="meta">Static PI cache: ${cache.available ? `build ${escapeHtml(cache.build_number || "unknown")}` : escapeHtml(cache.error || "missing")}; ${formatNumber(cache.schematic_count)} schematics, ${formatNumber(cache.commodity_count)} commodities.</div>
         <div class="meta">${escapeHtml(planetary.pricing_note || "Customs transfer cost is included before profit.")}</div>
       `;
+      planetaryStrategy.innerHTML = renderPlanetaryStrategy(strategy);
+      planetaryShoppingList.innerHTML = renderPlanetaryPlanList(planetary.shopping_list || [], "input");
+      planetarySellTargets.innerHTML = renderPlanetaryPlanList(planetary.sell_targets || [], "output");
       planetaryResults.innerHTML = renderPlanetaryOpportunities(opportunities);
+    }
+
+    function renderPlanetaryStrategy(strategy) {
+      const best = strategy.best || {};
+      const bestText = best.output_name
+        ? `${escapeHtml(best.output_name)}: ${formatSignedIsk(best.profit_per_day)} / day, ${formatSignedIsk(best.net_profit)} / cycle`
+        : "No chain selected by the current filter.";
+      return `
+        <div class="planetary-strategy-card">
+          <strong>${escapeHtml(strategy.headline || "PI strategy summary")}</strong>
+          <div class="meta">${escapeHtml(strategy.plain_language || "Rankings use market orders, schematic cycle time, and customs assumptions.")}</div>
+        </div>
+        <div class="planetary-strategy-card">
+          <strong>${bestText}</strong>
+          <div class="meta">${escapeHtml(strategy.next_step || "Check the market in EVE before committing ISK.")}</div>
+          <div class="meta">${escapeHtml(strategy.future_note || "Buy inputs versus make inputs yourself can be added later.")}</div>
+        </div>
+      `;
+    }
+
+    function renderPlanetaryPlanList(items, kind) {
+      if (!items.length) return `<div class="decision-empty">No ${kind === "input" ? "inputs" : "outputs"} matched this filter.</div>`;
+      return items.slice(0, 10).map((line) => {
+        const value = line.missing_price || line.unit_price == null
+          ? "Price check"
+          : formatIsk(line.market_value);
+        const customs = line.customs_transfer_cost ? `; customs ${formatIsk(line.customs_transfer_cost)}` : "";
+        const fees = kind === "output" && (line.sales_tax || line.broker_fee)
+          ? `; tax/fee ${formatIsk(Number(line.sales_tax || 0) + Number(line.broker_fee || 0))}`
+          : "";
+        return `
+          <div class="planetary-plan-row">
+            <div>
+              <strong>${escapeHtml(line.name || "Unknown item")} x${formatNumber(line.quantity)}</strong>
+              <div class="meta">${line.unit_price == null ? "No current price" : `${formatIsk(line.unit_price)} each`}${customs}${fees}</div>
+              <div class="meta">${formatVolume(line.total_volume_m3)} total volume.</div>
+            </div>
+            <b>${escapeHtml(value)}</b>
+          </div>
+        `;
+      }).join("");
     }
 
     function renderPlanetaryOpportunities(opportunities) {
@@ -13433,13 +13770,13 @@ def _render_flight_attendant_dashboard() -> str:
               <strong>${escapeHtml(item.output_name || item.schematic_name)}</strong>
               <span class="pill ${statusClass}">${escapeHtml(statusLabel)}</span>
             </div>
-            <div class="decision-lede">Net ${formatSignedIsk(item.net_profit)} per ${escapeHtml(item.schematic_name || "schematic")} cycle after customs transfer.</div>
+            <div class="decision-lede">Ranked by ${formatSignedIsk(item.profit_per_day)} per day; net ${formatSignedIsk(item.net_profit)} per ${escapeHtml(item.schematic_name || "schematic")} cycle after customs transfer.</div>
             ${missing}
             <div class="decision-metrics">
-              <div class="decision-metric"><span>Net Profit</span><b>${formatSignedIsk(item.net_profit)}</b><small>Output minus inputs, customs, sales tax, and broker fee.</small></div>
               <div class="decision-metric"><span>Profit / Day</span><b>${formatSignedIsk(item.profit_per_day)}</b><small>Cycle time ${formatDuration(item.cycle_time_seconds)}.</small></div>
+              <div class="decision-metric"><span>Net Profit</span><b>${formatSignedIsk(item.net_profit)}</b><small>Output minus inputs, customs, sales tax, and broker fee.</small></div>
               <div class="decision-metric"><span>Customs Transfer</span><b>-${formatIsk(item.customs_transfer_cost)}</b><small>Import ${formatIsk(item.import_customs_cost)}; export ${formatIsk(item.export_customs_cost)}.</small></div>
-              <div class="decision-metric"><span>Market Values</span><b>${formatIsk(item.output_value)}</b><small>Inputs ${formatIsk(item.input_value)}.</small></div>
+              <div class="decision-metric"><span>Output Sell Target</span><b>${renderPlanetaryOutputTarget(item)}</b><small>Inputs cost ${formatIsk(item.input_value)}.</small></div>
             </div>
             <div class="meta">${renderPlanetaryMaterialSummary(item)}</div>
             ${renderPlanetaryMathDetails(item)}
@@ -13459,6 +13796,13 @@ def _render_flight_attendant_dashboard() -> str:
       return `Inputs: ${inputs || "unknown"}; outputs: ${outputs || "unknown"}.`;
     }
 
+    function renderPlanetaryOutputTarget(item) {
+      const target = (item.sell_targets || [])[0] || {};
+      if (!target.name) return formatIsk(item.output_value);
+      const unit = target.unit_price == null ? "price check" : `${formatIsk(target.unit_price)} each`;
+      return `${escapeHtml(target.name)} x${formatNumber(target.quantity)} at ${unit}`;
+    }
+
     function renderPlanetaryMathDetails(item) {
       const rows = [
         ["Output buy-order value", formatIsk(item.output_value)],
@@ -13473,10 +13817,26 @@ def _render_flight_attendant_dashboard() -> str:
       ];
       return `
         <details class="profit-details">
-          <summary>PI math details</summary>
+          <summary>PI shopping, sell target, and customs details</summary>
+          <div class="planetary-target-grid planetary-line-table">
+            <div>
+              <strong>Shopping List</strong>
+              <div class="planetary-plan-list">${renderPlanetaryPlanList(item.shopping_list || [], "input")}</div>
+            </div>
+            <div>
+              <strong>Sell Target</strong>
+              <div class="planetary-plan-list">${renderPlanetaryPlanList(item.sell_targets || [], "output")}</div>
+            </div>
+          </div>
           <div class="profit-detail-grid">
             ${rows.map(([label, value]) => `
               <div class="profit-detail-row"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>
+            `).join("")}
+            ${(item.customs_breakdown || []).map((line) => `
+              <div class="profit-detail-row">
+                <span>${escapeHtml(line.role || "Customs")} ${escapeHtml(line.name || "item")} x${formatNumber(line.quantity)}<br><small>Base ${formatIsk(line.customs_tax_base_per_unit)} each; ${escapeHtml(line.customs_direction || "customs")} customs.</small></span>
+                <b>-${formatIsk(line.customs_cost)}</b>
+              </div>
             `).join("")}
           </div>
         </details>
@@ -14618,6 +14978,7 @@ def _render_flight_attendant_dashboard() -> str:
       const settings = writePlanetarySettings({
         hub: planetaryHub.value,
         outputTier: planetaryOutputTier.value,
+        strategyFilter: currentPlanetaryStrategyFilter(),
         top: planetaryTop.value,
         ownerTaxPercent: planetaryOwnerTax.value,
         npcTaxPercent: planetaryNpcTax.value,
@@ -14630,6 +14991,22 @@ def _render_flight_attendant_dashboard() -> str:
 
     planetaryForm.addEventListener("submit", (event) => {
       event.preventDefault();
+      loadPlanetaryRanking();
+    });
+    planetaryFilters.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-planetary-filter]");
+      if (!button) return;
+      writePlanetarySettings({
+        hub: planetaryHub.value,
+        outputTier: planetaryOutputTier.value,
+        strategyFilter: button.dataset.planetaryFilter,
+        top: planetaryTop.value,
+        ownerTaxPercent: planetaryOwnerTax.value,
+        npcTaxPercent: planetaryNpcTax.value,
+        customsCodeExpertiseLevel: planetaryCce.value,
+        salesTaxPercent: planetarySalesTax.value,
+        brokerFeePercent: planetaryBrokerFee.value,
+      });
       loadPlanetaryRanking();
     });
     planetaryHub.addEventListener("change", updatePlanetaryAndReset);

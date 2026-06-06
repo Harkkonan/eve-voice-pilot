@@ -42,6 +42,7 @@ from eve_voice_pilot.corp_market import (
     edit_discord_webhook_message,
     fetch_flight_skills,
     fetch_flight_location,
+    filter_planetary_opportunities,
     format_isk,
     load_reprocessing_cache,
     parse_isk_amount,
@@ -318,8 +319,16 @@ def test_dashboard_includes_flight_esi_hooks():
     assert page.count("id=\"tab-trade-pnl\"") == 1
     assert page.count("id=\"tab-planetary\"") == 1
     assert "id=\"planetary-form\"" in page
+    assert "id=\"planetary-filters\"" in page
+    assert "data-planetary-filter=\"profitable\"" in page
+    assert "data-planetary-filter=\"price-check\"" in page
+    assert "id=\"planetary-strategy\" class=\"planetary-strategy-grid\"" in page
+    assert "id=\"planetary-shopping-list\"" in page
+    assert "id=\"planetary-sell-targets\"" in page
     assert "id=\"planetary-results\" class=\"decision-output\"" in page
     assert "Customs Transfer" in page
+    assert "renderPlanetaryStrategy" in page
+    assert "renderPlanetaryPlanList" in page
     assert "renderPlanetaryOpportunities" in page
     assert page.count("id=\"tab-reprocessing\"") == 1
     assert "https://images.evetech.net/types/" in page
@@ -1424,7 +1433,42 @@ def test_build_flight_planetary_payload_displays_customs_transfer_cost(monkeypat
     assert opportunity["sales_tax"] == pytest.approx(330.0)
     assert opportunity["net_profit"] == pytest.approx(-2930.0)
     assert opportunity["profit_per_day"] == pytest.approx(-70320.0)
+    assert payload["settings"]["strategy_filter"] == "all"
+    assert payload["planetary"]["ranked_opportunity_count"] == 1
+    assert payload["planetary"]["filtered_opportunity_count"] == 1
+    assert payload["planetary"]["below_cost_opportunity_count"] == 1
+    assert payload["planetary"]["strategy"]["plain_language"].startswith("This assumes you buy every input")
+    assert payload["planetary"]["strategy"]["future_note"].startswith("Buy inputs versus make")
+    plasmoids = next(item for item in payload["planetary"]["shopping_list"] if item["name"] == "Plasmoids")
+    assert plasmoids["market_value"] == pytest.approx(4000.0)
+    assert payload["planetary"]["sell_targets"][0]["name"] == "Superconductors"
+    assert payload["planetary"]["sell_targets"][0]["market_value"] == pytest.approx(11000.0)
+    assert opportunity["shopping_list"][0]["unit_price"] == pytest.approx(100.0)
+    assert opportunity["shopping_list"][0]["import_customs_cost"] == pytest.approx(800.0)
+    assert opportunity["sell_targets"][0]["unit_price"] == pytest.approx(2200.0)
+    assert opportunity["sell_targets"][0]["export_customs_cost"] == pytest.approx(3600.0)
+    assert opportunity["customs_breakdown"][0]["role"] == "Import input"
+    assert opportunity["customs_breakdown"][-1]["role"] == "Export output"
     assert "Customs transfer" in payload["planetary"]["pricing_note"]
+
+
+def test_filter_planetary_opportunities_supports_strategy_modes():
+    class Opportunity:
+        def __init__(self, *, profitable: bool, price_complete: bool) -> None:
+            self.profitable = profitable
+            self.price_complete = price_complete
+
+    profitable = Opportunity(profitable=True, price_complete=True)
+    below_cost = Opportunity(profitable=False, price_complete=True)
+    price_check = Opportunity(profitable=False, price_complete=False)
+
+    assert filter_planetary_opportunities([profitable, below_cost, price_check], "all") == [
+        profitable,
+        below_cost,
+        price_check,
+    ]
+    assert filter_planetary_opportunities([profitable, below_cost, price_check], "profitable") == [profitable]
+    assert filter_planetary_opportunities([profitable, below_cost, price_check], "price-check") == [price_check]
 
 
 def test_load_reprocessing_cache_reads_ore_and_station_data(tmp_path):

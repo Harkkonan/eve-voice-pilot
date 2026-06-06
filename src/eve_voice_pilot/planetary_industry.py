@@ -86,6 +86,33 @@ class PlanetaryMarketPrice:
 
 
 @dataclass(frozen=True)
+class PlanetaryPlanItem:
+    type_id: int
+    name: str
+    tier: str
+    quantity: int
+    market_side: str
+    unit_price: float | None
+    market_value: float | None
+    import_customs_cost: float = 0.0
+    export_customs_cost: float = 0.0
+    sales_tax: float = 0.0
+    broker_fee: float = 0.0
+    volume_m3: float | None = None
+    total_volume_m3: float | None = None
+    export_tax_base_per_unit: float | None = None
+    import_tax_base_per_unit: float | None = None
+
+    @property
+    def price_complete(self) -> bool:
+        return self.unit_price is not None and self.market_value is not None
+
+    @property
+    def customs_transfer_cost(self) -> float:
+        return self.import_customs_cost + self.export_customs_cost
+
+
+@dataclass(frozen=True)
 class PlanetaryTaxProfile:
     owner_export_tax_rate: float = 0.0
     npc_export_tax_rate: float = 0.0
@@ -129,6 +156,8 @@ class PlanetaryOpportunity:
     missing_price_type_ids: tuple[int, ...]
     inputs: tuple[PlanetaryItem, ...]
     outputs: tuple[PlanetaryItem, ...]
+    shopping_list: tuple[PlanetaryPlanItem, ...]
+    sell_targets: tuple[PlanetaryPlanItem, ...]
 
     @property
     def profitable(self) -> bool:
@@ -200,8 +229,8 @@ def rank_planetary_opportunities(
     opportunities.sort(
         key=lambda item: (
             0 if item.price_complete else 1,
-            -item.net_profit,
             -float(item.profit_per_day or 0.0),
+            -item.net_profit,
             item.schematic_name,
         )
     )
@@ -255,6 +284,24 @@ def build_planetary_opportunity(
         missing_price_type_ids=tuple(sorted(set(missing_input_prices + missing_output_prices))),
         inputs=schematic.inputs,
         outputs=schematic.outputs,
+        shopping_list=tuple(
+            build_plan_item(
+                item,
+                prices=prices,
+                tax_profile=tax_profile,
+                market_side="input-sell",
+            )
+            for item in schematic.inputs
+        ),
+        sell_targets=tuple(
+            build_plan_item(
+                item,
+                prices=prices,
+                tax_profile=tax_profile,
+                market_side="output-buy",
+            )
+            for item in schematic.outputs
+        ),
     )
 
 
@@ -277,14 +324,47 @@ def material_value(
 
 
 def customs_cost(items: Iterable[PlanetaryItem], tax_profile: PlanetaryTaxProfile, *, direction: str) -> float:
-    rate = tax_profile.effective_export_tax_rate
-    total = 0.0
-    for item in items:
-        base = item.import_tax_base_per_unit if direction == "import" else item.export_tax_base_per_unit
-        if base is None:
-            continue
-        total += float(base) * item.quantity * rate
-    return total
+    return sum(customs_line_cost(item, tax_profile, direction=direction) for item in items)
+
+
+def customs_line_cost(item: PlanetaryItem, tax_profile: PlanetaryTaxProfile, *, direction: str) -> float:
+    base = item.import_tax_base_per_unit if direction == "import" else item.export_tax_base_per_unit
+    if base is None:
+        return 0.0
+    return float(base) * item.quantity * tax_profile.effective_export_tax_rate
+
+
+def build_plan_item(
+    item: PlanetaryItem,
+    *,
+    prices: dict[int, PlanetaryMarketPrice],
+    tax_profile: PlanetaryTaxProfile,
+    market_side: str,
+) -> PlanetaryPlanItem:
+    price = prices.get(item.type_id)
+    unit_price = price.sell_price if market_side == "input-sell" and price else price.buy_price if price else None
+    market_value = None if unit_price is None else float(unit_price) * item.quantity
+    import_customs = customs_line_cost(item, tax_profile, direction="import") if market_side == "input-sell" else 0.0
+    export_customs = customs_line_cost(item, tax_profile, direction="export") if market_side == "output-buy" else 0.0
+    sales_tax = (market_value or 0.0) * max(0.0, tax_profile.sales_tax_rate) if market_side == "output-buy" else 0.0
+    broker_fee = (market_value or 0.0) * max(0.0, tax_profile.broker_fee_rate) if market_side == "output-buy" else 0.0
+    return PlanetaryPlanItem(
+        type_id=item.type_id,
+        name=item.name,
+        tier=item.tier,
+        quantity=item.quantity,
+        market_side=market_side,
+        unit_price=unit_price,
+        market_value=market_value,
+        import_customs_cost=import_customs,
+        export_customs_cost=export_customs,
+        sales_tax=sales_tax,
+        broker_fee=broker_fee,
+        volume_m3=item.volume_m3,
+        total_volume_m3=item.total_volume_m3,
+        export_tax_base_per_unit=item.export_tax_base_per_unit,
+        import_tax_base_per_unit=item.import_tax_base_per_unit,
+    )
 
 
 def break_even_export_tax_rate(

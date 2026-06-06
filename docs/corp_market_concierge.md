@@ -150,13 +150,13 @@ If these caches are missing, the Flight Attendant tab still requires ESI and wil
 
 ### Planetary Industry Planner
 
-Planetary Industry support is being added one safe layer at a time. The static cache and planner module can already model PI schematics from the SDE and rank them against market prices and tax assumptions; the site tab will wire that planner into the Flight Attendant UI in a later slice.
+Planetary Industry support is being added one safe layer at a time. The Flight Attendant tab can rank PI schematics from the SDE against public market orders and manual tax assumptions. The current strategy layer shows a plain-language summary, profitable-only and price-check filters, profit-per-day ranking, an input shopping list, output sell targets, and a separate import/export customs breakdown.
 
 The planner should support these modes:
 
 - manual public-data mode: choose a hub, output tier, and tax settings, then compare PI schematics using public market orders and SDE schematic data;
 - factory-planet mode: treat all inputs as bought/imported and all outputs as exported/sold;
-- extraction or hybrid mode later: use selected self-supplied inputs as zero-cash purchases while still showing their opportunity value;
+- extraction or hybrid mode later: compare buying inputs with making lower-tier inputs yourself, while still showing the opportunity value of self-supplied materials;
 - signed-in colony mode later: read colonies with `esi-planets.manage_planets.v1`, while warning that ESI colony layout data may be stale until the pilot opens the colony in EVE.
 
 Profit math must always show customs movement cost, not hide it inside a generic fee. Use this shape:

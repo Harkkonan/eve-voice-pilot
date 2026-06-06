@@ -140,6 +140,15 @@ def test_rank_planetary_opportunities_subtracts_customs_transfer_cost(tmp_path):
     assert opportunity.net_profit == pytest.approx(-2930.0)
     assert opportunity.profit_per_day == pytest.approx(-70320.0)
     assert opportunity.break_even_export_tax_rate == pytest.approx(0.0436538461538)
+    assert opportunity.shopping_list[0].name == "Plasmoids"
+    assert opportunity.shopping_list[0].unit_price == pytest.approx(100.0)
+    assert opportunity.shopping_list[0].market_value == pytest.approx(4000.0)
+    assert opportunity.shopping_list[0].import_customs_cost == pytest.approx(800.0)
+    assert opportunity.sell_targets[0].name == "Superconductors"
+    assert opportunity.sell_targets[0].unit_price == pytest.approx(2200.0)
+    assert opportunity.sell_targets[0].market_value == pytest.approx(11000.0)
+    assert opportunity.sell_targets[0].export_customs_cost == pytest.approx(3600.0)
+    assert opportunity.sell_targets[0].sales_tax == pytest.approx(330.0)
 
 
 def test_rank_planetary_opportunities_labels_missing_prices(tmp_path):
