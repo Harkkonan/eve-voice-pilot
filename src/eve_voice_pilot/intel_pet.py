@@ -553,6 +553,10 @@ def start_native_window_drag(window: Any) -> bool:
     return True
 
 
+def raise_tk_widget(widget: Any) -> None:
+    widget.tk.call("raise", widget._w)
+
+
 def ship_sprite_frame_paths(asset_dir: Path = DEFAULT_SPRITE_DIR) -> tuple[Path, ...]:
     return tuple(asset_dir / f"ship-frame-{index:02d}.png" for index in range(SHIP_FRAME_COUNT))
 
@@ -1680,7 +1684,7 @@ def run_overlay(
     def show_message_bubble(message: str, *, severity: str) -> None:
         resize_overlay(OVERLAY_ALERT_WIDTH)
         bubble_canvas.place(x=128, y=6)
-        control_canvas.tkraise()
+        raise_tk_widget(control_canvas)
         apply_severity(severity)
         message_var.set(message)
         for item_id in bubble_item_ids:

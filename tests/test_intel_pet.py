@@ -570,6 +570,22 @@ def test_native_window_drag_noops_off_windows(monkeypatch):
     assert not intel_pet_module.start_native_window_drag(object())
 
 
+def test_raise_tk_widget_uses_widget_raise_for_canvas_like_widgets():
+    calls = []
+
+    class FakeTk:
+        def call(self, *args):
+            calls.append(args)
+
+    class FakeWidget:
+        tk = FakeTk()
+        _w = ".!frame.!canvas3"
+
+    intel_pet_module.raise_tk_widget(FakeWidget())
+
+    assert calls == [("raise", ".!frame.!canvas3")]
+
+
 def test_trim_history_keeps_most_recent_items():
     items = tuple(
         history_item_from_cheer(
