@@ -140,11 +140,11 @@ EVE_VOICE_OPENAI_API_KEY
 
 You can also turn spoken pet messages on or off in `Options` > `Voice`.
 
-## Optional Voice Command Practice
+## Optional Voice Command Listener
 
-The pet can also listen for the same phrases configured in EVE Voice Pilot and show what command matched. This first pet integration is practice-only: it does not send keys, click, move the mouse, or control EVE.
+The pet can also listen for the same phrases configured in EVE Voice Pilot and show what command matched. It starts in practice mode: it does not send keys, click, move the mouse, or control EVE.
 
-To try it:
+To try practice mode:
 
 ```powershell
 .\scripts\run_intel_pet.ps1 --enable-voice-listener
@@ -154,6 +154,35 @@ When it recognizes a configured phrase, the bubble shows the heard phrase, the m
 
 ```text
 Practice only. No key sent.
+```
+
+To allow exact matched voice commands to send their configured keybinds:
+
+```powershell
+.\scripts\run_intel_pet.ps1 `
+  --enable-voice-listener `
+  --allow-voice-command-sending
+```
+
+Command sending stays guarded by the active-window check by default. The pet only sends when the active window title contains:
+
+```text
+EVE
+```
+
+You can change the required title text:
+
+```powershell
+.\scripts\run_intel_pet.ps1 `
+  --enable-voice-listener `
+  --allow-voice-command-sending `
+  --voice-target-title "EVE"
+```
+
+To return to practice mode:
+
+```powershell
+.\scripts\run_intel_pet.ps1 --enable-voice-listener --no-voice-command-sending
 ```
 
 The listener uses your saved EVE Voice Pilot command profile when available, then falls back to the sample profile. You can choose the speech engine, microphone, and call sign in `Options` > `Voice`.
@@ -239,7 +268,7 @@ In the `Behaviors` tab, choose the ship animation for each alert type:
 
 Each row has a small animated preview next to the selector. The behavior choices include short alert, happy flight, combat burst, long flight, long shooting, long combo, calm wiggle, and no animation. Behavior changes are saved immediately to the same local settings file.
 
-In the `Voice` tab, turn spoken pet messages on or off and choose the voice engine/style. You can also enable the practice voice-command listener there. The listener reports matched Voice Pilot commands but does not send keys.
+In the `Voice` tab, turn spoken pet messages on or off and choose the voice engine/style. You can also enable the voice-command listener there. `Allow command sending` is off by default; when it is on, the active-window guard is still on by default.
 
 ## Alert History
 
@@ -278,6 +307,9 @@ Example:
   "voice_engine": "Local (offline)",
   "voice_input_device": "",
   "voice_call_sign": "merlin",
+  "allow_voice_command_sending": false,
+  "require_voice_target_window": true,
+  "voice_target_title": "EVE",
   "alert_behaviors": {
     "mention": "alert",
     "help": "alert",

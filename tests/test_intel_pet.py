@@ -22,6 +22,7 @@ from eve_voice_pilot.intel_pet import (
     DEFAULT_INPUT_DEVICE_LABEL,
     DEFAULT_PET_SPEECH_ENGINE,
     DEFAULT_VOICE_ENGINE,
+    DEFAULT_VOICE_TARGET_TITLE,
     IDLE_SPRITE_SEQUENCE,
     KILL_SPRITE_STEPS,
     LONG_COMBAT_SPRITE_STEPS,
@@ -45,6 +46,7 @@ from eve_voice_pilot.intel_pet import (
     clean_alert_behaviors,
     clean_voice_engine,
     clean_voice_input_device,
+    clean_voice_target_title,
     clean_user_terms,
     combat_cheer_from_game_log_line,
     display_message_from_alert,
@@ -53,6 +55,7 @@ from eve_voice_pilot.intel_pet import (
     display_message_from_combat_cheer,
     display_message_from_mission_cheer,
     display_message_from_voice_status,
+    execute_voice_command,
     fetch_pet_location,
     highest_severity_alert,
     history_item_from_alert,
@@ -241,6 +244,9 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
         voice_engine="OpenAI realtime",
         voice_input_device="3: Headset (48000 Hz)",
         voice_call_sign="Aura",
+        allow_voice_command_sending=True,
+        require_voice_target_window=True,
+        voice_target_title="EVE - Dandin",
     )
 
     save_settings(settings_path, settings)
@@ -254,6 +260,9 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     assert loaded.voice_engine == "OpenAI realtime"
     assert loaded.voice_input_device == "3: Headset (48000 Hz)"
     assert loaded.voice_call_sign == "Aura"
+    assert loaded.allow_voice_command_sending is True
+    assert loaded.require_voice_target_window is True
+    assert loaded.voice_target_title == "EVE - Dandin"
     cleaned = replace_voice_settings(
         loaded,
         speak_alerts=False,
@@ -264,12 +273,18 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
         voice_engine="not-real",
         voice_input_device=DEFAULT_INPUT_DEVICE_LABEL,
         voice_call_sign="",
+        allow_voice_command_sending=False,
+        require_voice_target_window=False,
+        voice_target_title="",
     )
 
     assert cleaned.response_engine == DEFAULT_PET_SPEECH_ENGINE == RESPONSE_ENGINE_WINDOWS
     assert cleaned.voice_engine == DEFAULT_VOICE_ENGINE
     assert cleaned.voice_input_device == ""
     assert cleaned.voice_call_sign == "merlin"
+    assert cleaned.allow_voice_command_sending is False
+    assert cleaned.require_voice_target_window is False
+    assert cleaned.voice_target_title == DEFAULT_VOICE_TARGET_TITLE
 
 
 def test_spoken_pet_text_collapses_bubble_newlines():
@@ -280,6 +295,7 @@ def test_voice_input_device_display_uses_system_default_label():
     assert clean_voice_input_device(DEFAULT_INPUT_DEVICE_LABEL) == ""
     assert voice_input_device_display("") == DEFAULT_INPUT_DEVICE_LABEL
     assert clean_voice_engine("not-real") == DEFAULT_VOICE_ENGINE
+    assert clean_voice_target_title("") == DEFAULT_VOICE_TARGET_TITLE
 
 
 def test_voice_status_from_transcript_matches_command_without_sending_keys():
@@ -293,6 +309,61 @@ def test_voice_status_from_transcript_matches_command_without_sending_keys():
     assert "Matched: Warp to -> S for 0.10s" in status.detail
     assert "Practice only. No key sent." in status.detail
     assert display_message_from_voice_status(status) == status.detail
+
+
+def test_execute_voice_command_blocks_without_sending_permission():
+    command = VoiceCommand("Warp to", ["warp"], "S")
+    sent: list[tuple[str, float]] = []
+
+    result, severity = execute_voice_command(
+        command,
+        allow_command_sending=False,
+        require_target_window=True,
+        target_title="EVE",
+        key_sender=lambda key, seconds: sent.append((key, seconds)),
+    )
+
+    assert result == "Practice only. No key sent."
+    assert severity == "info"
+    assert sent == []
+
+
+def test_execute_voice_command_blocks_when_active_window_does_not_match():
+    command = VoiceCommand("Warp to", ["warp"], "S")
+    sent: list[tuple[str, float]] = []
+
+    result, severity = execute_voice_command(
+        command,
+        allow_command_sending=True,
+        require_target_window=True,
+        target_title="EVE",
+        active_window_lookup=lambda: "Notepad",
+        key_sender=lambda key, seconds: sent.append((key, seconds)),
+    )
+
+    assert result == "Did not send S; active window is 'Notepad'."
+    assert severity == "high"
+    assert sent == []
+
+
+def test_voice_status_from_transcript_sends_when_explicitly_allowed_and_window_matches():
+    command = VoiceCommand("Warp to", ["warp"], "S")
+    sent: list[tuple[str, float]] = []
+
+    status = voice_status_from_transcript(
+        "warp",
+        [command],
+        allow_command_sending=True,
+        require_target_window=True,
+        target_title="EVE",
+        active_window_lookup=lambda: "EVE - Dandin Ridderston",
+        key_sender=lambda key, seconds: sent.append((key, seconds)),
+    )
+
+    assert status is not None
+    assert status.title == "Voice command sent"
+    assert "Sent S for 0.10s." in status.detail
+    assert sent == [("S", 0.1)]
 
 
 def test_voice_status_from_transcript_reports_unmatched_phrase():

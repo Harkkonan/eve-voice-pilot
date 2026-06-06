@@ -54,6 +54,7 @@ from eve_voice_pilot.commands import (
     strip_response_call_sign,
 )
 from eve_voice_pilot.config import load_settings as load_app_settings
+from eve_voice_pilot.input_sender import active_window_title, send_key_chord
 from eve_voice_pilot.local_transcription import LocalVoskTranscriber
 from eve_voice_pilot.speech_responses import (
     DEFAULT_OPENAI_TTS_MODEL,
@@ -84,6 +85,7 @@ VOICE_ENGINE_OPENAI = "OpenAI realtime"
 VOICE_ENGINES = (VOICE_ENGINE_LOCAL, VOICE_ENGINE_OPENAI)
 DEFAULT_VOICE_ENGINE = VOICE_ENGINE_LOCAL
 DEFAULT_INPUT_DEVICE_LABEL = "System default"
+DEFAULT_VOICE_TARGET_TITLE = "EVE"
 LOCATION_SCOPE = "esi-location.read_location.v1"
 OVERLAY_IDLE_WIDTH = 220
 OVERLAY_ALERT_WIDTH = 430
@@ -291,6 +293,11 @@ def clean_voice_call_sign(value: Any) -> str:
     return call_sign or DEFAULT_RESPONSE_CALL_SIGN
 
 
+def clean_voice_target_title(value: Any) -> str:
+    title = str(value or "").strip()
+    return title or DEFAULT_VOICE_TARGET_TITLE
+
+
 def pet_openai_api_key() -> str:
     for name in ("INTEL_PET_OPENAI_API_KEY", "OPENAI_API_KEY", "EVE_VOICE_OPENAI_API_KEY"):
         value = os.environ.get(name, "").strip()
@@ -333,11 +340,46 @@ def voice_command_signature(commands: Iterable[VoiceCommand]) -> tuple[tuple[str
     )
 
 
+def execute_voice_command(
+    command: VoiceCommand,
+    *,
+    allow_command_sending: bool,
+    require_target_window: bool,
+    target_title: str,
+    active_window_lookup: Callable[[], str] = active_window_title,
+    key_sender: Callable[[str, float], None] = send_key_chord,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> tuple[str, str]:
+    if not allow_command_sending:
+        return "Practice only. No key sent.", "info"
+
+    if require_target_window:
+        title = active_window_lookup()
+        required = clean_voice_target_title(target_title).casefold()
+        if required not in title.casefold():
+            return f"Did not send {command.key}; active window is {title!r}.", "high"
+
+    try:
+        for press_index in range(command.press_count):
+            key_sender(command.key, command.hold_seconds)
+            if press_index < command.press_count - 1:
+                sleeper(command.repeat_gap_seconds)
+    except Exception as exc:
+        return f"Could not send {command.key}: {exc}", "high"
+    return f"Sent {command.action_summary}.", "info"
+
+
 def voice_status_from_transcript(
     transcript: str,
     commands: list[VoiceCommand],
     *,
     response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+    allow_command_sending: bool = False,
+    require_target_window: bool = True,
+    target_title: str = DEFAULT_VOICE_TARGET_TITLE,
+    active_window_lookup: Callable[[], str] = active_window_title,
+    key_sender: Callable[[str, float], None] = send_key_chord,
+    sleeper: Callable[[float], None] = time.sleep,
 ) -> "IntelPetVoiceStatus | None":
     heard = normalize_response_text(transcript)
     if not heard:
@@ -345,14 +387,29 @@ def voice_status_from_transcript(
     cleaned, _response_requested = strip_response_call_sign(heard, response_call_signs(response_call_sign))
     match = find_exact_phrase_match(cleaned, commands)
     if match:
+        result, severity = execute_voice_command(
+            match.command,
+            allow_command_sending=allow_command_sending,
+            require_target_window=require_target_window,
+            target_title=target_title,
+            active_window_lookup=active_window_lookup,
+            key_sender=key_sender,
+            sleeper=sleeper,
+        )
         detail = "\n".join(
             (
                 f"Heard: {heard}",
                 f"Matched: {match.command.name} -> {match.command.action_summary}",
-                "Practice only. No key sent.",
+                result,
             )
         )
-        return IntelPetVoiceStatus(title="Voice command matched", detail=detail, severity="info", recorded_at=now_iso())
+        if result.startswith("Sent "):
+            title = "Voice command sent"
+        elif result.startswith("Practice only"):
+            title = "Voice command matched"
+        else:
+            title = "Voice command blocked"
+        return IntelPetVoiceStatus(title=title, detail=detail, severity=severity, recorded_at=now_iso())
     return IntelPetVoiceStatus(
         title="Voice heard",
         detail=f"Heard: {heard}\nNo exact command matched.",
@@ -377,6 +434,9 @@ class IntelPetSettings:
     voice_engine: str = DEFAULT_VOICE_ENGINE
     voice_input_device: str = ""
     voice_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN
+    allow_voice_command_sending: bool = False
+    require_voice_target_window: bool = True
+    voice_target_title: str = DEFAULT_VOICE_TARGET_TITLE
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "IntelPetSettings":
@@ -395,6 +455,9 @@ class IntelPetSettings:
             voice_engine=clean_voice_engine(payload.get("voice_engine")),
             voice_input_device=clean_voice_input_device(payload.get("voice_input_device")),
             voice_call_sign=clean_voice_call_sign(payload.get("voice_call_sign")),
+            allow_voice_command_sending=bool(payload.get("allow_voice_command_sending", False)),
+            require_voice_target_window=bool(payload.get("require_voice_target_window", True)),
+            voice_target_title=clean_voice_target_title(payload.get("voice_target_title")),
         )
 
     def to_watchlist(self) -> IntelWatchlist:
@@ -419,6 +482,9 @@ class IntelPetSettings:
             "voice_engine": clean_voice_engine(self.voice_engine),
             "voice_input_device": clean_voice_input_device(self.voice_input_device),
             "voice_call_sign": clean_voice_call_sign(self.voice_call_sign),
+            "allow_voice_command_sending": bool(self.allow_voice_command_sending),
+            "require_voice_target_window": bool(self.require_voice_target_window),
+            "voice_target_title": clean_voice_target_title(self.voice_target_title),
         }
 
 
@@ -619,6 +685,12 @@ def load_settings(path: Path | None, *, overrides: argparse.Namespace | None = N
         settings = replace(settings, voice_input_device=clean_voice_input_device(overrides.voice_input_device))
     if getattr(overrides, "voice_call_sign", ""):
         settings = replace(settings, voice_call_sign=clean_voice_call_sign(overrides.voice_call_sign))
+    if getattr(overrides, "allow_voice_command_sending", None) is not None:
+        settings = replace(settings, allow_voice_command_sending=bool(overrides.allow_voice_command_sending))
+    if getattr(overrides, "require_voice_target_window", None) is not None:
+        settings = replace(settings, require_voice_target_window=bool(overrides.require_voice_target_window))
+    if getattr(overrides, "voice_target_title", ""):
+        settings = replace(settings, voice_target_title=clean_voice_target_title(overrides.voice_target_title))
     return settings
 
 
@@ -669,6 +741,9 @@ def replace_voice_settings(
     voice_engine: str | None = None,
     voice_input_device: str | None = None,
     voice_call_sign: str | None = None,
+    allow_voice_command_sending: bool | None = None,
+    require_voice_target_window: bool | None = None,
+    voice_target_title: str | None = None,
 ) -> IntelPetSettings:
     return replace(
         settings,
@@ -680,6 +755,15 @@ def replace_voice_settings(
         voice_engine=settings.voice_engine if voice_engine is None else clean_voice_engine(voice_engine),
         voice_input_device=settings.voice_input_device if voice_input_device is None else clean_voice_input_device(voice_input_device),
         voice_call_sign=settings.voice_call_sign if voice_call_sign is None else clean_voice_call_sign(voice_call_sign),
+        allow_voice_command_sending=(
+            settings.allow_voice_command_sending
+            if allow_voice_command_sending is None
+            else bool(allow_voice_command_sending)
+        ),
+        require_voice_target_window=(
+            settings.require_voice_target_window if require_voice_target_window is None else bool(require_voice_target_window)
+        ),
+        voice_target_title=settings.voice_target_title if voice_target_title is None else clean_voice_target_title(voice_target_title),
     )
 
 
@@ -1504,7 +1588,14 @@ def run_overlay(
                     )
 
                 transcript = transcriber.record_until_stopped(stop_event, on_ready=on_ready)
-                status = voice_status_from_transcript(transcript, commands, response_call_sign=call_sign)
+                status = voice_status_from_transcript(
+                    transcript,
+                    commands,
+                    response_call_sign=call_sign,
+                    allow_command_sending=settings.allow_voice_command_sending,
+                    require_target_window=settings.require_voice_target_window,
+                    target_title=settings.voice_target_title,
+                )
                 if status:
                     alert_queue.put(status)
                 last_error = ""
@@ -2138,6 +2229,9 @@ def run_overlay(
         except Exception:
             input_device_labels = [DEFAULT_INPUT_DEVICE_LABEL]
         voice_input_device_var = tk.StringVar(value=voice_input_device_display(voice_settings.voice_input_device))
+        allow_command_sending_var = tk.BooleanVar(value=voice_settings.allow_voice_command_sending)
+        require_target_window_var = tk.BooleanVar(value=voice_settings.require_voice_target_window)
+        voice_target_title_var = tk.StringVar(value=clean_voice_target_title(voice_settings.voice_target_title))
 
         def persist_voice_settings(action: str = "Voice settings saved") -> None:
             try:
@@ -2151,6 +2245,9 @@ def run_overlay(
                     voice_engine=speech_engine_var.get(),
                     voice_input_device=voice_input_device_var.get(),
                     voice_call_sign=voice_call_sign_var.get(),
+                    allow_voice_command_sending=allow_command_sending_var.get(),
+                    require_voice_target_window=require_target_window_var.get(),
+                    voice_target_title=voice_target_title_var.get(),
                 )
                 save_settings(settings_path, settings)
                 engine.update_settings(settings)
@@ -2159,7 +2256,8 @@ def run_overlay(
                 editor_status_var.set(f"Voice save failed: {exc}")
                 return
             state = "on" if settings.speak_alerts else "off"
-            editor_status_var.set(f"{action}. Spoken pet messages are {state}.")
+            command_state = "enabled" if settings.allow_voice_command_sending else "practice only"
+            editor_status_var.set(f"{action}. Spoken pet messages are {state}; commands are {command_state}.")
 
         voice_grid = ttk.Frame(voice_frame)
         voice_grid.pack(fill="x")
@@ -2239,6 +2337,25 @@ def run_overlay(
 
         ttk.Label(voice_grid, text="Response call sign").grid(row=11, column=0, sticky="w", pady=5)
         ttk.Entry(voice_grid, textvariable=voice_call_sign_var).grid(row=11, column=1, sticky="ew", pady=5)
+
+        ttk.Checkbutton(
+            voice_grid,
+            text="Allow command sending",
+            variable=allow_command_sending_var,
+            command=lambda: persist_voice_settings("Command sending setting saved"),
+        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(12, 4))
+        ttk.Label(
+            voice_grid,
+            text="Leave this off for practice. When on, only exact Voice Pilot command matches can send their configured keybind.",
+            wraplength=500,
+        ).grid(row=13, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Checkbutton(
+            voice_grid,
+            text="Only send when active window title matches",
+            variable=require_target_window_var,
+            command=lambda: persist_voice_settings("Window guard saved"),
+        ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Entry(voice_grid, textvariable=voice_target_title_var).grid(row=15, column=0, columnspan=2, sticky="ew", pady=(0, 5))
 
         voice_buttons = ttk.Frame(voice_frame)
         voice_buttons.pack(fill="x", pady=(8, 0))
@@ -2723,6 +2840,35 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--voice-engine", default="", choices=VOICE_ENGINES, help="Speech engine for the practice listener.")
     parser.add_argument("--voice-input-device", default="", help="Microphone label for the practice listener.")
     parser.add_argument("--voice-call-sign", default="", help="Response call sign for voice commands, like Merlin or Aura.")
+    parser.add_argument(
+        "--allow-voice-command-sending",
+        action="store_true",
+        default=None,
+        help="Allow exact voice command matches to send their configured keybind.",
+    )
+    parser.add_argument(
+        "--no-voice-command-sending",
+        action="store_false",
+        dest="allow_voice_command_sending",
+        help="Keep voice commands in practice mode even if saved settings allow sending.",
+    )
+    parser.add_argument(
+        "--require-voice-target-window",
+        action="store_true",
+        default=None,
+        help="Require the active window title to match before sending voice command keybinds.",
+    )
+    parser.add_argument(
+        "--no-voice-target-window",
+        action="store_false",
+        dest="require_voice_target_window",
+        help="Disable the active-window guard for voice command key sending.",
+    )
+    parser.add_argument(
+        "--voice-target-title",
+        default="",
+        help="Active window title text required before sending voice command keybinds. Defaults to EVE.",
+    )
     parser.add_argument("--no-combat-cheer", action="store_true", help="Do not watch local game logs for kill cheers.")
     parser.add_argument("--no-mission-cheer", action="store_true", help="Do not watch local game logs for mission comments.")
     parser.add_argument(

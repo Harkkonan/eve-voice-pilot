@@ -30,6 +30,7 @@ The corp intel board and hosted Flight Attendant/Corp Market surfaces are design
 - The EVE Intel Pet overlay is local-only and informational: it reads the user's own EVE chat logs, shows matching lines to that user, and does not share them by default.
 - The Intel Pet alert history is in-memory only for the current pet run and is not written to disk or shared with Discord, ESI, or the corp intel board.
 - Optional Intel Pet location cheer uses only the read-only `esi-location.read_location.v1` scope after explicit EVE SSO consent, keeps the access token in memory only while the pet is running, and shows local animation only.
+- Optional Intel Pet voice command sending is local-only, off by default, requires explicit user opt-in, uses exact matches from the existing EVE Voice Pilot command profile, and keeps the active EVE-window guard on by default.
 - It uses EVE SSO to prove character ownership and public ESI to check corporation/alliance membership.
 - It signature-verifies SSO access tokens and discards EVE access/refresh tokens after login.
 - It stores local operational records only: verified pilot identity, token hashes, watchlist settings, and sanitized intel events.
@@ -71,7 +72,8 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - Keep channel allowlists narrow.
 - Keep the board private to the corporation unless a broader review is done.
 - Keep alert overlays informational and local-only unless there is a separate consent and policy review.
-- Do not add overlay-driven client input, OCR-driven gameplay decisions, bot-like behavior, or automated reactions.
+- Do not add automatic overlay-driven client input, OCR-driven gameplay decisions, bot-like behavior, input broadcasting, stored rapid keystroke patterns, or automated reactions.
+- Keep voice-driven client input off by default, exact-command only, active-window guarded by default, and manually configured by the local user.
 
 ## Review Log
 
@@ -84,3 +86,4 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - 2026-06-05: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding EVE Intel Pet. The first slice is local-only, reads the user's own EVE chat logs, shows informational alerts for matching new lines, adds no ESI scope, shares nothing by default, and does not control the EVE client.
 - 2026-06-06: Re-opened the official EVE Developer License Agreement, developer license docs, EVE SSO docs, EVE third-party policy page, ESI rate-limit/best-practices docs, and the live ESI Swagger spec before adding optional Intel Pet location cheer. The feature adds only `esi-location.read_location.v1`, polls slowly, keeps tokens in memory only, shares no location data, and remains local informational animation only.
 - 2026-06-06: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding Intel Pet alert history and a sleeker local overlay. The history is in-memory only, capped to recent alerts, cleared when the pet closes, and remains local informational display only.
+- 2026-06-06: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding opt-in Intel Pet voice command sending. The feature is local-only, disabled by default, requires exact spoken command matches from the existing EVE Voice Pilot profile, sends only the configured key/chord for that command, keeps the active-window guard enabled by default, and does not add OCR decisions, client memory/cache/packet access, input broadcasting, or automated reaction chains.
