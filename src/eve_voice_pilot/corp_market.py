@@ -35,10 +35,15 @@ from eve_voice_pilot.corp_intel import (
     verify_sso_character,
 )
 from eve_voice_pilot.planetary_industry import (
+    PlanetaryChainNode,
+    PlanetaryChainPlan,
+    PlanetaryChainRawInput,
     PlanetaryIndustryError,
     PlanetaryMarketPrice,
     PlanetaryTaxProfile,
+    build_planetary_chain_plan,
     load_planetary_industry_cache,
+    planetary_chain_material_type_ids,
     rank_planetary_opportunities,
 )
 
@@ -76,6 +81,7 @@ MAX_FLIGHT_TRADE_PNL_TRANSACTIONS = 10_000
 MAX_FLIGHT_TRADE_PNL_ITEMS = 40
 DEFAULT_PLANETARY_HUB_SYSTEM = "Jita"
 DEFAULT_PLANETARY_OUTPUT_TIER = "P2"
+DEFAULT_PLANETARY_CHAIN_TARGET = "Microfiber Shielding"
 PLANETARY_OUTPUT_TIERS = frozenset({"P1", "P2", "P3", "P4"})
 DEFAULT_PLANETARY_STRATEGY_FILTER = "all"
 PLANETARY_STRATEGY_FILTERS = frozenset({"all", "profitable", "price-check"})
@@ -6064,6 +6070,7 @@ def build_flight_planetary_payload(
     config: EveSsoConfig,
     hub_name: str = DEFAULT_PLANETARY_HUB_SYSTEM,
     output_tier: str = DEFAULT_PLANETARY_OUTPUT_TIER,
+    chain_target: str = DEFAULT_PLANETARY_CHAIN_TARGET,
     strategy_filter: str = DEFAULT_PLANETARY_STRATEGY_FILTER,
     owner_tax_percent: float = DEFAULT_PLANETARY_OWNER_TAX_PERCENT,
     npc_tax_percent: float = DEFAULT_PLANETARY_NPC_TAX_PERCENT,
@@ -6078,6 +6085,7 @@ def build_flight_planetary_payload(
     route_cache = load_route_graph_cache()
     hub_system = resolve_planetary_market_hub(route_cache, hub_name)
     clean_tier = normalize_planetary_output_tier(output_tier)
+    clean_chain_target = clean_planetary_chain_target(chain_target)
     clean_strategy_filter = normalize_planetary_strategy_filter(strategy_filter)
     clean_top = clean_planetary_top(top)
     clean_owner_tax_percent = clamp_planetary_percent(
@@ -6109,8 +6117,16 @@ def build_flight_planetary_payload(
     if not schematics:
         raise CorpMarketError(f"No {clean_tier} planetary schematics were found in the static cache.")
 
-    input_type_ids = sorted({item.type_id for schematic in schematics for item in schematic.inputs})
-    output_type_ids = sorted({item.type_id for schematic in schematics for item in schematic.outputs})
+    chain_type_ids: set[int] = set()
+    chain_lookup_error = ""
+    if clean_chain_target:
+        try:
+            chain_type_ids = planetary_chain_material_type_ids(cache, clean_chain_target)
+        except PlanetaryIndustryError as exc:
+            chain_lookup_error = str(exc)
+
+    input_type_ids = sorted({item.type_id for schematic in schematics for item in schematic.inputs} | chain_type_ids)
+    output_type_ids = sorted({item.type_id for schematic in schematics for item in schematic.outputs} | chain_type_ids)
     input_sell_orders, input_order_count, input_errors = scan_system_market_orders(
         config=config,
         type_ids=input_type_ids,
@@ -6134,6 +6150,30 @@ def build_flight_planetary_payload(
         sales_tax_rate=clean_sales_tax_percent / 100.0,
         broker_fee_rate=clean_broker_fee_percent / 100.0,
     )
+    chain_payload: dict[str, Any] | None = None
+    if clean_chain_target:
+        if chain_lookup_error:
+            chain_payload = {
+                "available": False,
+                "target_query": clean_chain_target,
+                "error": chain_lookup_error,
+            }
+        else:
+            try:
+                chain_payload = planetary_chain_plan_to_dict(
+                    build_planetary_chain_plan(
+                        cache,
+                        clean_chain_target,
+                        prices=price_map,
+                        tax_profile=tax_profile,
+                    )
+                )
+            except PlanetaryIndustryError as exc:
+                chain_payload = {
+                    "available": False,
+                    "target_query": clean_chain_target,
+                    "error": str(exc),
+                }
     try:
         all_opportunities = rank_planetary_opportunities(
             cache,
@@ -6160,6 +6200,7 @@ def build_flight_planetary_payload(
             "hub_name": hub_system.name,
             "requested_hub_name": hub_name,
             "output_tier": clean_tier,
+            "chain_target": clean_chain_target,
             "strategy_filter": clean_strategy_filter,
             "top": clean_top,
             "owner_tax_percent": clean_owner_tax_percent,
@@ -6174,6 +6215,7 @@ def build_flight_planetary_payload(
             "schematic_count": len(schematics),
             "input_type_count": len(input_type_ids),
             "output_type_count": len(output_type_ids),
+            "chain_type_count": len(chain_type_ids),
             "priced_input_type_count": sum(
                 1 for type_id in input_type_ids if price_map.get(type_id) and price_map[type_id].sell_price is not None
             ),
@@ -6203,6 +6245,7 @@ def build_flight_planetary_payload(
             ),
             "shopping_list": aggregate_planetary_plan_items(opportunities, "shopping_list"),
             "sell_targets": aggregate_planetary_plan_items(opportunities, "sell_targets"),
+            "chain": chain_payload,
             "opportunities": [planetary_opportunity_to_dict(opportunity) for opportunity in opportunities],
             "errors": (input_errors + output_errors)[:10],
             "pricing_note": (
@@ -6428,6 +6471,7 @@ def planetary_cache_public_dict(cache: Any) -> dict[str, Any]:
         "release_date": getattr(cache, "release_date", ""),
         "schematic_count": len(getattr(cache, "schematics", {}) or {}),
         "commodity_count": len(getattr(cache, "commodities", {}) or {}),
+        "planet_count": len(getattr(cache, "planets", {}) or {}),
         "error": getattr(cache, "error", ""),
     }
 
@@ -6523,11 +6567,110 @@ def planetary_opportunity_to_dict(opportunity: Any) -> dict[str, Any]:
     }
 
 
+def planetary_planet_type_count_to_dict(item: Any) -> dict[str, Any]:
+    return {
+        "planet_type": item.planet_type,
+        "planet_count": item.planet_count,
+    }
+
+
+def planetary_chain_raw_input_to_dict(item: PlanetaryChainRawInput) -> dict[str, Any]:
+    return {
+        "type_id": item.type_id,
+        "name": item.name,
+        "tier": item.tier,
+        "quantity": item.quantity,
+        "buy_unit_price": item.buy_unit_price,
+        "buy_market_value": item.buy_market_value,
+        "buy_import_customs_cost": item.buy_import_customs_cost,
+        "buy_total_cost": item.buy_total_cost,
+        "price_complete": item.price_complete,
+        "planet_types": list(item.planet_types),
+        "planet_type_counts": [planetary_planet_type_count_to_dict(row) for row in item.planet_type_counts],
+    }
+
+
+def planetary_chain_node_to_dict(node: PlanetaryChainNode) -> dict[str, Any]:
+    return {
+        "type_id": node.type_id,
+        "name": node.name,
+        "tier": node.tier,
+        "required_quantity": node.required_quantity,
+        "produced_quantity": node.produced_quantity,
+        "depth": node.depth,
+        "schematic_id": node.schematic_id,
+        "schematic_name": node.schematic_name,
+        "cycle_time_seconds": node.cycle_time_seconds,
+        "cycle_count": node.cycle_count,
+        "buy_unit_price": node.buy_unit_price,
+        "buy_market_value": node.buy_market_value,
+        "buy_import_customs_cost": node.buy_import_customs_cost,
+        "buy_total_cost": node.buy_total_cost,
+        "sell_unit_price": node.sell_unit_price,
+        "sell_market_value": node.sell_market_value,
+        "sell_export_customs_cost": node.sell_export_customs_cost,
+        "sales_tax": node.sales_tax,
+        "broker_fee": node.broker_fee,
+        "sell_net_value": node.sell_net_value,
+        "immediate_input_market_cost": node.immediate_input_market_cost,
+        "immediate_input_customs_cost": node.immediate_input_customs_cost,
+        "produce_from_bought_inputs_cost": node.produce_from_bought_inputs_cost,
+        "produce_from_bought_inputs_profit": node.produce_from_bought_inputs_profit,
+        "off_planet_transfer_customs_cost": node.off_planet_transfer_customs_cost,
+        "same_planet_transfer_savings": node.same_planet_transfer_savings,
+        "same_planet_options": list(node.same_planet_options),
+        "planet_types": list(node.planet_types),
+        "planet_type_counts": [planetary_planet_type_count_to_dict(row) for row in node.planet_type_counts],
+        "missing_price_type_ids": list(node.missing_price_type_ids),
+        "price_complete": node.price_complete,
+        "raw_resource": node.raw_resource,
+        "children": [planetary_chain_node_to_dict(child) for child in node.children],
+    }
+
+
+def planetary_chain_plan_to_dict(plan: PlanetaryChainPlan) -> dict[str, Any]:
+    node = plan.node
+    return {
+        "available": True,
+        "target_query": plan.target_query,
+        "price_complete": plan.price_complete,
+        "target": planetary_item_to_dict(plan.target),
+        "summary": {
+            "target_name": plan.target.name,
+            "target_tier": plan.target.tier,
+            "target_quantity": plan.target.quantity,
+            "buy_direct_cost": node.buy_total_cost,
+            "buy_direct_market_value": node.buy_market_value,
+            "buy_direct_import_customs_cost": node.buy_import_customs_cost,
+            "sell_net_value": node.sell_net_value,
+            "sell_market_value": node.sell_market_value,
+            "sell_export_customs_cost": node.sell_export_customs_cost,
+            "sales_tax": node.sales_tax,
+            "broker_fee": node.broker_fee,
+            "produce_from_bought_inputs_cost": node.produce_from_bought_inputs_cost,
+            "produce_from_bought_inputs_profit": node.produce_from_bought_inputs_profit,
+            "immediate_input_market_cost": node.immediate_input_market_cost,
+            "immediate_input_customs_cost": node.immediate_input_customs_cost,
+            "off_planet_transfer_customs_cost": node.off_planet_transfer_customs_cost,
+            "same_planet_transfer_savings": plan.same_planet_transfer_savings,
+            "same_planet_options": list(plan.same_planet_options),
+            "missing_price_type_ids": list(plan.missing_price_type_ids),
+        },
+        "raw_inputs": [planetary_chain_raw_input_to_dict(item) for item in plan.raw_inputs],
+        "node": planetary_chain_node_to_dict(node),
+        "notes": list(plan.notes),
+    }
+
+
 def normalize_planetary_output_tier(value: Any) -> str:
     tier = str(value or "").strip().upper()
     if tier not in PLANETARY_OUTPUT_TIERS:
         return DEFAULT_PLANETARY_OUTPUT_TIER
     return tier
+
+
+def clean_planetary_chain_target(value: Any) -> str:
+    return str(value or "").strip()[:96]
 
 
 def clamp_planetary_percent(value: Any, field: str, *, default: float) -> float:
@@ -8272,6 +8415,7 @@ def build_http_server(
                     config=sso_config,
                     hub_name=first_query_value(query, "hub") or DEFAULT_PLANETARY_HUB_SYSTEM,
                     output_tier=first_query_value(query, "output_tier") or DEFAULT_PLANETARY_OUTPUT_TIER,
+                    chain_target=first_query_value(query, "chain_target") or DEFAULT_PLANETARY_CHAIN_TARGET,
                     strategy_filter=first_query_value(query, "strategy_filter") or DEFAULT_PLANETARY_STRATEGY_FILTER,
                     owner_tax_percent=clamp_planetary_percent(
                         first_query_value(query, "owner_tax_percent"),
@@ -9544,6 +9688,87 @@ def _render_flight_attendant_dashboard() -> str:
     body[data-active-tab="reprocessing"] #tab-reprocessing button {
       border-color: rgba(169, 137, 74, .62);
     }
+    body[data-active-tab="planetary"] header {
+      border-bottom: 1px solid rgba(224, 168, 74, .18);
+      margin-bottom: 2px;
+    }
+    body[data-active-tab="planetary"] .brand-mark {
+      color: #101708;
+      border-color: rgba(100, 196, 125, .8);
+      background:
+        radial-gradient(circle at 42% 34%, rgba(220, 255, 184, .9), transparent 34%),
+        linear-gradient(135deg, #7ec46f, #a17635);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), 0 8px 18px rgba(0, 0, 0, .3);
+    }
+    body[data-active-tab="planetary"] .status {
+      border-color: rgba(100, 196, 125, .36);
+      background:
+        linear-gradient(180deg, rgba(22, 28, 22, .96), rgba(7, 11, 12, .88)),
+        rgba(8, 13, 15, .9);
+    }
+    body[data-active-tab="planetary"] .tabbar {
+      border-top-color: rgba(224, 168, 74, .2);
+      border-bottom-color: rgba(100, 196, 125, .28);
+    }
+    body[data-active-tab="planetary"] .tabbar button {
+      border-color: rgba(93, 119, 77, .58);
+      background:
+        linear-gradient(180deg, rgba(28, 33, 25, .92), rgba(8, 12, 13, .82));
+    }
+    body[data-active-tab="planetary"] .tabbar button[aria-selected="true"] {
+      color: #11170d;
+      border-color: rgba(100, 196, 125, .84);
+      background:
+        linear-gradient(180deg, #96cf7b, #a17635);
+    }
+    body[data-active-tab="planetary"] #tab-planetary .panel {
+      border-color: rgba(127, 158, 95, .52);
+      background:
+        linear-gradient(90deg, rgba(224, 168, 74, .04) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(100, 196, 125, .032) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(18, 26, 19, .94), rgba(7, 11, 12, .9));
+      background-size: 28px 28px, 28px 28px, auto;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035), 0 22px 54px rgba(0, 0, 0, .38);
+    }
+    body[data-active-tab="planetary"] #tab-planetary .panel-header {
+      border-bottom: 1px solid rgba(100, 196, 125, .2);
+      margin: -2px 0 13px;
+      padding-bottom: 11px;
+    }
+    body[data-active-tab="planetary"] #tab-planetary h2 {
+      color: #eff4e7;
+      font-size: 19px;
+      letter-spacing: .015em;
+    }
+    body[data-active-tab="planetary"] #tab-planetary .meta,
+    body[data-active-tab="planetary"] #tab-planetary .input-note {
+      color: #b8c6b3;
+    }
+    body[data-active-tab="planetary"] #tab-planetary label {
+      color: #c6d0bd;
+      font-weight: 750;
+      letter-spacing: .025em;
+      text-transform: uppercase;
+      font-size: 11px;
+    }
+    body[data-active-tab="planetary"] #tab-planetary input,
+    body[data-active-tab="planetary"] #tab-planetary select,
+    body[data-active-tab="planetary"] #tab-planetary textarea {
+      border-color: rgba(127, 158, 95, .42);
+      background:
+        linear-gradient(180deg, rgba(237, 244, 239, .035), transparent),
+        rgba(5, 9, 11, .88);
+      color: #f2f4ed;
+    }
+    body[data-active-tab="planetary"] #tab-planetary input:focus,
+    body[data-active-tab="planetary"] #tab-planetary select:focus,
+    body[data-active-tab="planetary"] #tab-planetary textarea:focus {
+      outline-color: rgba(100, 196, 125, .26);
+      border-color: rgba(100, 196, 125, .72);
+    }
+    body[data-active-tab="planetary"] #tab-planetary button {
+      border-color: rgba(127, 158, 95, .56);
+    }
     body[data-active-tab="flight"] #tab-flight .panel {
       background: linear-gradient(180deg, rgba(11, 18, 20, .8), rgba(7, 11, 13, .72));
       border-color: rgba(97, 199, 217, .34);
@@ -10757,6 +10982,333 @@ def _render_flight_attendant_dashboard() -> str:
     .planetary-plan-row b { color: var(--text); text-align: right; overflow-wrap: anywhere; }
     .planetary-plan-row .meta { margin-top: 2px; }
     .planetary-line-table { margin-top: 8px; }
+    .planetary-tax-guide {
+      display: grid;
+      gap: 9px;
+      margin-top: 14px;
+      border: 1px solid rgba(224, 168, 74, .34);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(100, 196, 125, .1), rgba(224, 168, 74, .08) 52%, rgba(8, 13, 15, .7)),
+        rgba(8, 13, 15, .62);
+      padding: 10px;
+    }
+    .planetary-tax-guide-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid rgba(224, 168, 74, .22);
+      padding-bottom: 8px;
+    }
+    .planetary-tax-guide-head strong {
+      color: var(--text);
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+    .planetary-tax-guide-head span {
+      color: var(--amber);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .planetary-tax-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .planetary-tax-card {
+      border: 1px solid rgba(85, 111, 103, .52);
+      border-radius: 7px;
+      background: rgba(8, 13, 15, .48);
+      padding: 9px;
+      min-width: 0;
+    }
+    .planetary-tax-card strong {
+      display: block;
+      color: var(--cyan);
+      font-size: 13px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .planetary-tax-card p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.42;
+      overflow-wrap: anywhere;
+    }
+    .planetary-tax-card-wide { grid-column: 1 / -1; }
+    .planetary-tax-sources {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .planetary-tax-sources a {
+      color: var(--cyan);
+      font-weight: 800;
+    }
+    .planetary-answer-book {
+      display: grid;
+      gap: 7px;
+      max-height: 520px;
+      overflow: auto;
+      margin-top: 14px;
+      border: 1px solid rgba(100, 196, 125, .3);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(12, 19, 16, .78), rgba(6, 10, 11, .68)),
+        rgba(8, 13, 15, .7);
+      padding: 10px;
+    }
+    .planetary-answer-book-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      position: sticky;
+      top: -10px;
+      z-index: 1;
+      border-bottom: 1px solid rgba(100, 196, 125, .2);
+      background:
+        linear-gradient(180deg, rgba(18, 26, 19, .98), rgba(10, 15, 13, .94));
+      padding: 0 0 8px;
+    }
+    .planetary-answer-book-head strong {
+      color: var(--text);
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+    .planetary-answer-book-head span {
+      color: var(--amber);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .planetary-answer-item {
+      border: 1px solid rgba(85, 111, 103, .56);
+      border-radius: 7px;
+      background: rgba(8, 13, 15, .48);
+      overflow: hidden;
+    }
+    .planetary-answer-item summary {
+      cursor: pointer;
+      list-style: none;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 850;
+      line-height: 1.3;
+      padding: 9px 30px 9px 10px;
+      position: relative;
+      overflow-wrap: anywhere;
+    }
+    .planetary-answer-item summary::-webkit-details-marker { display: none; }
+    .planetary-answer-item summary::after {
+      content: "Open";
+      position: absolute;
+      right: 9px;
+      top: 9px;
+      color: var(--cyan);
+      font-size: 10px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .planetary-answer-item[open] summary {
+      color: #eaf7dc;
+      border-bottom: 1px solid rgba(85, 111, 103, .42);
+      background: rgba(100, 196, 125, .08);
+    }
+    .planetary-answer-item[open] summary::after {
+      content: "Close";
+      color: var(--amber);
+    }
+    .planetary-answer-item p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.42;
+      padding: 9px 10px 10px;
+    }
+    .planetary-answer-sources {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+      padding: 4px 2px 0;
+    }
+    .planetary-answer-sources a {
+      color: var(--cyan);
+      font-weight: 800;
+    }
+    .planetary-chain-panel:empty { display: none; }
+    .planetary-chain-panel {
+      display: grid;
+      gap: 12px;
+      margin: 12px 0;
+      border: 1px solid rgba(100, 196, 125, .38);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(100, 196, 125, .1), rgba(224, 168, 74, .07) 44%, rgba(8, 13, 15, .72)),
+        rgba(8, 13, 15, .72);
+      padding: 12px;
+      overflow: hidden;
+    }
+    .planetary-chain-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .planetary-chain-head strong {
+      display: block;
+      color: var(--text);
+      font-size: 20px;
+      line-height: 1.18;
+      overflow-wrap: anywhere;
+    }
+    .planetary-chain-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .planetary-chain-metrics .assay-cell {
+      min-height: 76px;
+      background: rgba(17, 24, 25, .66);
+    }
+    .planetary-ecology-layout {
+      display: grid;
+      grid-template-columns: minmax(280px, .72fr) minmax(420px, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .planetary-chain-notebook {
+      grid-area: auto;
+      min-height: 0;
+    }
+    .planetary-chain-notebook .notebook-ribbon {
+      background: linear-gradient(180deg, #2d3b25, #141714);
+    }
+    .planetary-raw-list,
+    .planetary-note-list {
+      display: grid;
+      gap: 7px;
+    }
+    .planetary-raw-row {
+      border: 1px solid rgba(61, 51, 34, .22);
+      border-radius: 4px;
+      background: rgba(255, 248, 224, .22);
+      padding: 8px;
+    }
+    .planetary-raw-row strong {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      color: #1b1d17;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .planetary-planet-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 5px;
+    }
+    .planetary-planet-tags span {
+      border: 1px solid rgba(45, 107, 52, .28);
+      border-radius: 999px;
+      background: rgba(45, 107, 52, .11);
+      color: #234b24;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 900;
+    }
+    .planetary-chain-tree {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+    .planetary-chain-node {
+      display: grid;
+      gap: 8px;
+      position: relative;
+      border: 1px solid rgba(85, 111, 103, .68);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(100, 196, 125, .075), rgba(8, 13, 15, .66)),
+        rgba(8, 13, 15, .58);
+      padding: 10px 10px 10px calc(10px + (var(--depth, 0) * 13px));
+      overflow: hidden;
+    }
+    .planetary-chain-node::before {
+      content: "";
+      position: absolute;
+      left: calc(7px + (var(--depth, 0) * 13px));
+      top: 10px;
+      bottom: 10px;
+      width: 3px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, rgba(100, 196, 125, .72), rgba(224, 168, 74, .64));
+    }
+    .planetary-chain-node.depth-0 {
+      border-color: rgba(224, 168, 74, .5);
+      background:
+        linear-gradient(135deg, rgba(224, 168, 74, .13), rgba(100, 196, 125, .08)),
+        rgba(8, 13, 15, .66);
+    }
+    .planetary-node-main {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+    }
+    .planetary-node-main strong {
+      display: block;
+      color: var(--text);
+      font-size: 16px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+    }
+    .planetary-node-values {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .planetary-node-values .decision-metric {
+      min-height: 58px;
+      padding: 7px;
+      background: rgba(17, 24, 25, .5);
+    }
+    .planetary-node-children {
+      display: grid;
+      gap: 8px;
+    }
+    .planetary-same-planet {
+      color: var(--green);
+      font-weight: 900;
+    }
+    .planetary-missing-price {
+      color: var(--amber);
+      font-weight: 900;
+    }
+    .quickbar-copy-panel {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid rgba(97, 199, 217, .36);
+      border-radius: 7px;
+      background: rgba(97, 199, 217, .08);
+      padding: 10px;
+      margin: 10px 0;
+    }
+    .quickbar-copy-panel[hidden] { display: none; }
+    .quickbar-copy-panel strong { display: block; color: var(--text); overflow-wrap: anywhere; }
+    .quickbar-copy-panel button { flex: 0 0 auto; }
+    .quickbar-copy-status { min-height: 18px; }
+    .quickbar-copy-status.error { color: var(--red); }
     .cache-preflight-panel .profit-summary { margin-bottom: 10px; }
     .cache-list { display: grid; gap: 8px; }
     .cache-row {
@@ -10858,7 +11410,9 @@ def _render_flight_attendant_dashboard() -> str:
       .panel-header .pill { margin-top: 8px; }
       .panel-header .meta { max-width: 100%; }
       h1 { font-size: 24px; }
-      .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid { grid-template-columns: 1fr; }
+      .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
+      .planetary-tax-guide-head { align-items: start; flex-direction: column; }
+      .planetary-tax-guide-head span { white-space: normal; }
       .offer, .note-card { grid-template-columns: 1fr; }
       .planetary-plan-row { grid-template-columns: 1fr; }
       .cache-row { grid-template-columns: 1fr; }
@@ -11304,6 +11858,14 @@ def _render_flight_attendant_dashboard() -> str:
               <summary>Route Opportunity Results</summary>
               <div class="output-details-body">
                 <div id="haul-opportunity-summary" class="profit-summary">No route scan has run yet.</div>
+                <div id="haul-quickbar-panel" class="quickbar-copy-panel" hidden>
+                  <div>
+                    <strong>Quickbar Import</strong>
+                    <div class="meta">Copies item names, one per line. In EVE, use Market &gt; Quickbar &gt; Import Quickbar, then add the clipboard contents.</div>
+                    <div id="haul-quickbar-status" class="meta quickbar-copy-status" aria-live="polite"></div>
+                  </div>
+                  <button class="secondary" type="button" data-copy-quickbar="hauling">Copy Quickbar Items</button>
+                </div>
                 <div id="haul-opportunity-top" class="decision-output"></div>
               </div>
             </details>
@@ -11415,6 +11977,14 @@ def _render_flight_attendant_dashboard() -> str:
             <details class="output-details" open>
               <summary>Recommendation Results</summary>
               <div class="output-details-body">
+                <div id="acq-quickbar-panel" class="quickbar-copy-panel" hidden>
+                  <div>
+                    <strong>Quickbar Import</strong>
+                    <div class="meta">Copies recommended item names only, one per line. Use this to import a watchlist; place buy orders manually after checking the warnings.</div>
+                    <div id="acq-quickbar-status" class="meta quickbar-copy-status" aria-live="polite"></div>
+                  </div>
+                  <button class="secondary" type="button" data-copy-quickbar="acquisition">Copy Quickbar Items</button>
+                </div>
                 <div id="acq-results" class="decision-output"></div>
               </div>
             </details>
@@ -11543,6 +12113,11 @@ def _render_flight_attendant_dashboard() -> str:
                 </label>
               </div>
               <div class="row">
+                <label>Chain target
+                  <input id="planetary-chain-target" name="chain_target" autocomplete="off" value="Microfiber Shielding" placeholder="Microfiber Shielding, Viral Agent">
+                </label>
+              </div>
+              <div class="row">
                 <label>Owner tax %
                   <input id="planetary-owner-tax" name="owner_tax_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="5">
                 </label>
@@ -11590,6 +12165,137 @@ def _render_flight_attendant_dashboard() -> str:
               <li><strong>Customs transfer:</strong> import and export customs are subtracted before profit.</li>
               <li><strong>Manual action:</strong> the tab never edits colonies, places orders, or touches the EVE client.</li>
             </ul>
+            <div class="planetary-tax-guide" aria-label="Planetary tax field guide">
+              <div class="planetary-tax-guide-head">
+                <strong>Tax Field Guide</strong>
+                <span>Manual inputs today</span>
+              </div>
+              <div class="planetary-tax-grid">
+                <div class="planetary-tax-card">
+                  <strong>Owner tax %</strong>
+                  <p>The player or corporation customs office owner rate for the planet. Find it in the in-game customs office import/export window; the rate can change by owner settings, access lists, and standings.</p>
+                </div>
+                <div class="planetary-tax-card">
+                  <strong>NPC tax %</strong>
+                  <p>The CONCORD/NPC customs tax portion, mainly relevant in high-sec. High-sec customs transfers can show this as a separate charge; low-sec, null-sec, and wormhole planning usually uses 0 here unless the transfer preview says otherwise.</p>
+                </div>
+                <div class="planetary-tax-card">
+                  <strong>Customs Code Expertise</strong>
+                  <p>Your trained skill level from 0 to 5. It reduces the NPC customs portion, so check Character Sheet &gt; Skills or the customs transfer preview. A later signed-in mode can read this from ESI skills.</p>
+                </div>
+                <div class="planetary-tax-card">
+                  <strong>Sales tax %</strong>
+                  <p>The market transaction tax deducted from the seller after an item sells. Accounting lowers it. Use the percent shown in the sell window or wallet tax details; this still matters when valuing output sold to buy orders.</p>
+                </div>
+                <div class="planetary-tax-card">
+                  <strong>Broker fee %</strong>
+                  <p>The fee for creating or changing a market order. Use 0 if you plan to sell immediately to an existing buy order; enter the fee shown in the sell order window if you plan to list the output yourself.</p>
+                </div>
+                <div class="planetary-tax-card planetary-tax-card-wide">
+                  <strong>Can ESI auto-fill these from location?</strong>
+                  <p>Partly. ESI can provide the signed-in pilot's location, public market prices, and skill levels such as Accounting or Customs Code Expertise with the skills scope. It cannot generally reveal every planet's current owner POCO tax for a normal member. Corp-owned customs office rates are a later Director-only corporation mode, not a default member flow. The safest source for Owner tax, NPC tax, and broker fee is the in-game transfer or order confirmation window for the exact planet or market location.</p>
+                </div>
+              </div>
+              <div class="planetary-tax-sources">
+                Sources checked:
+                <a href="https://support.eveonline.com/hc/en-us/articles/203269921-Customs-Offices" target="_blank" rel="noreferrer">customs offices</a>,
+                <a href="https://support.eveonline.com/hc/en-us/articles/203218962-Broker-Fee-and-Sales-Tax" target="_blank" rel="noreferrer">broker fee and sales tax</a>,
+                <a href="https://developers.eveonline.com/docs/services/esi/endpoints/" target="_blank" rel="noreferrer">ESI endpoints</a>.
+              </div>
+            </div>
+            <div class="planetary-answer-book" aria-label="Common Planetary Industry answers">
+              <div class="planetary-answer-book-head">
+                <strong>PI Field Answers</strong>
+                <span>20 quick reminders</span>
+              </div>
+              <details class="planetary-answer-item">
+                <summary>How do I open PI from a station?</summary>
+                <p>Use the NeoCom path for planetary colonies or planetary industry, usually under Business or Industry depending on the current UI. You can also right-click a planet and choose View Planetary Industry.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>How do I find the planet type I need?</summary>
+                <p>Open the map or Agency planet view, inspect systems near your home, and filter or check for the planet type that carries the P0 resources your target chain needs.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>What do I need before placing my first colony?</summary>
+                <p>Buy the command center that matches the planet type, haul it to the target system, undock, enter planet mode, place the command center, and submit the build.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>Can I manage PI while docked?</summary>
+                <p>After the command center is deployed, most colony management can be done remotely, including links, routes, schematics, and extractor programs. Moving cargo through customs still needs the right in-space access.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>Which skills matter first?</summary>
+                <p>Remote Sensing opens the door. Command Center Upgrades gives more CPU and powergrid, Interplanetary Consolidation gives more planets, Planetology improves scanning, and Customs Code Expertise helps with NPC customs tax.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>What do P0, P1, P2, P3, and P4 mean?</summary>
+                <p>P0 is extracted raw resource. Basic processors turn P0 into P1, advanced processors combine lower tiers into P2 and P3, and high-tech production plants make P4.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>Should I use a launchpad or storage facility?</summary>
+                <p>Use a launchpad as the default buffer when you can because it stores material and connects to the customs office. Add storage when you need extra buffer space or want to smooth extractor spikes.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>Do I need to link every building directly?</summary>
+                <p>No. Create enough links for a valid path. Routes can travel across linked buildings, so a clean hub-and-spoke layout usually saves CPU and powergrid.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>Do I create links or routes first?</summary>
+                <p>Create the links first, then create routes. A route follows the linked path to the destination, so the destination has to be reachable before the route can work.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>How should I route extractor output?</summary>
+                <p>Route P0 from the extractor products tab to a launchpad or storage buffer, then route from that buffer into the basic processor that consumes it.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>Can I route P0 directly into a processor?</summary>
+                <p>You can, but it is usually risky. Processors only hold enough input for a small amount of work, so overflow can be wasted if extraction outpaces processing.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>How do I route a product from a factory?</summary>
+                <p>Install the schematic first, then use the product output to create a route. Route it directly to the next production facility if you want continuous production, or to a launchpad/storage buffer if you want to store it.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>Why will a route not create?</summary>
+                <p>Check that the structures are linked, the processor has the right schematic installed, the destination can receive that material, and the route is not trying to use an invalid storage-to-storage style move.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>What does a link overload mean?</summary>
+                <p>Too much routed volume is crossing that link. Upgrade the link, shorten the path, split traffic through another route, or move buildings closer together.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>Why did my changes not start?</summary>
+                <p>PI plans do not become real until you click Submit. Build changes, route changes, extractor programs, links, and decommissions all need that final confirmation.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>How do imports and exports work?</summary>
+                <p>A launchpad connects to the planet customs office. Export finished goods from the launchpad to customs, warp to the customs office, and transfer the goods to your ship cargo.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>Should I use command center launches?</summary>
+                <p>Command center launches work, but they create a temporary cargo rocket pickup. A launchpad plus customs office is usually the cleaner routine export and import path.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>Why does high-sec PI often look weak?</summary>
+                <p>High-sec often has lower resource density, more competition, and NPC customs tax on top of the owner tax. It is fine for learning; serious income often depends on better planets and lower total taxes.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>How long should extractor programs run?</summary>
+                <p>Pick the cycle that matches how often you will actually reset it. Shorter programs can pull harder but demand more attention; longer programs are easier to maintain.</p>
+              </details>
+              <details class="planetary-answer-item">
+                <summary>When should I use a factory planet?</summary>
+                <p>Use extraction planets for P0 or P1, then haul inputs to a factory planet when higher-tier production needs materials from several planets. If one planet has all raw inputs, same-planet P2 can save customs movement.</p>
+              </details>
+              <div class="planetary-answer-sources">
+                Sources checked:
+                <a href="https://wiki.eveuniversity.org/Planetary_Industry" target="_blank" rel="noreferrer">EVE Uni PI</a>,
+                <a href="https://wiki.eveuniversity.org/Planetary_buildings" target="_blank" rel="noreferrer">buildings/routes</a>,
+                <a href="https://support.eveonline.com/hc/en-us/sections/201141722-Industry" target="_blank" rel="noreferrer">CCP support</a>,
+                <a href="https://www.thonky.com/eve-online-guide/planetary-industry" target="_blank" rel="noreferrer">Thonky guide</a>.
+              </div>
+            </div>
           </section>
 
           <section class="panel profit-panel" aria-labelledby="planetary-results-title">
@@ -11607,15 +12313,20 @@ def _render_flight_attendant_dashboard() -> str:
               <div class="output-details-body">
                 <div id="planetary-summary" class="profit-summary">Choose PI settings and rank chains.</div>
                 <div id="planetary-strategy" class="planetary-strategy-grid"></div>
+                <div id="planetary-chain-panel" class="planetary-chain-panel"></div>
                 <div class="planetary-target-grid">
                   <div class="planetary-plan-box">
                     <strong>Input Shopping List</strong>
                     <div class="meta">Shown chains only; assumes buying inputs from hub sell orders.</div>
+                    <button class="secondary" type="button" data-copy-quickbar="planetary-shopping">Copy Quickbar Inputs</button>
+                    <div id="planetary-shopping-quickbar-status" class="meta quickbar-copy-status" aria-live="polite"></div>
                     <div id="planetary-shopping-list" class="planetary-plan-list"></div>
                   </div>
                   <div class="planetary-plan-box">
                     <strong>Output Sell Targets</strong>
                     <div class="meta">Shown chains only; assumes selling outputs to hub buy orders.</div>
+                    <button class="secondary" type="button" data-copy-quickbar="planetary-sell">Copy Quickbar Outputs</button>
+                    <div id="planetary-sell-quickbar-status" class="meta quickbar-copy-status" aria-live="polite"></div>
                     <div id="planetary-sell-targets" class="planetary-plan-list"></div>
                   </div>
                 </div>
@@ -11802,6 +12513,8 @@ def _render_flight_attendant_dashboard() -> str:
     const haulRoutePath = document.querySelector("#haul-route-path");
     const haulProgressLog = document.querySelector("#haul-progress-log");
     const haulOpportunitySummary = document.querySelector("#haul-opportunity-summary");
+    const haulQuickbarPanel = document.querySelector("#haul-quickbar-panel");
+    const haulQuickbarStatus = document.querySelector("#haul-quickbar-status");
     const haulOpportunityTop = document.querySelector("#haul-opportunity-top");
     const acquisitionForm = document.querySelector("#acquisition-form");
     const acqOrigin = document.querySelector("#acq-origin");
@@ -11820,6 +12533,8 @@ def _render_flight_attendant_dashboard() -> str:
     const acqSummary = document.querySelector("#acq-summary");
     const acqStrategy = document.querySelector("#acq-strategy");
     const acqRoute = document.querySelector("#acq-route");
+    const acqQuickbarPanel = document.querySelector("#acq-quickbar-panel");
+    const acqQuickbarStatus = document.querySelector("#acq-quickbar-status");
     const acqResults = document.querySelector("#acq-results");
     const tradePnlForm = document.querySelector("#trade-pnl-form");
     const tradePnlWindowHours = document.querySelector("#trade-pnl-window-hours");
@@ -11833,6 +12548,7 @@ def _render_flight_attendant_dashboard() -> str:
     const planetaryForm = document.querySelector("#planetary-form");
     const planetaryHub = document.querySelector("#planetary-hub");
     const planetaryOutputTier = document.querySelector("#planetary-output-tier");
+    const planetaryChainTarget = document.querySelector("#planetary-chain-target");
     const planetaryTop = document.querySelector("#planetary-top");
     const planetaryOwnerTax = document.querySelector("#planetary-owner-tax");
     const planetaryNpcTax = document.querySelector("#planetary-npc-tax");
@@ -11843,8 +12559,11 @@ def _render_flight_attendant_dashboard() -> str:
     const planetaryRankButton = document.querySelector("#planetary-rank");
     const planetarySummary = document.querySelector("#planetary-summary");
     const planetaryStrategy = document.querySelector("#planetary-strategy");
+    const planetaryChainPanel = document.querySelector("#planetary-chain-panel");
     const planetaryShoppingList = document.querySelector("#planetary-shopping-list");
+    const planetaryShoppingQuickbarStatus = document.querySelector("#planetary-shopping-quickbar-status");
     const planetarySellTargets = document.querySelector("#planetary-sell-targets");
+    const planetarySellQuickbarStatus = document.querySelector("#planetary-sell-quickbar-status");
     const planetaryResults = document.querySelector("#planetary-results");
     const reprocessingForm = document.querySelector("#reprocessing-form");
     const reprocessOre = document.querySelector("#reprocess-ore");
@@ -11890,6 +12609,7 @@ def _render_flight_attendant_dashboard() -> str:
     const tradePnlShowMatchesKey = "eve-flight-trade-pnl-show-matches-v1";
     const planetaryHubKey = "eve-flight-planetary-hub-v1";
     const planetaryTierKey = "eve-flight-planetary-tier-v1";
+    const planetaryChainTargetKey = "eve-flight-planetary-chain-target-v1";
     const planetaryTopKey = "eve-flight-planetary-top-v1";
     const planetaryOwnerTaxKey = "eve-flight-planetary-owner-tax-v1";
     const planetaryNpcTaxKey = "eve-flight-planetary-npc-tax-v1";
@@ -11922,6 +12642,10 @@ def _render_flight_attendant_dashboard() -> str:
     let haulScanFinished = false;
     let haulProgressTimer = null;
     let haulProgressStartedAt = 0;
+    let haulQuickbarItems = [];
+    let acquisitionQuickbarItems = [];
+    let planetaryShoppingQuickbarItems = [];
+    let planetarySellQuickbarItems = [];
 
     function escapeHtml(value) {
       const replacements = {
@@ -11960,6 +12684,112 @@ def _render_flight_attendant_dashboard() -> str:
       const statusLabel = response.status ? `HTTP ${response.status}` : "a non-JSON response";
       const detail = snippet ? ` (${snippet})` : "";
       throw new Error(`${fallbackMessage}: server returned ${statusLabel} instead of JSON${detail}.`);
+    }
+
+    function quickbarItemName(item) {
+      if (typeof item === "string") return item;
+      if (!item || typeof item !== "object") return "";
+      return item.item_name || item.name || item.product_name || item.output_name || "";
+    }
+
+    function quickbarImportNames(items) {
+      const seen = new Set();
+      const names = [];
+      (items || []).forEach((item) => {
+        const name = String(quickbarItemName(item) || "").trim();
+        if (!name) return;
+        const key = name.toLocaleLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        names.push(name);
+      });
+      return names;
+    }
+
+    function quickbarImportText(items) {
+      return quickbarImportNames(items).join("\\n");
+    }
+
+    async function writeTextToClipboard(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand("copy");
+      textarea.remove();
+      if (!copied) throw new Error("Clipboard copy was blocked by this browser.");
+    }
+
+    function setQuickbarStatus(statusEl, message, isError = false) {
+      if (!statusEl) return;
+      statusEl.textContent = message;
+      statusEl.classList.toggle("error", Boolean(isError));
+    }
+
+    function updateQuickbarPanel(panel, statusEl, items, noun = "items") {
+      const names = quickbarImportNames(items);
+      if (panel) panel.hidden = names.length === 0;
+      if (names.length) {
+        setQuickbarStatus(statusEl, `${formatNumber(names.length)} ${noun} ready for Quickbar import.`);
+      } else {
+        setQuickbarStatus(statusEl, "");
+      }
+    }
+
+    function resetQuickbarList(panel, statusEl, listRefName) {
+      if (listRefName === "hauling") haulQuickbarItems = [];
+      if (listRefName === "acquisition") acquisitionQuickbarItems = [];
+      if (listRefName === "planetary-shopping") planetaryShoppingQuickbarItems = [];
+      if (listRefName === "planetary-sell") planetarySellQuickbarItems = [];
+      if (panel) panel.hidden = true;
+      setQuickbarStatus(statusEl, "");
+    }
+
+    function quickbarSourceForKind(kind) {
+      const sources = {
+        hauling: {items: haulQuickbarItems, status: haulQuickbarStatus, label: "route opportunity"},
+        acquisition: {items: acquisitionQuickbarItems, status: acqQuickbarStatus, label: "acquisition recommendation"},
+        "planetary-shopping": {items: planetaryShoppingQuickbarItems, status: planetaryShoppingQuickbarStatus, label: "PI input"},
+        "planetary-sell": {items: planetarySellQuickbarItems, status: planetarySellQuickbarStatus, label: "PI output"},
+      };
+      return sources[kind] || null;
+    }
+
+    async function copyQuickbarItems(kind, button) {
+      const source = quickbarSourceForKind(kind);
+      if (!source) return;
+      const names = quickbarImportNames(source.items);
+      if (!names.length) {
+        setQuickbarStatus(source.status, "No item names are ready to copy yet.", true);
+        return;
+      }
+      const previousText = button ? button.textContent : "";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Copying...";
+      }
+      try {
+        await writeTextToClipboard(quickbarImportText(names));
+        const plural = names.length === 1 ? source.label : `${source.label}s`;
+        setQuickbarStatus(
+          source.status,
+          `Copied ${formatNumber(names.length)} ${plural}. In EVE: Market > Quickbar > Import Quickbar > Add clipboard items.`,
+        );
+      } catch (error) {
+        setQuickbarStatus(source.status, error.message || "Clipboard copy failed.", true);
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = previousText;
+        }
+      }
     }
 
     async function loadFlightDiagnostics() {
@@ -13080,6 +13910,7 @@ def _render_flight_attendant_dashboard() -> str:
       haulProgressLog.hidden = true;
       haulProgressLog.innerHTML = "";
       haulOpportunitySummary.textContent = "No route scan has run yet.";
+      resetQuickbarList(haulQuickbarPanel, haulQuickbarStatus, "hauling");
       haulOpportunityTop.textContent = "";
       haulScanButton.disabled = false;
     }
@@ -13153,6 +13984,7 @@ def _render_flight_attendant_dashboard() -> str:
       haulRoutePath.textContent = "";
       haulProgressLog.hidden = false;
       haulProgressLog.innerHTML = "";
+      resetQuickbarList(haulQuickbarPanel, haulQuickbarStatus, "hauling");
       startHaulProgressTimer(settings, routeRule, podRule);
       haulOpportunityTop.innerHTML = `<div class="decision-empty">Route opportunities will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
@@ -13265,6 +14097,8 @@ def _render_flight_attendant_dashboard() -> str:
         ${routeWarning}
       `;
       haulRoutePath.innerHTML = renderHaulRoutePath(route.systems || []);
+      haulQuickbarItems = Array.isArray(hauling.opportunities) ? hauling.opportunities : [];
+      updateQuickbarPanel(haulQuickbarPanel, haulQuickbarStatus, haulQuickbarItems, "route item");
       haulOpportunitySummary.innerHTML = `
         <div class="profit-stats">
           <div class="profit-stat"><span>Profitable</span><b>${formatNumber(hauling.profitable_opportunities)}</b></div>
@@ -13332,6 +14166,7 @@ def _render_flight_attendant_dashboard() -> str:
       acqSummary.textContent = message;
       acqStrategy.innerHTML = "";
       acqRoute.textContent = "";
+      resetQuickbarList(acqQuickbarPanel, acqQuickbarStatus, "acquisition");
       acqResults.innerHTML = "";
       acqScanButton.disabled = false;
     }
@@ -13352,6 +14187,7 @@ def _render_flight_attendant_dashboard() -> str:
       acqSummary.textContent = `Checking public orders and market history for ${acquisitionItemScopeLabel(settings)}...`;
       acqStrategy.innerHTML = "";
       acqRoute.textContent = "";
+      resetQuickbarList(acqQuickbarPanel, acqQuickbarStatus, "acquisition");
       acqResults.innerHTML = `<div class="decision-empty">Recommendations will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
         origin_name: settings.originName,
@@ -13413,6 +14249,8 @@ def _render_flight_attendant_dashboard() -> str:
         <div class="meta">${escapeHtml(acquisition.pricing_note || "Planner is advisory only; verify in EVE before posting buy orders.")}</div>
       `;
       acqStrategy.innerHTML = renderAcquisitionStrategy(acquisition.strategy || {});
+      acquisitionQuickbarItems = Array.isArray(acquisition.opportunities) ? acquisition.opportunities : [];
+      updateQuickbarPanel(acqQuickbarPanel, acqQuickbarStatus, acquisitionQuickbarItems, "recommended item");
       acqResults.innerHTML = renderAcquisitionOpportunities(acquisition.opportunities || []);
     }
 
@@ -13732,6 +14570,10 @@ def _render_flight_attendant_dashboard() -> str:
       return ["all", "profitable", "price-check"].includes(filter) ? filter : "all";
     }
 
+    function cleanPlanetaryChainTarget(value) {
+      return String(value || "").trim().slice(0, 96);
+    }
+
     function clampPlanetaryCceValue(value) {
       const number = Math.floor(Number(value));
       if (!Number.isFinite(number)) return 0;
@@ -13742,6 +14584,7 @@ def _render_flight_attendant_dashboard() -> str:
       return {
         hub: String(window.localStorage.getItem(planetaryHubKey) || planetaryHub.value || "Jita").trim() || "Jita",
         outputTier: normalizePlanetaryTier(window.localStorage.getItem(planetaryTierKey) || planetaryOutputTier.value),
+        chainTarget: cleanPlanetaryChainTarget(window.localStorage.getItem(planetaryChainTargetKey) || planetaryChainTarget.value || "Microfiber Shielding"),
         strategyFilter: normalizePlanetaryStrategyFilter(window.localStorage.getItem(planetaryStrategyFilterKey) || "all"),
         top: clampPlanetaryTopValue(window.localStorage.getItem(planetaryTopKey) || planetaryTop.value || 20),
         ownerTaxPercent: clampPlanetaryPercentValue(window.localStorage.getItem(planetaryOwnerTaxKey) || planetaryOwnerTax.value || 5, 5),
@@ -13756,6 +14599,7 @@ def _render_flight_attendant_dashboard() -> str:
       const clean = {
         hub: String(settings.hub || "Jita").trim() || "Jita",
         outputTier: normalizePlanetaryTier(settings.outputTier),
+        chainTarget: cleanPlanetaryChainTarget(settings.chainTarget || "Microfiber Shielding"),
         strategyFilter: normalizePlanetaryStrategyFilter(settings.strategyFilter),
         top: clampPlanetaryTopValue(settings.top),
         ownerTaxPercent: clampPlanetaryPercentValue(settings.ownerTaxPercent, 5),
@@ -13766,6 +14610,7 @@ def _render_flight_attendant_dashboard() -> str:
       };
       planetaryHub.value = clean.hub;
       planetaryOutputTier.value = clean.outputTier;
+      planetaryChainTarget.value = clean.chainTarget;
       planetaryFilters.querySelectorAll("button[data-planetary-filter]").forEach((button) => {
         button.classList.toggle("active", button.dataset.planetaryFilter === clean.strategyFilter);
       });
@@ -13777,6 +14622,7 @@ def _render_flight_attendant_dashboard() -> str:
       planetaryBrokerFee.value = String(clean.brokerFeePercent);
       window.localStorage.setItem(planetaryHubKey, clean.hub);
       window.localStorage.setItem(planetaryTierKey, clean.outputTier);
+      window.localStorage.setItem(planetaryChainTargetKey, clean.chainTarget);
       window.localStorage.setItem(planetaryStrategyFilterKey, clean.strategyFilter);
       window.localStorage.setItem(planetaryTopKey, String(clean.top));
       window.localStorage.setItem(planetaryOwnerTaxKey, String(clean.ownerTaxPercent));
@@ -13795,6 +14641,11 @@ def _render_flight_attendant_dashboard() -> str:
     function resetPlanetary(message) {
       planetarySummary.textContent = message;
       planetaryStrategy.innerHTML = "";
+      planetaryChainPanel.innerHTML = "";
+      planetaryShoppingQuickbarItems = [];
+      planetarySellQuickbarItems = [];
+      setQuickbarStatus(planetaryShoppingQuickbarStatus, "");
+      setQuickbarStatus(planetarySellQuickbarStatus, "");
       planetaryShoppingList.innerHTML = "";
       planetarySellTargets.innerHTML = "";
       planetaryResults.innerHTML = "";
@@ -13805,6 +14656,7 @@ def _render_flight_attendant_dashboard() -> str:
       const settings = writePlanetarySettings({
         hub: planetaryHub.value,
         outputTier: planetaryOutputTier.value,
+        chainTarget: planetaryChainTarget.value,
         strategyFilter: currentPlanetaryStrategyFilter(),
         top: planetaryTop.value,
         ownerTaxPercent: planetaryOwnerTax.value,
@@ -13815,10 +14667,12 @@ def _render_flight_attendant_dashboard() -> str:
       });
       planetaryRankButton.disabled = true;
       planetarySummary.textContent = `Pricing ${settings.outputTier} planetary chains in ${settings.hub}...`;
+      planetaryChainPanel.innerHTML = "";
       planetaryResults.innerHTML = `<div class="decision-empty">PI ranking will appear here when pricing finishes.</div>`;
       const params = new URLSearchParams({
         hub: settings.hub,
         output_tier: settings.outputTier,
+        chain_target: settings.chainTarget,
         strategy_filter: settings.strategyFilter,
         top: String(settings.top),
         owner_tax_percent: String(settings.ownerTaxPercent),
@@ -13863,6 +14717,21 @@ def _render_flight_attendant_dashboard() -> str:
         <div class="meta">${escapeHtml(planetary.pricing_note || "Customs transfer cost is included before profit.")}</div>
       `;
       planetaryStrategy.innerHTML = renderPlanetaryStrategy(strategy);
+      planetaryChainPanel.innerHTML = renderPlanetaryChain(planetary.chain);
+      planetaryShoppingQuickbarItems = Array.isArray(planetary.shopping_list) ? planetary.shopping_list : [];
+      planetarySellQuickbarItems = Array.isArray(planetary.sell_targets) ? planetary.sell_targets : [];
+      setQuickbarStatus(
+        planetaryShoppingQuickbarStatus,
+        planetaryShoppingQuickbarItems.length
+          ? `${formatNumber(quickbarImportNames(planetaryShoppingQuickbarItems).length)} PI input names ready for Quickbar import.`
+          : "",
+      );
+      setQuickbarStatus(
+        planetarySellQuickbarStatus,
+        planetarySellQuickbarItems.length
+          ? `${formatNumber(quickbarImportNames(planetarySellQuickbarItems).length)} PI output names ready for Quickbar import.`
+          : "",
+      );
       planetaryShoppingList.innerHTML = renderPlanetaryPlanList(planetary.shopping_list || [], "input");
       planetarySellTargets.innerHTML = renderPlanetaryPlanList(planetary.sell_targets || [], "output");
       planetaryResults.innerHTML = renderPlanetaryOpportunities(opportunities);
@@ -13882,6 +14751,139 @@ def _render_flight_attendant_dashboard() -> str:
           <strong>${bestText}</strong>
           <div class="meta">${escapeHtml(strategy.next_step || "Check the market in EVE before committing ISK.")}</div>
           <div class="meta">${escapeHtml(strategy.future_note || "Buy inputs versus make inputs yourself can be added later.")}</div>
+        </div>
+      `;
+    }
+
+    function formatPlanetaryIsk(value) {
+      return value == null ? "Price check" : formatIsk(value);
+    }
+
+    function formatPlanetarySignedIsk(value) {
+      return value == null ? "Price check" : formatSignedIsk(value);
+    }
+
+    function renderPlanetaryChain(chain) {
+      if (!chain) return "";
+      if (!chain.available) {
+        return `<div class="decision-empty">${escapeHtml(chain.error || "No material chain is available for this target.")}</div>`;
+      }
+      const summary = chain.summary || {};
+      const target = chain.target || {};
+      const targetName = summary.target_name || target.name || chain.target_query || "Planetary material";
+      const sameOptions = summary.same_planet_options || [];
+      const sameBadge = sameOptions.length ? `Same planet: ${sameOptions.map(escapeHtml).join(", ")}` : "Multi-planet route";
+      const sameClass = sameOptions.length ? "decision-build" : "decision-price";
+      const missing = summary.missing_price_type_ids || [];
+      const missingLine = missing.length
+        ? `<div class="meta planetary-missing-price">Price check needed for type ids ${escapeHtml(missing.join(", "))}.</div>`
+        : "";
+      return `
+        <section class="planetary-chain-workbench">
+          <div class="planetary-chain-head">
+            <div>
+              <span class="notebook-ribbon">Ecology Chain</span>
+              <strong>${escapeHtml(targetName)} x${formatNumber(summary.target_quantity || target.quantity || 0)}</strong>
+              <div class="meta">${escapeHtml((target.tier || summary.target_tier || "PI").toString())} material chain with buy, produce, export, and same-planet transfer math.</div>
+              ${missingLine}
+            </div>
+            <span class="pill ${sameClass}">${sameBadge}</span>
+          </div>
+          <div class="planetary-chain-metrics">
+            <div class="assay-cell"><span>Buy Direct</span><b>${formatPlanetaryIsk(summary.buy_direct_cost)}</b><small>${formatPlanetaryIsk(summary.buy_direct_market_value)} market; ${formatIsk(summary.buy_direct_import_customs_cost)} import customs.</small></div>
+            <div class="assay-cell"><span>Make From Bought Inputs</span><b>${formatPlanetaryIsk(summary.produce_from_bought_inputs_cost)}</b><small>Profit to sell: ${formatPlanetarySignedIsk(summary.produce_from_bought_inputs_profit)}.</small></div>
+            <div class="assay-cell"><span>Output Sell Target</span><b>${formatPlanetaryIsk(summary.sell_net_value)}</b><small>${formatPlanetaryIsk(summary.sell_market_value)} buy value; ${formatIsk(Number(summary.sell_export_customs_cost || 0) + Number(summary.sales_tax || 0) + Number(summary.broker_fee || 0))} fees.</small></div>
+            <div class="assay-cell"><span>Same-Planet Value</span><b>${sameOptions.length ? `+${formatIsk(summary.same_planet_transfer_savings)}` : "No one-planet chain"}</b><small>${sameOptions.length ? "Intermediate customs you can avoid." : `${formatIsk(summary.off_planet_transfer_customs_cost)} intermediate transfer exposure.`}</small></div>
+          </div>
+          <div class="planetary-ecology-layout">
+            ${renderPlanetaryChainNotebook(chain)}
+            <div class="planetary-chain-tree">
+              ${renderPlanetaryChainNode(chain.node || {}, 0)}
+            </div>
+          </div>
+        </section>
+      `;
+    }
+
+    function renderPlanetaryChainNotebook(chain) {
+      const rawInputs = chain.raw_inputs || [];
+      const notes = chain.notes || [];
+      return `
+        <section class="field-notebook planetary-chain-notebook">
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Raw Inputs</span>
+            <div class="planetary-raw-list">
+              ${rawInputs.length ? rawInputs.map(renderPlanetaryRawInput).join("") : `<div class="notebook-note">No raw inputs were found for this target.</div>`}
+            </div>
+          </div>
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Customs Notes</span>
+            <div class="planetary-note-list">
+              ${notes.slice(0, 5).map((note) => `<div class="notebook-note">${escapeHtml(note)}</div>`).join("")}
+            </div>
+          </div>
+        </section>
+      `;
+    }
+
+    function renderPlanetaryRawInput(item) {
+      return `
+        <div class="planetary-raw-row">
+          <strong><span>${escapeHtml(item.name || "Raw material")} x${formatNumber(item.quantity)}</span><span>${formatPlanetaryIsk(item.buy_total_cost)}</span></strong>
+          <div class="notebook-note">${formatPlanetaryIsk(item.buy_market_value)} market; ${formatIsk(item.buy_import_customs_cost)} import customs if bought and moved.</div>
+          ${renderPlanetaryPlanetTags(item.planet_type_counts || [], item.planet_types || [])}
+        </div>
+      `;
+    }
+
+    function renderPlanetaryPlanetTags(counts, planetTypes) {
+      const rows = Array.isArray(counts) && counts.length
+        ? counts.map((row) => `${escapeHtml(row.planet_type || "Planet")} ${formatNumber(row.planet_count)}`)
+        : (planetTypes || []).map((name) => escapeHtml(name));
+      if (!rows.length) return `<div class="planetary-planet-tags"><span>No P0 planet type</span></div>`;
+      return `<div class="planetary-planet-tags">${rows.map((label) => `<span>${label}</span>`).join("")}</div>`;
+    }
+
+    function renderPlanetaryChainNode(node, depth) {
+      if (!node || !node.name) return `<div class="decision-empty">No chain node was returned.</div>`;
+      const children = node.children || [];
+      const sameOptions = node.same_planet_options || [];
+      const cycleText = node.cycle_count
+        ? `${formatNumber(node.cycle_count)} cycle${Number(node.cycle_count) === 1 ? "" : "s"} at ${formatDuration(node.cycle_time_seconds)}`
+        : "No schematic";
+      const planetLine = (node.planet_types || []).length
+        ? `Planets: ${(node.planet_types || []).map(escapeHtml).join(", ")}.`
+        : sameOptions.length
+          ? `Same-planet candidates: ${sameOptions.map(escapeHtml).join(", ")}.`
+          : "Factory or imported material.";
+      const makeValue = node.produce_from_bought_inputs_cost == null
+        ? (node.raw_resource ? "Extractor source" : "Price check")
+        : formatPlanetaryIsk(node.produce_from_bought_inputs_cost);
+      const makeSmall = node.produce_from_bought_inputs_cost == null
+        ? planetLine
+        : `Sell net ${formatPlanetaryIsk(node.sell_net_value)}; profit ${formatPlanetarySignedIsk(node.produce_from_bought_inputs_profit)}.`;
+      const transferValue = node.off_planet_transfer_customs_cost
+        ? formatIsk(node.off_planet_transfer_customs_cost)
+        : formatIsk(Number(node.buy_import_customs_cost || 0) + Number(node.sell_export_customs_cost || 0));
+      const transferSmall = sameOptions.length
+        ? `Same planet can avoid ${formatIsk(node.same_planet_transfer_savings)}.`
+        : "Import/export customs shown where material crosses customs.";
+      return `
+        <div class="planetary-chain-node depth-${Math.min(4, Number(depth || node.depth || 0))}" style="--depth: ${Math.min(4, Number(depth || node.depth || 0))}">
+          <div class="planetary-node-main">
+            <div>
+              <strong>${escapeHtml(node.name)} x${formatNumber(node.required_quantity)}</strong>
+              <div class="meta">${escapeHtml(node.tier || "PI")} ${node.produced_quantity !== node.required_quantity ? `produces ${formatNumber(node.produced_quantity)}; ` : ""}${escapeHtml(cycleText)}</div>
+              <div class="meta">${planetLine}</div>
+            </div>
+            <span class="pill ${node.raw_resource ? "decision-source" : "reserved"}">${node.raw_resource ? "P0 Source" : "Schematic"}</span>
+          </div>
+          <div class="planetary-node-values">
+            <div class="decision-metric"><span>Buy Material</span><b>${formatPlanetaryIsk(node.buy_total_cost)}</b><small>${formatPlanetaryIsk(node.buy_market_value)} market; ${formatIsk(node.buy_import_customs_cost)} import.</small></div>
+            <div class="decision-metric"><span>Produce Value</span><b>${makeValue}</b><small>${makeSmall}</small></div>
+            <div class="decision-metric"><span>Transfer Customs</span><b>${transferValue}</b><small>${transferSmall}</small></div>
+          </div>
+          ${children.length ? `<div class="planetary-node-children">${children.map((child) => renderPlanetaryChainNode(child, Number(depth || node.depth || 0) + 1)).join("")}</div>` : ""}
         </div>
       `;
     }
@@ -15108,6 +16110,12 @@ def _render_flight_attendant_dashboard() -> str:
       updateAcquisitionScopeAndReset();
     });
 
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-copy-quickbar]");
+      if (!button) return;
+      copyQuickbarItems(button.dataset.copyQuickbar, button);
+    });
+
     function updateTradePnlAndReset() {
       const settings = writeTradePnlSettings({
         windowHours: tradePnlWindowHours.value,
@@ -15131,6 +16139,7 @@ def _render_flight_attendant_dashboard() -> str:
       const settings = writePlanetarySettings({
         hub: planetaryHub.value,
         outputTier: planetaryOutputTier.value,
+        chainTarget: planetaryChainTarget.value,
         strategyFilter: currentPlanetaryStrategyFilter(),
         top: planetaryTop.value,
         ownerTaxPercent: planetaryOwnerTax.value,
@@ -15152,6 +16161,7 @@ def _render_flight_attendant_dashboard() -> str:
       writePlanetarySettings({
         hub: planetaryHub.value,
         outputTier: planetaryOutputTier.value,
+        chainTarget: planetaryChainTarget.value,
         strategyFilter: button.dataset.planetaryFilter,
         top: planetaryTop.value,
         ownerTaxPercent: planetaryOwnerTax.value,
@@ -15164,6 +16174,7 @@ def _render_flight_attendant_dashboard() -> str:
     });
     planetaryHub.addEventListener("change", updatePlanetaryAndReset);
     planetaryOutputTier.addEventListener("change", updatePlanetaryAndReset);
+    planetaryChainTarget.addEventListener("change", updatePlanetaryAndReset);
     planetaryTop.addEventListener("change", updatePlanetaryAndReset);
     planetaryOwnerTax.addEventListener("change", updatePlanetaryAndReset);
     planetaryNpcTax.addEventListener("change", updatePlanetaryAndReset);

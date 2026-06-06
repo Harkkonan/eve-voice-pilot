@@ -41,7 +41,7 @@ The first version is a safe briefing surface:
 - It includes a `Market Acquisition Planner` tab that compares public buy/sell orders with public market history before suggesting public buy-order ceilings, first-order size, and collection range.
 - It includes a `Trade P&L` tab that reads recent wallet transactions and wallet journal fee rows to match visible buys and sells into item-level profit, loss, open stock, unmatched sells, and optional matched transaction rows. The tab can narrow history from 1 hour to 30 days and can exclude selected items from the considered income total while still showing their real result.
 - It includes an `Ore Reprocessing` tab that uses ESI location, skills, standings, and implants plus local SDE ore data to estimate mineral output from a typed ore amount.
-- It is gaining a `Planetary Industry` planner for comparing PI schematics, market prices, and customs transfer costs before a pilot moves goods manually.
+- It includes a `Planetary Industry` planner for comparing PI schematics, material chains, market prices, planet availability, and customs transfer costs before a pilot moves goods manually.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
@@ -146,17 +146,21 @@ cache\eve_reprocessing.json
 cache\eve_planetary_industry.json
 ```
 
-If these caches are missing, the Flight Attendant tab still requires ESI and will show the data it can safely fetch, but recipe matching, buildability previews, jump-aware nearby system coverage, ore reprocessing estimates, and planetary schematic planning will stay unavailable. Refresh the cache after updates that add static fields such as `volume_m3`, `max_production_limit`, required skills, job time, ore portions, station reprocessing values, PI schematic inputs and outputs, PI commodity tiers, or customs-tax base values.
+If these caches are missing, the Flight Attendant tab still requires ESI and will show the data it can safely fetch, but recipe matching, buildability previews, jump-aware nearby system coverage, ore reprocessing estimates, and planetary schematic and chain planning will stay unavailable. Refresh the cache after updates that add static fields such as `volume_m3`, `max_production_limit`, required skills, job time, ore portions, station reprocessing values, PI schematic inputs and outputs, PI commodity tiers, customs-tax base values, or SDE planet records.
 
 ### Planetary Industry Planner
 
 Planetary Industry support is being added one safe layer at a time. The Flight Attendant tab can rank PI schematics from the SDE against public market orders and manual tax assumptions. The current strategy layer shows a plain-language summary, profitable-only and price-check filters, profit-per-day ranking, an input shopping list, output sell targets, and a separate import/export customs breakdown.
 
-The planner should support these modes:
+The material-chain target field can walk a target such as `Microfiber Shielding` or `Viral Agent` backward through PI schematics. The chain view shows P1/P0 requirements for one target schematic batch, which planet types provide the P0 resources, buy-direct cost, make-from-bought-inputs value, output sell target value, and customs fees for each material movement. Same-planet notes show when every raw input can be sourced on one planet type and how much intermediate transfer customs can be avoided.
+
+The Planning Rules panel includes a `Tax Field Guide` for Owner tax %, NPC tax %, Customs Code Expertise, Sales tax %, and Broker fee %, plus a collapsible `PI Field Answers` guide with 20 common operational reminders. The field guide explains where to find the rates in game and what can or cannot be auto-filled later from ESI. ESI can help with signed-in location, public market prices, and character skill levels such as Accounting or Customs Code Expertise; arbitrary planet owner POCO tax and exact broker fee for a chosen order location should remain manual unless a later role-gated corporation customs-office mode is added.
+
+The planner uses these public-data planning modes and leaves signed-in colony layout as future work:
 
 - manual public-data mode: choose a hub, output tier, and tax settings, then compare PI schematics using public market orders and SDE schematic data;
 - factory-planet mode: treat all inputs as bought/imported and all outputs as exported/sold;
-- extraction or hybrid mode later: compare buying inputs with making lower-tier inputs yourself, while still showing the opportunity value of self-supplied materials;
+- extraction or hybrid mode: compare buying inputs with making lower-tier inputs yourself, while still showing the opportunity value of self-supplied materials;
 - signed-in colony mode later: read colonies with `esi-planets.manage_planets.v1`, while warning that ESI colony layout data may be stale until the pilot opens the colony in EVE.
 
 Profit math must always show customs movement cost, not hide it inside a generic fee. Use this shape:
@@ -223,6 +227,8 @@ It recommends:
 The item scope picker is shared with `Hauler Routes`. When the local SDE market data is available, each top-level market category and subcategory is labeled from that cache, shows the published item count, and includes collapsed item-name previews with a show-more control. The planner defaults to a 50,000,000 ISK budget and accepts manual budgets from 1 ISK through 10,000,000,000 ISK. Common materials uses a smaller top-industry-input scan in the hosted planner so broad scans are less likely to time out; use market categories for a more targeted family of items.
 
 History warnings are intentionally plain-language. A `Possible trap` signal means the top-of-book spread is not supported by recent market history, the competing buy side is already above the safe ceiling, or another market-history/current-order mismatch needs manual checking. It is not proof of bad intent by another player. Treat it as a reason to verify the item in EVE before posting a buy order.
+
+Acquisition recommendations, hauler route opportunities, and Planetary Industry input/output lists include Quickbar copy buttons. Those buttons copy plain market item names, one per line, for EVE's Market Quickbar import flow. They do not copy quantities, place orders, write EVE settings files, or touch the EVE client; the pilot still opens the market window, uses `Quickbar > Import Quickbar`, chooses the add/import option, and verifies the item list manually in EVE.
 
 This tab does not place, update, or cancel market orders. The pilot still creates every buy order manually in EVE.
 

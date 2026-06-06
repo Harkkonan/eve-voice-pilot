@@ -289,6 +289,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-progress-log\"" in page
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page
+    assert "id=\"haul-quickbar-panel\" class=\"quickbar-copy-panel\" hidden" in page
+    assert "data-copy-quickbar=\"hauling\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
     assert "id=\"acquisition-form\"" in page
     assert "id=\"acq-budget\"" in page
@@ -299,6 +301,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"acq-broker-fee\"" in page
     assert f"top {corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES} industry inputs" in page
     assert "id=\"acq-strategy\" class=\"acquisition-strategy-grid\"" in page
+    assert "id=\"acq-quickbar-panel\" class=\"quickbar-copy-panel\" hidden" in page
+    assert "data-copy-quickbar=\"acquisition\"" in page
     assert "id=\"acq-results\" class=\"decision-output\"" in page
     assert "Market Acquisition Planner" in page
     assert "Possible trap" in page
@@ -322,17 +326,34 @@ def test_dashboard_includes_flight_esi_hooks():
     assert page.count("id=\"tab-trade-pnl\"") == 1
     assert page.count("id=\"tab-planetary\"") == 1
     assert "id=\"planetary-form\"" in page
+    assert "id=\"planetary-chain-target\"" in page
     assert "id=\"planetary-filters\"" in page
     assert "data-planetary-filter=\"profitable\"" in page
     assert "data-planetary-filter=\"price-check\"" in page
     assert "id=\"planetary-strategy\" class=\"planetary-strategy-grid\"" in page
+    assert "id=\"planetary-chain-panel\" class=\"planetary-chain-panel\"" in page
+    assert "Planetary tax field guide" in page
+    assert "Tax Field Guide" in page
+    assert "The player or corporation customs office owner rate" in page
+    assert "Customs Code Expertise" in page
+    assert "Can ESI auto-fill these from location?" in page
+    assert "Corp-owned customs office rates are a later Director-only corporation mode" in page
+    assert "Common Planetary Industry answers" in page
+    assert page.count("class=\"planetary-answer-item\"") == 20
+    assert "How do I open PI from a station?" in page
+    assert "How do I route a product from a factory?" in page
     assert "id=\"planetary-shopping-list\"" in page
+    assert "data-copy-quickbar=\"planetary-shopping\"" in page
     assert "id=\"planetary-sell-targets\"" in page
+    assert "data-copy-quickbar=\"planetary-sell\"" in page
     assert "id=\"planetary-results\" class=\"decision-output\"" in page
     assert "Customs Transfer" in page
     assert "renderPlanetaryStrategy" in page
+    assert "renderPlanetaryChain" in page
     assert "renderPlanetaryPlanList" in page
     assert "renderPlanetaryOpportunities" in page
+    assert "quickbarImportText" in page
+    assert "Market &gt; Quickbar &gt; Import Quickbar" in page
     assert page.count("id=\"tab-reprocessing\"") == 1
     assert "https://images.evetech.net/types/" in page
     assert "reprocess-page" in page
@@ -1450,6 +1471,7 @@ def test_build_flight_planetary_payload_displays_customs_transfer_cost(monkeypat
         config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
         hub_name="Jita",
         output_tier="P2",
+        chain_target="Superconductors",
         owner_tax_percent=5.0,
         npc_tax_percent=10.0,
         customs_code_expertise_level=5,
@@ -1461,6 +1483,7 @@ def test_build_flight_planetary_payload_displays_customs_transfer_cost(monkeypat
     opportunity = payload["planetary"]["opportunities"][0]
     assert payload["ok"] is True
     assert payload["settings"]["output_tier"] == "P2"
+    assert payload["settings"]["chain_target"] == "Superconductors"
     assert payload["tax_profile"]["effective_export_tax_percent"] == pytest.approx(10.0)
     assert opportunity["schematic_name"] == "Superconductors"
     assert opportunity["input_value"] == pytest.approx(8400.0)
@@ -1477,6 +1500,9 @@ def test_build_flight_planetary_payload_displays_customs_transfer_cost(monkeypat
     assert payload["planetary"]["below_cost_opportunity_count"] == 1
     assert payload["planetary"]["strategy"]["plain_language"].startswith("This assumes you buy every input")
     assert payload["planetary"]["strategy"]["future_note"].startswith("Buy inputs versus make")
+    assert payload["planetary"]["chain"]["available"] is True
+    assert payload["planetary"]["chain"]["target"]["name"] == "Superconductors"
+    assert payload["planetary"]["chain"]["summary"]["target_quantity"] == 5
     plasmoids = next(item for item in payload["planetary"]["shopping_list"] if item["name"] == "Plasmoids")
     assert plasmoids["market_value"] == pytest.approx(4000.0)
     assert payload["planetary"]["sell_targets"][0]["name"] == "Superconductors"
