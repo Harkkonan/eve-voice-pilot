@@ -77,6 +77,7 @@ ALERT_BEHAVIOR_KINDS = (
     ("keyword", "Keyword match", "When an extra local keyword matches."),
     ("location", "System arrival", "When location cheer sees a happy system."),
     ("combat", "Kill cheer", "When a local game-log kill line appears."),
+    ("mission", "Agent mission", "When a local game-log mission acceptance or completion appears."),
 )
 DEFAULT_ALERT_BEHAVIORS = {
     "mention": BEHAVIOR_ALERT,
@@ -85,6 +86,7 @@ DEFAULT_ALERT_BEHAVIORS = {
     "keyword": BEHAVIOR_ALERT,
     "location": BEHAVIOR_HAPPY,
     "combat": BEHAVIOR_COMBAT,
+    "mission": BEHAVIOR_HAPPY,
 }
 SHIP_FRAME_COUNT = 8
 SHIP_FRAME_MS = 150
@@ -129,6 +131,31 @@ SELF_LOSS_PATTERNS = (
     re.compile(r"\byou (?:have )?been destroyed\b", re.IGNORECASE),
     re.compile(r"\byour (?:ship|capsule|pod)\b.*\bhas been destroyed\b", re.IGNORECASE),
 )
+MISSION_ACCEPT_PATTERNS = (
+    re.compile(r"\bmission\b.*\baccepted\b", re.IGNORECASE),
+    re.compile(r"\baccepted\b.*\bmission\b", re.IGNORECASE),
+)
+MISSION_COMPLETE_PATTERNS = (
+    re.compile(r"\bmission\b.*\b(?:complete|completed|finished|accomplished)\b", re.IGNORECASE),
+    re.compile(r"\b(?:complete|completed|finished|accomplished)\b.*\bmission\b", re.IGNORECASE),
+    re.compile(r"\bobjectives?\s+complete\b", re.IGNORECASE),
+)
+MISSION_NEGATIVE_PATTERNS = (
+    re.compile(r"\b(?:not|isn't|is not|cannot|can't)\b.*\b(?:complete|completed|finish|finished)\b", re.IGNORECASE),
+    re.compile(r"\bmission\b.*\b(?:failed|expired|declined)\b", re.IGNORECASE),
+)
+MISSION_COMMENTS = {
+    "accepted": (
+        "Agent contract accepted. Engines warm, capsuleer.",
+        "Mission logged. The agent's clock is ticking.",
+        "Orders received. Let the void keep pace.",
+    ),
+    "completed": (
+        "Mission complete. The agent will want this report.",
+        "Objective secured. Another entry for the capsuleer ledger.",
+        "Contract fulfilled. The cluster owes you a quieter minute.",
+    ),
+}
 
 
 def default_alert_behaviors() -> dict[str, str]:
@@ -218,6 +245,16 @@ class IntelPetLocationCheer:
 @dataclass(frozen=True)
 class IntelPetCombatCheer:
     message: str
+    observed_at: str
+    reported_at: str
+    log_path: str = ""
+
+
+@dataclass(frozen=True)
+class IntelPetMissionCheer:
+    action: str
+    message: str
+    comment: str
     observed_at: str
     reported_at: str
     log_path: str = ""
@@ -586,6 +623,21 @@ def display_message_from_combat_cheer(cheer: IntelPetCombatCheer) -> str:
     return cheer.message
 
 
+def history_item_from_mission_cheer(cheer: IntelPetMissionCheer) -> IntelPetHistoryItem:
+    title = "Mission accepted" if cheer.action == "accepted" else "Mission completed"
+    return IntelPetHistoryItem(
+        title=title,
+        detail=f"{cheer.comment} ({cheer.message})",
+        meta="Local game log | mission progress line",
+        severity="info",
+        recorded_at=cheer.reported_at,
+    )
+
+
+def display_message_from_mission_cheer(cheer: IntelPetMissionCheer) -> str:
+    return cheer.comment
+
+
 def start_native_window_drag(window: Any) -> bool:
     if os.name != "nt":
         return False
@@ -800,6 +852,23 @@ def is_kill_event_text(text: str) -> bool:
     return any(pattern.search(message) for pattern in KILL_EVENT_PATTERNS)
 
 
+def mission_action_from_text(text: str) -> str:
+    message = clean_game_log_text(text)
+    if not message or any(pattern.search(message) for pattern in MISSION_NEGATIVE_PATTERNS):
+        return ""
+    if any(pattern.search(message) for pattern in MISSION_ACCEPT_PATTERNS):
+        return "accepted"
+    if any(pattern.search(message) for pattern in MISSION_COMPLETE_PATTERNS):
+        return "completed"
+    return ""
+
+
+def mission_comment(action: str, *, seed_text: str = "") -> str:
+    options = MISSION_COMMENTS.get(action) or MISSION_COMMENTS["accepted"]
+    seed = sum(ord(character) for character in seed_text)
+    return options[seed % len(options)]
+
+
 def combat_cheer_from_game_log_line(line: str, *, log_path: str = "") -> IntelPetCombatCheer | None:
     clean_line = line.lstrip("\ufeff").rstrip("\r\n")
     match = GAME_LOG_LINE_RE.match(clean_line)
@@ -815,10 +884,29 @@ def combat_cheer_from_game_log_line(line: str, *, log_path: str = "") -> IntelPe
     )
 
 
+def mission_cheer_from_game_log_line(line: str, *, log_path: str = "") -> IntelPetMissionCheer | None:
+    clean_line = line.lstrip("\ufeff").rstrip("\r\n")
+    match = GAME_LOG_LINE_RE.match(clean_line)
+    timestamp = match.group("timestamp") if match else ""
+    message = clean_game_log_text(clean_line)
+    action = mission_action_from_text(message)
+    if not action:
+        return None
+    return IntelPetMissionCheer(
+        action=action,
+        message=message,
+        comment=mission_comment(action, seed_text=f"{timestamp}:{message}"),
+        observed_at=eve_timestamp_to_iso(timestamp) if timestamp else now_iso(),
+        reported_at=now_iso(),
+        log_path=log_path,
+    )
+
+
 def watch_game_logs(
     *,
     log_dir: Path,
     on_kill: Callable[[IntelPetCombatCheer], None],
+    on_mission: Callable[[IntelPetMissionCheer], None] | None = None,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     read_existing: bool = False,
     stop_event: threading.Event | None = None,
@@ -833,13 +921,17 @@ def watch_game_logs(
 
     log(f"Watching EVE game logs in {log_dir}")
     if not read_existing:
-        log("Starting at the end of existing game logs. New kill-looking lines will be processed.")
+        log("Starting at the end of existing game logs. New kill-looking and mission-looking lines will be processed.")
 
     while not stop_event.is_set():
         discover_game_log_files(log_dir, states, read_existing=read_existing, log=log)
         for state in list(states.values()):
-            for cheer in read_new_combat_cheers(state):
+            combat_cheers, mission_cheers = read_new_game_log_cheers(state)
+            for cheer in combat_cheers:
                 on_kill(cheer)
+            if on_mission is not None:
+                for cheer in mission_cheers:
+                    on_mission(cheer)
         stop_event.wait(poll_seconds)
 
 
@@ -877,6 +969,46 @@ def read_new_combat_cheers(state: GameLogState) -> list[IntelPetCombatCheer]:
     return cheers
 
 
+def read_new_mission_cheers(state: GameLogState) -> list[IntelPetMissionCheer]:
+    cheers: list[IntelPetMissionCheer] = []
+    try:
+        with state.path.open("r", encoding=state.encoding, errors="replace") as handle:
+            handle.seek(state.offset)
+            while True:
+                line = handle.readline()
+                if not line:
+                    break
+                cheer = mission_cheer_from_game_log_line(line, log_path=str(state.path))
+                if cheer:
+                    cheers.append(cheer)
+            state.offset = handle.tell()
+    except OSError:
+        return []
+    return cheers
+
+
+def read_new_game_log_cheers(state: GameLogState) -> tuple[list[IntelPetCombatCheer], list[IntelPetMissionCheer]]:
+    combat_cheers: list[IntelPetCombatCheer] = []
+    mission_cheers: list[IntelPetMissionCheer] = []
+    try:
+        with state.path.open("r", encoding=state.encoding, errors="replace") as handle:
+            handle.seek(state.offset)
+            while True:
+                line = handle.readline()
+                if not line:
+                    break
+                combat_cheer = combat_cheer_from_game_log_line(line, log_path=str(state.path))
+                if combat_cheer:
+                    combat_cheers.append(combat_cheer)
+                mission_cheer = mission_cheer_from_game_log_line(line, log_path=str(state.path))
+                if mission_cheer:
+                    mission_cheers.append(mission_cheer)
+            state.offset = handle.tell()
+    except OSError:
+        return [], []
+    return combat_cheers, mission_cheers
+
+
 def run_console(args: argparse.Namespace, engine: IntelPetEngine) -> None:
     channel_filter = channel_filter_from_args(args)
     listener_filter = listener_filter_from_args(args, location_session=None)
@@ -906,7 +1038,9 @@ def run_overlay(
     import tkinter as tk
     from tkinter import ttk
 
-    alert_queue: queue.Queue[IntelPetAlert | IntelPetLocationCheer | IntelPetCombatCheer | str] = queue.Queue()
+    alert_queue: queue.Queue[
+        IntelPetAlert | IntelPetLocationCheer | IntelPetCombatCheer | IntelPetMissionCheer | str
+    ] = queue.Queue()
     stop_event = threading.Event()
     channel_filter = channel_filter_from_args(args)
     listener_filter = listener_filter_from_args(args, location_session=location_session)
@@ -933,6 +1067,9 @@ def run_overlay(
     def on_kill(cheer: IntelPetCombatCheer) -> None:
         alert_queue.put(cheer)
 
+    def on_mission(cheer: IntelPetMissionCheer) -> None:
+        alert_queue.put(cheer)
+
     def watcher() -> None:
         try:
             watch_chat_logs(
@@ -955,7 +1092,8 @@ def run_overlay(
         try:
             watch_game_logs(
                 log_dir=args.game_log_dir,
-                on_kill=on_kill,
+                on_kill=on_kill if not args.no_combat_cheer else lambda _cheer: None,
+                on_mission=on_mission if not args.no_mission_cheer else None,
                 poll_seconds=args.poll_seconds,
                 read_existing=args.read_existing,
                 stop_event=stop_event,
@@ -964,7 +1102,7 @@ def run_overlay(
         except Exception as exc:  # pragma: no cover - surfaced in the UI.
             alert_queue.put(f"Combat cheer stopped: {exc}")
 
-    if not args.no_combat_cheer:
+    if not args.no_combat_cheer or not args.no_mission_cheer:
         threading.Thread(target=combat_watcher, daemon=True).start()
 
     def location_watcher() -> None:
@@ -1815,10 +1953,21 @@ def run_overlay(
         start_behavior_cycle(behavior_for_kind("combat", settings))
         idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
 
+    def show_mission_cheer(cheer: IntelPetMissionCheer) -> None:
+        nonlocal idle_after_id
+        if idle_after_id is not None:
+            root.after_cancel(idle_after_id)
+        settings = engine.current_settings()
+        show_message_bubble(display_message_from_mission_cheer(cheer), severity="info")
+        remember_history(history_item_from_mission_cheer(cheer))
+        start_behavior_cycle(behavior_for_kind("mission", settings))
+        idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
+
     def poll_queue() -> None:
         chat_alerts: list[IntelPetAlert] = []
         location_cheers: list[IntelPetLocationCheer] = []
         combat_cheers: list[IntelPetCombatCheer] = []
+        mission_cheers: list[IntelPetMissionCheer] = []
         high_statuses: list[IntelPetHistoryItem] = []
         while True:
             try:
@@ -1831,6 +1980,8 @@ def run_overlay(
                 location_cheers.append(item)
             elif isinstance(item, IntelPetCombatCheer):
                 combat_cheers.append(item)
+            elif isinstance(item, IntelPetMissionCheer):
+                mission_cheers.append(item)
             elif isinstance(item, str):
                 status_item = history_item_from_status(item)
                 remember_history(status_item)
@@ -1842,6 +1993,8 @@ def run_overlay(
             show_location_cheer(cheer)
         for cheer in combat_cheers:
             show_combat_cheer(cheer)
+        for cheer in mission_cheers:
+            show_mission_cheer(cheer)
         for status_item in high_statuses:
             show_message_bubble(status_item.detail, severity=status_item.severity)
         root.after(250, poll_queue)
@@ -1922,6 +2075,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-message-text", action="store_true", help="Hide the matched message text in the overlay.")
     parser.add_argument("--alert-seconds", type=float, default=None, help="Seconds before the overlay returns to idle.")
     parser.add_argument("--no-combat-cheer", action="store_true", help="Do not watch local game logs for kill cheers.")
+    parser.add_argument("--no-mission-cheer", action="store_true", help="Do not watch local game logs for mission comments.")
     parser.add_argument(
         "--enable-location-cheer",
         action="store_true",

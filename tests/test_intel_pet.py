@@ -39,18 +39,24 @@ from eve_voice_pilot.intel_pet import (
     display_message_from_alerts,
     display_message_from_cheer,
     display_message_from_combat_cheer,
+    display_message_from_mission_cheer,
     fetch_pet_location,
     highest_severity_alert,
     history_item_from_alert,
     history_item_from_cheer,
     history_item_from_combat_cheer,
+    history_item_from_mission_cheer,
     history_item_from_status,
     is_kill_event_text,
     is_happy_system,
     listener_filter_from_args,
     load_sprite_frames,
+    mission_action_from_text,
+    mission_cheer_from_game_log_line,
     load_settings,
     read_new_combat_cheers,
+    read_new_game_log_cheers,
+    read_new_mission_cheers,
     replace_alert_behaviors,
     replace_alert_terms,
     replace_extra_keywords,
@@ -485,6 +491,84 @@ def test_read_new_combat_cheers_updates_game_log_offset(tmp_path):
     assert read_new_combat_cheers(state) == []
 
 
+def test_mission_cheer_parses_accepted_game_log_line():
+    line = "[ 2026.06.06 19:20:31 ] (notify) Mission accepted: Worlds Collide"
+
+    cheer = mission_cheer_from_game_log_line(line, log_path="game.txt")
+
+    assert cheer is not None
+    assert cheer.action == "accepted"
+    assert cheer.message == "Mission accepted: Worlds Collide"
+    assert cheer.comment in {
+        "Agent contract accepted. Engines warm, capsuleer.",
+        "Mission logged. The agent's clock is ticking.",
+        "Orders received. Let the void keep pace.",
+    }
+    assert cheer.observed_at == "2026-06-06T19:20:31Z"
+    assert cheer.log_path == "game.txt"
+
+
+def test_mission_cheer_parses_completed_game_log_line():
+    line = "[ 2026.06.06 20:10:01 ] (notify) Mission objectives complete"
+
+    cheer = mission_cheer_from_game_log_line(line)
+
+    assert cheer is not None
+    assert cheer.action == "completed"
+    assert cheer.comment in {
+        "Mission complete. The agent will want this report.",
+        "Objective secured. Another entry for the capsuleer ledger.",
+        "Contract fulfilled. The cluster owes you a quieter minute.",
+    }
+
+
+def test_mission_cheer_ignores_failed_or_incomplete_lines():
+    assert mission_action_from_text("Mission failed") == ""
+    assert mission_action_from_text("Mission is not complete") == ""
+    assert mission_cheer_from_game_log_line("[ 2026.06.06 20:10:01 ] (notify) Mission declined") is None
+
+
+def test_read_new_mission_cheers_updates_game_log_offset(tmp_path):
+    path = tmp_path / "GameLog_20260606_201001.txt"
+    path.write_text(
+        "\n".join(
+            (
+                "[ 2026.06.06 20:10:01 ] (notify) Mission accepted: Recon",
+                "[ 2026.06.06 20:12:01 ] (notify) Mission is not complete",
+                "[ 2026.06.06 20:20:01 ] (notify) Mission completed",
+            )
+        ),
+        encoding="utf-8",
+    )
+    state = GameLogState(path=path, encoding="utf-8", offset=0)
+
+    cheers = read_new_mission_cheers(state)
+
+    assert [cheer.action for cheer in cheers] == ["accepted", "completed"]
+    assert state.offset > 0
+    assert read_new_mission_cheers(state) == []
+
+
+def test_read_new_game_log_cheers_reads_combat_and_mission_once(tmp_path):
+    path = tmp_path / "GameLog_20260606_201001.txt"
+    path.write_text(
+        "\n".join(
+            (
+                "[ 2026.06.06 20:10:01 ] (notify) Mission accepted: Recon",
+                "[ 2026.06.06 20:15:01 ] (combat) Serpentis Spy has been destroyed",
+            )
+        ),
+        encoding="utf-8",
+    )
+    state = GameLogState(path=path, encoding="utf-8", offset=0)
+
+    combat_cheers, mission_cheers = read_new_game_log_cheers(state)
+
+    assert [cheer.message for cheer in combat_cheers] == ["Serpentis Spy has been destroyed"]
+    assert [cheer.action for cheer in mission_cheers] == ["accepted"]
+    assert read_new_game_log_cheers(state) == ([], [])
+
+
 def test_display_message_from_alert_includes_time_system_and_message_text():
     engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)), system_names=("Amarr",))
     alert = engine.analyze(make_message("gate camp on the Amarr undock", speaker="Scout Pilot"))
@@ -558,6 +642,19 @@ def test_history_item_from_combat_cheer_records_local_context():
     assert "Local game log" in item.meta
     assert item.severity == "high"
     assert item.recorded_at == "2026-06-06T10:45:01Z"
+
+
+def test_mission_cheer_display_and_history_use_lore_comment():
+    cheer = mission_cheer_from_game_log_line("[ 2026.06.06 20:10:01 ] (notify) Mission completed")
+
+    assert cheer is not None
+    item = history_item_from_mission_cheer(cheer)
+
+    assert display_message_from_mission_cheer(cheer) == cheer.comment
+    assert item.title == "Mission completed"
+    assert cheer.comment in item.detail
+    assert "Mission completed" in item.detail
+    assert item.severity == "info"
 
 
 def test_history_item_from_status_surfaces_watcher_failures():

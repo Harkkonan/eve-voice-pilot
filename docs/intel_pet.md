@@ -1,11 +1,11 @@
 # EVE Intel Pet
 
-EVE Intel Pet is a small local overlay that watches your own EVE chat and game logs. It shows an always-on-top alert when a new chat line matches something important, and the ship celebrates when a fresh game-log line looks like a kill.
+EVE Intel Pet is a small local overlay that watches your own EVE chat and game logs. It shows an always-on-top alert when a new chat line matches something important, and the ship celebrates when a fresh game-log line looks like a kill or mission milestone.
 
 It is intentionally personal and local-first:
 
 - It reads only the EVE chat and game log folders on your computer.
-- It starts at the end of existing files by default, so old chat and combat logs are not replayed.
+- It starts at the end of existing files by default, so old chat, combat, and mission log lines are not replayed.
 - It does not connect to Discord or the corp intel board.
 - It connects to ESI only if you deliberately start optional location cheer mode.
 - It does not control the EVE client, read memory, inspect packets, or automate gameplay.
@@ -53,7 +53,7 @@ The pet includes a small original pixel-art spaceship. It uses eight transparent
 src/eve_voice_pilot/static/intel-pet/
 ```
 
-The overlay swaps those frames with Tkinter only. Turrets and engines animate when an alert appears, the ship flies happily on configured system arrivals, and it flies around shooting when a local game-log kill is detected. The ship also runs a short idle cycle every five minutes.
+The overlay swaps those frames with Tkinter only. Turrets and engines animate when an alert appears, the ship flies happily on configured system arrivals and mission milestones, and it flies around shooting when a local game-log kill is detected. The ship also runs a short idle cycle every five minutes.
 
 Alert bubbles stay visible for 15 seconds by default. If a newer alert arrives before that timer ends, the bubble switches to the newer message and the 15-second timer starts again.
 
@@ -91,6 +91,24 @@ If your EVE game logs live somewhere unusual:
 
 ```powershell
 .\scripts\run_intel_pet.ps1 --game-log-dir "C:\Path\To\EVE\logs\Gamelogs"
+```
+
+## Local Mission Comments
+
+The pet also watches the same local EVE `Gamelogs` folder for new mission-looking lines such as `Mission accepted`, `Mission completed`, or `Mission objectives complete`. When it sees one, the bubble shows a short lore-flavored comment and the History tab keeps the cleaned game-log line that triggered it.
+
+Mission comments are local only:
+
+- they do not use ESI;
+- they do not require any new ESI scope;
+- they do not inspect the EVE client, packets, memory, or cache files;
+- they start at the end of existing game logs by default;
+- they only react to new lines written while the pet is running.
+
+To disable mission comments:
+
+```powershell
+.\scripts\run_intel_pet.ps1 --no-mission-cheer
 ```
 
 ## Optional ESI Location Cheer
@@ -167,7 +185,8 @@ In the `Behaviors` tab, choose the ship animation for each alert type:
 - hostile intel;
 - keyword match;
 - system arrival;
-- kill cheer.
+- kill cheer;
+- mission milestone.
 
 Each row has a small animated preview next to the selector. Behavior changes are saved immediately to the same local settings file.
 
@@ -206,7 +225,8 @@ Example:
     "hostile": "alert",
     "keyword": "alert",
     "location": "happy",
-    "combat": "combat"
+    "combat": "combat",
+    "mission": "happy"
   }
 }
 ```
