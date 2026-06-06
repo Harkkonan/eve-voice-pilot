@@ -63,10 +63,16 @@ BEHAVIOR_HAPPY = "happy"
 BEHAVIOR_COMBAT = "combat"
 BEHAVIOR_IDLE = "idle"
 BEHAVIOR_NONE = "none"
+BEHAVIOR_LONG_MOVE = "long_move"
+BEHAVIOR_LONG_COMBAT = "long_combat"
+BEHAVIOR_LONG_COMBO = "long_combo"
 BEHAVIOR_OPTIONS = (
     (BEHAVIOR_ALERT, "Alert pulse", "quick turret and engine pulse"),
     (BEHAVIOR_HAPPY, "Happy flight", "small cheerful loop"),
     (BEHAVIOR_COMBAT, "Combat burst", "fast flight with laser shots"),
+    (BEHAVIOR_LONG_MOVE, "Long flight", "extended movement loop"),
+    (BEHAVIOR_LONG_COMBAT, "Long shooting", "extended laser volley"),
+    (BEHAVIOR_LONG_COMBO, "Long combo", "extended flight and shooting"),
     (BEHAVIOR_IDLE, "Calm wiggle", "quiet idle flutter"),
     (BEHAVIOR_NONE, "No animation", "message only"),
 )
@@ -104,6 +110,26 @@ HAPPY_SPRITE_STEPS = (
     (7, -10, 8),
     (0, 0, 0),
 )
+LONG_MOVE_SPRITE_STEPS = (
+    (0, 0, 0),
+    (1, 12, -12),
+    (2, 26, -16),
+    (3, 34, -4),
+    (4, 28, 12),
+    (5, 12, 18),
+    (6, -8, 14),
+    (7, -24, 4),
+    (0, -30, -10),
+    (1, -16, -18),
+    (2, 4, -12),
+    (3, 22, 0),
+    (4, 34, 12),
+    (5, 16, 18),
+    (6, -4, 12),
+    (7, -22, -2),
+    (0, -10, -12),
+    (1, 0, 0),
+)
 KILL_SPRITE_STEPS = (
     (0, 0, 0, 148, 44),
     (7, 18, -12, 156, 28),
@@ -114,6 +140,45 @@ KILL_SPRITE_STEPS = (
     (2, -8, -18, 150, 26),
     (1, 18, -4, 158, 54),
     (0, 0, 0, 148, 64),
+)
+LONG_COMBAT_SPRITE_STEPS = (
+    (0, 0, 0, 152, 28),
+    (7, 6, -4, 158, 42),
+    (6, 10, 0, 154, 58),
+    (5, 8, 4, 158, 74),
+    (4, 2, 8, 150, 92),
+    (3, -4, 4, 144, 36),
+    (2, -8, -2, 156, 52),
+    (1, -4, -8, 148, 76),
+    (0, 4, -10, 158, 24),
+    (7, 12, -4, 154, 64),
+    (6, 8, 6, 150, 96),
+    (5, -2, 10, 156, 44),
+    (4, -10, 4, 148, 60),
+    (3, -12, -6, 158, 80),
+    (2, -4, -12, 144, 32),
+    (1, 8, -6, 156, 70),
+    (0, 0, 0, 148, 64),
+)
+LONG_COMBO_SPRITE_STEPS = (
+    (0, 0, 0, 148, 36),
+    (1, 14, -12, 156, 24),
+    (2, 28, -16, 158, 48),
+    (3, 36, -4, 154, 72),
+    (4, 28, 12, 150, 96),
+    (5, 10, 18, 156, 58),
+    (6, -10, 14, 146, 38),
+    (7, -26, 2, 158, 82),
+    (0, -32, -12, 148, 100),
+    (1, -18, -20, 154, 26),
+    (2, 4, -14, 158, 54),
+    (3, 24, -2, 150, 86),
+    (4, 34, 12, 156, 42),
+    (5, 18, 20, 146, 70),
+    (6, -4, 14, 158, 96),
+    (7, -24, 0, 150, 34),
+    (0, -10, -12, 156, 62),
+    (1, 0, 0, 148, 64),
 )
 GAME_LOG_LINE_RE = re.compile(
     r"^\s*\[\s*(?P<timestamp>\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}:\d{2})\s*\]\s*(?P<body>.*)$"
@@ -1592,6 +1657,39 @@ def run_overlay(
                 offsets = ((0, 0), (10, -6), (16, 2), (8, 8), (-8, -5), (0, 0))
                 offset_x, offset_y = offsets[step % len(offsets)]
                 accent = "#f97316"
+            elif behavior == BEHAVIOR_LONG_MOVE:
+                offsets = (
+                    (0, 0),
+                    (10, -8),
+                    (18, -10),
+                    (22, 0),
+                    (16, 8),
+                    (2, 10),
+                    (-14, 4),
+                    (-22, -6),
+                    (-8, -10),
+                    (0, 0),
+                )
+                offset_x, offset_y = offsets[step % len(offsets)]
+                accent = "#22d3ee"
+            elif behavior == BEHAVIOR_LONG_COMBAT:
+                offsets = ((0, 0), (6, -3), (8, 2), (4, 5), (-3, 4), (-6, -2), (0, -5), (0, 0))
+                offset_x, offset_y = offsets[step % len(offsets)]
+                accent = "#fb923c"
+            elif behavior == BEHAVIOR_LONG_COMBO:
+                offsets = (
+                    (0, 0),
+                    (12, -8),
+                    (22, -6),
+                    (20, 8),
+                    (4, 12),
+                    (-14, 6),
+                    (-24, -6),
+                    (-10, -12),
+                    (0, 0),
+                )
+                offset_x, offset_y = offsets[step % len(offsets)]
+                accent = "#facc15"
             elif behavior == BEHAVIOR_IDLE:
                 offsets = ((0, 0), (2, -2), (0, 0), (-2, 2))
                 offset_x, offset_y = offsets[step % len(offsets)]
@@ -1638,6 +1736,21 @@ def run_overlay(
             elif behavior == BEHAVIOR_COMBAT:
                 canvas.create_line(x + 16, y - 3, 92, 10 + (step % 3) * 10, fill="#fbbf24", width=2, tags=("preview",))
                 canvas.create_line(x + 14, y + 5, 88, 22 + (step % 2) * 12, fill="#ef4444", width=1, tags=("preview",))
+            elif behavior == BEHAVIOR_LONG_COMBAT:
+                for index in range(3):
+                    canvas.create_line(
+                        x + 12,
+                        y - 4 + index * 4,
+                        88,
+                        8 + ((step + index) % 5) * 8,
+                        fill=("#fbbf24" if index % 2 == 0 else "#ef4444"),
+                        width=2 if index == 0 else 1,
+                        tags=("preview",),
+                    )
+            elif behavior == BEHAVIOR_LONG_COMBO:
+                canvas.create_line(x + 16, y - 5, 92, 8 + (step % 4) * 10, fill="#fde68a", width=2, tags=("preview",))
+                canvas.create_line(x + 12, y + 5, 88, 38 - (step % 3) * 8, fill="#ef4444", width=1, tags=("preview",))
+                canvas.create_oval(8 + (step % 7) * 10, 44, 10 + (step % 7) * 10, 46, fill="#facc15", outline="", tags=("preview",))
 
         for kind, title, description in ALERT_BEHAVIOR_KINDS:
             row = ttk.Frame(behavior_frame)
@@ -1809,6 +1922,7 @@ def run_overlay(
         sequence: tuple[tuple[int, int, int, int, int], ...],
         *,
         reschedule_idle: bool = True,
+        frame_ms: int = 90,
     ) -> None:
         nonlocal sprite_after_id
         if not sprite_frames:
@@ -1834,7 +1948,7 @@ def run_overlay(
             draw_shots(offset_x, offset_y, target_x, target_y)
             next_position = position + 1
             if next_position < len(sequence):
-                sprite_after_id = root.after(90, lambda: advance(next_position))
+                sprite_after_id = root.after(frame_ms, lambda: advance(next_position))
             else:
                 sprite_after_id = None
                 clear_combat_shots()
@@ -1854,6 +1968,12 @@ def run_overlay(
             start_sprite_motion_cycle(HAPPY_SPRITE_STEPS)
         elif behavior == BEHAVIOR_COMBAT:
             start_combat_sprite_cycle(KILL_SPRITE_STEPS)
+        elif behavior == BEHAVIOR_LONG_MOVE:
+            start_sprite_motion_cycle(LONG_MOVE_SPRITE_STEPS)
+        elif behavior == BEHAVIOR_LONG_COMBAT:
+            start_combat_sprite_cycle(LONG_COMBAT_SPRITE_STEPS, frame_ms=140)
+        elif behavior == BEHAVIOR_LONG_COMBO:
+            start_combat_sprite_cycle(LONG_COMBO_SPRITE_STEPS, frame_ms=140)
         elif behavior == BEHAVIOR_IDLE:
             start_sprite_cycle(IDLE_SPRITE_SEQUENCE)
         elif behavior == BEHAVIOR_NONE:

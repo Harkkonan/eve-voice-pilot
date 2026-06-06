@@ -13,11 +13,17 @@ from eve_voice_pilot.intel_pet import (
     BEHAVIOR_COMBAT,
     BEHAVIOR_HAPPY,
     BEHAVIOR_IDLE,
+    BEHAVIOR_LONG_COMBAT,
+    BEHAVIOR_LONG_COMBO,
+    BEHAVIOR_LONG_MOVE,
     BEHAVIOR_NONE,
     DEFAULT_ALERT_SECONDS,
     DEFAULT_ALERT_BEHAVIORS,
     IDLE_SPRITE_SEQUENCE,
     KILL_SPRITE_STEPS,
+    LONG_COMBAT_SPRITE_STEPS,
+    LONG_COMBO_SPRITE_STEPS,
+    LONG_MOVE_SPRITE_STEPS,
     LOCATION_SCOPE,
     SHIP_FRAME_COUNT,
     GameLogState,
@@ -148,6 +154,7 @@ def test_load_settings_merges_local_file_and_cli_overrides(tmp_path):
     "hostile": "none",
     "keyword": "idle",
     "location": "alert",
+    "mission": "long_combo",
     "combat": "not-a-real-behavior"
   }
 }
@@ -174,6 +181,7 @@ def test_load_settings_merges_local_file_and_cli_overrides(tmp_path):
     assert settings.alert_behaviors["hostile"] == BEHAVIOR_NONE
     assert settings.alert_behaviors["keyword"] == BEHAVIOR_IDLE
     assert settings.alert_behaviors["location"] == BEHAVIOR_ALERT
+    assert settings.alert_behaviors["mission"] == BEHAVIOR_LONG_COMBO
     assert settings.alert_behaviors["combat"] == DEFAULT_ALERT_BEHAVIORS["combat"]
 
 
@@ -227,6 +235,7 @@ def test_replace_alert_behaviors_cleans_unknown_values():
             "mention": BEHAVIOR_HAPPY,
             "help": "not-real",
             "combat": BEHAVIOR_NONE,
+            "mission": BEHAVIOR_LONG_MOVE,
             "unknown": BEHAVIOR_COMBAT,
         },
     )
@@ -234,11 +243,15 @@ def test_replace_alert_behaviors_cleans_unknown_values():
     assert settings.alert_behaviors["mention"] == BEHAVIOR_HAPPY
     assert settings.alert_behaviors["help"] == DEFAULT_ALERT_BEHAVIORS["help"]
     assert settings.alert_behaviors["combat"] == BEHAVIOR_NONE
+    assert settings.alert_behaviors["mission"] == BEHAVIOR_LONG_MOVE
     assert "unknown" not in settings.alert_behaviors
 
 
 def test_behavior_labels_round_trip_for_options_ui():
     assert behavior_key_from_label(behavior_label(BEHAVIOR_COMBAT)) == BEHAVIOR_COMBAT
+    assert behavior_key_from_label(behavior_label(BEHAVIOR_LONG_MOVE)) == BEHAVIOR_LONG_MOVE
+    assert behavior_key_from_label(behavior_label(BEHAVIOR_LONG_COMBAT)) == BEHAVIOR_LONG_COMBAT
+    assert behavior_key_from_label(behavior_label(BEHAVIOR_LONG_COMBO)) == BEHAVIOR_LONG_COMBO
     assert behavior_key_from_label("not a label") == BEHAVIOR_ALERT
 
 
@@ -772,9 +785,15 @@ def test_sprite_sequences_only_reference_existing_frames():
     assert set(IDLE_SPRITE_SEQUENCE) <= valid_indexes
     assert set(ALERT_SPRITE_SEQUENCE) <= valid_indexes
     assert {step[0] for step in KILL_SPRITE_STEPS} <= valid_indexes
+    assert {step[0] for step in LONG_MOVE_SPRITE_STEPS} <= valid_indexes
+    assert {step[0] for step in LONG_COMBAT_SPRITE_STEPS} <= valid_indexes
+    assert {step[0] for step in LONG_COMBO_SPRITE_STEPS} <= valid_indexes
     assert IDLE_SPRITE_SEQUENCE[-1] == 0
     assert ALERT_SPRITE_SEQUENCE[-1] == 0
     assert KILL_SPRITE_STEPS[-1][0] == 0
+    assert LONG_MOVE_SPRITE_STEPS[-1][0] == 1
+    assert LONG_COMBAT_SPRITE_STEPS[-1][0] == 0
+    assert LONG_COMBO_SPRITE_STEPS[-1][0] == 1
 
 
 def test_load_sprite_frames_returns_empty_when_any_frame_is_missing(tmp_path):

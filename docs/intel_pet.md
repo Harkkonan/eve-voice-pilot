@@ -188,7 +188,7 @@ In the `Behaviors` tab, choose the ship animation for each alert type:
 - kill cheer;
 - mission milestone.
 
-Each row has a small animated preview next to the selector. Behavior changes are saved immediately to the same local settings file.
+Each row has a small animated preview next to the selector. The behavior choices include short alert, happy flight, combat burst, long flight, long shooting, long combo, calm wiggle, and no animation. Behavior changes are saved immediately to the same local settings file.
 
 ## Alert History
 
@@ -226,7 +226,7 @@ Example:
     "keyword": "alert",
     "location": "happy",
     "combat": "combat",
-    "mission": "happy"
+    "mission": "long_move"
   }
 }
 ```
