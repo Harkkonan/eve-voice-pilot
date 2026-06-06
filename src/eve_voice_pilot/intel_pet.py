@@ -179,6 +179,7 @@ class IntelPetAlert:
     channel: str
     speaker: str
     message: str
+    systems: tuple[str, ...]
     observed_at: str
     reported_at: str
     categories: tuple[str, ...]
@@ -257,6 +258,7 @@ class IntelPetEngine:
             settings.pilot_names,
         )
 
+        systems = event.systems if event else parser.system_matcher.find(message.text)
         categories = set(event.categories if event else ())
         keywords = list(event.keywords if event else ())
         severity = event.severity if event else "info"
@@ -277,6 +279,7 @@ class IntelPetEngine:
             channel=message.channel,
             speaker=message.speaker,
             message=message.text if settings.show_message_text else "",
+            systems=systems,
             observed_at=message.observed_at,
             reported_at=now_iso(),
             categories=tuple(sorted(categories)),
@@ -471,15 +474,30 @@ def safe_float(value: Any, fallback: float) -> float:
         return fallback
 
 
+def alert_time_label(alert: IntelPetAlert) -> str:
+    observed_at = str(alert.observed_at or "")
+    if "T" in observed_at:
+        return observed_at.split("T", 1)[1].replace("+00:00", "Z")
+    return observed_at or "unknown time"
+
+
+def alert_system_label(alert: IntelPetAlert) -> str:
+    return ", ".join(alert.systems) if alert.systems else "No system"
+
+
+def alert_context_label(alert: IntelPetAlert) -> str:
+    return f"{alert_time_label(alert)} | {alert_system_label(alert)}"
+
+
 def format_alert(alert: IntelPetAlert) -> str:
     message = f" | {alert.message}" if alert.message else ""
     keywords = f" | {', '.join(alert.keywords)}" if alert.keywords else ""
-    return f"[{alert.severity.upper()}] {alert.title} | {alert.speaker}{message}{keywords}"
+    return f"[{alert.severity.upper()}] {alert.title} | {alert_context_label(alert)} | {alert.speaker}{message}{keywords}"
 
 
 def history_item_from_alert(alert: IntelPetAlert) -> IntelPetHistoryItem:
     message = alert.message or "Message text hidden by settings."
-    meta = f"{alert.channel} | {', '.join(alert.keywords) or 'matched chat'}"
+    meta = f"{alert.channel} | {alert_context_label(alert)} | {', '.join(alert.keywords) or 'matched chat'}"
     return IntelPetHistoryItem(
         title=alert.title,
         detail=f"{alert.speaker}: {message}",
@@ -505,7 +523,36 @@ def trim_history(items: Iterable[IntelPetHistoryItem], limit: int = DEFAULT_HIST
 
 
 def display_message_from_alert(alert: IntelPetAlert) -> str:
-    return alert.message or "Message text hidden by settings."
+    message = alert.message or "Message text hidden by settings."
+    return f"{alert_context_label(alert)}\n{message}"
+
+
+def display_message_from_alerts(alerts: Iterable[IntelPetAlert]) -> str:
+    clean_alerts = tuple(alerts)
+    if not clean_alerts:
+        return ""
+    if len(clean_alerts) == 1:
+        return display_message_from_alert(clean_alerts[0])
+    lines = []
+    for alert in clean_alerts:
+        message = alert.message or "Message text hidden by settings."
+        lines.append(f"{alert_context_label(alert)} | {message}")
+    return "\n".join(lines)
+
+
+def highest_severity_alert(alerts: Iterable[IntelPetAlert]) -> IntelPetAlert | None:
+    highest: IntelPetAlert | None = None
+    for alert in alerts:
+        if highest is None or higher_severity(highest.severity, alert.severity) == alert.severity:
+            highest = alert
+    return highest
+
+
+def alert_with_local_system_fallback(alert: IntelPetAlert, system_name: str) -> IntelPetAlert:
+    clean_system_name = system_name.strip()
+    if alert.systems or not clean_system_name or alert.channel.casefold() != "local":
+        return alert
+    return replace(alert, systems=(clean_system_name,))
 
 
 def display_message_from_cheer(cheer: IntelPetLocationCheer) -> str:
@@ -866,11 +913,22 @@ def run_overlay(
     settings_path = args.settings_path.expanduser()
     happy_systems = clean_user_terms(args.happy_system or DEFAULT_HAPPY_SYSTEMS)
     location_poll_seconds = max(5.0, safe_float(args.location_poll_seconds, DEFAULT_LOCATION_POLL_SECONDS))
+    current_system_lock = threading.Lock()
+    current_system_name = ""
+
+    def current_local_system() -> str:
+        with current_system_lock:
+            return current_system_name
+
+    def set_current_local_system(system_name: str) -> None:
+        nonlocal current_system_name
+        with current_system_lock:
+            current_system_name = system_name
 
     def on_message(message: ChatMessage) -> None:
         alert = engine.analyze(message)
         if alert:
-            alert_queue.put(alert)
+            alert_queue.put(alert_with_local_system_fallback(alert, current_local_system()))
 
     def on_kill(cheer: IntelPetCombatCheer) -> None:
         alert_queue.put(cheer)
@@ -921,6 +979,7 @@ def run_overlay(
             except Exception as exc:  # pragma: no cover - surfaced in the UI.
                 alert_queue.put(f"Location cheer stopped: {exc}")
                 return
+            set_current_local_system(location.solar_system_name)
             if location.solar_system_name != last_system_name:
                 alert_queue.put(f"ESI location: {location.solar_system_name}")
                 last_system_name = location.solar_system_name
@@ -1719,13 +1778,21 @@ def run_overlay(
         hide_message_bubble()
 
     def show_alert(alert: IntelPetAlert) -> None:
+        show_alert_batch((alert,))
+
+    def show_alert_batch(alerts: Iterable[IntelPetAlert]) -> None:
         nonlocal idle_after_id
+        clean_alerts = tuple(alerts)
+        if not clean_alerts:
+            return
         if idle_after_id is not None:
             root.after_cancel(idle_after_id)
         settings = engine.current_settings()
-        show_message_bubble(display_message_from_alert(alert), severity=alert.severity)
-        remember_history(history_item_from_alert(alert))
-        start_behavior_cycle(behavior_for_alert(alert, settings))
+        display_alert = highest_severity_alert(clean_alerts) or clean_alerts[-1]
+        show_message_bubble(display_message_from_alerts(clean_alerts), severity=display_alert.severity)
+        for alert in clean_alerts:
+            remember_history(history_item_from_alert(alert))
+        start_behavior_cycle(behavior_for_alert(display_alert, settings))
         idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
 
     def show_location_cheer(cheer: IntelPetLocationCheer) -> None:
@@ -1749,22 +1816,34 @@ def run_overlay(
         idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
 
     def poll_queue() -> None:
+        chat_alerts: list[IntelPetAlert] = []
+        location_cheers: list[IntelPetLocationCheer] = []
+        combat_cheers: list[IntelPetCombatCheer] = []
+        high_statuses: list[IntelPetHistoryItem] = []
         while True:
             try:
                 item = alert_queue.get_nowait()
             except queue.Empty:
                 break
             if isinstance(item, IntelPetAlert):
-                show_alert(item)
+                chat_alerts.append(item)
             elif isinstance(item, IntelPetLocationCheer):
-                show_location_cheer(item)
+                location_cheers.append(item)
             elif isinstance(item, IntelPetCombatCheer):
-                show_combat_cheer(item)
+                combat_cheers.append(item)
             elif isinstance(item, str):
                 status_item = history_item_from_status(item)
                 remember_history(status_item)
                 if status_item.severity == "high":
-                    show_message_bubble(status_item.detail, severity=status_item.severity)
+                    high_statuses.append(status_item)
+        if chat_alerts:
+            show_alert_batch(chat_alerts)
+        for cheer in location_cheers:
+            show_location_cheer(cheer)
+        for cheer in combat_cheers:
+            show_combat_cheer(cheer)
+        for status_item in high_statuses:
+            show_message_bubble(status_item.detail, severity=status_item.severity)
         root.after(250, poll_queue)
 
     def on_close() -> None:

@@ -27,6 +27,7 @@ from eve_voice_pilot.intel_pet import (
     IntelPetEngine,
     IntelPetSettings,
     alert_behavior_key,
+    alert_with_local_system_fallback,
     behavior_for_alert,
     behavior_for_kind,
     behavior_key_from_label,
@@ -35,9 +36,11 @@ from eve_voice_pilot.intel_pet import (
     clean_user_terms,
     combat_cheer_from_game_log_line,
     display_message_from_alert,
+    display_message_from_alerts,
     display_message_from_cheer,
     display_message_from_combat_cheer,
     fetch_pet_location,
+    highest_severity_alert,
     history_item_from_alert,
     history_item_from_cheer,
     history_item_from_combat_cheer,
@@ -311,6 +314,25 @@ def test_alert_behavior_key_routes_chat_alert_types():
     assert behavior_for_alert(keyword, settings) == BEHAVIOR_NONE
 
 
+def test_alert_keeps_timestamp_and_detected_system_context():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)), system_names=("Tama", "Amarr"))
+
+    alert = engine.analyze(make_message("gate camp on Tama", speaker="Scout Pilot"))
+
+    assert alert is not None
+    assert alert.observed_at == "2026-06-05T18:15:00Z"
+    assert alert.systems == ("Tama",)
+
+
+def test_mention_alert_detects_system_even_without_other_intel_terms():
+    engine = IntelPetEngine(IntelPetSettings(pilot_names=("Dandin",)), system_names=("Tama",))
+
+    alert = engine.analyze(make_message("Dandin can you check Tama?", speaker="Scout Pilot"))
+
+    assert alert is not None
+    assert alert.systems == ("Tama",)
+
+
 def test_fetch_pet_location_uses_read_only_esi_scope(monkeypatch):
     calls = []
 
@@ -398,7 +420,7 @@ def test_listener_filter_explicit_names_work_without_sso():
 
 
 def test_history_item_from_alert_keeps_message_context():
-    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)))
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)), system_names=("Amarr",))
     alert = engine.analyze(make_message("gate camp on the Amarr undock", speaker="Scout Pilot"))
 
     assert alert is not None
@@ -406,6 +428,7 @@ def test_history_item_from_alert_keeps_message_context():
 
     assert item.title == alert.title
     assert item.detail == "Scout Pilot: gate camp on the Amarr undock"
+    assert "18:15:00Z | Amarr" in item.meta
     assert "keyword: gate camp" in item.meta
     assert item.severity == alert.severity
 
@@ -462,12 +485,47 @@ def test_read_new_combat_cheers_updates_game_log_offset(tmp_path):
     assert read_new_combat_cheers(state) == []
 
 
-def test_display_message_from_alert_is_message_only():
-    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)))
+def test_display_message_from_alert_includes_time_system_and_message_text():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)), system_names=("Amarr",))
     alert = engine.analyze(make_message("gate camp on the Amarr undock", speaker="Scout Pilot"))
 
     assert alert is not None
-    assert display_message_from_alert(alert) == "gate camp on the Amarr undock"
+    assert display_message_from_alert(alert) == "18:15:00Z | Amarr\ngate camp on the Amarr undock"
+
+
+def test_display_message_from_alert_uses_no_system_fallback():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)), system_names=("Tama",))
+    alert = engine.analyze(make_message("gate camp on the undock", speaker="Scout Pilot"))
+
+    assert alert is not None
+    assert display_message_from_alert(alert) == "18:15:00Z | No system\ngate camp on the undock"
+
+
+def test_display_message_from_alerts_keeps_multiple_alert_texts():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp", "buy order")), system_names=("Tama", "Amarr"))
+    first = engine.analyze(make_message("gate camp on Tama", speaker="Scout Pilot"))
+    second = engine.analyze(make_message("buy order in Amarr", speaker="Trader Pilot"))
+
+    assert first is not None
+    assert second is not None
+    assert display_message_from_alerts((first, second)) == "\n".join(
+        (
+            "18:15:00Z | Tama | gate camp on Tama",
+            "18:15:00Z | Amarr | buy order in Amarr",
+        )
+    )
+    assert highest_severity_alert((second, first)) is first
+
+
+def test_local_alert_can_use_current_esi_system_as_fallback():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)), system_names=("Tama",))
+    local_alert = engine.analyze(make_message("gate camp on the undock", channel="Local", speaker="Scout Pilot"))
+    corp_alert = engine.analyze(make_message("gate camp on the undock", channel="Corp", speaker="Scout Pilot"))
+
+    assert local_alert is not None
+    assert alert_with_local_system_fallback(local_alert, "Amarr").systems == ("Amarr",)
+    assert corp_alert is not None
+    assert alert_with_local_system_fallback(corp_alert, "Amarr") is corp_alert
 
 
 def test_display_message_from_cheer_is_short_arrival_text():
