@@ -286,11 +286,16 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
     assert "id=\"acquisition-form\"" in page
     assert "id=\"acq-budget\"" in page
+    assert (
+        "id=\"acq-budget\" name=\"budget_isk\" type=\"number\" min=\"1\" max=\"10000000000\" "
+        "step=\"1\" inputmode=\"decimal\" value=\"50000000\""
+    ) in page
     assert "id=\"acq-broker-fee\"" in page
     assert "id=\"acq-results\" class=\"decision-output\"" in page
     assert "Market Acquisition Planner" in page
     assert "Possible trap" in page
     assert "Market history can reveal" in page
+    assert "readJsonApiResponse" in page
     assert "writeAcquisitionSettings" in page
     assert "renderAcquisitionOpportunities" in page
     assert "data-tab-target=\"trade-pnl\"" in page
@@ -914,6 +919,12 @@ def test_haul_detour_margin_clamps_to_slider_range():
     assert corp_market.clamp_haul_min_detour_margin_percent("999") == 500.0
 
 
+def test_acquisition_budget_clamps_to_approved_range():
+    assert corp_market.clamp_acquisition_budget_isk("bad") == pytest.approx(50_000_000.0)
+    assert corp_market.clamp_acquisition_budget_isk("0") == pytest.approx(1.0)
+    assert corp_market.clamp_acquisition_budget_isk("10000000001") == pytest.approx(10_000_000_000.0)
+
+
 def test_haul_route_preference_normalizes_eve_route_terms():
     assert corp_market.normalize_haul_route_preference("Prefer safer") == "safer"
     assert corp_market.normalize_haul_route_preference("secure") == "safer"
@@ -924,6 +935,39 @@ def test_haul_route_preference_normalizes_eve_route_terms():
 
 def test_haul_market_group_ids_parse_and_dedupe():
     assert corp_market.clean_haul_market_group_ids(["4,11", "4", "bad", " 19 "]) == (4, 11, 19)
+
+
+def test_market_group_picker_renders_sde_counts_items_and_show_more(tmp_path):
+    static_data = corp_market.StaticMarketData(
+        path=tmp_path / "sde.zip",
+        groups={
+            19: {"market_group_id": 19, "name": "Trade Goods", "parent_group_id": None},
+            100: {"market_group_id": 100, "name": "Industrial Goods", "parent_group_id": 19},
+            101: {"market_group_id": 101, "name": "Prototype Parts", "parent_group_id": 100},
+        },
+        children={19: (100,), 100: (101,)},
+        types_by_group={
+            100: (
+                {"type_id": 1, "name": "Broken Broadcast Node", "market_group_id": 100},
+                {"type_id": 2, "name": "Broken Nano-Factory", "market_group_id": 100},
+            ),
+            101: (
+                {"type_id": 3, "name": "Orbital Data Fragment", "market_group_id": 101},
+            ),
+        },
+    )
+
+    html_options = corp_market.render_market_group_picker_options(static_data, item_preview_limit=2)
+
+    assert "Trade Goods" in html_options
+    assert "Industrial Goods" in html_options
+    assert "3 items" in html_options
+    assert "Includes 1 nested market group." in html_options
+    assert "Broken Broadcast Node" in html_options
+    assert "Orbital Data Fragment" in html_options
+    assert "data-market-extra-item" in html_options
+    assert "Show 1 more item" in html_options
+    assert "data-haul-market-group=\"100\"" in html_options
 
 
 def test_haul_item_targets_combine_common_materials_and_market_groups(monkeypatch, tmp_path):

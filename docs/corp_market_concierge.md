@@ -216,6 +216,8 @@ It recommends:
 - a narrow or wider buy-order range;
 - visible history warnings.
 
+The item scope picker is shared with `Hauler Routes`. When the local SDE market data is available, each top-level market category and subcategory is labeled from that cache, shows the published item count, and includes collapsed item-name previews with a show-more control. The planner defaults to a 50,000,000 ISK budget and accepts manual budgets from 1 ISK through 10,000,000,000 ISK.
+
 History warnings are intentionally plain-language. A `Possible trap` signal means the top-of-book spread is not supported by recent market history, the competing buy side is already above the safe ceiling, or another market-history/current-order mismatch needs manual checking. It is not proof of bad intent by another player. Treat it as a reason to verify the item in EVE before posting a buy order.
 
 This tab does not place, update, or cancel market orders. The pilot still creates every buy order manually in EVE.

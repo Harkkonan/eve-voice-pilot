@@ -91,13 +91,14 @@ MAX_HAUL_CARGO_M3 = 10_000_000.0
 DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT = 10.0
 MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT = 500.0
 DEFAULT_ACQUISITION_BUDGET_ISK = 50_000_000.0
-MAX_ACQUISITION_BUDGET_ISK = 1_000_000_000_000.0
+MAX_ACQUISITION_BUDGET_ISK = 10_000_000_000.0
 DEFAULT_ACQUISITION_PICKUP_JUMPS = 2
 MAX_ACQUISITION_PICKUP_JUMPS = 10
 DEFAULT_ACQUISITION_BROKER_FEE_PERCENT = 3.0
 MAX_ACQUISITION_BROKER_FEE_PERCENT = 20.0
 DEFAULT_ACQUISITION_TARGET_DAYS = 3
 MAX_ACQUISITION_TARGET_DAYS = 30
+MARKET_GROUP_ITEM_PREVIEW_LIMIT = 8
 DEFAULT_HAUL_ROUTE_PREFERENCE = "safer"
 HAUL_ROUTE_PREFERENCES = {"shorter", "safer", "less_secure"}
 HAUL_ROUTE_ESI_PREFERENCES = {"shorter": "Shorter", "safer": "Safer", "less_secure": "LessSecure"}
@@ -8621,16 +8622,189 @@ def render_reprocessing_ore_options() -> str:
     return "\n".join(options)
 
 
-def _render_flight_attendant_dashboard() -> str:
-    category_options = "\n".join(
-        f'                    <option value="{html.escape(key)}">{html.escape(label)}</option>'
-        for key, label in LISTING_CATEGORIES.items()
+def format_market_group_item_count(count: int) -> str:
+    return f"{count:,} item" if count == 1 else f"{count:,} items"
+
+
+def format_market_group_more_count(count: int) -> str:
+    return f"{count:,} more item" if count == 1 else f"{count:,} more items"
+
+
+def market_group_display_name(static_data: StaticMarketData, group_id: int, fallback: str | None = None) -> str:
+    return str(static_data.groups.get(group_id, {}).get("name") or fallback or f"Market Group {group_id}")
+
+
+def market_group_item_infos(
+    static_data: StaticMarketData,
+    group_ids: Iterable[int],
+    *,
+    include_descendants: bool = True,
+) -> tuple[dict[str, Any], ...]:
+    clean_group_ids = clean_haul_market_group_ids(group_ids)
+    if not clean_group_ids:
+        return ()
+    selected_group_ids = (
+        market_group_descendant_ids(static_data, clean_group_ids) if include_descendants else set(clean_group_ids)
     )
-    haul_market_group_options = "\n".join(
+    items_by_type_id: dict[int, dict[str, Any]] = {}
+    for group_id in sorted(selected_group_ids):
+        group_name = market_group_display_name(static_data, group_id)
+        for type_info in static_data.types_by_group.get(group_id, ()):
+            try:
+                type_id = int(type_info.get("type_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if type_id <= 0 or type_id in items_by_type_id:
+                continue
+            items_by_type_id[type_id] = {
+                "type_id": type_id,
+                "name": str(type_info.get("name") or f"Type {type_id}"),
+                "market_group_id": group_id,
+                "market_group_name": group_name,
+            }
+    return tuple(sorted(items_by_type_id.values(), key=lambda item: (str(item["name"]).casefold(), int(item["type_id"]))))
+
+
+def render_market_group_item_list(
+    items: Iterable[dict[str, Any]],
+    *,
+    context_name: str,
+    item_preview_limit: int = MARKET_GROUP_ITEM_PREVIEW_LIMIT,
+) -> str:
+    item_list = tuple(items)
+    if not item_list:
+        return '<div class="market-subgroup-empty">No published market items found in this category.</div>'
+    preview_limit = max(1, int(item_preview_limit))
+    total_count = len(item_list)
+    visible_count = min(total_count, preview_limit)
+    item_rows = []
+    for index, item in enumerate(item_list):
+        hidden_attr = ' hidden data-market-extra-item="1"' if index >= preview_limit else ""
+        item_name = html.escape(str(item.get("name") or f"Type {item.get('type_id', '')}"))
+        group_name = str(item.get("market_group_name") or "")
+        source_html = ""
+        if group_name and group_name != context_name:
+            source_html = f' <span class="market-group-item-source">{html.escape(group_name)}</span>'
+        item_rows.append(f"                          <li{hidden_attr}>{item_name}{source_html}</li>")
+    hidden_count = total_count - visible_count
+    show_more = ""
+    if hidden_count > 0:
+        show_more = f"""
+                        <button
+                          type="button"
+                          class="secondary market-show-more"
+                          data-market-show-more="1"
+                          data-market-total-items="{total_count}"
+                        >Show {format_market_group_more_count(hidden_count)}</button>"""
+    return f"""
+                      <details class="market-group-items" data-market-group-items>
+                        <summary>Items <span class="market-group-count">{format_market_group_item_count(total_count)}</span></summary>
+                        <ul class="market-group-item-list">
+{chr(10).join(item_rows)}
+                        </ul>
+                        <div class="market-group-item-actions">
+                          <span class="meta" data-market-showing-status="1">Showing {visible_count:,} of {format_market_group_item_count(total_count)}.</span>
+{show_more}
+                        </div>
+                      </details>"""
+
+
+def render_market_group_child(
+    static_data: StaticMarketData,
+    *,
+    root_id: int,
+    child_id: int,
+    item_preview_limit: int = MARKET_GROUP_ITEM_PREVIEW_LIMIT,
+) -> str:
+    child_name = market_group_display_name(static_data, child_id)
+    items = market_group_item_infos(static_data, (child_id,))
+    child_group_ids = market_group_descendant_ids(static_data, (child_id,))
+    nested_count = max(0, len(child_group_ids) - 1)
+    nested_note = ""
+    if nested_count:
+        noun = "group" if nested_count == 1 else "groups"
+        nested_note = f'                      <div class="market-subgroup-meta">Includes {nested_count:,} nested market {noun}.</div>'
+    return f"""
+                    <details class="market-subgroup">
+                      <summary>
+                        <span class="market-group-summary-main">
+                          <span class="market-group-title">{html.escape(child_name)}</span>
+                          <span class="market-group-count">{format_market_group_item_count(len(items))}</span>
+                        </span>
+                        <label class="mini-check" title="Scan this market subcategory">
+                          <input type="checkbox" data-haul-market-group="{child_id}" data-haul-market-parent="{root_id}">
+                          Scan
+                        </label>
+                      </summary>
+                      <div class="market-subgroup-body">
+{nested_note}
+{render_market_group_item_list(items, context_name=child_name, item_preview_limit=item_preview_limit)}
+                      </div>
+                    </details>"""
+
+
+def render_market_group_root(
+    static_data: StaticMarketData,
+    *,
+    root_id: int,
+    fallback_name: str,
+    item_preview_limit: int = MARKET_GROUP_ITEM_PREVIEW_LIMIT,
+) -> str:
+    root_name = market_group_display_name(static_data, root_id, fallback_name)
+    root_items = market_group_item_infos(static_data, (root_id,))
+    direct_items = market_group_item_infos(static_data, (root_id,), include_descendants=False)
+    child_ids = static_data.children.get(root_id, ())
+    if not child_ids:
+        child_ids = tuple(
+            child_id for child_id, _child_name in HAUL_MARKET_GROUP_CHILDREN.get(root_id, ()) if child_id in static_data.groups
+        )
+    sorted_child_ids = tuple(sorted(child_ids, key=lambda child_id: market_group_display_name(static_data, child_id).casefold()))
+    direct_items_html = ""
+    if direct_items:
+        direct_items_html = render_market_group_item_list(
+            direct_items,
+            context_name=root_name,
+            item_preview_limit=item_preview_limit,
+        )
+    children_html = "\n".join(
+        render_market_group_child(
+            static_data,
+            root_id=root_id,
+            child_id=child_id,
+            item_preview_limit=item_preview_limit,
+        )
+        for child_id in sorted_child_ids
+    )
+    if not children_html and not direct_items_html:
+        children_html = '                    <div class="market-subgroup-empty">No published market items found in this category.</div>'
+    return f"""
+                  <details class="haul-market-group">
+                    <summary>
+                      <span class="market-group-summary-main">
+                        <span class="market-group-title">{html.escape(root_name)}</span>
+                        <span class="market-group-count">{format_market_group_item_count(len(root_items))}</span>
+                      </span>
+                      <label class="mini-check" title="Scan this whole market category">
+                        <input type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
+                        All
+                      </label>
+                    </summary>
+                    <div class="haul-market-children">
+{direct_items_html}
+{children_html}
+                    </div>
+                  </details>"""
+
+
+def render_fallback_market_group_options() -> str:
+    return "\n".join(
         f"""
                   <details class="haul-market-group">
                     <summary>
-                      <span>{html.escape(root_name)}</span>
+                      <span class="market-group-summary-main">
+                        <span class="market-group-title">{html.escape(root_name)}</span>
+                        <span class="market-group-count">SDE cache needed for item counts</span>
+                      </span>
                       <label class="mini-check" title="Scan this whole market category">
                         <input type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
                         All
@@ -8645,6 +8819,33 @@ def _render_flight_attendant_dashboard() -> str:
                   </details>"""
         for root_id, root_name in HAUL_MARKET_GROUP_ROOTS
     )
+
+
+def render_market_group_picker_options(
+    static_data: StaticMarketData | None = None,
+    *,
+    item_preview_limit: int = MARKET_GROUP_ITEM_PREVIEW_LIMIT,
+) -> str:
+    active_static_data = static_data if static_data is not None else load_static_market_data()
+    if active_static_data is None:
+        return render_fallback_market_group_options()
+    return "\n".join(
+        render_market_group_root(
+            active_static_data,
+            root_id=root_id,
+            fallback_name=root_name,
+            item_preview_limit=item_preview_limit,
+        )
+        for root_id, root_name in HAUL_MARKET_GROUP_ROOTS
+    )
+
+
+def _render_flight_attendant_dashboard() -> str:
+    category_options = "\n".join(
+        f'                    <option value="{html.escape(key)}">{html.escape(label)}</option>'
+        for key, label in LISTING_CATEGORIES.items()
+    )
+    haul_market_group_options = render_market_group_picker_options()
     reprocessing_ore_options = render_reprocessing_ore_options()
     markup = """
 <!doctype html>
@@ -8976,6 +9177,66 @@ def _render_flight_attendant_dashboard() -> str:
       font-weight: 800;
     }
     .haul-market-children { display: grid; gap: 4px; padding: 0 8px 8px; }
+    .market-group-summary-main { display: grid; gap: 2px; min-width: 0; }
+    .market-group-title { overflow-wrap: anywhere; }
+    .market-group-count { color: var(--amber); font-size: 12px; font-weight: 800; }
+    .market-subgroup {
+      border: 1px solid rgba(63, 85, 80, .42);
+      border-radius: 6px;
+      background: rgba(5, 9, 11, .36);
+      overflow: hidden;
+    }
+    .market-subgroup summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px;
+      cursor: pointer;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .market-subgroup-body { display: grid; gap: 7px; padding: 0 7px 7px; }
+    .market-subgroup-meta,
+    .market-subgroup-empty { color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .market-group-items {
+      border: 1px solid rgba(63, 85, 80, .34);
+      border-radius: 6px;
+      background: rgba(8, 13, 15, .42);
+      overflow: hidden;
+    }
+    .market-group-items summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .market-group-item-list {
+      display: grid;
+      gap: 4px;
+      max-height: 230px;
+      overflow: auto;
+      margin: 0;
+      padding: 0 8px 8px 24px;
+      color: var(--text);
+      font-size: 12px;
+    }
+    .market-group-item-source { color: var(--muted); }
+    .market-group-item-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 0 8px 8px;
+    }
+    .market-show-more { padding: 6px 8px; font-size: 12px; }
     .mini-check { display: inline-flex; align-items: center; gap: 5px; color: var(--amber); font-size: 12px; font-weight: 800; }
     .mini-check input { margin: 0; }
     .scope-warning { color: var(--amber); }
@@ -10560,7 +10821,7 @@ def _render_flight_attendant_dashboard() -> str:
               </div>
               <div class="row">
                 <label>Budget ISK
-                  <input id="acq-budget" name="budget_isk" type="number" min="1" max="1000000000000" step="1000000" inputmode="decimal" value="50000000">
+                  <input id="acq-budget" name="budget_isk" type="number" min="1" max="10000000000" step="1" inputmode="decimal" value="50000000">
                 </label>
                 <label>Broker fee estimate
                   <input id="acq-broker-fee" name="broker_fee_percent" type="number" min="0" max="20" step="0.1" inputmode="decimal" value="3">
@@ -11133,6 +11394,53 @@ def _render_flight_attendant_dashboard() -> str:
       return String(value ?? "").replace(/[&<>"']/g, (char) => replacements[char]);
     }
 
+    function cleanResponseSnippet(value) {
+      return String(value || "")
+        .replace(/<script[\\s\\S]*?<\\/script>/gi, " ")
+        .replace(/<style[\\s\\S]*?<\\/style>/gi, " ")
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .slice(0, 160);
+    }
+
+    async function readJsonApiResponse(response, fallbackMessage) {
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.toLowerCase().includes("application/json")) {
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || fallbackMessage);
+        return data;
+      }
+      let snippet = "";
+      try {
+        snippet = cleanResponseSnippet(await response.text());
+      } catch (_error) {
+        snippet = "";
+      }
+      const statusLabel = response.status ? `HTTP ${response.status}` : "a non-JSON response";
+      const detail = snippet ? ` (${snippet})` : "";
+      throw new Error(`${fallbackMessage}: server returned ${statusLabel} instead of JSON${detail}.`);
+    }
+
+    function handleMarketGroupShowMore(container, event) {
+      const button = event.target.closest("[data-market-show-more]");
+      if (!button || !container.contains(button)) return false;
+      event.preventDefault();
+      event.stopPropagation();
+      const itemPanel = button.closest("[data-market-group-items]");
+      if (!itemPanel) return true;
+      itemPanel.querySelectorAll("[data-market-extra-item]").forEach((item) => {
+        item.hidden = false;
+      });
+      button.hidden = true;
+      const status = itemPanel.querySelector("[data-market-showing-status]");
+      if (status) {
+        const total = Number(button.dataset.marketTotalItems) || itemPanel.querySelectorAll("li").length;
+        status.textContent = `Showing all ${formatNumber(total)} item${total === 1 ? "" : "s"}.`;
+      }
+      return true;
+    }
+
     function showTab(tabName) {
       const targetTab = validTabs.has(tabName) ? tabName : "market";
       document.body.dataset.activeTab = targetTab;
@@ -11465,7 +11773,7 @@ def _render_flight_attendant_dashboard() -> str:
     function clampAcquisitionBudget(value) {
       const budget = Number(value);
       if (!Number.isFinite(budget)) return 50000000;
-      return Math.max(1, Math.min(1000000000000, budget));
+      return Math.max(1, Math.min(10000000000, budget));
     }
 
     function clampAcquisitionBrokerFee(value) {
@@ -12455,8 +12763,7 @@ def _render_flight_attendant_dashboard() -> str:
       });
       try {
         const response = await fetch(`/api/flight/acquisition?${params}`);
-        const data = await response.json();
-        if (!data.ok) throw new Error(data.error || "Could not plan market acquisitions");
+        const data = await readJsonApiResponse(response, "Could not plan market acquisitions");
         renderMarketAcquisition(data);
       } catch (error) {
         acqSummary.textContent = error.message;
@@ -14025,6 +14332,7 @@ def _render_flight_attendant_dashboard() -> str:
     haulDestination.addEventListener("change", updateHaulScopeAndReset);
     haulCommonMaterials.addEventListener("change", updateHaulScopeAndReset);
     haulMarketGroups.addEventListener("click", (event) => {
+      if (handleMarketGroupShowMore(haulMarketGroups, event)) return;
       if (event.target.closest("input[data-haul-market-group], .mini-check")) {
         event.stopPropagation();
       }
@@ -14066,6 +14374,7 @@ def _render_flight_attendant_dashboard() -> str:
     acqMinMargin.addEventListener("change", updateAcquisitionScopeAndReset);
     acqCommonMaterials.addEventListener("change", updateAcquisitionScopeAndReset);
     acqMarketGroups.addEventListener("click", (event) => {
+      if (handleMarketGroupShowMore(acqMarketGroups, event)) return;
       if (event.target.closest("input[data-haul-market-group], .mini-check")) {
         event.stopPropagation();
       }
