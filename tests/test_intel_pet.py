@@ -14,6 +14,7 @@ from eve_voice_pilot.intel_pet import (
     clean_user_terms,
     load_sprite_frames,
     load_settings,
+    replace_alert_terms,
     replace_extra_keywords,
     save_settings,
     ship_sprite_frame_paths,
@@ -153,6 +154,35 @@ def test_engine_update_settings_changes_keyword_matches_without_restarting():
     assert alert is not None
     assert alert.title == "Keyword match in Corp"
     assert alert.keywords == ("keyword: contract alert",)
+
+
+def test_replace_alert_terms_updates_all_local_alert_lists():
+    settings = IntelPetSettings(
+        pilot_names=("Dandin Ridderston",),
+        extra_keywords=("buy order",),
+        help_phrases=("need help",),
+        show_message_text=False,
+        alert_seconds=12,
+    )
+
+    updated = replace_alert_terms(
+        settings,
+        pilot_names=("Dandin Ridderston, Second Pilot", "second pilot"),
+        extra_keywords=("gate camp, Buy Order",),
+        help_phrases=("need evac", "Need Evac"),
+    )
+
+    assert updated.pilot_names == ("Dandin Ridderston", "Second Pilot")
+    assert updated.extra_keywords == ("gate camp", "Buy Order")
+    assert updated.help_phrases == ("need evac",)
+    assert updated.show_message_text is False
+    assert updated.alert_seconds == 12
+
+
+def test_replace_alert_terms_without_updates_returns_same_settings():
+    settings = IntelPetSettings(extra_keywords=("buy order",))
+
+    assert replace_alert_terms(settings) is settings
 
 
 def test_ship_sprite_frame_paths_point_to_committed_assets():

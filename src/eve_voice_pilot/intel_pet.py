@@ -192,8 +192,27 @@ def save_settings(path: Path, settings: IntelPetSettings) -> None:
     tmp_path.replace(path)
 
 
+def replace_alert_terms(
+    settings: IntelPetSettings,
+    *,
+    pilot_names: Iterable[str] | None = None,
+    extra_keywords: Iterable[str] | None = None,
+    help_phrases: Iterable[str] | None = None,
+) -> IntelPetSettings:
+    updates: dict[str, tuple[str, ...]] = {}
+    if pilot_names is not None:
+        updates["pilot_names"] = clean_user_terms(pilot_names)
+    if extra_keywords is not None:
+        updates["extra_keywords"] = clean_user_terms(extra_keywords)
+    if help_phrases is not None:
+        updates["help_phrases"] = clean_user_terms(help_phrases)
+    if not updates:
+        return settings
+    return replace(settings, **updates)
+
+
 def replace_extra_keywords(settings: IntelPetSettings, keywords: Iterable[str]) -> IntelPetSettings:
-    return replace(settings, extra_keywords=clean_user_terms(keywords))
+    return replace_alert_terms(settings, extra_keywords=keywords)
 
 
 def merge_terms(existing: tuple[str, ...], additions: Iterable[str]) -> tuple[str, ...]:
@@ -360,121 +379,179 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
         pady=(8, 0),
     )
 
-    def open_keyword_manager() -> None:
+    def open_alert_settings() -> None:
         editor = tk.Toplevel(root)
-        editor.title("Intel Pet Keywords")
-        editor.geometry("420x360+80+80")
-        editor.minsize(360, 300)
+        editor.title("Intel Pet Alerts")
+        editor.geometry("520x620+80+80")
+        editor.minsize(440, 500)
         editor.transient(root)
         editor.attributes("-topmost", True)
 
         editor_frame = ttk.Frame(editor, padding=12)
         editor_frame.pack(fill="both", expand=True)
 
-        keyword_var = tk.StringVar()
         editor_status_var = tk.StringVar(value="Saved locally only.")
 
-        ttk.Label(editor_frame, text="Local alert keywords", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(editor_frame, text="Local alert settings", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(
             editor_frame,
             text="These match new chat lines on this computer and are saved to your ignored profile settings.",
-            wraplength=380,
+            wraplength=480,
         ).pack(anchor="w", pady=(2, 8))
 
-        list_frame = ttk.Frame(editor_frame)
-        list_frame.pack(fill="both", expand=True)
-        keyword_list = tk.Listbox(list_frame, height=8, exportselection=False)
-        keyword_list.pack(side="left", fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=keyword_list.yview)
-        scrollbar.pack(side="right", fill="y")
-        keyword_list.configure(yscrollcommand=scrollbar.set)
+        term_lists: dict[str, Any] = {}
+        term_vars: dict[str, Any] = {}
 
-        def refresh_list(keywords: Iterable[str]) -> None:
-            keyword_list.delete(0, tk.END)
-            for keyword in keywords:
-                keyword_list.insert(tk.END, keyword)
+        def refresh_list(name: str, terms: Iterable[str]) -> None:
+            term_list = term_lists[name]
+            term_list.delete(0, tk.END)
+            for term in terms:
+                term_list.insert(tk.END, term)
 
-        def current_keywords() -> tuple[str, ...]:
-            return tuple(str(item) for item in keyword_list.get(0, tk.END))
+        def current_terms(name: str) -> tuple[str, ...]:
+            return tuple(str(item) for item in term_lists[name].get(0, tk.END))
 
-        def persist_keywords(action: str) -> None:
+        def persist_terms(action: str) -> None:
             try:
-                settings = replace_extra_keywords(engine.current_settings(), current_keywords())
+                settings = replace_alert_terms(
+                    engine.current_settings(),
+                    pilot_names=current_terms("pilot_names"),
+                    extra_keywords=current_terms("extra_keywords"),
+                    help_phrases=current_terms("help_phrases"),
+                )
                 save_settings(settings_path, settings)
                 engine.update_settings(settings)
             except Exception as exc:
                 editor_status_var.set(f"Save failed: {exc}")
                 return
-            count = len(settings.extra_keywords)
-            editor_status_var.set(f"{action}. {count} keyword{'s' if count != 1 else ''} saved.")
-            meta_var.set(f"{count} local keyword{'s' if count != 1 else ''} active.")
+            refresh_list("pilot_names", settings.pilot_names)
+            refresh_list("help_phrases", settings.help_phrases)
+            refresh_list("extra_keywords", settings.extra_keywords)
+            counts = (
+                f"{len(settings.pilot_names)} name{'s' if len(settings.pilot_names) != 1 else ''}",
+                f"{len(settings.help_phrases)} help phrase{'s' if len(settings.help_phrases) != 1 else ''}",
+                f"{len(settings.extra_keywords)} keyword{'s' if len(settings.extra_keywords) != 1 else ''}",
+            )
+            editor_status_var.set(f"{action}. {', '.join(counts)} saved.")
+            meta_var.set(f"Alerts active: {', '.join(counts)}.")
 
-        def add_keyword() -> None:
-            merged = clean_user_terms((*current_keywords(), keyword_var.get()))
+        def add_term(name: str) -> None:
+            term_var = term_vars[name]
+            merged = clean_user_terms((*current_terms(name), term_var.get()))
             if not merged:
-                editor_status_var.set("Enter a keyword first.")
+                editor_status_var.set("Enter a term first.")
                 return
-            refresh_list(merged)
-            keyword_var.set("")
-            persist_keywords("Added")
+            refresh_list(name, merged)
+            term_var.set("")
+            persist_terms("Added")
 
-        def selected_index() -> int | None:
-            selection = keyword_list.curselection()
+        def selected_index(name: str) -> int | None:
+            selection = term_lists[name].curselection()
             return int(selection[0]) if selection else None
 
-        def change_keyword() -> None:
-            index = selected_index()
-            replacement = keyword_var.get().strip()
+        def change_term(name: str) -> None:
+            index = selected_index(name)
+            term_var = term_vars[name]
+            replacement = term_var.get().strip()
             if index is None:
-                editor_status_var.set("Select a keyword to change.")
+                editor_status_var.set("Select a term to change.")
                 return
             if not replacement:
-                editor_status_var.set("Enter the replacement keyword.")
+                editor_status_var.set("Enter the replacement term.")
                 return
-            keywords = list(current_keywords())
-            keywords[index] = replacement
-            refresh_list(clean_user_terms(keywords))
-            keyword_var.set("")
-            persist_keywords("Changed")
+            terms = list(current_terms(name))
+            terms[index] = replacement
+            refresh_list(name, clean_user_terms(terms))
+            term_var.set("")
+            persist_terms("Changed")
 
-        def remove_keyword() -> None:
-            index = selected_index()
+        def remove_term(name: str) -> None:
+            index = selected_index(name)
             if index is None:
-                editor_status_var.set("Select a keyword to remove.")
+                editor_status_var.set("Select a term to remove.")
                 return
-            keywords = list(current_keywords())
-            del keywords[index]
-            refresh_list(keywords)
-            keyword_var.set("")
-            persist_keywords("Removed")
+            terms = list(current_terms(name))
+            del terms[index]
+            refresh_list(name, terms)
+            term_vars[name].set("")
+            persist_terms("Removed")
 
-        def fill_entry(_event: object | None = None) -> None:
-            index = selected_index()
+        def fill_entry(name: str) -> None:
+            index = selected_index(name)
             if index is not None:
-                keyword_var.set(keyword_list.get(index))
+                term_vars[name].set(term_lists[name].get(index))
 
-        refresh_list(engine.current_settings().extra_keywords)
-        keyword_list.bind("<<ListboxSelect>>", fill_entry)
+        sections = (
+            (
+                "pilot_names",
+                "Your pilot names",
+                "High alerts when someone else mentions one of these names.",
+                engine.current_settings().pilot_names,
+            ),
+            (
+                "help_phrases",
+                "Help phrases",
+                "Critical alerts for calls that sound like someone needs help.",
+                engine.current_settings().help_phrases,
+            ),
+            (
+                "extra_keywords",
+                "Extra keywords",
+                "Medium alerts for local watch terms like market or intel phrases.",
+                engine.current_settings().extra_keywords,
+            ),
+        )
 
-        entry_row = ttk.Frame(editor_frame)
-        entry_row.pack(fill="x", pady=(10, 6))
-        keyword_entry = ttk.Entry(entry_row, textvariable=keyword_var)
-        keyword_entry.pack(side="left", fill="x", expand=True)
-        keyword_entry.bind("<Return>", lambda _event: add_keyword())
+        first_entry = None
+        for section_name, title, description, initial_terms in sections:
+            section = ttk.LabelFrame(editor_frame, text=title, padding=8)
+            section.pack(fill="both", expand=True, pady=(0, 8))
+            ttk.Label(section, text=description, wraplength=460).pack(anchor="w", pady=(0, 6))
 
-        action_row = ttk.Frame(editor_frame)
-        action_row.pack(fill="x")
-        ttk.Button(action_row, text="Add", command=add_keyword).pack(side="left")
-        ttk.Button(action_row, text="Change", command=change_keyword).pack(side="left", padx=(6, 0))
-        ttk.Button(action_row, text="Remove", command=remove_keyword).pack(side="left", padx=(6, 0))
-        ttk.Button(action_row, text="Close", command=editor.destroy).pack(side="right")
+            list_frame = ttk.Frame(section)
+            list_frame.pack(fill="both", expand=True)
+            term_list = tk.Listbox(list_frame, height=4, exportselection=False)
+            term_list.pack(side="left", fill="both", expand=True)
+            scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=term_list.yview)
+            scrollbar.pack(side="right", fill="y")
+            term_list.configure(yscrollcommand=scrollbar.set)
 
-        ttk.Label(editor_frame, textvariable=editor_status_var, wraplength=380).pack(anchor="w", pady=(10, 0))
-        keyword_entry.focus_set()
+            term_var = tk.StringVar()
+            term_lists[section_name] = term_list
+            term_vars[section_name] = term_var
+            refresh_list(section_name, initial_terms)
+            term_list.bind("<<ListboxSelect>>", lambda _event, name=section_name: fill_entry(name))
+
+            entry_row = ttk.Frame(section)
+            entry_row.pack(fill="x", pady=(8, 6))
+            term_entry = ttk.Entry(entry_row, textvariable=term_var)
+            term_entry.pack(side="left", fill="x", expand=True)
+            term_entry.bind("<Return>", lambda _event, name=section_name: add_term(name))
+            if first_entry is None:
+                first_entry = term_entry
+
+            action_row = ttk.Frame(section)
+            action_row.pack(fill="x")
+            ttk.Button(action_row, text="Add", command=lambda name=section_name: add_term(name)).pack(side="left")
+            ttk.Button(action_row, text="Change", command=lambda name=section_name: change_term(name)).pack(
+                side="left",
+                padx=(6, 0),
+            )
+            ttk.Button(action_row, text="Remove", command=lambda name=section_name: remove_term(name)).pack(
+                side="left",
+                padx=(6, 0),
+            )
+
+        footer = ttk.Frame(editor_frame)
+        footer.pack(fill="x")
+        ttk.Label(footer, textvariable=editor_status_var, wraplength=380).pack(side="left", anchor="w")
+        ttk.Button(footer, text="Close", command=editor.destroy).pack(side="right")
+        if first_entry is not None:
+            first_entry.focus_set()
 
     buttons = ttk.Frame(frame)
     buttons.pack(anchor="e", fill="x", pady=(10, 0))
-    ttk.Button(buttons, text="Keywords", command=open_keyword_manager).pack(side="left")
+    ttk.Button(buttons, text="Alerts", command=open_alert_settings).pack(side="left")
     ttk.Button(buttons, text="Clear", command=lambda: set_idle()).pack(side="right")
     ttk.Button(buttons, text="Quit", command=lambda: on_close()).pack(side="right", padx=(0, 8))
 

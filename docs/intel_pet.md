@@ -49,9 +49,13 @@ You can add extra keywords or help phrases from the command line:
 
 The first version has no Discord push. That keeps the trust boundary simple while we prove the overlay is useful.
 
-## Manage Keywords In The Overlay
+## Manage Alerts In The Overlay
 
-Click `Keywords` in the pet window to add, change, or remove local alert keywords while the overlay is running.
+Click `Alerts` in the pet window to add, change, or remove:
+
+- your pilot names for mention alerts;
+- help phrases for critical calls;
+- extra keywords for watch terms.
 
 Changes are saved immediately to:
 
@@ -59,7 +63,7 @@ Changes are saved immediately to:
 profiles/intel_pet_settings.json
 ```
 
-The live matcher refreshes as soon as a keyword is saved, so you do not need to restart the pet.
+The live matcher refreshes as soon as a setting is saved, so you do not need to restart the pet.
 
 ## Optional Local Settings File
 
