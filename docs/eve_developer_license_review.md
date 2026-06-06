@@ -6,6 +6,7 @@ Authoritative source:
 
 - EVE Developer License Agreement: https://developers.eveonline.com/license-agreement
 - EVE developer license docs: https://developers.eveonline.com/docs/resources/license/
+- EVE third-party policies: https://support.eveonline.com/hc/en-us/articles/8564030965660-Third-Party-Policies
 - EVE SSO docs: https://developers.eveonline.com/docs/services/sso/
 - ESI API explorer: https://developers.eveonline.com/api-explorer
 - ESI Swagger spec: https://esi.evetech.net/latest/swagger.json
@@ -26,6 +27,7 @@ The corp intel board and hosted Flight Attendant/Corp Market surfaces are design
 - It is read-only with respect to the EVE client.
 - It does not send keys, click, read packets, scrape cache files, inspect process memory, or automate gameplay.
 - It reads opted-in local chat logs and sends only matching intel events by default.
+- The EVE Intel Pet overlay is local-only and informational: it reads the user's own EVE chat logs, shows matching lines to that user, and does not share them by default.
 - It uses EVE SSO to prove character ownership and public ESI to check corporation/alliance membership.
 - It signature-verifies SSO access tokens and discards EVE access/refresh tokens after login.
 - It stores local operational records only: verified pilot identity, token hashes, watchlist settings, and sanitized intel events.
@@ -66,7 +68,8 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - Prefer `--require-verified-ingest` plus per-pilot agent tokens over a shared ingest token.
 - Keep channel allowlists narrow.
 - Keep the board private to the corporation unless a broader review is done.
-- Do not add reaction alerts, overlay control, client input, OCR-driven gameplay decisions, or bot-like behavior.
+- Keep alert overlays informational and local-only unless there is a separate consent and policy review.
+- Do not add overlay-driven client input, OCR-driven gameplay decisions, bot-like behavior, or automated reactions.
 
 ## Review Log
 
@@ -76,3 +79,4 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - 2026-06-05: Re-opened the official EVE Developer License Agreement, developer license docs, and ESI Swagger/API docs before adding the ore reprocessing calculator. The feature adds read-only implant and structure-info scopes, keeps tokens in server memory only, uses SDE cache data for ore/station constants, and remains advisory/manual only.
 - 2026-06-05: Re-opened the official EVE Developer License Agreement, developer license docs, EVE third-party policy page, and ESI Swagger/API docs before adding Trade P&L. The feature adds a read-only wallet scope, analyzes recent wallet transactions and market fee journal rows only after pilot SSO consent, keeps tokens in server memory only, and remains advisory/manual only.
 - 2026-06-05: Re-opened the official EVE Developer License Agreement, developer license docs, EVE third-party policy page, API Explorer, and ESI overview/best-practices docs before adding standings-ranked NPC reprocessing station selection. The feature reuses existing read-only location, skills, standings, and implant scopes, stores no standings or station-choice data beyond browser local storage, uses SDE cache station constants, and remains advisory/manual only.
+- 2026-06-05: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding EVE Intel Pet. The first slice is local-only, reads the user's own EVE chat logs, shows informational alerts for matching new lines, adds no ESI scope, shares nothing by default, and does not control the EVE client.

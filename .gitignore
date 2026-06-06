@@ -39,4 +39,5 @@ profiles/*.db-*
 profiles/my_eve_commands.json
 profiles/my_ocr_watcher_settings.json
 profiles/corp_intel_watchlist.json
+profiles/intel_pet_settings.json
 profiles/chatlog_knowledge_link_review.md

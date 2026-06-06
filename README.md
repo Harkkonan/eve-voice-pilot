@@ -141,6 +141,16 @@ For a shared corp-hosted board, add `--require-sso-dashboard` plus `--allowed-co
 
 After SSO login, trusted members can create per-pilot agent upload tokens from the dashboard and run the local agent with `--agent-token`. The server stores only token hashes, uses the token for authenticated watchlist refreshes, and stamps matching uploads with the verified EVE character identity.
 
+### EVE Intel Pet
+
+Double-click `Start-EveIntelPet.bat` for a local-only always-on-top alert overlay. It watches your own EVE chat logs, starts at the end of existing files, and warns on new help/hostile/keyword lines. Add your character name for mention alerts:
+
+```powershell
+.\scripts\run_intel_pet.ps1 --pilot-name "Your Character Name"
+```
+
+Local settings can live in ignored profile data at `profiles/intel_pet_settings.json`. More detail is in `docs/intel_pet.md`.
+
 ## Notes
 
 If EVE is running as administrator and this app is not, Windows may block simulated keypresses. Usually both apps should run normally, without administrator mode.
