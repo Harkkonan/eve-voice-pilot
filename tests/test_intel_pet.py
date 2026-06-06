@@ -4,14 +4,18 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from eve_voice_pilot.corp_intel import ChatMessage
+from eve_voice_pilot.corp_intel import ChatMessage, EveSsoConfig
 from eve_voice_pilot.intel_pet import (
     ALERT_SPRITE_SEQUENCE,
     IDLE_SPRITE_SEQUENCE,
+    LOCATION_SCOPE,
     SHIP_FRAME_COUNT,
+    IntelPetLocationSession,
     IntelPetEngine,
     IntelPetSettings,
     clean_user_terms,
+    fetch_pet_location,
+    is_happy_system,
     load_sprite_frames,
     load_settings,
     replace_alert_terms,
@@ -183,6 +187,58 @@ def test_replace_alert_terms_without_updates_returns_same_settings():
     settings = IntelPetSettings(extra_keywords=("buy order",))
 
     assert replace_alert_terms(settings) is settings
+
+
+def test_is_happy_system_matches_configured_systems_case_insensitively():
+    assert is_happy_system("jita", ("Dihra", "Amarr", "Jita"))
+    assert is_happy_system("Dihra", ("dihra",))
+    assert not is_happy_system("Perimeter", ("Dihra", "Amarr", "Jita"))
+
+
+def test_fetch_pet_location_uses_read_only_esi_scope(monkeypatch):
+    calls = []
+
+    def fake_get_json(url, *, timeout_seconds=30.0, headers=None):
+        calls.append((url, headers or {}))
+        if "/location/" in url:
+            return {"solar_system_id": 30000142}
+        if "/universe/systems/30000142/" in url:
+            return {"name": "Jita"}
+        raise AssertionError(f"unexpected URL {url}")
+
+    monkeypatch.setattr("eve_voice_pilot.intel_pet.get_json", fake_get_json)
+    session = IntelPetLocationSession(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        scopes=(LOCATION_SCOPE,),
+        access_token="access-token",
+        expires_at=9999999999,
+    )
+
+    location = fetch_pet_location(EveSsoConfig(esi_base_url="https://esi.test/latest"), session)
+
+    assert location.solar_system_id == 30000142
+    assert location.solar_system_name == "Jita"
+    assert calls[0][0] == "https://esi.test/latest/characters/123456789/location/?datasource=tranquility"
+    assert calls[0][1]["Authorization"] == "Bearer access-token"
+    assert "Authorization" not in calls[1][1]
+
+
+def test_fetch_pet_location_requires_location_scope():
+    session = IntelPetLocationSession(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        scopes=(),
+        access_token="access-token",
+        expires_at=9999999999,
+    )
+
+    try:
+        fetch_pet_location(EveSsoConfig(esi_base_url="https://esi.test/latest"), session)
+    except Exception as exc:
+        assert LOCATION_SCOPE in str(exc)
+    else:
+        raise AssertionError("expected missing location scope to fail")
 
 
 def test_ship_sprite_frame_paths_point_to_committed_assets():

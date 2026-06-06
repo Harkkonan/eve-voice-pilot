@@ -1,6 +1,6 @@
 # EVE Developer License Review
 
-Last verified: 2026-06-05
+Last verified: 2026-06-06
 
 Authoritative source:
 
@@ -28,6 +28,7 @@ The corp intel board and hosted Flight Attendant/Corp Market surfaces are design
 - It does not send keys, click, read packets, scrape cache files, inspect process memory, or automate gameplay.
 - It reads opted-in local chat logs and sends only matching intel events by default.
 - The EVE Intel Pet overlay is local-only and informational: it reads the user's own EVE chat logs, shows matching lines to that user, and does not share them by default.
+- Optional Intel Pet location cheer uses only the read-only `esi-location.read_location.v1` scope after explicit EVE SSO consent, keeps the access token in memory only while the pet is running, and shows local animation only.
 - It uses EVE SSO to prove character ownership and public ESI to check corporation/alliance membership.
 - It signature-verifies SSO access tokens and discards EVE access/refresh tokens after login.
 - It stores local operational records only: verified pilot identity, token hashes, watchlist settings, and sanitized intel events.
@@ -80,3 +81,4 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - 2026-06-05: Re-opened the official EVE Developer License Agreement, developer license docs, EVE third-party policy page, and ESI Swagger/API docs before adding Trade P&L. The feature adds a read-only wallet scope, analyzes recent wallet transactions and market fee journal rows only after pilot SSO consent, keeps tokens in server memory only, and remains advisory/manual only.
 - 2026-06-05: Re-opened the official EVE Developer License Agreement, developer license docs, EVE third-party policy page, API Explorer, and ESI overview/best-practices docs before adding standings-ranked NPC reprocessing station selection. The feature reuses existing read-only location, skills, standings, and implant scopes, stores no standings or station-choice data beyond browser local storage, uses SDE cache station constants, and remains advisory/manual only.
 - 2026-06-05: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding EVE Intel Pet. The first slice is local-only, reads the user's own EVE chat logs, shows informational alerts for matching new lines, adds no ESI scope, shares nothing by default, and does not control the EVE client.
+- 2026-06-06: Re-opened the official EVE Developer License Agreement, developer license docs, EVE SSO docs, EVE third-party policy page, ESI rate-limit/best-practices docs, and the live ESI Swagger spec before adding optional Intel Pet location cheer. The feature adds only `esi-location.read_location.v1`, polls slowly, keeps tokens in memory only, shares no location data, and remains local informational animation only.

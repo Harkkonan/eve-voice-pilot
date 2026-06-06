@@ -6,7 +6,8 @@ It is intentionally personal and local-first:
 
 - It reads only the EVE chat log folder on your computer.
 - It starts at the end of existing files by default, so old chat is not replayed.
-- It does not connect to Discord, ESI, or the corp intel board in the first version.
+- It does not connect to Discord or the corp intel board.
+- It connects to ESI only if you deliberately start optional location cheer mode.
 - It does not control the EVE client, read memory, inspect packets, or automate gameplay.
 - Its ship pet is original generated pixel art, not extracted EVE client art or a copied official ship.
 
@@ -48,6 +49,51 @@ You can add extra keywords or help phrases from the command line:
 ```
 
 The first version has no Discord push. That keeps the trust boundary simple while we prove the overlay is useful.
+
+## Optional ESI Location Cheer
+
+Location cheer makes the ship fly happily when your connected EVE character reaches `Dihra`, `Amarr`, or `Jita`.
+
+This mode is opt-in. It asks EVE SSO for only:
+
+```text
+esi-location.read_location.v1
+```
+
+The pet keeps the ESI access token in memory only while it is running. It does not write token files, store refresh tokens, send your location to Discord, share it with the corp intel board, or control the EVE client.
+
+Register this local callback URL in your EVE Developers application:
+
+```text
+http://127.0.0.1:8788/intel-pet/callback
+```
+
+Then start the pet with your local SSO app values:
+
+```powershell
+.\scripts\run_intel_pet.ps1 `
+  --enable-location-cheer `
+  --sso-client-id "client-id" `
+  --sso-client-secret "client-secret"
+```
+
+You can also keep the SSO values in your local PowerShell environment:
+
+```powershell
+$env:INTEL_PET_SSO_CLIENT_ID = "client-id"
+$env:INTEL_PET_SSO_CLIENT_SECRET = "client-secret"
+.\scripts\run_intel_pet.ps1 --enable-location-cheer
+```
+
+To choose different happy systems:
+
+```powershell
+.\scripts\run_intel_pet.ps1 `
+  --enable-location-cheer `
+  --happy-system "Dihra" `
+  --happy-system "Amarr" `
+  --happy-system "Jita"
+```
 
 ## Manage Alerts In The Overlay
 

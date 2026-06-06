@@ -2,29 +2,42 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import os
 from pathlib import Path
 import queue
 import threading
+import time
 from typing import Any, Iterable
+from urllib.parse import parse_qs, urlparse
+import webbrowser
 
 from eve_voice_pilot.corp_intel import (
     COMMON_SYSTEM_NAMES,
     DEFAULT_CHANNELS,
+    DEFAULT_ESI_BASE_URL,
     DEFAULT_POLL_SECONDS,
     ROOT,
     ChannelFilter,
     ChatMessage,
     CorpIntelError,
+    EveSsoConfig,
     IntelParser,
     IntelWatchlist,
     WatchlistStore,
+    build_sso_authorization_url,
+    character_id_from_sso_payload,
     clean_watchlist_terms,
     compile_phrase_pattern,
+    decode_eve_access_token,
     default_chat_log_dir,
+    exchange_sso_code,
+    get_json,
     higher_severity,
     now_iso,
     parse_csv,
+    scopes_from_sso_payload,
     watch_chat_logs,
 )
 
@@ -32,11 +45,26 @@ from eve_voice_pilot.corp_intel import (
 DEFAULT_SETTINGS_PATH = ROOT / "profiles" / "intel_pet_settings.json"
 DEFAULT_SPRITE_DIR = ROOT / "src" / "eve_voice_pilot" / "static" / "intel-pet"
 DEFAULT_ALERT_SECONDS = 18.0
+DEFAULT_LOCATION_CALLBACK_URL = "http://127.0.0.1:8788/intel-pet/callback"
+DEFAULT_LOCATION_POLL_SECONDS = 15.0
+DEFAULT_HAPPY_SYSTEMS = ("Dihra", "Amarr", "Jita")
+LOCATION_SCOPE = "esi-location.read_location.v1"
 SHIP_FRAME_COUNT = 8
 SHIP_FRAME_MS = 150
 IDLE_ANIMATION_MS = 5 * 60 * 1000
 IDLE_SPRITE_SEQUENCE = (0, 1, 2, 3, 4, 5, 6, 7, 0)
 ALERT_SPRITE_SEQUENCE = (0, 7, 6, 5, 4, 3, 2, 1, 0)
+HAPPY_SPRITE_STEPS = (
+    (0, 0, 0),
+    (1, 10, -8),
+    (2, 18, 0),
+    (3, 10, 8),
+    (4, 0, 0),
+    (5, -10, -8),
+    (6, -18, 0),
+    (7, -10, 8),
+    (0, 0, 0),
+)
 
 
 @dataclass(frozen=True)
@@ -84,6 +112,35 @@ class IntelPetAlert:
     reported_at: str
     categories: tuple[str, ...]
     keywords: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class IntelPetLocationSession:
+    character_id: int
+    character_name: str
+    scopes: tuple[str, ...]
+    access_token: str
+    expires_at: float
+
+    @property
+    def expired(self) -> bool:
+        return self.expires_at <= time.time()
+
+
+@dataclass(frozen=True)
+class IntelPetLocation:
+    solar_system_id: int
+    solar_system_name: str
+    station_id: int | None = None
+    structure_id: int | None = None
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
+class IntelPetLocationCheer:
+    system_name: str
+    character_name: str
+    updated_at: str
 
 
 class IntelPetEngine:
@@ -278,6 +335,158 @@ def ship_sprite_frame_paths(asset_dir: Path = DEFAULT_SPRITE_DIR) -> tuple[Path,
     return tuple(asset_dir / f"ship-frame-{index:02d}.png" for index in range(SHIP_FRAME_COUNT))
 
 
+def location_sso_config_from_args(args: argparse.Namespace) -> EveSsoConfig:
+    happy_systems = clean_user_terms(args.happy_system or DEFAULT_HAPPY_SYSTEMS)
+    if not happy_systems:
+        raise CorpIntelError("Choose at least one happy system for location cheer.")
+    return EveSsoConfig(
+        client_id=str(args.sso_client_id or ""),
+        client_secret=str(args.sso_client_secret or ""),
+        callback_url=str(args.sso_callback_url or DEFAULT_LOCATION_CALLBACK_URL),
+        scopes=(LOCATION_SCOPE,),
+        esi_base_url=str(args.esi_base_url or DEFAULT_ESI_BASE_URL),
+    )
+
+
+def validate_location_sso_config(config: EveSsoConfig) -> None:
+    if not config.enabled:
+        raise CorpIntelError(
+            "Location cheer needs EVE SSO client values. Start with --sso-client-id and --sso-client-secret."
+        )
+    callback = urlparse(config.callback_url)
+    if callback.scheme != "http" or callback.hostname not in {"127.0.0.1", "localhost"}:
+        raise CorpIntelError(
+            "Intel Pet location cheer uses a localhost HTTP callback, "
+            "like http://127.0.0.1:8788/intel-pet/callback."
+        )
+    if not callback.port:
+        raise CorpIntelError("Intel Pet location cheer callback URL must include a localhost port.")
+
+
+def login_location_session(
+    config: EveSsoConfig,
+    *,
+    timeout_seconds: float = 180.0,
+    open_browser: bool = True,
+) -> IntelPetLocationSession:
+    validate_location_sso_config(config)
+    state = os.urandom(24).hex()
+    code_result: dict[str, str] = {}
+    ready = threading.Event()
+    callback = urlparse(config.callback_url)
+    callback_path = callback.path or "/"
+
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+        def do_GET(self) -> None:  # noqa: N802 - stdlib callback name.
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            if parsed.path != callback_path:
+                self.send_error(404)
+                return
+            if params.get("state", [""])[0] != state:
+                code_result["error"] = "Invalid EVE SSO callback state."
+            elif params.get("error", [""])[0]:
+                code_result["error"] = "EVE SSO declined the location login."
+            else:
+                code_result["code"] = params.get("code", [""])[0]
+                if not code_result["code"]:
+                    code_result["error"] = "EVE SSO callback did not include an authorization code."
+            ready.set()
+            body = (
+                "<!doctype html><meta charset='utf-8'>"
+                "<title>EVE Intel Pet</title>"
+                "<body style='font-family:Segoe UI,Arial,sans-serif;padding:24px'>"
+                "<h1>EVE Intel Pet connected</h1>"
+                "<p>You can close this tab and return to the pet.</p>"
+                "</body>"
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    authorize_url = build_sso_authorization_url(config, state)
+    try:
+        server = HTTPServer((str(callback.hostname), int(callback.port)), CallbackHandler)
+    except OSError as exc:
+        raise CorpIntelError(f"Could not start Intel Pet SSO callback on {config.callback_url}: {exc}") from exc
+    server.timeout = max(1.0, timeout_seconds)
+    server_thread = threading.Thread(target=server.handle_request, daemon=True)
+    server_thread.start()
+    try:
+        if open_browser:
+            webbrowser.open(authorize_url)
+        if not ready.wait(timeout_seconds):
+            raise CorpIntelError("Timed out waiting for EVE SSO location login.")
+    finally:
+        server.server_close()
+    if code_result.get("error"):
+        raise CorpIntelError(code_result["error"])
+    token_response = exchange_sso_code(config, str(code_result.get("code") or ""))
+    access_token = str(token_response.get("access_token") or "")
+    token_payload = decode_eve_access_token(access_token, client_id=config.client_id)
+    scopes = scopes_from_sso_payload(token_payload)
+    if LOCATION_SCOPE not in scopes:
+        raise CorpIntelError(f"EVE SSO token did not include {LOCATION_SCOPE}.")
+    return IntelPetLocationSession(
+        character_id=character_id_from_sso_payload(token_payload),
+        character_name=str(token_payload.get("name") or "Connected pilot"),
+        scopes=scopes,
+        access_token=access_token,
+        expires_at=time.time() + safe_float(token_response.get("expires_in"), 1200.0),
+    )
+
+
+def fetch_pet_location(config: EveSsoConfig, session: IntelPetLocationSession) -> IntelPetLocation:
+    if session.expired:
+        raise CorpIntelError("EVE SSO location token expired. Restart location cheer to reconnect.")
+    if LOCATION_SCOPE not in session.scopes:
+        raise CorpIntelError(f"Location cheer needs {LOCATION_SCOPE}.")
+    base_url = config.esi_base_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {session.access_token}"}
+    location = get_json(
+        f"{base_url}/characters/{session.character_id}/location/?datasource=tranquility",
+        timeout_seconds=30.0,
+        headers=headers,
+    )
+    if not isinstance(location, dict):
+        raise CorpIntelError("ESI location endpoint returned unexpected data.")
+    solar_system_id = int(location.get("solar_system_id") or 0)
+    if solar_system_id <= 0:
+        raise CorpIntelError("ESI location endpoint did not return a solar system id.")
+    system_payload = get_json(
+        f"{base_url}/universe/systems/{solar_system_id}/?datasource=tranquility",
+        timeout_seconds=30.0,
+    )
+    system_name = ""
+    if isinstance(system_payload, dict):
+        system_name = str(system_payload.get("name") or "")
+    return IntelPetLocation(
+        solar_system_id=solar_system_id,
+        solar_system_name=system_name or f"System {solar_system_id}",
+        station_id=optional_int(location.get("station_id")),
+        structure_id=optional_int(location.get("structure_id")),
+        updated_at=now_iso(),
+    )
+
+
+def optional_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def is_happy_system(system_name: str, happy_systems: Iterable[str]) -> bool:
+    folded = system_name.strip().casefold()
+    return bool(folded) and folded in {system.strip().casefold() for system in happy_systems if system.strip()}
+
+
 def run_console(args: argparse.Namespace, engine: IntelPetEngine) -> None:
     channel_filter = channel_filter_from_args(args)
 
@@ -295,14 +504,22 @@ def run_console(args: argparse.Namespace, engine: IntelPetEngine) -> None:
     )
 
 
-def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
+def run_overlay(
+    args: argparse.Namespace,
+    engine: IntelPetEngine,
+    *,
+    location_config: EveSsoConfig | None = None,
+    location_session: IntelPetLocationSession | None = None,
+) -> None:
     import tkinter as tk
     from tkinter import ttk
 
-    alert_queue: queue.Queue[IntelPetAlert | str] = queue.Queue()
+    alert_queue: queue.Queue[IntelPetAlert | IntelPetLocationCheer | str] = queue.Queue()
     stop_event = threading.Event()
     channel_filter = channel_filter_from_args(args)
     settings_path = args.settings_path.expanduser()
+    happy_systems = clean_user_terms(args.happy_system or DEFAULT_HAPPY_SYSTEMS)
+    location_poll_seconds = max(5.0, safe_float(args.location_poll_seconds, DEFAULT_LOCATION_POLL_SECONDS))
 
     def on_message(message: ChatMessage) -> None:
         alert = engine.analyze(message)
@@ -325,6 +542,39 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
 
     thread = threading.Thread(target=watcher, daemon=True)
     thread.start()
+
+    def location_watcher() -> None:
+        if location_config is None or location_session is None:
+            return
+        alert_queue.put(f"ESI location connected as {location_session.character_name}.")
+        last_system_name = ""
+        last_cheered_system = ""
+        while not stop_event.is_set():
+            try:
+                location = fetch_pet_location(location_config, location_session)
+            except Exception as exc:  # pragma: no cover - surfaced in the UI.
+                alert_queue.put(f"Location cheer stopped: {exc}")
+                return
+            if location.solar_system_name != last_system_name:
+                alert_queue.put(f"ESI location: {location.solar_system_name}")
+                last_system_name = location.solar_system_name
+                if not is_happy_system(location.solar_system_name, happy_systems):
+                    last_cheered_system = ""
+            if is_happy_system(location.solar_system_name, happy_systems):
+                folded = location.solar_system_name.casefold()
+                if folded != last_cheered_system:
+                    alert_queue.put(
+                        IntelPetLocationCheer(
+                            system_name=location.solar_system_name,
+                            character_name=location_session.character_name,
+                            updated_at=location.updated_at,
+                        )
+                    )
+                    last_cheered_system = folded
+            stop_event.wait(location_poll_seconds)
+
+    if location_session is not None:
+        threading.Thread(target=location_watcher, daemon=True).start()
 
     root = tk.Tk()
     root.title("EVE Intel Pet")
@@ -557,11 +807,12 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
 
     idle_after_id: str | None = None
 
-    def set_sprite_frame(index: int) -> None:
+    def set_sprite_frame(index: int, *, offset_x: int = 0, offset_y: int = 0) -> None:
         if not sprite_frames or sprite_image_id is None:
             return
         clean_index = max(0, min(index, len(sprite_frames) - 1))
         sprite_canvas.itemconfigure(sprite_image_id, image=sprite_frames[clean_index])
+        sprite_canvas.coords(sprite_image_id, 64 + offset_x, 48 + offset_y)
 
     def cancel_sprite_cycle() -> None:
         nonlocal sprite_after_id
@@ -592,6 +843,28 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
         def advance(position: int = 0) -> None:
             nonlocal sprite_after_id
             set_sprite_frame(sequence[position])
+            next_position = position + 1
+            if next_position < len(sequence):
+                sprite_after_id = root.after(SHIP_FRAME_MS, lambda: advance(next_position))
+            else:
+                sprite_after_id = None
+                set_sprite_frame(0)
+                if reschedule_idle:
+                    schedule_idle_sprite_cycle()
+
+        advance()
+
+    def start_sprite_motion_cycle(sequence: tuple[tuple[int, int, int], ...], *, reschedule_idle: bool = True) -> None:
+        nonlocal sprite_after_id
+        if not sprite_frames:
+            return
+        cancel_sprite_cycle()
+        cancel_idle_sprite_cycle()
+
+        def advance(position: int = 0) -> None:
+            nonlocal sprite_after_id
+            frame_index, offset_x, offset_y = sequence[position]
+            set_sprite_frame(frame_index, offset_x=offset_x, offset_y=offset_y)
             next_position = position + 1
             if next_position < len(sequence):
                 sprite_after_id = root.after(SHIP_FRAME_MS, lambda: advance(next_position))
@@ -640,6 +913,17 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
         start_sprite_cycle(ALERT_SPRITE_SEQUENCE)
         idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
 
+    def show_location_cheer(cheer: IntelPetLocationCheer) -> None:
+        nonlocal idle_after_id
+        if idle_after_id is not None:
+            root.after_cancel(idle_after_id)
+        apply_severity("info")
+        title_var.set(f"Happy arrival: {cheer.system_name}")
+        message_var.set(f"{cheer.character_name} reached {cheer.system_name}.")
+        meta_var.set(f"ESI location cheer | {LOCATION_SCOPE}")
+        start_sprite_motion_cycle(HAPPY_SPRITE_STEPS)
+        idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
+
     def poll_queue() -> None:
         while True:
             try:
@@ -648,6 +932,8 @@ def run_overlay(args: argparse.Namespace, engine: IntelPetEngine) -> None:
                 break
             if isinstance(item, IntelPetAlert):
                 show_alert(item)
+            elif isinstance(item, IntelPetLocationCheer):
+                show_location_cheer(item)
             else:
                 status_var.set(item)
         root.after(250, poll_queue)
@@ -700,6 +986,48 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--help-phrase", action="append", default=(), help="Extra help phrase to treat as critical.")
     parser.add_argument("--no-message-text", action="store_true", help="Hide the matched message text in the overlay.")
     parser.add_argument("--alert-seconds", type=float, default=None, help="Seconds before the overlay returns to idle.")
+    parser.add_argument(
+        "--enable-location-cheer",
+        action="store_true",
+        help="Use read-only ESI location to cheer in target systems.",
+    )
+    parser.add_argument(
+        "--happy-system",
+        action="append",
+        default=(),
+        help="System name that makes the ship fly happily. Defaults to Dihra, Amarr, and Jita.",
+    )
+    parser.add_argument(
+        "--location-poll-seconds",
+        type=float,
+        default=DEFAULT_LOCATION_POLL_SECONDS,
+        help="Seconds between ESI location checks when location cheer is enabled.",
+    )
+    parser.add_argument(
+        "--sso-client-id",
+        default=os.environ.get("INTEL_PET_SSO_CLIENT_ID", os.environ.get("EVE_SSO_CLIENT_ID", "")),
+        help="EVE SSO client id for optional location cheer.",
+    )
+    parser.add_argument(
+        "--sso-client-secret",
+        default=os.environ.get("INTEL_PET_SSO_CLIENT_SECRET", os.environ.get("EVE_SSO_CLIENT_SECRET", "")),
+        help="EVE SSO client secret for optional location cheer.",
+    )
+    parser.add_argument(
+        "--sso-callback-url",
+        default=os.environ.get("INTEL_PET_SSO_CALLBACK_URL", DEFAULT_LOCATION_CALLBACK_URL),
+        help="Local EVE SSO callback URL for optional location cheer.",
+    )
+    parser.add_argument(
+        "--esi-base-url",
+        default=os.environ.get("INTEL_PET_ESI_BASE_URL", DEFAULT_ESI_BASE_URL),
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--no-open-sso-browser",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS, help="Chat log polling interval.")
     parser.add_argument("--read-existing", action="store_true", help="Process existing log lines instead of new lines only.")
     parser.add_argument("--console", action="store_true", help="Print alerts to the console instead of opening the overlay.")
@@ -711,10 +1039,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     settings = load_settings(args.settings_path, overrides=args)
     engine = IntelPetEngine(settings)
+    location_config = None
+    location_session = None
+    if args.enable_location_cheer:
+        if args.console:
+            raise CorpIntelError("Location cheer needs overlay mode. Remove --console to use the ship animation.")
+        location_config = location_sso_config_from_args(args)
+        location_session = login_location_session(location_config, open_browser=not args.no_open_sso_browser)
     if args.console:
         run_console(args, engine)
     else:
-        run_overlay(args, engine)
+        run_overlay(args, engine, location_config=location_config, location_session=location_session)
     return 0
 
 
