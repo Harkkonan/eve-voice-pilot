@@ -1680,7 +1680,7 @@ def run_overlay(
     def show_message_bubble(message: str, *, severity: str) -> None:
         resize_overlay(OVERLAY_ALERT_WIDTH)
         bubble_canvas.place(x=128, y=6)
-        control_canvas.lift()
+        control_canvas.tkraise()
         apply_severity(severity)
         message_var.set(message)
         for item_id in bubble_item_ids:
