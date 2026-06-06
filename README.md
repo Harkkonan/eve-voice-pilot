@@ -211,10 +211,12 @@ For an Internet-accessible Flight Attendant link, use `--public-hosting-mode` wi
 
 Listings are stored in ignored local SQLite data at `profiles/corp_market.sqlite3`. More detail is in `docs/corp_market_concierge.md`.
 
+The Flight Attendant tab includes a `Static Cache Preflight` panel. Run `python .\scripts\update_industry_recipe_cache.py` on the same machine or container that serves the website before inviting testers; generated cache files under `cache\` are ignored and are not copied by Git pushes.
+
 The Flight Attendant tab also includes a `Market Acquisition Planner`. It compares public ESI market orders with public market history to suggest cautious public buy-order ceilings, first-order size, and collection range. `Possible trap` warnings mean the current order spread is not well supported by recent history or is too thin to trust without checking in EVE.
 
 The `Trade P&L` tab reads recent ESI wallet transactions and market fee journal rows to match visible buys and sells into item-level profit, loss, open stock, unmatched sells, and optional matched transaction rows. Its history filter can be narrowed from 1 hour up to 30 days, and its considered income view can use an accounting lens plus item exclusions such as Pyerite while still showing the real underlying profit or loss. It is read-only and does not place or edit market orders.
 
 The `Ore Reprocessing` tab estimates mineral output from an ore amount using ESI location, skills, standings, and implants plus local SDE ore/station data. It can rank NPC reprocessing stations where your ESI standing is over 1.5, include the standings-adjusted processing fee, let you sort by net yield, processing fee, or standing, and compare the Jita buy-order value of the processed materials with the Jita buy-order value of the unprocessed ore stack. Upwell structure rigs, taxes, and bonuses still need manual overrides because ESI does not expose those settings.
 
-Planetary Industry planner support is being added in safe slices. The cache/planner layer uses SDE PI schematics, manual customs-tax settings, and public market prices to rank PI chains after import customs cost, export customs cost, sales tax, and optional broker fee. The later site tab should remain advisory only: pilots still create colonies, move goods, and place orders manually.
+The `Planetary Industry` tab uses SDE PI schematics, manual customs-tax settings, and public market prices to rank PI chains after import customs cost, export customs cost, sales tax, and optional broker fee. It remains advisory only: pilots still create colonies, move goods, and place orders manually.

@@ -118,6 +118,8 @@ Use the diagnostics endpoint after startup:
 https://YOUR-DOMAIN-OR-TUNNEL/api/flight/diagnostics
 ```
 
+The Flight Attendant tab also shows a **Static Cache Preflight** panel. Check it before inviting testers or after deploying a new server/container. If it reports a missing cache, run the cache refresh on the same host that serves the website, then restart or refresh the page.
+
 Remote market listing writes are locked down in public hosting mode. Add an admin token for operator-only writes, or add `--trusted-members-can-write-market` if allowlisted EVE SSO members should be able to create, reserve, and update market listings from the shared site:
 
 ```powershell
@@ -132,6 +134,8 @@ Flight Attendant uses ESI to learn your actual location, owned blueprints, mater
 ```powershell
 python .\scripts\update_industry_recipe_cache.py
 ```
+
+Run this command on the actual web host, VM, or container that is serving the site. The generated files are ignored local data, so pushing Git commits does not copy them to a separate host. A missing `cache\eve_planetary_industry.json` will make the Planetary Industry tab report `Planetary cache file is missing.` until the refresh runs there.
 
 The generated caches are written to ignored local data:
 

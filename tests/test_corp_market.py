@@ -50,6 +50,7 @@ from eve_voice_pilot.corp_market import (
     post_discord_webhook,
     render_dashboard,
     render_offer_page,
+    build_static_cache_diagnostics,
 )
 from eve_voice_pilot.planetary_industry import PlanetaryIndustryCache, PlanetaryItem, PlanetarySchematic
 
@@ -253,6 +254,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-profit-filters\"" in page
     assert "class=\"panel profit-panel\"" in page
     assert "id=\"flight-profit-top\" class=\"decision-output\"" in page
+    assert "Static Cache Preflight" in page
+    assert "id=\"flight-cache-summary\"" in page
+    assert "id=\"flight-cache-list\" class=\"cache-list\"" in page
+    assert "renderStaticCachePreflight" in page
     assert "Why This App Requests ESI Scopes" in page
     assert "It cannot buy, sell, contract, move assets, send mail, place market orders" in page
     assert "esi-wallet.read_character_wallet.v1" in page
@@ -1236,6 +1241,80 @@ def test_load_route_graph_cache_reads_compact_cache(tmp_path):
     assert cache.system_count == 1
     assert cache.adjacency[30000142] == (30000144,)
     assert cache.systems[30000142].name == "Jita"
+
+
+def test_static_cache_diagnostics_identifies_missing_planetary_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        corp_market,
+        "load_industry_recipe_cache",
+        lambda: IndustryRecipeCache(
+            path=tmp_path / "eve_industry_recipes.json",
+            available=True,
+            build_number=3374020,
+            recipes={},
+        ),
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "load_route_graph_cache",
+        lambda: RouteGraphCache(
+            path=tmp_path / "eve_route_graph.json",
+            available=True,
+            build_number=3374020,
+            systems={
+                30000142: RouteSystem(
+                    solar_system_id=30000142,
+                    name="Jita",
+                    region_id=10000002,
+                )
+            },
+            adjacency={30000142: ()},
+        ),
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "load_reprocessing_cache",
+        lambda: ReprocessingCache(
+            path=tmp_path / "eve_reprocessing.json",
+            available=True,
+            build_number=3374020,
+            ores={
+                1230: ReprocessingOre(
+                    type_id=1230,
+                    name="Veldspar",
+                    group_id=462,
+                    group_name="Veldspar",
+                    portion_size=100,
+                    specialization_skill_type_id=60377,
+                    specialization_skill_name="Simple Ore Processing",
+                    materials=(ReprocessingMaterial(type_id=34, name="Tritanium", quantity=400),),
+                )
+            },
+            stations={},
+        ),
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "load_planetary_industry_cache",
+        lambda cache_path=corp_market.DEFAULT_PLANETARY_CACHE_PATH: PlanetaryIndustryCache(
+            path=tmp_path / "eve_planetary_industry.json",
+            available=False,
+            schematics={},
+            commodities={},
+            error="Planetary cache file is missing.",
+        ),
+    )
+
+    diagnostics = build_static_cache_diagnostics()
+
+    assert diagnostics["ok"] is False
+    assert diagnostics["missing_count"] == 1
+    assert diagnostics["refresh_command"] == r"python .\scripts\update_industry_recipe_cache.py"
+    planetary = next(cache for cache in diagnostics["caches"] if cache["key"] == "planetary_industry")
+    assert planetary["available"] is False
+    assert planetary["file_name"] == "eve_planetary_industry.json"
+    assert planetary["detail"] == "Planetary cache file is missing."
+    assert "same machine or container" in diagnostics["same_host_note"]
 
 
 def test_build_flight_planetary_payload_displays_customs_transfer_cost(monkeypatch, tmp_path):

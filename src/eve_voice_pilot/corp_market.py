@@ -83,6 +83,7 @@ DEFAULT_PLANETARY_CUSTOMS_CODE_EXPERTISE_LEVEL = 0
 DEFAULT_PLANETARY_SALES_TAX_PERCENT = 3.0
 DEFAULT_PLANETARY_BROKER_FEE_PERCENT = 0.0
 MAX_PLANETARY_TAX_PERCENT = 100.0
+STATIC_CACHE_REFRESH_COMMAND = r"python .\scripts\update_industry_recipe_cache.py"
 DEFAULT_HAUL_DESTINATION_SYSTEM = "Jita"
 DEFAULT_HAUL_DETOUR_JUMPS = 1
 MAX_HAUL_DETOUR_JUMPS = 5
@@ -7282,6 +7283,111 @@ def build_flight_status_payload(
     return payload
 
 
+def build_static_cache_diagnostics() -> dict[str, Any]:
+    recipe_cache = load_industry_recipe_cache()
+    route_cache = load_route_graph_cache()
+    reprocessing_cache = load_reprocessing_cache()
+    planetary_cache = load_planetary_industry_cache(DEFAULT_PLANETARY_CACHE_PATH)
+    caches = [
+        static_cache_row(
+            key="industry_recipes",
+            label="Blueprint recipe cache",
+            file_name=DEFAULT_INDUSTRY_RECIPE_CACHE_PATH.name,
+            path=recipe_cache.path,
+            available=recipe_cache.available,
+            error=recipe_cache.error,
+            build_number=recipe_cache.build_number,
+            release_date=recipe_cache.release_date,
+            generated_at=recipe_cache.generated_at,
+            counts={"recipes": recipe_cache.recipe_count},
+            unlocks=("Flight blueprint matching", "profitability ranking", "hauling item targets"),
+        ),
+        static_cache_row(
+            key="route_graph",
+            label="Route graph cache",
+            file_name=DEFAULT_ROUTE_GRAPH_CACHE_PATH.name,
+            path=route_cache.path,
+            available=route_cache.available,
+            error=route_cache.error,
+            build_number=route_cache.build_number,
+            release_date=route_cache.release_date,
+            generated_at=route_cache.generated_at,
+            counts={"systems": route_cache.system_count, "gates": route_cache.edge_count},
+            unlocks=("nearby systems", "route hauling", "hub resolution"),
+        ),
+        static_cache_row(
+            key="reprocessing",
+            label="Ore reprocessing cache",
+            file_name=DEFAULT_REPROCESSING_CACHE_PATH.name,
+            path=reprocessing_cache.path,
+            available=reprocessing_cache.available,
+            error=reprocessing_cache.error,
+            build_number=reprocessing_cache.build_number,
+            release_date=reprocessing_cache.release_date,
+            generated_at=reprocessing_cache.generated_at,
+            counts={"ores": reprocessing_cache.ore_count, "stations": reprocessing_cache.station_count},
+            unlocks=("ore output estimates", "station yield/tax data"),
+        ),
+        static_cache_row(
+            key="planetary_industry",
+            label="Planetary industry cache",
+            file_name=DEFAULT_PLANETARY_CACHE_PATH.name,
+            path=planetary_cache.path,
+            available=planetary_cache.available,
+            error=planetary_cache.error,
+            build_number=planetary_cache.build_number,
+            release_date=planetary_cache.release_date,
+            generated_at="",
+            counts={
+                "schematics": len(planetary_cache.schematics or {}),
+                "commodities": len(planetary_cache.commodities or {}),
+            },
+            unlocks=("PI chain ranking", "customs-tax base values"),
+        ),
+    ]
+    missing = [cache for cache in caches if not cache["available"]]
+    return {
+        "ok": not missing,
+        "missing_count": len(missing),
+        "cache_count": len(caches),
+        "refresh_command": STATIC_CACHE_REFRESH_COMMAND,
+        "same_host_note": "Run the refresh command on the same machine or container that serves this website.",
+        "ignored_note": "Generated cache files live under cache/ and are intentionally not committed.",
+        "caches": caches,
+    }
+
+
+def static_cache_row(
+    *,
+    key: str,
+    label: str,
+    file_name: str,
+    path: Path,
+    available: bool,
+    error: str,
+    build_number: int | None,
+    release_date: str,
+    generated_at: str,
+    counts: dict[str, int],
+    unlocks: Iterable[str],
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "file_name": file_name,
+        "path": str(path),
+        "available": bool(available),
+        "status": "ready" if available else "missing",
+        "detail": "Ready." if available else (error or f"{file_name} is missing."),
+        "error": error,
+        "build_number": build_number,
+        "release_date": release_date,
+        "generated_at": generated_at,
+        "counts": {name: int(value or 0) for name, value in counts.items()},
+        "unlocks": list(unlocks),
+    }
+
+
 def build_flight_hosting_diagnostics(
     *,
     public_base_url: str,
@@ -7289,10 +7395,8 @@ def build_flight_hosting_diagnostics(
     public_hosting_mode: bool,
     secure_cookies: bool,
 ) -> dict[str, Any]:
-    recipe_cache = load_industry_recipe_cache()
-    route_cache = load_route_graph_cache()
-    reprocessing_cache = load_reprocessing_cache()
-    planetary_cache = load_planetary_industry_cache(DEFAULT_PLANETARY_CACHE_PATH)
+    static_caches = build_static_cache_diagnostics()
+    caches_by_key = {cache["key"]: cache for cache in static_caches["caches"]}
     checks = [
         {
             "name": "HTTPS public URL",
@@ -7316,23 +7420,23 @@ def build_flight_hosting_diagnostics(
         },
         {
             "name": "Recipe cache",
-            "ok": recipe_cache.available,
-            "detail": recipe_cache.error or "Blueprint recipe cache is ready.",
+            "ok": caches_by_key["industry_recipes"]["available"],
+            "detail": caches_by_key["industry_recipes"]["detail"],
         },
         {
             "name": "Route graph cache",
-            "ok": route_cache.available,
-            "detail": route_cache.error or "Jump-aware route graph cache is ready.",
+            "ok": caches_by_key["route_graph"]["available"],
+            "detail": caches_by_key["route_graph"]["detail"],
         },
         {
             "name": "Reprocessing cache",
-            "ok": reprocessing_cache.available,
-            "detail": reprocessing_cache.error or "Ore reprocessing cache is ready.",
+            "ok": caches_by_key["reprocessing"]["available"],
+            "detail": caches_by_key["reprocessing"]["detail"],
         },
         {
             "name": "Planetary industry cache",
-            "ok": planetary_cache.available,
-            "detail": planetary_cache.error or "Planetary industry cache is ready.",
+            "ok": caches_by_key["planetary_industry"]["available"],
+            "detail": caches_by_key["planetary_industry"]["detail"],
         },
     ]
     return {
@@ -7366,10 +7470,11 @@ def build_flight_hosting_diagnostics(
             "compatibility_date": esi_compatibility_date(),
         },
         "static_caches": {
-            "recipe_cache_available": recipe_cache.available,
-            "route_graph_available": route_cache.available,
-            "reprocessing_cache_available": reprocessing_cache.available,
-            "planetary_cache_available": planetary_cache.available,
+            **static_caches,
+            "recipe_cache_available": caches_by_key["industry_recipes"]["available"],
+            "route_graph_available": caches_by_key["route_graph"]["available"],
+            "reprocessing_cache_available": caches_by_key["reprocessing"]["available"],
+            "planetary_cache_available": caches_by_key["planetary_industry"]["available"],
         },
         "checks": checks,
         "notes": [
@@ -10287,6 +10392,35 @@ def _render_flight_attendant_dashboard() -> str:
     .decision-source, .decision-stock { background: rgba(97, 199, 217, .16); color: var(--cyan); }
     .decision-price, .decision-watch { background: rgba(224, 168, 74, .16); color: var(--amber); }
     .decision-skip { background: rgba(229, 116, 102, .16); color: var(--red); }
+    .cache-preflight-panel .profit-summary { margin-bottom: 10px; }
+    .cache-list { display: grid; gap: 8px; }
+    .cache-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      border: 1px solid rgba(63, 85, 80, .5);
+      border-radius: 7px;
+      background: rgba(8, 13, 15, .38);
+      padding: 10px;
+    }
+    .cache-row strong,
+    .cache-row code {
+      overflow-wrap: anywhere;
+    }
+    .cache-row code {
+      color: var(--cyan);
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+    }
+    .cache-row .meta { margin: 4px 0 0; }
+    .cache-counts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+    .cache-counts span {
+      border: 1px solid rgba(63, 85, 80, .5);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 2px 7px;
+    }
     .signal { color: var(--cyan); }
     .warning { color: var(--amber); }
     .danger { color: var(--red); }
@@ -10361,6 +10495,7 @@ def _render_flight_attendant_dashboard() -> str:
       h1 { font-size: 24px; }
       .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics { grid-template-columns: 1fr; }
       .offer, .note-card { grid-template-columns: 1fr; }
+      .cache-row { grid-template-columns: 1fr; }
       .profit-panel { min-height: 360px; }
       .profit-actions { display: grid; grid-template-columns: 1fr; }
       .reprocess-status-rail, .assay-status-strip, .ore-readouts, .sample-ledger, .mineral-grid { grid-template-columns: 1fr; }
@@ -10653,6 +10788,18 @@ def _render_flight_attendant_dashboard() -> str:
                 <div id="flight-profit-top" class="decision-output"></div>
               </div>
             </details>
+          </section>
+
+          <section class="panel cache-preflight-panel" aria-labelledby="flight-cache-title">
+            <div class="panel-header">
+              <div>
+                <h2 id="flight-cache-title">Static Cache Preflight</h2>
+                <div class="meta">Host-side cache readiness for industry, routes, reprocessing, and planetary planning.</div>
+              </div>
+              <span class="pill reserved">Deploy Check</span>
+            </div>
+            <div id="flight-cache-summary" class="profit-summary">Checking static caches...</div>
+            <div id="flight-cache-list" class="cache-list"></div>
           </section>
 
           <section class="panel">
@@ -11249,6 +11396,8 @@ def _render_flight_attendant_dashboard() -> str:
     const flightProfitSummary = document.querySelector("#flight-profit-summary");
     const flightProfitFilters = document.querySelector("#flight-profit-filters");
     const flightProfitTop = document.querySelector("#flight-profit-top");
+    const flightCacheSummary = document.querySelector("#flight-cache-summary");
+    const flightCacheList = document.querySelector("#flight-cache-list");
     const haulRouteForm = document.querySelector("#haul-route-form");
     const haulOrigin = document.querySelector("#haul-origin");
     const haulDestination = document.querySelector("#haul-destination");
@@ -11420,6 +11569,67 @@ def _render_flight_attendant_dashboard() -> str:
       const statusLabel = response.status ? `HTTP ${response.status}` : "a non-JSON response";
       const detail = snippet ? ` (${snippet})` : "";
       throw new Error(`${fallbackMessage}: server returned ${statusLabel} instead of JSON${detail}.`);
+    }
+
+    async function loadFlightDiagnostics() {
+      flightCacheSummary.textContent = "Checking static cache readiness...";
+      flightCacheList.innerHTML = "";
+      try {
+        const data = await readJsonApiResponse(
+          await fetch("/api/flight/diagnostics"),
+          "Could not load Flight Attendant diagnostics",
+        );
+        renderStaticCachePreflight(data.static_caches || {});
+      } catch (error) {
+        flightCacheSummary.textContent = error.message;
+        flightCacheList.innerHTML = "";
+      }
+    }
+
+    function renderStaticCachePreflight(staticCaches) {
+      const caches = Array.isArray(staticCaches.caches) ? staticCaches.caches : [];
+      const missingCount = Number(staticCaches.missing_count || caches.filter((cache) => !cache.available).length);
+      const refreshCommand = staticCaches.refresh_command || "python .\\\\scripts\\\\update_industry_recipe_cache.py";
+      if (!caches.length) {
+        flightCacheSummary.textContent = "No static cache diagnostics were returned.";
+        flightCacheList.innerHTML = "";
+        return;
+      }
+      if (missingCount > 0) {
+        flightCacheSummary.innerHTML = `
+          <strong>${formatNumber(missingCount)}</strong> static cache${missingCount === 1 ? "" : "s"} missing.
+          <div class="meta">Run <code>${escapeHtml(refreshCommand)}</code> on the same host that serves this website.</div>
+        `;
+      } else {
+        flightCacheSummary.innerHTML = `
+          <strong>All static caches ready.</strong>
+          <div class="meta">Generated cache files are local host data under <code>cache\\</code> and are not committed.</div>
+        `;
+      }
+      flightCacheList.innerHTML = caches.map(renderStaticCacheRow).join("");
+    }
+
+    function renderStaticCacheRow(cache) {
+      const counts = Object.entries(cache.counts || {})
+        .filter(([_name, value]) => Number(value || 0) > 0)
+        .map(([name, value]) => `<span>${escapeHtml(name)} ${formatNumber(value)}</span>`)
+        .join("");
+      const unlocks = (cache.unlocks || []).slice(0, 3).join(", ");
+      const statusClass = cache.available ? "decision-build" : "decision-price";
+      const statusText = cache.available ? "Ready" : "Missing";
+      const build = cache.build_number ? ` build ${escapeHtml(cache.build_number)}` : "";
+      return `
+        <article class="cache-row">
+          <div>
+            <strong>${escapeHtml(cache.label || cache.file_name || "Static cache")}${build}</strong>
+            <div class="meta">${escapeHtml(cache.detail || "")}</div>
+            <code>${escapeHtml(cache.path || cache.file_name || "")}</code>
+            <div class="meta">${escapeHtml(unlocks ? `Unlocks: ${unlocks}.` : "Used by Flight Attendant planning tools.")}</div>
+            ${counts ? `<div class="cache-counts">${counts}</div>` : ""}
+          </div>
+          <span class="pill ${statusClass}">${statusText}</span>
+        </article>
+      `;
     }
 
     function handleMarketGroupShowMore(container, event) {
@@ -14240,6 +14450,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     flightRefreshButton.addEventListener("click", () => {
       loadFlightStatus();
+      loadFlightDiagnostics();
     });
 
     flightBuyerScanButton.addEventListener("click", () => {
@@ -14494,6 +14705,7 @@ def _render_flight_attendant_dashboard() -> str:
     updateFilterButtons();
     renderNotes();
     loadFlightStatus();
+    loadFlightDiagnostics();
     loadOffers().catch((error) => {
       offersEl.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
       statusEl.textContent = "Load failed";
