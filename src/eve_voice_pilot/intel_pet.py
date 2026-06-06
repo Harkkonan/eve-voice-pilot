@@ -55,6 +55,9 @@ DEFAULT_LOCATION_POLL_SECONDS = 15.0
 DEFAULT_HAPPY_SYSTEMS = ("Dihra", "Amarr", "Jita")
 DEFAULT_HISTORY_LIMIT = 25
 LOCATION_SCOPE = "esi-location.read_location.v1"
+OVERLAY_IDLE_WIDTH = 220
+OVERLAY_ALERT_WIDTH = 430
+OVERLAY_HEIGHT = 176
 SHIP_FRAME_COUNT = 8
 SHIP_FRAME_MS = 150
 IDLE_ANIMATION_MS = 5 * 60 * 1000
@@ -834,13 +837,12 @@ def run_overlay(
 
     root = tk.Tk()
     root.title("EVE Intel Pet")
-    root.geometry("430x176+40+40")
+    desktop_left = root.winfo_vrootx()
+    desktop_width = root.winfo_vrootwidth()
+    start_x = max(desktop_left + 20, desktop_left + desktop_width - OVERLAY_ALERT_WIDTH - 40)
+    root.geometry(f"{OVERLAY_IDLE_WIDTH}x{OVERLAY_HEIGHT}+{start_x}+80")
     root.attributes("-topmost", True)
     root.overrideredirect(True)
-    try:
-        root.attributes("-alpha", 0.98)
-    except tk.TclError:
-        pass
 
     transparent_color = "#ff00ff"
     bubble_fill = "#101820"
@@ -874,7 +876,8 @@ def run_overlay(
         sprite_image_id = sprite_canvas.create_image(80, 64, image=sprite_frames[0], tags=("drag_handle",))
 
     bubble_canvas = tk.Canvas(pet_frame, width=300, height=152, bg=transparent_color, highlightthickness=0)
-    bubble_canvas.place(x=128, y=6)
+    control_canvas = tk.Canvas(pet_frame, width=76, height=30, bg=transparent_color, highlightthickness=0)
+    control_canvas.place(x=132, y=118)
 
     def draw_round_rectangle(
         canvas: Any,
@@ -996,41 +999,23 @@ def run_overlay(
         width=250,
         tags=("bubble",),
     )
-    options_rect_id = bubble_canvas.create_rectangle(
-        10,
-        116,
-        76,
-        140,
+    options_rect_id = control_canvas.create_rectangle(
+        2,
+        2,
+        74,
+        28,
         fill="#1f2937",
         outline="#64748b",
         width=1,
         tags=("options_button",),
     )
-    options_text_id = bubble_canvas.create_text(
-        43,
-        128,
+    options_text_id = control_canvas.create_text(
+        38,
+        15,
         fill="#f8fafc",
         font=("Segoe UI", 8, "bold"),
         text="Options",
         tags=("options_button",),
-    )
-    move_rect_id = bubble_canvas.create_rectangle(
-        84,
-        116,
-        132,
-        140,
-        fill="#1f2937",
-        outline="#64748b",
-        width=1,
-        tags=("move_button",),
-    )
-    move_text_id = bubble_canvas.create_text(
-        108,
-        128,
-        fill="#f8fafc",
-        font=("Segoe UI", 8, "bold"),
-        text="Move",
-        tags=("move_button",),
     )
     bubble_item_ids = (*bubble_border_items, bubble_tail_id, message_id)
     for item_id in bubble_item_ids:
@@ -1051,32 +1036,36 @@ def run_overlay(
 
     message_var = CanvasTextVar(bubble_canvas, message_id, "")
 
-    drag_start: dict[str, int] = {"x": 0, "y": 0}
+    drag_start: dict[str, int | bool] = {"x": 0, "y": 0, "moved": False}
 
     def begin_drag(event: Any) -> None:
         drag_start["x"] = int(event.x_root)
         drag_start["y"] = int(event.y_root)
-
-    def begin_native_drag(event: Any) -> None:
-        begin_drag(event)
-        start_native_window_drag(root)
+        drag_start["moved"] = False
 
     def drag_overlay(event: Any) -> None:
-        dx = int(event.x_root) - drag_start["x"]
-        dy = int(event.y_root) - drag_start["y"]
+        dx = int(event.x_root) - int(drag_start["x"])
+        dy = int(event.y_root) - int(drag_start["y"])
+        if dx or dy:
+            drag_start["moved"] = True
         drag_start["x"] = int(event.x_root)
         drag_start["y"] = int(event.y_root)
         root.geometry(f"{root.winfo_width()}x{root.winfo_height()}+{root.winfo_x() + dx}+{root.winfo_y() + dy}")
 
+    def release_options(_event: Any) -> None:
+        if not bool(drag_start["moved"]):
+            open_options()
+
     for widget in (sprite_canvas,):
-        widget.bind("<ButtonPress-1>", begin_native_drag)
+        widget.bind("<ButtonPress-1>", begin_drag)
         widget.bind("<B1-Motion>", drag_overlay)
-    sprite_canvas.tag_bind("drag_handle", "<ButtonPress-1>", begin_native_drag)
+    sprite_canvas.tag_bind("drag_handle", "<ButtonPress-1>", begin_drag)
     sprite_canvas.tag_bind("drag_handle", "<B1-Motion>", drag_overlay)
-    bubble_canvas.tag_bind("bubble", "<ButtonPress-1>", begin_native_drag)
+    bubble_canvas.tag_bind("bubble", "<ButtonPress-1>", begin_drag)
     bubble_canvas.tag_bind("bubble", "<B1-Motion>", drag_overlay)
-    bubble_canvas.tag_bind("move_button", "<ButtonPress-1>", begin_native_drag)
-    bubble_canvas.tag_bind("move_button", "<B1-Motion>", drag_overlay)
+    control_canvas.tag_bind("options_button", "<ButtonPress-1>", begin_drag)
+    control_canvas.tag_bind("options_button", "<B1-Motion>", drag_overlay)
+    control_canvas.tag_bind("options_button", "<ButtonRelease-1>", release_options)
 
     def open_options() -> None:
         editor = tk.Toplevel(root)
@@ -1290,8 +1279,6 @@ def run_overlay(
         if first_entry is not None:
             first_entry.focus_set()
 
-    bubble_canvas.tag_bind("options_button", "<Button-1>", lambda _event: open_options())
-
     idle_after_id: str | None = None
 
     def set_sprite_frame(index: int, *, offset_x: int = 0, offset_y: int = 0) -> None:
@@ -1418,10 +1405,19 @@ def run_overlay(
         for item_id in bubble_border_items:
             bubble_canvas.itemconfigure(item_id, outline=color)
         bubble_canvas.itemconfigure(bubble_tail_id, outline=color)
-        bubble_canvas.itemconfigure(options_rect_id, outline=color)
-        bubble_canvas.itemconfigure(move_rect_id, outline=color)
+        control_canvas.itemconfigure(options_rect_id, outline=color)
+
+    def resize_overlay(width: int) -> None:
+        desktop_left = root.winfo_vrootx()
+        desktop_width = root.winfo_vrootwidth()
+        max_x = desktop_left + max(0, desktop_width - width - 8)
+        clean_x = min(max(root.winfo_x(), desktop_left), max_x)
+        root.geometry(f"{width}x{OVERLAY_HEIGHT}+{clean_x}+{root.winfo_y()}")
 
     def show_message_bubble(message: str, *, severity: str) -> None:
+        resize_overlay(OVERLAY_ALERT_WIDTH)
+        bubble_canvas.place(x=128, y=6)
+        control_canvas.lift()
         apply_severity(severity)
         message_var.set(message)
         for item_id in bubble_item_ids:
@@ -1431,6 +1427,8 @@ def run_overlay(
         message_var.set("")
         for item_id in bubble_item_ids:
             bubble_canvas.itemconfigure(item_id, state="hidden")
+        bubble_canvas.place_forget()
+        resize_overlay(OVERLAY_IDLE_WIDTH)
         apply_severity("idle")
 
     def remember_history(item: IntelPetHistoryItem) -> None:

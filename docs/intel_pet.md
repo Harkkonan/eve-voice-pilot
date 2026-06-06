@@ -122,9 +122,9 @@ To choose different happy systems:
 
 ## Manage Alerts In The Overlay
 
-The overlay itself stays small. When idle, it shows only the ship and a small `Options` button. The speech bubble appears only for actual alert or arrival messages, then hides again.
+The overlay itself stays small. When idle, it shows only the ship and a small `Options` button. The speech bubble appears only for actual alert or arrival messages, then physically disappears again.
 
-Drag the ship or hold the `Move` button to move the pet around your screen.
+Drag the ship to move the pet around your screen. You can also drag the `Options` button; a normal click still opens settings.
 
 Click `Options` to open the full settings window.
 
