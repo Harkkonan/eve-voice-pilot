@@ -71,6 +71,10 @@ def response_text_for_command(command: VoiceCommand) -> str:
     return f"{cleaned} confirmed." if cleaned else "Command confirmed."
 
 
+def normalize_response_text(text: str) -> str:
+    return SPACE_RE.sub(" ", str(text or "").strip())
+
+
 def response_cache_path(
     command: VoiceCommand,
     engine: str = RESPONSE_ENGINE_WINDOWS,
@@ -83,6 +87,20 @@ def response_cache_path(
         f"{engine}\n{model}\n{voice}\n{instructions}\n{response_suffix(command)}\n{text}".encode("utf-8")
     ).hexdigest()[:16]
     return RESPONSE_CACHE_DIR / f"{digest}.wav"
+
+
+def response_text_cache_path(
+    text: str,
+    engine: str = RESPONSE_ENGINE_WINDOWS,
+    model: str = DEFAULT_OPENAI_TTS_MODEL,
+    voice: str = DEFAULT_OPENAI_TTS_VOICE,
+    instructions: str = DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+) -> Path:
+    clean_text = normalize_response_text(text)
+    digest = hashlib.sha1(
+        f"text\n{engine}\n{model}\n{voice}\n{instructions}\n{clean_text}".encode("utf-8")
+    ).hexdigest()[:16]
+    return RESPONSE_CACHE_DIR / f"text-{digest}.wav"
 
 
 def command_snapshot(command: VoiceCommand) -> VoiceCommand:
@@ -112,8 +130,39 @@ def generate_response_audio(
     return generate_windows_response_audio(command, force)
 
 
+def generate_text_audio(
+    text: str,
+    engine: str = RESPONSE_ENGINE_WINDOWS,
+    api_key: str = "",
+    model: str = DEFAULT_OPENAI_TTS_MODEL,
+    voice: str = DEFAULT_OPENAI_TTS_VOICE,
+    instructions: str = DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+    force: bool = False,
+) -> Path:
+    clean_text = normalize_response_text(text)
+    if not clean_text:
+        raise RuntimeError("Voice response text is empty.")
+    path = response_text_cache_path(
+        clean_text,
+        engine=engine,
+        model=model,
+        voice=voice,
+        instructions=instructions,
+    )
+    if engine == RESPONSE_ENGINE_OPENAI:
+        return generate_openai_text_audio(clean_text, path, api_key, model, voice, instructions, force)
+    return generate_windows_text_audio(clean_text, path, force)
+
+
 def generate_windows_response_audio(command: VoiceCommand, force: bool = False) -> Path:
     path = response_cache_path(command, engine=RESPONSE_ENGINE_WINDOWS)
+    return generate_windows_text_audio(response_text_for_command(command), path, force)
+
+
+def generate_windows_text_audio(text: str, path: Path, force: bool = False) -> Path:
+    clean_text = normalize_response_text(text)
+    if not clean_text:
+        raise RuntimeError("Voice response text is empty.")
     if path.exists():
         if force:
             path.unlink()
@@ -137,7 +186,7 @@ $synth.Speak($text)
 $synth.Dispose()
 """
     env = dict(os.environ)
-    env["EVE_VOICE_RESPONSE_TEXT"] = response_text_for_command(command)
+    env["EVE_VOICE_RESPONSE_TEXT"] = clean_text
     env["EVE_VOICE_RESPONSE_OUT"] = str(temp_path)
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -164,12 +213,27 @@ def generate_openai_response_audio(
     instructions: str = DEFAULT_POWER_BALLAD_INSTRUCTIONS,
     force: bool = False,
 ) -> Path:
+    path = response_cache_path(command, engine=RESPONSE_ENGINE_OPENAI, model=model, voice=voice, instructions=instructions)
+    return generate_openai_text_audio(response_text_for_command(command), path, api_key, model, voice, instructions, force)
+
+
+def generate_openai_text_audio(
+    text: str,
+    path: Path,
+    api_key: str,
+    model: str = DEFAULT_OPENAI_TTS_MODEL,
+    voice: str = DEFAULT_OPENAI_TTS_VOICE,
+    instructions: str = DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+    force: bool = False,
+) -> Path:
     if not api_key.strip():
         raise RuntimeError("Add your OpenAI API key before generating OpenAI voice responses.")
 
+    clean_text = normalize_response_text(text)
+    if not clean_text:
+        raise RuntimeError("Voice response text is empty.")
     voice = voice.strip() or DEFAULT_OPENAI_TTS_VOICE
     instructions = instructions.strip() or DEFAULT_POWER_BALLAD_INSTRUCTIONS
-    path = response_cache_path(command, engine=RESPONSE_ENGINE_OPENAI, model=model, voice=voice, instructions=instructions)
     if path.exists():
         if force:
             path.unlink()
@@ -184,7 +248,7 @@ def generate_openai_response_audio(
     payload = {
         "model": model,
         "voice": voice,
-        "input": response_text_for_command(command),
+        "input": clean_text,
         "instructions": instructions,
         "response_format": "wav",
     }
@@ -300,11 +364,24 @@ class SpeechResponseManager:
             self.log(f"Voice response for {command.name} is generating; try the command again in a moment.")
             self.prepare_command_async(command)
             return
+        self._play_path(path, f"voice response for {command.name}")
+
+    def play_text(self, text: str, label: str = "pet message") -> None:
+        clean_text = normalize_response_text(text)
+        if not clean_text:
+            return
+        path = self._text_cache_path(clean_text)
+        if path.exists():
+            self._play_path(path, label)
+            return
+        self._prepare_text_async(clean_text, label=label, play_when_ready=True)
+
+    def _play_path(self, path: Path, label: str) -> None:
         try:
             normalize_cached_wav(path)
             winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
         except Exception as exc:
-            self.log(f"Could not play voice response for {command.name}: {exc}")
+            self.log(f"Could not play {label}: {exc}")
 
     def stop(self) -> None:
         try:
@@ -315,6 +392,15 @@ class SpeechResponseManager:
     def _cache_path(self, command: VoiceCommand) -> Path:
         return response_cache_path(
             command,
+            engine=self.engine,
+            model=self.model,
+            voice=self.voice,
+            instructions=self.instructions,
+        )
+
+    def _text_cache_path(self, text: str) -> Path:
+        return response_text_cache_path(
+            text,
             engine=self.engine,
             model=self.model,
             voice=self.voice,
@@ -377,6 +463,64 @@ class SpeechResponseManager:
             finally:
                 with self.lock:
                     self.pending.discard(path)
+
+    def _prepare_text_async(self, text: str, *, label: str, play_when_ready: bool = False, force: bool = False) -> None:
+        with self.lock:
+            engine = self.engine
+            model = self.model
+            voice = self.voice
+            instructions = self.instructions
+            api_key = self.api_key
+            if engine == RESPONSE_ENGINE_OPENAI and not api_key:
+                if not self.missing_key_notice_shown:
+                    self.missing_key_notice_shown = True
+                    self.log("Add your OpenAI API key before generating OpenAI voice responses.")
+                return
+            path = response_text_cache_path(text, engine=engine, model=model, voice=voice, instructions=instructions)
+            if not force and path.exists():
+                if play_when_ready:
+                    self._play_path(path, label)
+                return
+            if path in self.pending:
+                return
+            self.pending.add(path)
+        threading.Thread(
+            target=self._prepare_text_worker,
+            args=(text, path, label, play_when_ready, force, engine, api_key, model, voice, instructions),
+            name="speech-text-worker",
+            daemon=True,
+        ).start()
+
+    def _prepare_text_worker(
+        self,
+        text: str,
+        path: Path,
+        label: str,
+        play_when_ready: bool,
+        force: bool,
+        engine: str,
+        api_key: str,
+        model: str,
+        voice: str,
+        instructions: str,
+    ) -> None:
+        try:
+            generated_path = generate_text_audio(
+                text,
+                engine=engine,
+                api_key=api_key,
+                model=model,
+                voice=voice,
+                instructions=instructions,
+                force=force,
+            )
+            if play_when_ready:
+                self._play_path(generated_path, label)
+        except Exception as exc:
+            self.log(f"Could not prepare {label}: {exc}")
+        finally:
+            with self.lock:
+                self.pending.discard(path)
 
 
 def normalize_cached_wav(path: Path) -> None:

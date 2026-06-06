@@ -111,6 +111,35 @@ To disable mission comments:
 .\scripts\run_intel_pet.ps1 --no-mission-cheer
 ```
 
+## Optional Spoken Pet Messages
+
+The pet can speak the same alert, location, combat, and mission text it already shows in its bubble. This is opt-in and read-only: spoken pet messages do not listen for voice commands and do not send keys to EVE.
+
+To enable it from the command line:
+
+```powershell
+.\scripts\run_intel_pet.ps1 --speak-alerts
+```
+
+The default pet speech engine is Windows local speech. You can also choose the cached OpenAI voice path used by EVE Voice Pilot:
+
+```powershell
+.\scripts\run_intel_pet.ps1 `
+  --speak-alerts `
+  --response-engine "OpenAI cached" `
+  --response-voice "ballad"
+```
+
+OpenAI pet speech uses the saved EVE Voice Pilot API key on this PC, or one of these local environment variables:
+
+```text
+INTEL_PET_OPENAI_API_KEY
+OPENAI_API_KEY
+EVE_VOICE_OPENAI_API_KEY
+```
+
+You can also turn spoken pet messages on or off in `Options` > `Voice`.
+
 ## Optional ESI Location Cheer
 
 Location cheer makes the ship fly happily when your connected EVE character reaches `Dihra`, `Amarr`, or `Jita`.
@@ -190,6 +219,8 @@ In the `Behaviors` tab, choose the ship animation for each alert type:
 
 Each row has a small animated preview next to the selector. The behavior choices include short alert, happy flight, combat burst, long flight, long shooting, long combo, calm wiggle, and no animation. Behavior changes are saved immediately to the same local settings file.
 
+In the `Voice` tab, turn spoken pet messages on or off and choose the voice engine/style. This only speaks local pet messages; it does not arm voice commands or control EVE.
+
 ## Alert History
 
 The `History` tab in `Options` shows recent chat alerts and location cheer events from this pet run.
@@ -219,6 +250,10 @@ Example:
   "help_phrases": ["need evac"],
   "show_message_text": true,
   "alert_seconds": 15,
+  "speak_alerts": false,
+  "response_engine": "Windows local",
+  "response_voice": "ballad",
+  "response_style": "Speak as a starship AI with a dramatic 1980s power ballad cadence: soaring, confident, a little theatrical, but concise and clear. Do not sing; speak the line.",
   "alert_behaviors": {
     "mention": "alert",
     "help": "alert",

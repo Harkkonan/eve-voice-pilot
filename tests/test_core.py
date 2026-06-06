@@ -22,8 +22,10 @@ from eve_voice_pilot.speech_responses import (
     RESPONSE_ENGINE_OPENAI,
     RESPONSE_ENGINE_WINDOWS,
     normalize_wav_bytes,
+    normalize_response_text,
     response_cache_path,
     response_enabled,
+    response_text_cache_path,
     response_text_for_command,
 )
 from eve_voice_pilot.transcription import audio_rms, block_size_for_rate, resample_pcm, resample_pcm_to_24k
@@ -210,6 +212,22 @@ def test_response_cache_separates_openai_and_windows_clips():
     )
     assert DEFAULT_RESPONSE_ENGINE == RESPONSE_ENGINE_OPENAI
     assert windows_path != openai_path
+
+
+def test_response_text_cache_normalizes_and_separates_engines():
+    first = response_text_cache_path("Arrived in Amarr.\n")
+    second = response_text_cache_path("Arrived   in Amarr.")
+    openai = response_text_cache_path(
+        "Arrived in Amarr.",
+        engine=RESPONSE_ENGINE_OPENAI,
+        voice="ballad",
+        instructions=DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+    )
+
+    assert normalize_response_text("Arrived   in Amarr.\n") == "Arrived in Amarr."
+    assert first == second
+    assert first.name.startswith("text-")
+    assert first != openai
 
 
 def test_voice_standard_includes_added_catalog_shortcuts():

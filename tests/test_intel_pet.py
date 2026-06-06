@@ -19,6 +19,7 @@ from eve_voice_pilot.intel_pet import (
     BEHAVIOR_NONE,
     DEFAULT_ALERT_SECONDS,
     DEFAULT_ALERT_BEHAVIORS,
+    DEFAULT_PET_SPEECH_ENGINE,
     IDLE_SPRITE_SEQUENCE,
     KILL_SPRITE_STEPS,
     LONG_COMBAT_SPRITE_STEPS,
@@ -66,10 +67,13 @@ from eve_voice_pilot.intel_pet import (
     replace_alert_behaviors,
     replace_alert_terms,
     replace_extra_keywords,
+    replace_voice_settings,
     save_settings,
     ship_sprite_frame_paths,
+    spoken_pet_text,
     trim_history,
 )
+from eve_voice_pilot.speech_responses import RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_WINDOWS
 
 
 def make_message(text: str, *, speaker: str = "Alice Example", channel: str = "Corp") -> ChatMessage:
@@ -213,6 +217,36 @@ def test_save_settings_persists_keywords_for_later_load(tmp_path):
     loaded = load_settings(settings_path)
 
     assert loaded == settings
+
+
+def test_pet_voice_settings_persist_and_clean_values(tmp_path):
+    settings_path = tmp_path / "intel_pet_settings.json"
+    settings = replace_voice_settings(
+        IntelPetSettings(),
+        speak_alerts=True,
+        response_engine=RESPONSE_ENGINE_OPENAI,
+        response_voice="nova",
+        response_style="Short and calm.",
+    )
+
+    save_settings(settings_path, settings)
+    loaded = load_settings(settings_path)
+
+    assert loaded.speak_alerts is True
+    assert loaded.response_engine == RESPONSE_ENGINE_OPENAI
+    assert loaded.response_voice == "nova"
+    assert loaded.response_style == "Short and calm."
+    assert replace_voice_settings(
+        loaded,
+        speak_alerts=False,
+        response_engine="not-real",
+        response_voice="",
+        response_style="",
+    ).response_engine == DEFAULT_PET_SPEECH_ENGINE == RESPONSE_ENGINE_WINDOWS
+
+
+def test_spoken_pet_text_collapses_bubble_newlines():
+    assert spoken_pet_text("18:15:00Z | Amarr\nbuy order appeared") == "18:15:00Z | Amarr. buy order appeared"
 
 
 def test_default_alert_duration_is_fifteen_seconds():

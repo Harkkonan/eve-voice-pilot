@@ -45,6 +45,17 @@ from eve_voice_pilot.corp_intel import (
     scopes_from_sso_payload,
     watch_chat_logs,
 )
+from eve_voice_pilot.config import load_settings as load_app_settings
+from eve_voice_pilot.speech_responses import (
+    DEFAULT_OPENAI_TTS_MODEL,
+    DEFAULT_OPENAI_TTS_VOICE,
+    DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+    OPENAI_TTS_VOICES,
+    RESPONSE_ENGINE_WINDOWS,
+    RESPONSE_ENGINES,
+    SpeechResponseManager,
+    normalize_response_text,
+)
 
 
 DEFAULT_SETTINGS_PATH = ROOT / "profiles" / "intel_pet_settings.json"
@@ -54,6 +65,8 @@ DEFAULT_LOCATION_CALLBACK_URL = "http://127.0.0.1:8788/intel-pet/callback"
 DEFAULT_LOCATION_POLL_SECONDS = 15.0
 DEFAULT_HAPPY_SYSTEMS = ("Dihra", "Amarr", "Jita")
 DEFAULT_HISTORY_LIMIT = 25
+DEFAULT_PET_SPEECH_ENGINE = RESPONSE_ENGINE_WINDOWS
+DEFAULT_PET_SPEECH_STYLE = DEFAULT_POWER_BALLAD_INSTRUCTIONS
 LOCATION_SCOPE = "esi-location.read_location.v1"
 OVERLAY_IDLE_WIDTH = 220
 OVERLAY_ALERT_WIDTH = 430
@@ -227,6 +240,36 @@ def default_alert_behaviors() -> dict[str, str]:
     return dict(DEFAULT_ALERT_BEHAVIORS)
 
 
+def clean_response_engine(value: Any) -> str:
+    engine = str(value or "").strip()
+    return engine if engine in RESPONSE_ENGINES else DEFAULT_PET_SPEECH_ENGINE
+
+
+def clean_response_voice(value: Any) -> str:
+    voice = str(value or "").strip()
+    return voice or DEFAULT_OPENAI_TTS_VOICE
+
+
+def clean_response_style(value: Any) -> str:
+    style = str(value or "").strip()
+    return style or DEFAULT_PET_SPEECH_STYLE
+
+
+def pet_openai_api_key() -> str:
+    for name in ("INTEL_PET_OPENAI_API_KEY", "OPENAI_API_KEY", "EVE_VOICE_OPENAI_API_KEY"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    try:
+        return str(load_app_settings().get("api_key", "")).strip()
+    except Exception:
+        return ""
+
+
+def spoken_pet_text(text: str) -> str:
+    return normalize_response_text(str(text or "").replace("\n", ". "))
+
+
 @dataclass(frozen=True)
 class IntelPetSettings:
     pilot_names: tuple[str, ...] = ()
@@ -235,6 +278,10 @@ class IntelPetSettings:
     show_message_text: bool = True
     alert_seconds: float = DEFAULT_ALERT_SECONDS
     alert_behaviors: dict[str, str] = field(default_factory=default_alert_behaviors)
+    speak_alerts: bool = False
+    response_engine: str = DEFAULT_PET_SPEECH_ENGINE
+    response_voice: str = DEFAULT_OPENAI_TTS_VOICE
+    response_style: str = DEFAULT_PET_SPEECH_STYLE
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "IntelPetSettings":
@@ -245,6 +292,10 @@ class IntelPetSettings:
             show_message_text=bool(payload.get("show_message_text", True)),
             alert_seconds=safe_float(payload.get("alert_seconds"), DEFAULT_ALERT_SECONDS),
             alert_behaviors=clean_alert_behaviors(payload.get("alert_behaviors")),
+            speak_alerts=bool(payload.get("speak_alerts", False)),
+            response_engine=clean_response_engine(payload.get("response_engine")),
+            response_voice=clean_response_voice(payload.get("response_voice")),
+            response_style=clean_response_style(payload.get("response_style")),
         )
 
     def to_watchlist(self) -> IntelWatchlist:
@@ -261,6 +312,10 @@ class IntelPetSettings:
             "show_message_text": self.show_message_text,
             "alert_seconds": self.alert_seconds,
             "alert_behaviors": clean_alert_behaviors(self.alert_behaviors),
+            "speak_alerts": bool(self.speak_alerts),
+            "response_engine": clean_response_engine(self.response_engine),
+            "response_voice": clean_response_voice(self.response_voice),
+            "response_style": clean_response_style(self.response_style),
         }
 
 
@@ -437,6 +492,14 @@ def load_settings(path: Path | None, *, overrides: argparse.Namespace | None = N
         settings = replace(settings, show_message_text=False)
     if overrides.alert_seconds is not None:
         settings = replace(settings, alert_seconds=max(3.0, float(overrides.alert_seconds)))
+    if getattr(overrides, "speak_alerts", None) is not None:
+        settings = replace(settings, speak_alerts=bool(overrides.speak_alerts))
+    if getattr(overrides, "response_engine", ""):
+        settings = replace(settings, response_engine=clean_response_engine(overrides.response_engine))
+    if getattr(overrides, "response_voice", ""):
+        settings = replace(settings, response_voice=clean_response_voice(overrides.response_voice))
+    if getattr(overrides, "response_style", ""):
+        settings = replace(settings, response_style=clean_response_style(overrides.response_style))
     return settings
 
 
@@ -474,6 +537,23 @@ def replace_extra_keywords(settings: IntelPetSettings, keywords: Iterable[str]) 
 
 def replace_alert_behaviors(settings: IntelPetSettings, behaviors: dict[str, str]) -> IntelPetSettings:
     return replace(settings, alert_behaviors=clean_alert_behaviors(behaviors))
+
+
+def replace_voice_settings(
+    settings: IntelPetSettings,
+    *,
+    speak_alerts: bool,
+    response_engine: str,
+    response_voice: str,
+    response_style: str,
+) -> IntelPetSettings:
+    return replace(
+        settings,
+        speak_alerts=bool(speak_alerts),
+        response_engine=clean_response_engine(response_engine),
+        response_voice=clean_response_voice(response_voice),
+        response_style=clean_response_style(response_style),
+    )
 
 
 def merge_terms(existing: tuple[str, ...], additions: Iterable[str]) -> tuple[str, ...]:
@@ -1114,6 +1194,18 @@ def run_overlay(
     location_poll_seconds = max(5.0, safe_float(args.location_poll_seconds, DEFAULT_LOCATION_POLL_SECONDS))
     current_system_lock = threading.Lock()
     current_system_name = ""
+    pet_speech = SpeechResponseManager(lambda text: alert_queue.put(f"Pet voice: {text}"))
+
+    def configure_pet_speech(settings: IntelPetSettings) -> None:
+        pet_speech.configure(
+            engine=settings.response_engine,
+            api_key=pet_openai_api_key(),
+            model=DEFAULT_OPENAI_TTS_MODEL,
+            voice=settings.response_voice,
+            instructions=settings.response_style,
+        )
+
+    configure_pet_speech(engine.current_settings())
 
     def current_local_system() -> str:
         with current_system_lock:
@@ -1452,9 +1544,11 @@ def run_overlay(
         notebook.pack(fill="both", expand=True)
         settings_frame = ttk.Frame(notebook, padding=12)
         behavior_frame = ttk.Frame(notebook, padding=12)
+        voice_frame = ttk.Frame(notebook, padding=12)
         history_frame = ttk.Frame(notebook, padding=12)
         notebook.add(settings_frame, text="Alerts")
         notebook.add(behavior_frame, text="Behaviors")
+        notebook.add(voice_frame, text="Voice")
         notebook.add(history_frame, text="History")
 
         editor_status_var = tk.StringVar(value="Saved locally only.")
@@ -1790,6 +1884,78 @@ def run_overlay(
 
         animate_behavior_previews()
 
+        ttk.Label(voice_frame, text="Pet voice", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(
+            voice_frame,
+            text="Speak the same local alert messages shown in the pet bubble. This does not listen for commands or send keys.",
+            wraplength=520,
+        ).pack(anchor="w", pady=(2, 10))
+
+        voice_settings = engine.current_settings()
+        speak_alerts_var = tk.BooleanVar(value=voice_settings.speak_alerts)
+        response_engine_var = tk.StringVar(value=clean_response_engine(voice_settings.response_engine))
+        response_voice_var = tk.StringVar(value=clean_response_voice(voice_settings.response_voice))
+        response_style_var = tk.StringVar(value=clean_response_style(voice_settings.response_style))
+
+        def persist_voice_settings(action: str = "Voice settings saved") -> None:
+            try:
+                settings = replace_voice_settings(
+                    engine.current_settings(),
+                    speak_alerts=speak_alerts_var.get(),
+                    response_engine=response_engine_var.get(),
+                    response_voice=response_voice_var.get(),
+                    response_style=response_style_var.get(),
+                )
+                save_settings(settings_path, settings)
+                engine.update_settings(settings)
+                configure_pet_speech(settings)
+            except Exception as exc:
+                editor_status_var.set(f"Voice save failed: {exc}")
+                return
+            state = "on" if settings.speak_alerts else "off"
+            editor_status_var.set(f"{action}. Spoken pet messages are {state}.")
+
+        voice_grid = ttk.Frame(voice_frame)
+        voice_grid.pack(fill="x")
+        voice_grid.columnconfigure(1, weight=1)
+
+        ttk.Checkbutton(
+            voice_grid,
+            text="Speak pet messages",
+            variable=speak_alerts_var,
+            command=lambda: persist_voice_settings("Pet voice toggled"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        ttk.Label(voice_grid, text="Voice engine").grid(row=1, column=0, sticky="w", pady=5)
+        response_engine_box = ttk.Combobox(
+            voice_grid,
+            textvariable=response_engine_var,
+            values=RESPONSE_ENGINES,
+            state="readonly",
+        )
+        response_engine_box.grid(row=1, column=1, sticky="ew", pady=5)
+        response_engine_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
+
+        ttk.Label(voice_grid, text="OpenAI voice").grid(row=2, column=0, sticky="w", pady=5)
+        response_voice_box = ttk.Combobox(voice_grid, textvariable=response_voice_var, values=OPENAI_TTS_VOICES)
+        response_voice_box.grid(row=2, column=1, sticky="ew", pady=5)
+        response_voice_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
+
+        ttk.Label(voice_grid, text="Voice style").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=response_style_var).grid(row=3, column=1, sticky="ew", pady=5)
+
+        voice_buttons = ttk.Frame(voice_frame)
+        voice_buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(voice_buttons, text="Save Voice Settings", command=persist_voice_settings).pack(side="left")
+        ttk.Button(
+            voice_buttons,
+            text="Test Pet Voice",
+            command=lambda: (
+                persist_voice_settings("Voice test saved"),
+                pet_speech.play_text("Intel Pet voice online.", label="pet voice test"),
+            ),
+        ).pack(side="left", padx=(6, 0))
+
         ttk.Label(history_frame, text="Alert history", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(
             history_frame,
@@ -2015,6 +2181,13 @@ def run_overlay(
         resize_overlay(OVERLAY_IDLE_WIDTH)
         apply_severity("idle")
 
+    def speak_pet_message(message: str, *, label: str) -> None:
+        if not engine.current_settings().speak_alerts:
+            return
+        clean_text = spoken_pet_text(message)
+        if clean_text:
+            pet_speech.play_text(clean_text, label=label)
+
     def remember_history(item: IntelPetHistoryItem) -> None:
         history_items.append(item)
         del history_items[:-DEFAULT_HISTORY_LIMIT]
@@ -2047,7 +2220,9 @@ def run_overlay(
             root.after_cancel(idle_after_id)
         settings = engine.current_settings()
         display_alert = highest_severity_alert(clean_alerts) or clean_alerts[-1]
-        show_message_bubble(display_message_from_alerts(clean_alerts), severity=display_alert.severity)
+        message = display_message_from_alerts(clean_alerts)
+        show_message_bubble(message, severity=display_alert.severity)
+        speak_pet_message(message, label="pet chat alert")
         for alert in clean_alerts:
             remember_history(history_item_from_alert(alert))
         start_behavior_cycle(behavior_for_alert(display_alert, settings))
@@ -2058,7 +2233,9 @@ def run_overlay(
         if idle_after_id is not None:
             root.after_cancel(idle_after_id)
         settings = engine.current_settings()
-        show_message_bubble(display_message_from_cheer(cheer), severity="info")
+        message = display_message_from_cheer(cheer)
+        show_message_bubble(message, severity="info")
+        speak_pet_message(message, label="pet location cheer")
         remember_history(history_item_from_cheer(cheer))
         start_behavior_cycle(behavior_for_kind("location", settings))
         idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
@@ -2068,7 +2245,9 @@ def run_overlay(
         if idle_after_id is not None:
             root.after_cancel(idle_after_id)
         settings = engine.current_settings()
-        show_message_bubble(display_message_from_combat_cheer(cheer), severity="high")
+        message = display_message_from_combat_cheer(cheer)
+        show_message_bubble(message, severity="high")
+        speak_pet_message(message, label="pet combat cheer")
         remember_history(history_item_from_combat_cheer(cheer))
         start_behavior_cycle(behavior_for_kind("combat", settings))
         idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
@@ -2078,7 +2257,9 @@ def run_overlay(
         if idle_after_id is not None:
             root.after_cancel(idle_after_id)
         settings = engine.current_settings()
-        show_message_bubble(display_message_from_mission_cheer(cheer), severity="info")
+        message = display_message_from_mission_cheer(cheer)
+        show_message_bubble(message, severity="info")
+        speak_pet_message(message, label="pet mission cheer")
         remember_history(history_item_from_mission_cheer(cheer))
         start_behavior_cycle(behavior_for_kind("mission", settings))
         idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
@@ -2123,6 +2304,7 @@ def run_overlay(
         stop_event.set()
         cancel_sprite_cycle()
         cancel_idle_sprite_cycle()
+        pet_speech.stop()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
@@ -2130,6 +2312,7 @@ def run_overlay(
     poll_queue()
     root.mainloop()
     stop_event.set()
+    pet_speech.stop()
 
 
 def load_sprite_frames(tk_module: Any, root: Any, paths: Iterable[Path] | None = None) -> tuple[Any, ...]:
@@ -2194,6 +2377,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--help-phrase", action="append", default=(), help="Extra help phrase to treat as critical.")
     parser.add_argument("--no-message-text", action="store_true", help="Hide the matched message text in the overlay.")
     parser.add_argument("--alert-seconds", type=float, default=None, help="Seconds before the overlay returns to idle.")
+    parser.add_argument(
+        "--speak-alerts",
+        action="store_true",
+        default=None,
+        help="Speak pet alert, location, combat, and mission messages.",
+    )
+    parser.add_argument(
+        "--no-speak-alerts",
+        action="store_false",
+        dest="speak_alerts",
+        help="Disable spoken pet messages even if saved settings enable them.",
+    )
+    parser.add_argument(
+        "--response-engine",
+        default="",
+        choices=RESPONSE_ENGINES,
+        help="Voice engine for spoken pet messages.",
+    )
+    parser.add_argument("--response-voice", default="", help="OpenAI TTS voice for spoken pet messages.")
+    parser.add_argument("--response-style", default="", help="OpenAI TTS style instructions for spoken pet messages.")
     parser.add_argument("--no-combat-cheer", action="store_true", help="Do not watch local game logs for kill cheers.")
     parser.add_argument("--no-mission-cheer", action="store_true", help="Do not watch local game logs for mission comments.")
     parser.add_argument(
