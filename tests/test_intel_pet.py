@@ -9,7 +9,13 @@ from eve_voice_pilot.corp_intel import ChannelFilter, ChatMessage, EveSsoConfig,
 import eve_voice_pilot.intel_pet as intel_pet_module
 from eve_voice_pilot.intel_pet import (
     ALERT_SPRITE_SEQUENCE,
+    BEHAVIOR_ALERT,
+    BEHAVIOR_COMBAT,
+    BEHAVIOR_HAPPY,
+    BEHAVIOR_IDLE,
+    BEHAVIOR_NONE,
     DEFAULT_ALERT_SECONDS,
+    DEFAULT_ALERT_BEHAVIORS,
     IDLE_SPRITE_SEQUENCE,
     KILL_SPRITE_STEPS,
     LOCATION_SCOPE,
@@ -20,6 +26,12 @@ from eve_voice_pilot.intel_pet import (
     IntelPetLocationSession,
     IntelPetEngine,
     IntelPetSettings,
+    alert_behavior_key,
+    behavior_for_alert,
+    behavior_for_kind,
+    behavior_key_from_label,
+    behavior_label,
+    clean_alert_behaviors,
     clean_user_terms,
     combat_cheer_from_game_log_line,
     display_message_from_alert,
@@ -35,6 +47,7 @@ from eve_voice_pilot.intel_pet import (
     load_sprite_frames,
     load_settings,
     read_new_combat_cheers,
+    replace_alert_behaviors,
     replace_alert_terms,
     replace_extra_keywords,
     save_settings,
@@ -118,7 +131,15 @@ def test_load_settings_merges_local_file_and_cli_overrides(tmp_path):
   "extra_keywords": ["buy order"],
   "help_phrases": ["need evac"],
   "show_message_text": false,
-  "alert_seconds": 12
+  "alert_seconds": 12,
+  "alert_behaviors": {
+    "mention": "happy",
+    "help": "combat",
+    "hostile": "none",
+    "keyword": "idle",
+    "location": "alert",
+    "combat": "not-a-real-behavior"
+  }
 }
 """.strip(),
         encoding="utf-8",
@@ -138,6 +159,12 @@ def test_load_settings_merges_local_file_and_cli_overrides(tmp_path):
     assert settings.help_phrases == ("need evac",)
     assert settings.show_message_text is False
     assert settings.alert_seconds == 12
+    assert settings.alert_behaviors["mention"] == BEHAVIOR_HAPPY
+    assert settings.alert_behaviors["help"] == BEHAVIOR_COMBAT
+    assert settings.alert_behaviors["hostile"] == BEHAVIOR_NONE
+    assert settings.alert_behaviors["keyword"] == BEHAVIOR_IDLE
+    assert settings.alert_behaviors["location"] == BEHAVIOR_ALERT
+    assert settings.alert_behaviors["combat"] == DEFAULT_ALERT_BEHAVIORS["combat"]
 
 
 def test_clean_user_terms_splits_commas_and_dedupes_case_insensitively():
@@ -156,6 +183,12 @@ def test_save_settings_persists_keywords_for_later_load(tmp_path):
         help_phrases=("need evac",),
         show_message_text=False,
         alert_seconds=9,
+        alert_behaviors=clean_alert_behaviors(
+            {
+                "mention": BEHAVIOR_HAPPY,
+                "combat": BEHAVIOR_NONE,
+            }
+        ),
     )
 
     save_settings(settings_path, settings)
@@ -166,6 +199,37 @@ def test_save_settings_persists_keywords_for_later_load(tmp_path):
 
 def test_default_alert_duration_is_fifteen_seconds():
     assert IntelPetSettings().alert_seconds == DEFAULT_ALERT_SECONDS == 15.0
+
+
+def test_default_alert_behaviors_preserve_existing_pet_actions():
+    settings = IntelPetSettings()
+
+    assert settings.alert_behaviors == DEFAULT_ALERT_BEHAVIORS
+    assert behavior_for_kind("mention", settings) == BEHAVIOR_ALERT
+    assert behavior_for_kind("location", settings) == BEHAVIOR_HAPPY
+    assert behavior_for_kind("combat", settings) == BEHAVIOR_COMBAT
+
+
+def test_replace_alert_behaviors_cleans_unknown_values():
+    settings = replace_alert_behaviors(
+        IntelPetSettings(),
+        {
+            "mention": BEHAVIOR_HAPPY,
+            "help": "not-real",
+            "combat": BEHAVIOR_NONE,
+            "unknown": BEHAVIOR_COMBAT,
+        },
+    )
+
+    assert settings.alert_behaviors["mention"] == BEHAVIOR_HAPPY
+    assert settings.alert_behaviors["help"] == DEFAULT_ALERT_BEHAVIORS["help"]
+    assert settings.alert_behaviors["combat"] == BEHAVIOR_NONE
+    assert "unknown" not in settings.alert_behaviors
+
+
+def test_behavior_labels_round_trip_for_options_ui():
+    assert behavior_key_from_label(behavior_label(BEHAVIOR_COMBAT)) == BEHAVIOR_COMBAT
+    assert behavior_key_from_label("not a label") == BEHAVIOR_ALERT
 
 
 def test_engine_update_settings_changes_keyword_matches_without_restarting():
@@ -215,6 +279,35 @@ def test_is_happy_system_matches_configured_systems_case_insensitively():
     assert is_happy_system("jita", ("Dihra", "Amarr", "Jita"))
     assert is_happy_system("Dihra", ("dihra",))
     assert not is_happy_system("Perimeter", ("Dihra", "Amarr", "Jita"))
+
+
+def test_alert_behavior_key_routes_chat_alert_types():
+    settings = replace_alert_behaviors(
+        IntelPetSettings(
+            pilot_names=("Dandin Ridderston",),
+            extra_keywords=("buy order",),
+        ),
+        {
+            "mention": BEHAVIOR_HAPPY,
+            "help": BEHAVIOR_COMBAT,
+            "keyword": BEHAVIOR_NONE,
+        },
+    )
+    engine = IntelPetEngine(settings)
+
+    mention = engine.analyze(make_message("Dandin Ridderston can you scout?"))
+    help_call = engine.analyze(make_message("need help on the gate"))
+    keyword = engine.analyze(make_message("that buy order is up"))
+
+    assert mention is not None
+    assert alert_behavior_key(mention) == "mention"
+    assert behavior_for_alert(mention, settings) == BEHAVIOR_HAPPY
+    assert help_call is not None
+    assert alert_behavior_key(help_call) == "help"
+    assert behavior_for_alert(help_call, settings) == BEHAVIOR_COMBAT
+    assert keyword is not None
+    assert alert_behavior_key(keyword) == "keyword"
+    assert behavior_for_alert(keyword, settings) == BEHAVIOR_NONE
 
 
 def test_fetch_pet_location_uses_read_only_esi_scope(monkeypatch):

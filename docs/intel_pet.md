@@ -142,6 +142,17 @@ profiles/intel_pet_settings.json
 
 The live matcher refreshes as soon as a setting is saved, so you do not need to restart the pet.
 
+In the `Behaviors` tab, choose the ship animation for each alert type:
+
+- pilot mention;
+- help call;
+- hostile intel;
+- keyword match;
+- system arrival;
+- kill cheer.
+
+Each row has a small animated preview next to the selector. Behavior changes are saved immediately to the same local settings file.
+
 ## Alert History
 
 The `History` tab in `Options` shows recent chat alerts and location cheer events from this pet run.
@@ -168,7 +179,15 @@ Example:
   "extra_keywords": ["buy order"],
   "help_phrases": ["need evac"],
   "show_message_text": true,
-  "alert_seconds": 15
+  "alert_seconds": 15,
+  "alert_behaviors": {
+    "mention": "alert",
+    "help": "alert",
+    "hostile": "alert",
+    "keyword": "alert",
+    "location": "happy",
+    "combat": "combat"
+  }
 }
 ```
 

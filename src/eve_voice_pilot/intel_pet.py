@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import html
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -58,6 +58,34 @@ LOCATION_SCOPE = "esi-location.read_location.v1"
 OVERLAY_IDLE_WIDTH = 220
 OVERLAY_ALERT_WIDTH = 430
 OVERLAY_HEIGHT = 176
+BEHAVIOR_ALERT = "alert"
+BEHAVIOR_HAPPY = "happy"
+BEHAVIOR_COMBAT = "combat"
+BEHAVIOR_IDLE = "idle"
+BEHAVIOR_NONE = "none"
+BEHAVIOR_OPTIONS = (
+    (BEHAVIOR_ALERT, "Alert pulse", "quick turret and engine pulse"),
+    (BEHAVIOR_HAPPY, "Happy flight", "small cheerful loop"),
+    (BEHAVIOR_COMBAT, "Combat burst", "fast flight with laser shots"),
+    (BEHAVIOR_IDLE, "Calm wiggle", "quiet idle flutter"),
+    (BEHAVIOR_NONE, "No animation", "message only"),
+)
+ALERT_BEHAVIOR_KINDS = (
+    ("mention", "Pilot mention", "When someone says one of your pilot names."),
+    ("help", "Help call", "When a help phrase or aid call is detected."),
+    ("hostile", "Hostile intel", "When hostile, red, neutral, or war-target intel matches."),
+    ("keyword", "Keyword match", "When an extra local keyword matches."),
+    ("location", "System arrival", "When location cheer sees a happy system."),
+    ("combat", "Kill cheer", "When a local game-log kill line appears."),
+)
+DEFAULT_ALERT_BEHAVIORS = {
+    "mention": BEHAVIOR_ALERT,
+    "help": BEHAVIOR_ALERT,
+    "hostile": BEHAVIOR_ALERT,
+    "keyword": BEHAVIOR_ALERT,
+    "location": BEHAVIOR_HAPPY,
+    "combat": BEHAVIOR_COMBAT,
+}
 SHIP_FRAME_COUNT = 8
 SHIP_FRAME_MS = 150
 IDLE_ANIMATION_MS = 5 * 60 * 1000
@@ -103,6 +131,10 @@ SELF_LOSS_PATTERNS = (
 )
 
 
+def default_alert_behaviors() -> dict[str, str]:
+    return dict(DEFAULT_ALERT_BEHAVIORS)
+
+
 @dataclass(frozen=True)
 class IntelPetSettings:
     pilot_names: tuple[str, ...] = ()
@@ -110,6 +142,7 @@ class IntelPetSettings:
     help_phrases: tuple[str, ...] = ()
     show_message_text: bool = True
     alert_seconds: float = DEFAULT_ALERT_SECONDS
+    alert_behaviors: dict[str, str] = field(default_factory=default_alert_behaviors)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "IntelPetSettings":
@@ -119,6 +152,7 @@ class IntelPetSettings:
             help_phrases=clean_watchlist_terms(payload.get("help_phrases")),
             show_message_text=bool(payload.get("show_message_text", True)),
             alert_seconds=safe_float(payload.get("alert_seconds"), DEFAULT_ALERT_SECONDS),
+            alert_behaviors=clean_alert_behaviors(payload.get("alert_behaviors")),
         )
 
     def to_watchlist(self) -> IntelWatchlist:
@@ -134,6 +168,7 @@ class IntelPetSettings:
             "help_phrases": list(self.help_phrases),
             "show_message_text": self.show_message_text,
             "alert_seconds": self.alert_seconds,
+            "alert_behaviors": clean_alert_behaviors(self.alert_behaviors),
         }
 
 
@@ -332,6 +367,10 @@ def replace_extra_keywords(settings: IntelPetSettings, keywords: Iterable[str]) 
     return replace_alert_terms(settings, extra_keywords=keywords)
 
 
+def replace_alert_behaviors(settings: IntelPetSettings, behaviors: dict[str, str]) -> IntelPetSettings:
+    return replace(settings, alert_behaviors=clean_alert_behaviors(behaviors))
+
+
 def merge_terms(existing: tuple[str, ...], additions: Iterable[str]) -> tuple[str, ...]:
     return tuple(dedupe_preserve_order((*existing, *clean_user_terms(additions))))
 
@@ -341,6 +380,53 @@ def clean_user_terms(values: Iterable[str]) -> tuple[str, ...]:
     for value in values:
         terms.extend(clean_watchlist_terms(value))
     return tuple(dedupe_preserve_order(terms))
+
+
+def clean_alert_behaviors(value: Any) -> dict[str, str]:
+    valid_behaviors = {key for key, _label, _description in BEHAVIOR_OPTIONS}
+    cleaned = default_alert_behaviors()
+    if not isinstance(value, dict):
+        return cleaned
+    for kind, _label, _description in ALERT_BEHAVIOR_KINDS:
+        behavior = str(value.get(kind) or "").strip()
+        if behavior in valid_behaviors:
+            cleaned[kind] = behavior
+    return cleaned
+
+
+def behavior_label(behavior: str) -> str:
+    for key, label, _description in BEHAVIOR_OPTIONS:
+        if behavior == key:
+            return label
+    return behavior_label(BEHAVIOR_ALERT)
+
+
+def behavior_key_from_label(label: str) -> str:
+    for key, option_label, _description in BEHAVIOR_OPTIONS:
+        if label == option_label:
+            return key
+    return BEHAVIOR_ALERT
+
+
+def alert_behavior_key(alert: IntelPetAlert) -> str:
+    categories = set(alert.categories)
+    if "self-mention" in categories:
+        return "mention"
+    if "aid" in categories:
+        return "help"
+    if "hostile" in categories:
+        return "hostile"
+    return "keyword"
+
+
+def behavior_for_alert(alert: IntelPetAlert, settings: IntelPetSettings) -> str:
+    behaviors = clean_alert_behaviors(settings.alert_behaviors)
+    return behaviors[alert_behavior_key(alert)]
+
+
+def behavior_for_kind(kind: str, settings: IntelPetSettings) -> str:
+    behaviors = clean_alert_behaviors(settings.alert_behaviors)
+    return behaviors.get(kind, DEFAULT_ALERT_BEHAVIORS.get(kind, BEHAVIOR_ALERT))
 
 
 def find_matching_terms(terms: Iterable[str], text: str) -> tuple[str, ...]:
@@ -1093,8 +1179,10 @@ def run_overlay(
         notebook = ttk.Notebook(editor_frame)
         notebook.pack(fill="both", expand=True)
         settings_frame = ttk.Frame(notebook, padding=12)
+        behavior_frame = ttk.Frame(notebook, padding=12)
         history_frame = ttk.Frame(notebook, padding=12)
         notebook.add(settings_frame, text="Alerts")
+        notebook.add(behavior_frame, text="Behaviors")
         notebook.add(history_frame, text="History")
 
         editor_status_var = tk.StringVar(value="Saved locally only.")
@@ -1247,6 +1335,140 @@ def run_overlay(
                 side="left",
                 padx=(6, 0),
             )
+
+        ttk.Label(behavior_frame, text="Alert behaviors", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(
+            behavior_frame,
+            text="Choose the ship animation for each kind of pet alert. These are saved locally with your alert terms.",
+            wraplength=520,
+        ).pack(anchor="w", pady=(2, 10))
+
+        behavior_labels = tuple(label for _key, label, _description in BEHAVIOR_OPTIONS)
+        behavior_vars: dict[str, Any] = {}
+        preview_canvases: dict[str, Any] = {}
+
+        def current_behavior_choices() -> dict[str, str]:
+            choices = clean_alert_behaviors(engine.current_settings().alert_behaviors)
+            for kind, var in behavior_vars.items():
+                choices[kind] = behavior_key_from_label(var.get())
+            return choices
+
+        def refresh_behavior_vars(settings: IntelPetSettings) -> None:
+            choices = clean_alert_behaviors(settings.alert_behaviors)
+            for kind, var in behavior_vars.items():
+                var.set(behavior_label(choices[kind]))
+
+        def persist_behavior(kind: str) -> None:
+            try:
+                settings = replace_alert_behaviors(engine.current_settings(), current_behavior_choices())
+                save_settings(settings_path, settings)
+                engine.update_settings(settings)
+            except Exception as exc:
+                editor_status_var.set(f"Behavior save failed: {exc}")
+                return
+            refresh_behavior_vars(settings)
+            label = next((item_label for item_kind, item_label, _description in ALERT_BEHAVIOR_KINDS if item_kind == kind), kind)
+            editor_status_var.set(f"{label} behavior saved as {behavior_label(settings.alert_behaviors[kind])}.")
+
+        def draw_behavior_preview(canvas: Any, behavior: str, step: int) -> None:
+            canvas.delete("preview")
+            canvas.create_rectangle(0, 0, 96, 52, fill="#0f172a", outline="#334155", tags=("preview",))
+            canvas.create_oval(14, 9, 16, 11, fill="#e2e8f0", outline="", tags=("preview",))
+            canvas.create_oval(72, 10, 74, 12, fill="#e2e8f0", outline="", tags=("preview",))
+            canvas.create_oval(84, 34, 86, 36, fill="#e2e8f0", outline="", tags=("preview",))
+
+            if behavior == BEHAVIOR_HAPPY:
+                offsets = ((0, 0), (6, -5), (10, 0), (6, 5), (0, 0), (-6, -5), (-10, 0), (-6, 5))
+                offset_x, offset_y = offsets[step % len(offsets)]
+                accent = "#38bdf8"
+            elif behavior == BEHAVIOR_COMBAT:
+                offsets = ((0, 0), (10, -6), (16, 2), (8, 8), (-8, -5), (0, 0))
+                offset_x, offset_y = offsets[step % len(offsets)]
+                accent = "#f97316"
+            elif behavior == BEHAVIOR_IDLE:
+                offsets = ((0, 0), (2, -2), (0, 0), (-2, 2))
+                offset_x, offset_y = offsets[step % len(offsets)]
+                accent = "#94a3b8"
+            else:
+                offset_x, offset_y = (0, 0)
+                accent = "#64748b" if behavior == BEHAVIOR_NONE else "#f59e0b"
+
+            x = 44 + offset_x
+            y = 26 + offset_y
+            canvas.create_polygon(
+                x - 22,
+                y,
+                x - 4,
+                y - 10,
+                x + 20,
+                y - 4,
+                x + 24,
+                y,
+                x + 20,
+                y + 4,
+                x - 4,
+                y + 10,
+                fill="#334155",
+                outline="#93c5fd",
+                width=1,
+                tags=("preview",),
+            )
+            canvas.create_rectangle(x - 2, y - 5, x + 10, y + 5, fill="#1e293b", outline="#64748b", tags=("preview",))
+            if behavior != BEHAVIOR_NONE and step % 2 == 0:
+                canvas.create_polygon(
+                    x - 24,
+                    y - 4,
+                    x - 34,
+                    y,
+                    x - 24,
+                    y + 4,
+                    fill=accent,
+                    outline="",
+                    tags=("preview",),
+                )
+            if behavior == BEHAVIOR_ALERT and step % 2 == 0:
+                canvas.create_line(x + 9, y - 8, x + 22, y - 15, fill="#fde68a", width=2, tags=("preview",))
+            elif behavior == BEHAVIOR_COMBAT:
+                canvas.create_line(x + 16, y - 3, 92, 10 + (step % 3) * 10, fill="#fbbf24", width=2, tags=("preview",))
+                canvas.create_line(x + 14, y + 5, 88, 22 + (step % 2) * 12, fill="#ef4444", width=1, tags=("preview",))
+
+        for kind, title, description in ALERT_BEHAVIOR_KINDS:
+            row = ttk.Frame(behavior_frame)
+            row.pack(fill="x", pady=(0, 10))
+            text_frame = ttk.Frame(row)
+            text_frame.pack(side="left", fill="x", expand=True)
+            ttk.Label(text_frame, text=title, font=("Segoe UI", 10, "bold")).pack(anchor="w")
+            ttk.Label(text_frame, text=description, wraplength=320).pack(anchor="w", pady=(1, 4))
+
+            choice_row = ttk.Frame(text_frame)
+            choice_row.pack(anchor="w")
+            behavior_var = tk.StringVar(value=behavior_label(behavior_for_kind(kind, engine.current_settings())))
+            behavior_vars[kind] = behavior_var
+            behavior_box = ttk.Combobox(
+                choice_row,
+                textvariable=behavior_var,
+                values=behavior_labels,
+                state="readonly",
+                width=18,
+            )
+            behavior_box.pack(side="left")
+            behavior_box.bind("<<ComboboxSelected>>", lambda _event, item_kind=kind: persist_behavior(item_kind))
+
+            preview = tk.Canvas(row, width=96, height=52, bg="#0f172a", highlightthickness=0)
+            preview.pack(side="right", padx=(10, 0))
+            preview_canvases[kind] = preview
+
+        def animate_behavior_previews(step: int = 0) -> None:
+            try:
+                if not editor.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            for kind, canvas in preview_canvases.items():
+                draw_behavior_preview(canvas, behavior_key_from_label(behavior_vars[kind].get()), step)
+            root.after(180, lambda: animate_behavior_previews(step + 1))
+
+        animate_behavior_previews()
 
         ttk.Label(history_frame, text="Alert history", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(
@@ -1413,6 +1635,21 @@ def run_overlay(
         idle_cycle_after_id = None
         start_sprite_cycle(IDLE_SPRITE_SEQUENCE)
 
+    def start_behavior_cycle(behavior: str) -> None:
+        if behavior == BEHAVIOR_HAPPY:
+            start_sprite_motion_cycle(HAPPY_SPRITE_STEPS)
+        elif behavior == BEHAVIOR_COMBAT:
+            start_combat_sprite_cycle(KILL_SPRITE_STEPS)
+        elif behavior == BEHAVIOR_IDLE:
+            start_sprite_cycle(IDLE_SPRITE_SEQUENCE)
+        elif behavior == BEHAVIOR_NONE:
+            cancel_sprite_cycle()
+            cancel_idle_sprite_cycle()
+            set_sprite_frame(0)
+            schedule_idle_sprite_cycle()
+        else:
+            start_sprite_cycle(ALERT_SPRITE_SEQUENCE)
+
     def apply_severity(severity: str) -> None:
         color = colors.get(severity, colors["info"])
         for item_id in bubble_border_items:
@@ -1462,28 +1699,31 @@ def run_overlay(
         nonlocal idle_after_id
         if idle_after_id is not None:
             root.after_cancel(idle_after_id)
+        settings = engine.current_settings()
         show_message_bubble(display_message_from_alert(alert), severity=alert.severity)
         remember_history(history_item_from_alert(alert))
-        start_sprite_cycle(ALERT_SPRITE_SEQUENCE)
-        idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
+        start_behavior_cycle(behavior_for_alert(alert, settings))
+        idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
 
     def show_location_cheer(cheer: IntelPetLocationCheer) -> None:
         nonlocal idle_after_id
         if idle_after_id is not None:
             root.after_cancel(idle_after_id)
+        settings = engine.current_settings()
         show_message_bubble(display_message_from_cheer(cheer), severity="info")
         remember_history(history_item_from_cheer(cheer))
-        start_sprite_motion_cycle(HAPPY_SPRITE_STEPS)
-        idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
+        start_behavior_cycle(behavior_for_kind("location", settings))
+        idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
 
     def show_combat_cheer(cheer: IntelPetCombatCheer) -> None:
         nonlocal idle_after_id
         if idle_after_id is not None:
             root.after_cancel(idle_after_id)
+        settings = engine.current_settings()
         show_message_bubble(display_message_from_combat_cheer(cheer), severity="high")
         remember_history(history_item_from_combat_cheer(cheer))
-        start_combat_sprite_cycle(KILL_SPRITE_STEPS)
-        idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
+        start_behavior_cycle(behavior_for_kind("combat", settings))
+        idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
 
     def poll_queue() -> None:
         while True:
