@@ -376,6 +376,20 @@ def display_message_from_cheer(cheer: IntelPetLocationCheer) -> str:
     return f"Arrived in {cheer.system_name}."
 
 
+def start_native_window_drag(window: Any) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.ReleaseCapture()
+        user32.SendMessageW(int(window.winfo_id()), 0x00A1, 2, 0)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+    return True
+
+
 def ship_sprite_frame_paths(asset_dir: Path = DEFAULT_SPRITE_DIR) -> tuple[Path, ...]:
     return tuple(asset_dir / f"ship-frame-{index:02d}.png" for index in range(SHIP_FRAME_COUNT))
 
@@ -802,6 +816,24 @@ def run_overlay(
         text="Options",
         tags=("options_button",),
     )
+    move_rect_id = bubble_canvas.create_rectangle(
+        84,
+        116,
+        132,
+        140,
+        fill="#1f2937",
+        outline="#64748b",
+        width=1,
+        tags=("move_button",),
+    )
+    move_text_id = bubble_canvas.create_text(
+        108,
+        128,
+        fill="#f8fafc",
+        font=("Segoe UI", 8, "bold"),
+        text="Move",
+        tags=("move_button",),
+    )
     bubble_item_ids = (*bubble_border_items, bubble_tail_id, message_id)
     for item_id in bubble_item_ids:
         bubble_canvas.itemconfigure(item_id, state="hidden")
@@ -827,6 +859,10 @@ def run_overlay(
         drag_start["x"] = int(event.x_root)
         drag_start["y"] = int(event.y_root)
 
+    def begin_native_drag(event: Any) -> None:
+        begin_drag(event)
+        start_native_window_drag(root)
+
     def drag_overlay(event: Any) -> None:
         dx = int(event.x_root) - drag_start["x"]
         dy = int(event.y_root) - drag_start["y"]
@@ -834,13 +870,15 @@ def run_overlay(
         drag_start["y"] = int(event.y_root)
         root.geometry(f"{root.winfo_width()}x{root.winfo_height()}+{root.winfo_x() + dx}+{root.winfo_y() + dy}")
 
-    for widget in (root, pet_frame, sprite_canvas, bubble_canvas):
-        widget.bind("<ButtonPress-1>", begin_drag)
+    for widget in (sprite_canvas,):
+        widget.bind("<ButtonPress-1>", begin_native_drag)
         widget.bind("<B1-Motion>", drag_overlay)
-    sprite_canvas.tag_bind("drag_handle", "<ButtonPress-1>", begin_drag)
+    sprite_canvas.tag_bind("drag_handle", "<ButtonPress-1>", begin_native_drag)
     sprite_canvas.tag_bind("drag_handle", "<B1-Motion>", drag_overlay)
-    bubble_canvas.tag_bind("bubble", "<ButtonPress-1>", begin_drag)
+    bubble_canvas.tag_bind("bubble", "<ButtonPress-1>", begin_native_drag)
     bubble_canvas.tag_bind("bubble", "<B1-Motion>", drag_overlay)
+    bubble_canvas.tag_bind("move_button", "<ButtonPress-1>", begin_native_drag)
+    bubble_canvas.tag_bind("move_button", "<B1-Motion>", drag_overlay)
 
     def open_options() -> None:
         editor = tk.Toplevel(root)
@@ -1138,6 +1176,7 @@ def run_overlay(
             bubble_canvas.itemconfigure(item_id, outline=color)
         bubble_canvas.itemconfigure(bubble_tail_id, outline=color)
         bubble_canvas.itemconfigure(options_rect_id, outline=color)
+        bubble_canvas.itemconfigure(move_rect_id, outline=color)
 
     def show_message_bubble(message: str, *, severity: str) -> None:
         apply_severity(severity)

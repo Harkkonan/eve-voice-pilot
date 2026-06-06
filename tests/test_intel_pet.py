@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from eve_voice_pilot.corp_intel import ChatMessage, EveSsoConfig
+import eve_voice_pilot.intel_pet as intel_pet_module
 from eve_voice_pilot.intel_pet import (
     ALERT_SPRITE_SEQUENCE,
     IDLE_SPRITE_SEQUENCE,
@@ -283,6 +284,12 @@ def test_display_message_from_cheer_is_short_arrival_text():
     cheer = IntelPetLocationCheer(system_name="Amarr", character_name="Scout Pilot", updated_at="2026-06-06T10:45:00Z")
 
     assert display_message_from_cheer(cheer) == "Arrived in Amarr."
+
+
+def test_native_window_drag_noops_off_windows(monkeypatch):
+    monkeypatch.setattr(intel_pet_module.os, "name", "posix")
+
+    assert not intel_pet_module.start_native_window_drag(object())
 
 
 def test_trim_history_keeps_most_recent_items():
