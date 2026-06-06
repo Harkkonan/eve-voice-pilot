@@ -297,11 +297,14 @@ def test_dashboard_includes_flight_esi_hooks():
         "step=\"1\" inputmode=\"decimal\" value=\"50000000\""
     ) in page
     assert "id=\"acq-broker-fee\"" in page
+    assert f"top {corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES} industry inputs" in page
+    assert "id=\"acq-strategy\" class=\"acquisition-strategy-grid\"" in page
     assert "id=\"acq-results\" class=\"decision-output\"" in page
     assert "Market Acquisition Planner" in page
     assert "Possible trap" in page
     assert "Market history can reveal" in page
     assert "readJsonApiResponse" in page
+    assert "renderAcquisitionStrategy" in page
     assert "writeAcquisitionSettings" in page
     assert "renderAcquisitionOpportunities" in page
     assert "data-tab-target=\"trade-pnl\"" in page
@@ -982,6 +985,41 @@ def test_market_group_picker_renders_sde_counts_items_and_show_more(tmp_path):
     assert "data-market-extra-item" in html_options
     assert "Show 1 more item" in html_options
     assert "data-haul-market-group=\"100\"" in html_options
+
+
+def test_acquisition_common_material_limit_keeps_hosted_scan_small(tmp_path):
+    recipes = {
+        blueprint_id: IndustryRecipe(
+            blueprint_type_id=blueprint_id,
+            blueprint_name=f"Blueprint {blueprint_id}",
+            product_type_id=blueprint_id + 10000,
+            product_name=f"Product {blueprint_id}",
+            product_quantity=1,
+            materials=(
+                IndustryMaterial(
+                    type_id=blueprint_id + 20000,
+                    name=f"Material {blueprint_id:02d}",
+                    quantity=1,
+                ),
+            ),
+        )
+        for blueprint_id in range(1, corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES + 8)
+    }
+    recipe_cache = IndustryRecipeCache(path=tmp_path / "recipes.json", available=True, recipes=recipes)
+
+    targets, scope = corp_market.build_haul_item_targets(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        recipe_cache=recipe_cache,
+        include_common_materials=True,
+        market_group_ids=(),
+        common_material_limit=corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES,
+        scan_type_limit=corp_market.MAX_FLIGHT_ACQUISITION_SCAN_TYPES,
+    )
+
+    assert len(targets) == corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES
+    assert scope["common_material_scan_limit"] == corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES
+    assert scope["common_material_available_item_types"] == corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES + 7
+    assert scope["scan_type_limit"] == corp_market.MAX_FLIGHT_ACQUISITION_SCAN_TYPES
 
 
 def test_haul_item_targets_combine_common_materials_and_market_groups(monkeypatch, tmp_path):
@@ -2657,7 +2695,13 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
     assert opportunity["range_recommendation"]["range"] == "station"
     assert opportunity["recommended_units"] == 10
     assert opportunity["suggested_bid"] == pytest.approx(68.0)
+    assert opportunity["gross_destination_revenue"] == pytest.approx(5000.0)
+    assert opportunity["estimated_sales_tax"] == pytest.approx(168.75)
+    assert opportunity["estimated_net_revenue"] == pytest.approx(4831.25)
     assert opportunity["history_flags"][0]["label"] == "Possible trap: price spike"
+    assert acquisition["strategy"]["best"]["item_name"] == "Tritanium"
+    assert "manual public buy order" in acquisition["strategy"]["plain_language"]
+    assert "Safe ceiling" in acquisition["strategy"]["math_note"]
     assert "possible trap" in acquisition["pricing_note"]
 
 

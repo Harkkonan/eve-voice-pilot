@@ -4240,8 +4240,6 @@ def scan_route_hauling_opportunities(
         recipe_cache=recipe_cache,
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
-        common_material_limit=MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES,
-        scan_type_limit=MAX_FLIGHT_ACQUISITION_SCAN_TYPES,
     )
     item_truncated = len(item_targets) > MAX_FLIGHT_HAUL_SCAN_TYPES
     scan_targets = item_targets[:MAX_FLIGHT_HAUL_SCAN_TYPES]
@@ -4471,6 +4469,8 @@ def scan_market_acquisition_opportunities(
         recipe_cache=recipe_cache,
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
+        common_material_limit=MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES,
+        scan_type_limit=MAX_FLIGHT_ACQUISITION_SCAN_TYPES,
     )
     item_truncated = len(item_targets) > MAX_FLIGHT_ACQUISITION_SCAN_TYPES
     scan_targets = item_targets[:MAX_FLIGHT_ACQUISITION_SCAN_TYPES]
@@ -4598,7 +4598,9 @@ def scan_market_acquisition_opportunities(
             continue
         broker_fee_total = suggested_bid * units * broker_fee_rate
         bid_total = suggested_bid * units
+        gross_destination_revenue = float(best_destination_buy["price"]) * units
         net_revenue = net_destination_price * units
+        sales_tax_total = gross_destination_revenue - net_revenue
         net_profit = net_revenue - bid_total - broker_fee_total
         if net_profit <= 0:
             continue
@@ -4644,7 +4646,10 @@ def scan_market_acquisition_opportunities(
             "estimated_bid_total": bid_total,
             "estimated_broker_fee": broker_fee_total,
             "estimated_isk_committed": bid_total + broker_fee_total,
+            "gross_destination_revenue": gross_destination_revenue,
             "net_destination_price": net_destination_price,
+            "estimated_sales_tax": sales_tax_total,
+            "estimated_net_revenue": net_revenue,
             "net_profit": net_profit,
             "net_profit_per_unit": net_profit / units,
             "margin_percent": margin_percent,
@@ -4696,16 +4701,123 @@ def scan_market_acquisition_opportunities(
         "opportunity_count": len(opportunities),
         "possible_trap_count": trap_signal_count,
         "caution_count": caution_signal_count,
+        "strategy": build_acquisition_strategy_summary(
+            opportunities=opportunities,
+            origin=origin,
+            destination=destination,
+            item_scope=item_scope,
+            budget_isk=clean_budget,
+            pickup_jumps=clean_pickup_jumps,
+            min_margin_percent=clean_min_margin_percent,
+            broker_fee_percent=clean_broker_fee_percent,
+            target_days=clean_target_days,
+            scanned_item_types=len(scan_targets),
+            total_item_types=len(item_targets),
+            pickup_regions_scanned=len(scan_pickup_region_ids),
+            item_truncated=item_truncated,
+        ),
         "opportunities": opportunities[:MAX_FLIGHT_ACQUISITION_OPPORTUNITIES],
         "errors": errors[:12],
         "sales_tax": sales_tax,
         "market_cache": market_order_cache_status(),
         "history_cache": market_history_cache_status(),
         "pricing_note": (
-            "This planner suggests public buy-order ceilings from public regional orders and market history. "
-            "A possible trap flag means recent history does not support the apparent spread or fill volume; "
-            "verify the item in EVE before posting an order. The page does not place orders."
+            "This planner assumes a manual public buy order near the source, a later haul, and a manual sale into "
+            "the current destination buy order. Suggested bid ceilings back out sales tax, estimated broker fee, "
+            "and the target margin. A possible trap flag means recent history does not support the apparent spread "
+            "or fill volume; verify the item in EVE before posting an order. The page does not place orders."
         ),
+    }
+
+
+def build_acquisition_strategy_summary(
+    *,
+    opportunities: Iterable[dict[str, Any]],
+    origin: RouteSystem,
+    destination: RouteSystem,
+    item_scope: dict[str, Any],
+    budget_isk: float,
+    pickup_jumps: int,
+    min_margin_percent: float,
+    broker_fee_percent: float,
+    target_days: int,
+    scanned_item_types: int,
+    total_item_types: int,
+    pickup_regions_scanned: int,
+    item_truncated: bool,
+) -> dict[str, Any]:
+    ranked = list(opportunities)
+    best = ranked[0] if ranked else None
+    common_materials = bool(item_scope.get("include_common_materials"))
+    common_limit = int(item_scope.get("common_material_scan_limit") or 0)
+    common_available = int(item_scope.get("common_material_available_item_types") or common_limit)
+    selected_group_count = int(item_scope.get("selected_market_group_count") or 0)
+    if best:
+        headline = (
+            f"Best shown buy-order plan is {best['item_name']} at {format_isk(best['suggested_bid'])} "
+            f"or less, with {format_isk(best['net_profit'])} estimated after-fee profit."
+        )
+        if str(best.get("risk_level") or "") == "possible-trap":
+            next_step = "Treat the top result as a price-check candidate first because history raised a trap signal."
+        else:
+            next_step = "Verify the current buy/sell orders in EVE, then start with the suggested first-order size."
+    else:
+        headline = f"No buy-order plan cleared the current filters from {origin.name} toward {destination.name}."
+        next_step = "Try a smaller targeted category, lower the target margin, or rerun after market caches refresh."
+    if common_materials and selected_group_count:
+        scope_note = (
+            f"Scanning the top {common_limit:,} of {common_available:,} common industry inputs first, then selected market categories, "
+            f"up to {scanned_item_types:,} item types this run."
+        )
+    elif common_materials:
+        scope_note = (
+            f"Common materials is a hosted-safe quick scan of the top {common_limit:,} of {common_available:,} "
+            "industry inputs by recipe use. "
+            "Use a market category when you want to inspect a specific trade family."
+        )
+    elif selected_group_count:
+        scope_note = f"Scanning selected market categories, capped at {scanned_item_types:,} item types this run."
+    else:
+        scope_note = "No item scope was selected."
+    if item_truncated:
+        timeout_note = (
+            f"The selected scope has {total_item_types:,} item types, so this request checked the first "
+            f"{scanned_item_types:,}. This keeps public-hosted scans under timeout limits."
+        )
+    else:
+        timeout_note = f"Checked all {scanned_item_types:,} selected item types across {pickup_regions_scanned:,} pickup region(s)."
+    return {
+        "headline": headline,
+        "plain_language": (
+            f"This assumes you place a manual public buy order around {origin.name} inside {pickup_jumps:g} jump(s), "
+            "let it fill, haul the stock, "
+            f"and sell into current {destination.name} buy demand. It is an income planning view, not an order placer."
+        ),
+        "math_note": (
+            f"Safe ceiling starts with the destination buy price after sales tax, then backs out the "
+            f"{broker_fee_percent:g}% broker-fee estimate and {min_margin_percent:g}% target margin. "
+            f"Units are capped by the {format_isk(budget_isk)} budget, visible destination demand, and "
+            f"{target_days:g} day(s) of recent source-region volume."
+        ),
+        "scope_note": scope_note,
+        "timeout_note": timeout_note,
+        "next_step": next_step,
+        "best": acquisition_strategy_best_dict(best),
+    }
+
+
+def acquisition_strategy_best_dict(opportunity: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not opportunity:
+        return None
+    return {
+        "type_id": opportunity.get("type_id"),
+        "item_name": opportunity.get("item_name"),
+        "risk_level": opportunity.get("risk_level"),
+        "suggested_bid": opportunity.get("suggested_bid"),
+        "recommended_units": opportunity.get("recommended_units"),
+        "estimated_isk_committed": opportunity.get("estimated_isk_committed"),
+        "net_profit": opportunity.get("net_profit"),
+        "margin_percent": opportunity.get("margin_percent"),
     }
 
 
@@ -5426,10 +5538,13 @@ def build_haul_item_targets(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     selected_market_group_ids = clean_haul_market_group_ids(market_group_ids)
     common_targets = []
+    common_candidate_count = 0
     clean_common_material_limit = max(0, int(common_material_limit))
     clean_scan_type_limit = max(1, int(scan_type_limit))
     if include_common_materials:
-        common_targets = industry_material_trade_targets(recipe_cache.recipes or {})[:clean_common_material_limit]
+        common_candidates = industry_material_trade_targets(recipe_cache.recipes or {})
+        common_candidate_count = len(common_candidates)
+        common_targets = common_candidates[:clean_common_material_limit]
         for target in common_targets:
             target["source"] = "common_material"
             target["source_label"] = "Common materials"
@@ -5484,6 +5599,7 @@ def build_haul_item_targets(
         "include_common_materials": bool(include_common_materials),
         "common_material_scan_limit": clean_common_material_limit,
         "common_material_item_types": len(common_targets),
+        "common_material_available_item_types": common_candidate_count,
         "selected_market_group_ids": market_group_meta.get("selected_market_group_ids", list(selected_market_group_ids)),
         "selected_market_groups": market_group_meta.get("selected_market_groups", []),
         "selected_market_group_count": int(market_group_meta.get("selected_market_group_count") or 0),
@@ -10608,6 +10724,7 @@ def _render_flight_attendant_dashboard() -> str:
     .decision-source, .decision-stock { background: rgba(97, 199, 217, .16); color: var(--cyan); }
     .decision-price, .decision-watch { background: rgba(224, 168, 74, .16); color: var(--amber); }
     .decision-skip { background: rgba(229, 116, 102, .16); color: var(--red); }
+    .acquisition-strategy-grid,
     .planetary-strategy-grid,
     .planetary-target-grid {
       display: grid;
@@ -10615,6 +10732,7 @@ def _render_flight_attendant_dashboard() -> str:
       gap: 9px;
       margin: 10px 0;
     }
+    .acquisition-strategy-card,
     .planetary-strategy-card,
     .planetary-plan-box {
       border: 1px solid rgba(63, 85, 80, .58);
@@ -10623,6 +10741,7 @@ def _render_flight_attendant_dashboard() -> str:
       padding: 10px;
       min-width: 0;
     }
+    .acquisition-strategy-card strong,
     .planetary-strategy-card strong,
     .planetary-plan-box strong { display: block; color: var(--text); overflow-wrap: anywhere; }
     .planetary-plan-list { display: grid; gap: 7px; margin-top: 8px; }
@@ -11245,7 +11364,7 @@ def _render_flight_attendant_dashboard() -> str:
                   <input id="acq-common-materials" name="common_materials" type="checkbox" checked>
                   <span>
                     Common materials
-                    <small>Default: practical industry inputs where buy orders can help a quartermaster stock up.</small>
+                    <small>Default: top @@ACQUISITION_COMMON_MATERIAL_LIMIT@@ industry inputs by recipe use for a faster hosted scan.</small>
                   </span>
                 </label>
                 <details>
@@ -11262,6 +11381,7 @@ def _render_flight_attendant_dashboard() -> str:
               <summary>Planner Output</summary>
               <div class="output-details-body">
                 <div id="acq-summary" class="profit-summary">Connect ESI to plan market acquisitions.</div>
+                <div id="acq-strategy" class="acquisition-strategy-grid"></div>
                 <div id="acq-route" class="meta"></div>
               </div>
             </details>
@@ -11698,6 +11818,7 @@ def _render_flight_attendant_dashboard() -> str:
     const acqItemScopeSummary = document.querySelector("#acq-item-scope-summary");
     const acqScanButton = document.querySelector("#acq-scan");
     const acqSummary = document.querySelector("#acq-summary");
+    const acqStrategy = document.querySelector("#acq-strategy");
     const acqRoute = document.querySelector("#acq-route");
     const acqResults = document.querySelector("#acq-results");
     const tradePnlForm = document.querySelector("#trade-pnl-form");
@@ -13209,6 +13330,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     function resetMarketAcquisition(message) {
       acqSummary.textContent = message;
+      acqStrategy.innerHTML = "";
       acqRoute.textContent = "";
       acqResults.innerHTML = "";
       acqScanButton.disabled = false;
@@ -13228,6 +13350,7 @@ def _render_flight_attendant_dashboard() -> str:
       });
       acqScanButton.disabled = true;
       acqSummary.textContent = `Checking public orders and market history for ${acquisitionItemScopeLabel(settings)}...`;
+      acqStrategy.innerHTML = "";
       acqRoute.textContent = "";
       acqResults.innerHTML = `<div class="decision-empty">Recommendations will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
@@ -13247,6 +13370,7 @@ def _render_flight_attendant_dashboard() -> str:
         renderMarketAcquisition(data);
       } catch (error) {
         acqSummary.textContent = error.message;
+        acqStrategy.innerHTML = "";
         acqRoute.textContent = "";
         acqResults.textContent = "";
       } finally {
@@ -13288,7 +13412,28 @@ def _render_flight_attendant_dashboard() -> str:
         <div class="meta">Order cache: ${formatNumber(marketCache.entries)} entries. History cache: ${formatNumber(historyCache.entries)} entries.</div>
         <div class="meta">${escapeHtml(acquisition.pricing_note || "Planner is advisory only; verify in EVE before posting buy orders.")}</div>
       `;
+      acqStrategy.innerHTML = renderAcquisitionStrategy(acquisition.strategy || {});
       acqResults.innerHTML = renderAcquisitionOpportunities(acquisition.opportunities || []);
+    }
+
+    function renderAcquisitionStrategy(strategy) {
+      const best = strategy.best || {};
+      const bestText = best.item_name
+        ? `${escapeHtml(best.item_name)}: ${formatIsk(best.suggested_bid)} bid, ${formatNumber(best.recommended_units)} units, ${formatSignedIsk(best.net_profit)} estimated profit`
+        : "No recommendation selected by the current filters.";
+      return `
+        <div class="acquisition-strategy-card">
+          <strong>${escapeHtml(strategy.headline || "Acquisition strategy summary")}</strong>
+          <div class="meta">${escapeHtml(strategy.plain_language || "Recommendations use public market orders, market history, budget, and fee assumptions.")}</div>
+          <div class="meta">${escapeHtml(strategy.scope_note || "Narrower scopes usually finish faster and give cleaner recommendations.")}</div>
+        </div>
+        <div class="acquisition-strategy-card">
+          <strong>${bestText}</strong>
+          <div class="meta">${escapeHtml(strategy.math_note || "The suggested bid backs out taxes, fees, and target margin from destination demand.")}</div>
+          <div class="meta">${escapeHtml(strategy.timeout_note || "Broad scans may be capped to keep hosted requests responsive.")}</div>
+          <div class="meta">${escapeHtml(strategy.next_step || "Verify current orders in EVE before committing ISK.")}</div>
+        </div>
+      `;
     }
 
     function acquisitionRiskClass(riskLevel) {
@@ -13314,6 +13459,7 @@ def _render_flight_attendant_dashboard() -> str:
         const sourceSell = item.best_source_sell || {};
         const destinationBuy = item.best_destination_buy || {};
         const riskClass = acquisitionRiskClass(item.risk_level);
+        const sourceLabels = (item.source_labels || []).join(", ") || "Selected scope";
         return `
           <div class="decision-row">
             <div class="decision-head">
@@ -13330,13 +13476,20 @@ def _render_flight_attendant_dashboard() -> str:
             <div class="decision-lede">${escapeHtml(decision.reason || "Verify current orders in EVE before posting.")}</div>
             ${renderAcquisitionHistoryFlags(item.history_flags || [])}
             <details class="profit-details">
-              <summary>Market details</summary>
+              <summary>Bid, range, and market math details</summary>
               <div class="profit-detail-grid">
+                <div class="profit-detail-row"><span>Item source</span><b>${escapeHtml(sourceLabels)}</b></div>
                 <div class="profit-detail-row"><span>Recommended range</span><b>${escapeHtml(range.range || "station")}</b></div>
                 <div class="profit-detail-row"><span>Range reason</span><b>${escapeHtml(range.reason || "Keep the first order easy to monitor.")}</b></div>
                 <div class="profit-detail-row"><span>Best competing source buy</span><b>${sourceBuy.price == null ? "none nearby" : `${formatIsk(sourceBuy.price)} in ${escapeHtml(sourceBuy.system_name || "source")}`}</b></div>
                 <div class="profit-detail-row"><span>Lowest nearby source sell</span><b>${sourceSell.price == null ? "none nearby" : `${formatIsk(sourceSell.price)} in ${escapeHtml(sourceSell.system_name || "source")}`}</b></div>
+                <div class="profit-detail-row"><span>Destination gross revenue</span><b>${formatIsk(item.gross_destination_revenue)}</b></div>
+                <div class="profit-detail-row"><span>Estimated sales tax</span><b>-${formatIsk(item.estimated_sales_tax)}</b></div>
+                <div class="profit-detail-row"><span>Destination net revenue</span><b>${formatIsk(item.estimated_net_revenue)}</b></div>
+                <div class="profit-detail-row"><span>Bid total</span><b>-${formatIsk(item.estimated_bid_total)}</b></div>
                 <div class="profit-detail-row"><span>Broker fee estimate</span><b>${formatIsk(item.estimated_broker_fee)}</b></div>
+                <div class="profit-detail-row"><span>Estimated net profit</span><b>${formatSignedIsk(item.net_profit)}</b></div>
+                <div class="profit-detail-row"><span>Profit per unit</span><b>${formatSignedIsk(item.net_profit_per_unit)}</b></div>
                 <div class="profit-detail-row"><span>Source history</span><b>${renderHistoryStats(item.source_history || {})}</b></div>
                 <div class="profit-detail-row"><span>Destination history</span><b>${renderHistoryStats(item.destination_history || {})}</b></div>
               </div>
@@ -15094,6 +15247,9 @@ def _render_flight_attendant_dashboard() -> str:
     return markup.replace("@@CATEGORY_OPTIONS@@", category_options).replace(
         "@@HAUL_MARKET_GROUP_OPTIONS@@",
         haul_market_group_options,
+    ).replace(
+        "@@ACQUISITION_COMMON_MATERIAL_LIMIT@@",
+        f"{MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES:,}",
     ).replace(
         "@@REPROCESSING_ORE_OPTIONS@@",
         reprocessing_ore_options,
