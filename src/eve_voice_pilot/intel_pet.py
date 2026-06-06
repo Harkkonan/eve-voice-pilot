@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
+import html
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
 import queue
+import re
 import threading
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import parse_qs, urlparse
 import webbrowser
 
@@ -31,8 +33,11 @@ from eve_voice_pilot.corp_intel import (
     clean_watchlist_terms,
     compile_phrase_pattern,
     decode_eve_access_token,
+    detect_encoding,
     default_chat_log_dir,
     exchange_sso_code,
+    eve_timestamp_to_iso,
+    file_end_offset,
     get_json,
     higher_severity,
     now_iso,
@@ -44,7 +49,7 @@ from eve_voice_pilot.corp_intel import (
 
 DEFAULT_SETTINGS_PATH = ROOT / "profiles" / "intel_pet_settings.json"
 DEFAULT_SPRITE_DIR = ROOT / "src" / "eve_voice_pilot" / "static" / "intel-pet"
-DEFAULT_ALERT_SECONDS = 18.0
+DEFAULT_ALERT_SECONDS = 15.0
 DEFAULT_LOCATION_CALLBACK_URL = "http://127.0.0.1:8788/intel-pet/callback"
 DEFAULT_LOCATION_POLL_SECONDS = 15.0
 DEFAULT_HAPPY_SYSTEMS = ("Dihra", "Amarr", "Jita")
@@ -65,6 +70,33 @@ HAPPY_SPRITE_STEPS = (
     (6, -18, 0),
     (7, -10, 8),
     (0, 0, 0),
+)
+KILL_SPRITE_STEPS = (
+    (0, 0, 0, 148, 44),
+    (7, 18, -12, 156, 28),
+    (6, 20, 2, 154, 70),
+    (5, 16, 16, 150, 96),
+    (4, -8, 8, 144, 76),
+    (3, -18, -10, 136, 40),
+    (2, -8, -18, 150, 26),
+    (1, 18, -4, 158, 54),
+    (0, 0, 0, 148, 64),
+)
+GAME_LOG_LINE_RE = re.compile(
+    r"^\s*\[\s*(?P<timestamp>\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}:\d{2})\s*\]\s*(?P<body>.*)$"
+)
+GAME_LOG_PREFIX_RE = re.compile(r"^\s*\((?:combat|notify|info|warning|question)\)\s*", re.IGNORECASE)
+GAME_LOG_TAG_RE = re.compile(r"<[^>]+>")
+KILL_EVENT_PATTERNS = (
+    re.compile(r"\byou (?:have )?(?:destroyed|killed)\b", re.IGNORECASE),
+    re.compile(r"\b(?:destroyed|killed) by you\b", re.IGNORECASE),
+    re.compile(r"\bfinal blow\b", re.IGNORECASE),
+    re.compile(r"\bhas been destroyed\b", re.IGNORECASE),
+    re.compile(r"\bwas destroyed\b", re.IGNORECASE),
+)
+SELF_LOSS_PATTERNS = (
+    re.compile(r"\byou (?:have )?been destroyed\b", re.IGNORECASE),
+    re.compile(r"\byour (?:ship|capsule|pod)\b.*\bhas been destroyed\b", re.IGNORECASE),
 )
 
 
@@ -145,12 +177,27 @@ class IntelPetLocationCheer:
 
 
 @dataclass(frozen=True)
+class IntelPetCombatCheer:
+    message: str
+    observed_at: str
+    reported_at: str
+    log_path: str = ""
+
+
+@dataclass(frozen=True)
 class IntelPetHistoryItem:
     title: str
     detail: str
     meta: str
     severity: str
     recorded_at: str
+
+
+@dataclass
+class GameLogState:
+    path: Path
+    encoding: str
+    offset: int
 
 
 class IntelPetEngine:
@@ -376,6 +423,20 @@ def display_message_from_cheer(cheer: IntelPetLocationCheer) -> str:
     return f"Arrived in {cheer.system_name}."
 
 
+def history_item_from_combat_cheer(cheer: IntelPetCombatCheer) -> IntelPetHistoryItem:
+    return IntelPetHistoryItem(
+        title="Kill cheer",
+        detail=cheer.message,
+        meta="Local game log | kill-looking combat line",
+        severity="high",
+        recorded_at=cheer.reported_at,
+    )
+
+
+def display_message_from_combat_cheer(cheer: IntelPetCombatCheer) -> str:
+    return cheer.message
+
+
 def start_native_window_drag(window: Any) -> bool:
     if os.name != "nt":
         return False
@@ -546,6 +607,123 @@ def is_happy_system(system_name: str, happy_systems: Iterable[str]) -> bool:
     return bool(folded) and folded in {system.strip().casefold() for system in happy_systems if system.strip()}
 
 
+def default_game_log_dir() -> Path:
+    candidates = [
+        Path.home() / "Documents" / "EVE" / "logs" / "Gamelogs",
+        Path.home() / "OneDrive" / "Documents" / "EVE" / "logs" / "Gamelogs",
+        default_chat_log_dir().parent / "Gamelogs",
+    ]
+    seen: set[Path] = set()
+    unique_candidates: list[Path] = []
+    for candidate in candidates:
+        expanded = candidate.expanduser()
+        if expanded in seen:
+            continue
+        seen.add(expanded)
+        unique_candidates.append(expanded)
+    for candidate in unique_candidates:
+        if candidate.exists():
+            return candidate
+    return unique_candidates[0]
+
+
+def clean_game_log_text(text: str) -> str:
+    line = text.lstrip("\ufeff").rstrip("\r\n")
+    match = GAME_LOG_LINE_RE.match(line)
+    if match:
+        line = match.group("body")
+    line = GAME_LOG_TAG_RE.sub("", line)
+    line = html.unescape(line)
+    line = GAME_LOG_PREFIX_RE.sub("", line)
+    return " ".join(line.split())
+
+
+def is_kill_event_text(text: str) -> bool:
+    message = clean_game_log_text(text)
+    if not message:
+        return False
+    if any(pattern.search(message) for pattern in SELF_LOSS_PATTERNS):
+        return False
+    return any(pattern.search(message) for pattern in KILL_EVENT_PATTERNS)
+
+
+def combat_cheer_from_game_log_line(line: str, *, log_path: str = "") -> IntelPetCombatCheer | None:
+    clean_line = line.lstrip("\ufeff").rstrip("\r\n")
+    match = GAME_LOG_LINE_RE.match(clean_line)
+    timestamp = match.group("timestamp") if match else ""
+    message = clean_game_log_text(clean_line)
+    if not is_kill_event_text(message):
+        return None
+    return IntelPetCombatCheer(
+        message=message,
+        observed_at=eve_timestamp_to_iso(timestamp) if timestamp else now_iso(),
+        reported_at=now_iso(),
+        log_path=log_path,
+    )
+
+
+def watch_game_logs(
+    *,
+    log_dir: Path,
+    on_kill: Callable[[IntelPetCombatCheer], None],
+    poll_seconds: float = DEFAULT_POLL_SECONDS,
+    read_existing: bool = False,
+    stop_event: threading.Event | None = None,
+    log: Callable[[str], None] = print,
+) -> None:
+    states: dict[Path, GameLogState] = {}
+    stop_event = stop_event or threading.Event()
+    log_dir = log_dir.expanduser()
+
+    if not log_dir.exists():
+        raise CorpIntelError(f"Game log folder does not exist: {log_dir}")
+
+    log(f"Watching EVE game logs in {log_dir}")
+    if not read_existing:
+        log("Starting at the end of existing game logs. New kill-looking lines will be processed.")
+
+    while not stop_event.is_set():
+        discover_game_log_files(log_dir, states, read_existing=read_existing, log=log)
+        for state in list(states.values()):
+            for cheer in read_new_combat_cheers(state):
+                on_kill(cheer)
+        stop_event.wait(poll_seconds)
+
+
+def discover_game_log_files(
+    log_dir: Path,
+    states: dict[Path, GameLogState],
+    *,
+    read_existing: bool,
+    log: Callable[[str], None] = print,
+) -> None:
+    for path in sorted(log_dir.glob("*.txt")):
+        if path in states:
+            continue
+        encoding = detect_encoding(path)
+        offset = 0 if read_existing else file_end_offset(path, encoding)
+        states[path] = GameLogState(path=path, encoding=encoding, offset=offset)
+        log(f"Watching game log {path.name}")
+
+
+def read_new_combat_cheers(state: GameLogState) -> list[IntelPetCombatCheer]:
+    cheers: list[IntelPetCombatCheer] = []
+    try:
+        with state.path.open("r", encoding=state.encoding, errors="replace") as handle:
+            handle.seek(state.offset)
+            while True:
+                line = handle.readline()
+                if not line:
+                    break
+                cheer = combat_cheer_from_game_log_line(line, log_path=str(state.path))
+                if cheer:
+                    cheers.append(cheer)
+            state.offset = handle.tell()
+    except OSError:
+        return []
+    return cheers
+
+
 def run_console(args: argparse.Namespace, engine: IntelPetEngine) -> None:
     channel_filter = channel_filter_from_args(args)
 
@@ -573,7 +751,7 @@ def run_overlay(
     import tkinter as tk
     from tkinter import ttk
 
-    alert_queue: queue.Queue[IntelPetAlert | IntelPetLocationCheer | str] = queue.Queue()
+    alert_queue: queue.Queue[IntelPetAlert | IntelPetLocationCheer | IntelPetCombatCheer | str] = queue.Queue()
     stop_event = threading.Event()
     channel_filter = channel_filter_from_args(args)
     settings_path = args.settings_path.expanduser()
@@ -584,6 +762,9 @@ def run_overlay(
         alert = engine.analyze(message)
         if alert:
             alert_queue.put(alert)
+
+    def on_kill(cheer: IntelPetCombatCheer) -> None:
+        alert_queue.put(cheer)
 
     def watcher() -> None:
         try:
@@ -601,6 +782,22 @@ def run_overlay(
 
     thread = threading.Thread(target=watcher, daemon=True)
     thread.start()
+
+    def combat_watcher() -> None:
+        try:
+            watch_game_logs(
+                log_dir=args.game_log_dir,
+                on_kill=on_kill,
+                poll_seconds=args.poll_seconds,
+                read_existing=args.read_existing,
+                stop_event=stop_event,
+                log=lambda text: alert_queue.put(text),
+            )
+        except Exception as exc:  # pragma: no cover - surfaced in the UI.
+            alert_queue.put(f"Combat cheer stopped: {exc}")
+
+    if not args.no_combat_cheer:
+        threading.Thread(target=combat_watcher, daemon=True).start()
 
     def location_watcher() -> None:
         if location_config is None or location_session is None:
@@ -664,6 +861,7 @@ def run_overlay(
     sprite_frames = load_sprite_frames(tk, root)
     sprite_after_id: str | None = None
     idle_cycle_after_id: str | None = None
+    shot_item_ids: list[int] = []
     history_items: list[IntelPetHistoryItem] = []
 
     pet_frame = tk.Frame(root, bg=transparent_color)
@@ -1103,11 +1301,17 @@ def run_overlay(
         sprite_canvas.itemconfigure(sprite_image_id, image=sprite_frames[clean_index])
         sprite_canvas.coords(sprite_image_id, 80 + offset_x, 64 + offset_y)
 
+    def clear_combat_shots() -> None:
+        for item_id in shot_item_ids:
+            sprite_canvas.delete(item_id)
+        shot_item_ids.clear()
+
     def cancel_sprite_cycle() -> None:
         nonlocal sprite_after_id
         if sprite_after_id is not None:
             root.after_cancel(sprite_after_id)
             sprite_after_id = None
+        clear_combat_shots()
 
     def cancel_idle_sprite_cycle() -> None:
         nonlocal idle_cycle_after_id
@@ -1159,6 +1363,45 @@ def run_overlay(
                 sprite_after_id = root.after(SHIP_FRAME_MS, lambda: advance(next_position))
             else:
                 sprite_after_id = None
+                set_sprite_frame(0)
+                if reschedule_idle:
+                    schedule_idle_sprite_cycle()
+
+        advance()
+
+    def start_combat_sprite_cycle(
+        sequence: tuple[tuple[int, int, int, int, int], ...],
+        *,
+        reschedule_idle: bool = True,
+    ) -> None:
+        nonlocal sprite_after_id
+        if not sprite_frames:
+            return
+        cancel_sprite_cycle()
+        cancel_idle_sprite_cycle()
+
+        def draw_shots(offset_x: int, offset_y: int, target_x: int, target_y: int) -> None:
+            clear_combat_shots()
+            origin_x = 108 + offset_x
+            origin_y = 58 + offset_y
+            shot_item_ids.append(
+                sprite_canvas.create_line(origin_x, origin_y, target_x, target_y, fill="#ffd166", width=3)
+            )
+            shot_item_ids.append(
+                sprite_canvas.create_line(origin_x - 8, origin_y + 8, target_x - 18, target_y + 6, fill="#ff5f56", width=2)
+            )
+
+        def advance(position: int = 0) -> None:
+            nonlocal sprite_after_id
+            frame_index, offset_x, offset_y, target_x, target_y = sequence[position]
+            set_sprite_frame(frame_index, offset_x=offset_x, offset_y=offset_y)
+            draw_shots(offset_x, offset_y, target_x, target_y)
+            next_position = position + 1
+            if next_position < len(sequence):
+                sprite_after_id = root.after(90, lambda: advance(next_position))
+            else:
+                sprite_after_id = None
+                clear_combat_shots()
                 set_sprite_frame(0)
                 if reschedule_idle:
                     schedule_idle_sprite_cycle()
@@ -1222,6 +1465,15 @@ def run_overlay(
         start_sprite_motion_cycle(HAPPY_SPRITE_STEPS)
         idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
 
+    def show_combat_cheer(cheer: IntelPetCombatCheer) -> None:
+        nonlocal idle_after_id
+        if idle_after_id is not None:
+            root.after_cancel(idle_after_id)
+        show_message_bubble(display_message_from_combat_cheer(cheer), severity="high")
+        remember_history(history_item_from_combat_cheer(cheer))
+        start_combat_sprite_cycle(KILL_SPRITE_STEPS)
+        idle_after_id = root.after(int(engine.current_settings().alert_seconds * 1000), set_idle)
+
     def poll_queue() -> None:
         while True:
             try:
@@ -1232,6 +1484,8 @@ def run_overlay(
                 show_alert(item)
             elif isinstance(item, IntelPetLocationCheer):
                 show_location_cheer(item)
+            elif isinstance(item, IntelPetCombatCheer):
+                show_combat_cheer(item)
         root.after(250, poll_queue)
 
     def on_close() -> None:
@@ -1267,9 +1521,10 @@ def channel_filter_from_args(args: argparse.Namespace) -> ChannelFilter:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a local-only EVE chat alert pet overlay.",
+        description="Run a local-only EVE chat and combat alert pet overlay.",
     )
     parser.add_argument("--log-dir", type=Path, default=default_chat_log_dir(), help="EVE Chatlogs folder.")
+    parser.add_argument("--game-log-dir", type=Path, default=default_game_log_dir(), help="EVE Gamelogs folder.")
     parser.add_argument(
         "--channels",
         default=DEFAULT_CHANNELS,
@@ -1282,6 +1537,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--help-phrase", action="append", default=(), help="Extra help phrase to treat as critical.")
     parser.add_argument("--no-message-text", action="store_true", help="Hide the matched message text in the overlay.")
     parser.add_argument("--alert-seconds", type=float, default=None, help="Seconds before the overlay returns to idle.")
+    parser.add_argument("--no-combat-cheer", action="store_true", help="Do not watch local game logs for kill cheers.")
     parser.add_argument(
         "--enable-location-cheer",
         action="store_true",
@@ -1324,7 +1580,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=argparse.SUPPRESS,
     )
-    parser.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS, help="Chat log polling interval.")
+    parser.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS, help="Log polling interval.")
     parser.add_argument("--read-existing", action="store_true", help="Process existing log lines instead of new lines only.")
     parser.add_argument("--console", action="store_true", help="Print alerts to the console instead of opening the overlay.")
     return parser

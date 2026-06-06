@@ -1,11 +1,11 @@
 # EVE Intel Pet
 
-EVE Intel Pet is a small local overlay that watches your own EVE chat logs and shows an always-on-top alert when a new chat line matches something important.
+EVE Intel Pet is a small local overlay that watches your own EVE chat and game logs. It shows an always-on-top alert when a new chat line matches something important, and the ship celebrates when a fresh game-log line looks like a kill.
 
 It is intentionally personal and local-first:
 
-- It reads only the EVE chat log folder on your computer.
-- It starts at the end of existing files by default, so old chat is not replayed.
+- It reads only the EVE chat and game log folders on your computer.
+- It starts at the end of existing files by default, so old chat and combat logs are not replayed.
 - It does not connect to Discord or the corp intel board.
 - It connects to ESI only if you deliberately start optional location cheer mode.
 - It does not control the EVE client, read memory, inspect packets, or automate gameplay.
@@ -35,7 +35,9 @@ The pet includes a small original pixel-art spaceship. It uses eight transparent
 src/eve_voice_pilot/static/intel-pet/
 ```
 
-The overlay swaps those frames with Tkinter only. Turrets and engines animate when an alert appears, and the ship runs a short idle cycle every five minutes.
+The overlay swaps those frames with Tkinter only. Turrets and engines animate when an alert appears, the ship flies happily on configured system arrivals, and it flies around shooting when a local game-log kill is detected. The ship also runs a short idle cycle every five minutes.
+
+Alert bubbles stay visible for 15 seconds by default. If a newer alert arrives before that timer ends, the bubble switches to the newer message and the 15-second timer starts again.
 
 ## Add Extra Local Alerts
 
@@ -49,6 +51,29 @@ You can add extra keywords or help phrases from the command line:
 ```
 
 The first version has no Discord push. That keeps the trust boundary simple while we prove the overlay is useful.
+
+## Local Combat Kill Cheer
+
+The pet watches your local EVE `Gamelogs` folder for new kill-looking lines such as `has been destroyed`, `you destroyed`, or `final blow`. When it sees one, the ship does a short frantic flight-and-shoot animation and the bubble shows the cleaned game-log message.
+
+This is local only:
+
+- it does not use ESI for combat;
+- it does not inspect the EVE client, packets, memory, or cache files;
+- it starts at the end of existing game logs by default;
+- it only reacts to new lines written while the pet is running.
+
+To disable combat cheering:
+
+```powershell
+.\scripts\run_intel_pet.ps1 --no-combat-cheer
+```
+
+If your EVE game logs live somewhere unusual:
+
+```powershell
+.\scripts\run_intel_pet.ps1 --game-log-dir "C:\Path\To\EVE\logs\Gamelogs"
+```
 
 ## Optional ESI Location Cheer
 
@@ -143,7 +168,7 @@ Example:
   "extra_keywords": ["buy order"],
   "help_phrases": ["need evac"],
   "show_message_text": true,
-  "alert_seconds": 18
+  "alert_seconds": 15
 }
 ```
 

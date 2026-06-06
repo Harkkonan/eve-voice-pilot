@@ -8,22 +8,31 @@ from eve_voice_pilot.corp_intel import ChatMessage, EveSsoConfig
 import eve_voice_pilot.intel_pet as intel_pet_module
 from eve_voice_pilot.intel_pet import (
     ALERT_SPRITE_SEQUENCE,
+    DEFAULT_ALERT_SECONDS,
     IDLE_SPRITE_SEQUENCE,
+    KILL_SPRITE_STEPS,
     LOCATION_SCOPE,
     SHIP_FRAME_COUNT,
+    GameLogState,
+    IntelPetCombatCheer,
     IntelPetLocationCheer,
     IntelPetLocationSession,
     IntelPetEngine,
     IntelPetSettings,
     clean_user_terms,
+    combat_cheer_from_game_log_line,
     display_message_from_alert,
     display_message_from_cheer,
+    display_message_from_combat_cheer,
     fetch_pet_location,
     history_item_from_alert,
     history_item_from_cheer,
+    history_item_from_combat_cheer,
+    is_kill_event_text,
     is_happy_system,
     load_sprite_frames,
     load_settings,
+    read_new_combat_cheers,
     replace_alert_terms,
     replace_extra_keywords,
     save_settings,
@@ -153,6 +162,10 @@ def test_save_settings_persists_keywords_for_later_load(tmp_path):
     assert loaded == settings
 
 
+def test_default_alert_duration_is_fifteen_seconds():
+    assert IntelPetSettings().alert_seconds == DEFAULT_ALERT_SECONDS == 15.0
+
+
 def test_engine_update_settings_changes_keyword_matches_without_restarting():
     engine = IntelPetEngine(IntelPetSettings(extra_keywords=("buy order",)))
     assert engine.analyze(make_message("contract alert")) is None
@@ -272,6 +285,47 @@ def test_history_item_from_cheer_records_location_arrival():
     assert item.recorded_at == "2026-06-06T10:45:00Z"
 
 
+def test_combat_cheer_parses_destroyed_game_log_line():
+    line = (
+        "[ 2026.06.06 19:15:31 ] (combat) "
+        "<color=0xff00ffff><b>Guristas Wrecker has been destroyed</b>"
+    )
+
+    cheer = combat_cheer_from_game_log_line(line, log_path="game.txt")
+
+    assert cheer is not None
+    assert cheer.message == "Guristas Wrecker has been destroyed"
+    assert cheer.observed_at == "2026-06-06T19:15:31Z"
+    assert cheer.log_path == "game.txt"
+
+
+def test_combat_cheer_ignores_your_own_loss_line():
+    line = "[ 2026.06.06 19:15:31 ] (notify) Your ship has been destroyed"
+
+    assert combat_cheer_from_game_log_line(line) is None
+    assert not is_kill_event_text("Your capsule has been destroyed")
+
+
+def test_read_new_combat_cheers_updates_game_log_offset(tmp_path):
+    path = tmp_path / "GameLog_20260606_191531.txt"
+    path.write_text(
+        "\n".join(
+            (
+                "[ 2026.06.06 19:15:31 ] (combat) Your blaster hits a pirate",
+                "[ 2026.06.06 19:15:33 ] (combat) Serpentis Spy has been destroyed",
+            )
+        ),
+        encoding="utf-8",
+    )
+    state = GameLogState(path=path, encoding="utf-8", offset=0)
+
+    cheers = read_new_combat_cheers(state)
+
+    assert [cheer.message for cheer in cheers] == ["Serpentis Spy has been destroyed"]
+    assert state.offset > 0
+    assert read_new_combat_cheers(state) == []
+
+
 def test_display_message_from_alert_is_message_only():
     engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)))
     alert = engine.analyze(make_message("gate camp on the Amarr undock", speaker="Scout Pilot"))
@@ -284,6 +338,32 @@ def test_display_message_from_cheer_is_short_arrival_text():
     cheer = IntelPetLocationCheer(system_name="Amarr", character_name="Scout Pilot", updated_at="2026-06-06T10:45:00Z")
 
     assert display_message_from_cheer(cheer) == "Arrived in Amarr."
+
+
+def test_display_message_from_combat_cheer_is_game_log_message_only():
+    cheer = IntelPetCombatCheer(
+        message="Guristas Wrecker has been destroyed",
+        observed_at="2026-06-06T10:45:00Z",
+        reported_at="2026-06-06T10:45:01Z",
+    )
+
+    assert display_message_from_combat_cheer(cheer) == "Guristas Wrecker has been destroyed"
+
+
+def test_history_item_from_combat_cheer_records_local_context():
+    cheer = IntelPetCombatCheer(
+        message="Guristas Wrecker has been destroyed",
+        observed_at="2026-06-06T10:45:00Z",
+        reported_at="2026-06-06T10:45:01Z",
+    )
+
+    item = history_item_from_combat_cheer(cheer)
+
+    assert item.title == "Kill cheer"
+    assert item.detail == "Guristas Wrecker has been destroyed"
+    assert "Local game log" in item.meta
+    assert item.severity == "high"
+    assert item.recorded_at == "2026-06-06T10:45:01Z"
 
 
 def test_native_window_drag_noops_off_windows(monkeypatch):
@@ -322,8 +402,10 @@ def test_sprite_sequences_only_reference_existing_frames():
 
     assert set(IDLE_SPRITE_SEQUENCE) <= valid_indexes
     assert set(ALERT_SPRITE_SEQUENCE) <= valid_indexes
+    assert {step[0] for step in KILL_SPRITE_STEPS} <= valid_indexes
     assert IDLE_SPRITE_SEQUENCE[-1] == 0
     assert ALERT_SPRITE_SEQUENCE[-1] == 0
+    assert KILL_SPRITE_STEPS[-1][0] == 0
 
 
 def test_load_sprite_frames_returns_empty_when_any_frame_is_missing(tmp_path):
