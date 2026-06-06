@@ -45,7 +45,16 @@ from eve_voice_pilot.corp_intel import (
     scopes_from_sso_payload,
     watch_chat_logs,
 )
+from eve_voice_pilot.commands import (
+    DEFAULT_RESPONSE_CALL_SIGN,
+    CommandProfile,
+    VoiceCommand,
+    find_exact_phrase_match,
+    response_call_signs,
+    strip_response_call_sign,
+)
 from eve_voice_pilot.config import load_settings as load_app_settings
+from eve_voice_pilot.local_transcription import LocalVoskTranscriber
 from eve_voice_pilot.speech_responses import (
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
@@ -56,6 +65,7 @@ from eve_voice_pilot.speech_responses import (
     SpeechResponseManager,
     normalize_response_text,
 )
+from eve_voice_pilot.transcription import RealtimeTranscriber, list_input_devices, resolve_input_device_label
 
 
 DEFAULT_SETTINGS_PATH = ROOT / "profiles" / "intel_pet_settings.json"
@@ -67,6 +77,13 @@ DEFAULT_HAPPY_SYSTEMS = ("Dihra", "Amarr", "Jita")
 DEFAULT_HISTORY_LIMIT = 25
 DEFAULT_PET_SPEECH_ENGINE = RESPONSE_ENGINE_WINDOWS
 DEFAULT_PET_SPEECH_STYLE = DEFAULT_POWER_BALLAD_INSTRUCTIONS
+DEFAULT_VOICE_PROFILE = ROOT / "profiles" / "eve_sample.json"
+USER_VOICE_PROFILE = ROOT / "profiles" / "my_eve_commands.json"
+VOICE_ENGINE_LOCAL = "Local (offline)"
+VOICE_ENGINE_OPENAI = "OpenAI realtime"
+VOICE_ENGINES = (VOICE_ENGINE_LOCAL, VOICE_ENGINE_OPENAI)
+DEFAULT_VOICE_ENGINE = VOICE_ENGINE_LOCAL
+DEFAULT_INPUT_DEVICE_LABEL = "System default"
 LOCATION_SCOPE = "esi-location.read_location.v1"
 OVERLAY_IDLE_WIDTH = 220
 OVERLAY_ALERT_WIDTH = 430
@@ -255,6 +272,25 @@ def clean_response_style(value: Any) -> str:
     return style or DEFAULT_PET_SPEECH_STYLE
 
 
+def clean_voice_engine(value: Any) -> str:
+    engine = str(value or "").strip()
+    return engine if engine in VOICE_ENGINES else DEFAULT_VOICE_ENGINE
+
+
+def clean_voice_input_device(value: Any) -> str:
+    label = str(value or "").strip()
+    return "" if label == DEFAULT_INPUT_DEVICE_LABEL else label
+
+
+def voice_input_device_display(value: Any) -> str:
+    return clean_voice_input_device(value) or DEFAULT_INPUT_DEVICE_LABEL
+
+
+def clean_voice_call_sign(value: Any) -> str:
+    call_sign = str(value or "").strip()
+    return call_sign or DEFAULT_RESPONSE_CALL_SIGN
+
+
 def pet_openai_api_key() -> str:
     for name in ("INTEL_PET_OPENAI_API_KEY", "OPENAI_API_KEY", "EVE_VOICE_OPENAI_API_KEY"):
         value = os.environ.get(name, "").strip()
@@ -270,6 +306,61 @@ def spoken_pet_text(text: str) -> str:
     return normalize_response_text(str(text or "").replace("\n", ". "))
 
 
+def load_voice_profile() -> tuple[CommandProfile, Path]:
+    try:
+        app_settings = load_app_settings()
+    except Exception:
+        app_settings = {}
+    candidates = (
+        Path(str(app_settings.get("profile_path", "")).strip()) if str(app_settings.get("profile_path", "")).strip() else None,
+        USER_VOICE_PROFILE,
+        DEFAULT_VOICE_PROFILE,
+    )
+    for candidate in candidates:
+        if candidate and candidate.exists():
+            return CommandProfile.load(candidate), candidate
+    raise CorpIntelError("No EVE Voice Pilot command profile was found.")
+
+
+def voice_input_device_index(label: str) -> int | None:
+    return resolve_input_device_label(clean_voice_input_device(label))
+
+
+def voice_command_signature(commands: Iterable[VoiceCommand]) -> tuple[tuple[str, tuple[str, ...], str, float, int, float], ...]:
+    return tuple(
+        (command.name, tuple(command.phrases), command.key, command.hold_seconds, command.press_count, command.repeat_gap_seconds)
+        for command in commands
+    )
+
+
+def voice_status_from_transcript(
+    transcript: str,
+    commands: list[VoiceCommand],
+    *,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+) -> "IntelPetVoiceStatus | None":
+    heard = normalize_response_text(transcript)
+    if not heard:
+        return None
+    cleaned, _response_requested = strip_response_call_sign(heard, response_call_signs(response_call_sign))
+    match = find_exact_phrase_match(cleaned, commands)
+    if match:
+        detail = "\n".join(
+            (
+                f"Heard: {heard}",
+                f"Matched: {match.command.name} -> {match.command.action_summary}",
+                "Practice only. No key sent.",
+            )
+        )
+        return IntelPetVoiceStatus(title="Voice command matched", detail=detail, severity="info", recorded_at=now_iso())
+    return IntelPetVoiceStatus(
+        title="Voice heard",
+        detail=f"Heard: {heard}\nNo exact command matched.",
+        severity="info",
+        recorded_at=now_iso(),
+    )
+
+
 @dataclass(frozen=True)
 class IntelPetSettings:
     pilot_names: tuple[str, ...] = ()
@@ -282,6 +373,10 @@ class IntelPetSettings:
     response_engine: str = DEFAULT_PET_SPEECH_ENGINE
     response_voice: str = DEFAULT_OPENAI_TTS_VOICE
     response_style: str = DEFAULT_PET_SPEECH_STYLE
+    enable_voice_listener: bool = False
+    voice_engine: str = DEFAULT_VOICE_ENGINE
+    voice_input_device: str = ""
+    voice_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "IntelPetSettings":
@@ -296,6 +391,10 @@ class IntelPetSettings:
             response_engine=clean_response_engine(payload.get("response_engine")),
             response_voice=clean_response_voice(payload.get("response_voice")),
             response_style=clean_response_style(payload.get("response_style")),
+            enable_voice_listener=bool(payload.get("enable_voice_listener", False)),
+            voice_engine=clean_voice_engine(payload.get("voice_engine")),
+            voice_input_device=clean_voice_input_device(payload.get("voice_input_device")),
+            voice_call_sign=clean_voice_call_sign(payload.get("voice_call_sign")),
         )
 
     def to_watchlist(self) -> IntelWatchlist:
@@ -316,6 +415,10 @@ class IntelPetSettings:
             "response_engine": clean_response_engine(self.response_engine),
             "response_voice": clean_response_voice(self.response_voice),
             "response_style": clean_response_style(self.response_style),
+            "enable_voice_listener": bool(self.enable_voice_listener),
+            "voice_engine": clean_voice_engine(self.voice_engine),
+            "voice_input_device": clean_voice_input_device(self.voice_input_device),
+            "voice_call_sign": clean_voice_call_sign(self.voice_call_sign),
         }
 
 
@@ -378,6 +481,14 @@ class IntelPetMissionCheer:
     observed_at: str
     reported_at: str
     log_path: str = ""
+
+
+@dataclass(frozen=True)
+class IntelPetVoiceStatus:
+    title: str
+    detail: str
+    severity: str
+    recorded_at: str
 
 
 @dataclass(frozen=True)
@@ -500,6 +611,14 @@ def load_settings(path: Path | None, *, overrides: argparse.Namespace | None = N
         settings = replace(settings, response_voice=clean_response_voice(overrides.response_voice))
     if getattr(overrides, "response_style", ""):
         settings = replace(settings, response_style=clean_response_style(overrides.response_style))
+    if getattr(overrides, "enable_voice_listener", None) is not None:
+        settings = replace(settings, enable_voice_listener=bool(overrides.enable_voice_listener))
+    if getattr(overrides, "voice_engine", ""):
+        settings = replace(settings, voice_engine=clean_voice_engine(overrides.voice_engine))
+    if getattr(overrides, "voice_input_device", ""):
+        settings = replace(settings, voice_input_device=clean_voice_input_device(overrides.voice_input_device))
+    if getattr(overrides, "voice_call_sign", ""):
+        settings = replace(settings, voice_call_sign=clean_voice_call_sign(overrides.voice_call_sign))
     return settings
 
 
@@ -546,6 +665,10 @@ def replace_voice_settings(
     response_engine: str,
     response_voice: str,
     response_style: str,
+    enable_voice_listener: bool | None = None,
+    voice_engine: str | None = None,
+    voice_input_device: str | None = None,
+    voice_call_sign: str | None = None,
 ) -> IntelPetSettings:
     return replace(
         settings,
@@ -553,6 +676,10 @@ def replace_voice_settings(
         response_engine=clean_response_engine(response_engine),
         response_voice=clean_response_voice(response_voice),
         response_style=clean_response_style(response_style),
+        enable_voice_listener=settings.enable_voice_listener if enable_voice_listener is None else bool(enable_voice_listener),
+        voice_engine=settings.voice_engine if voice_engine is None else clean_voice_engine(voice_engine),
+        voice_input_device=settings.voice_input_device if voice_input_device is None else clean_voice_input_device(voice_input_device),
+        voice_call_sign=settings.voice_call_sign if voice_call_sign is None else clean_voice_call_sign(voice_call_sign),
     )
 
 
@@ -762,6 +889,20 @@ def history_item_from_status(message: str) -> IntelPetHistoryItem:
         severity=severity,
         recorded_at=now_iso(),
     )
+
+
+def history_item_from_voice_status(status: IntelPetVoiceStatus) -> IntelPetHistoryItem:
+    return IntelPetHistoryItem(
+        title=status.title,
+        detail=status.detail,
+        meta="Voice practice listener",
+        severity=status.severity,
+        recorded_at=status.recorded_at,
+    )
+
+
+def display_message_from_voice_status(status: IntelPetVoiceStatus) -> str:
+    return status.detail
 
 
 def display_message_from_combat_cheer(cheer: IntelPetCombatCheer) -> str:
@@ -1184,7 +1325,7 @@ def run_overlay(
     from tkinter import ttk
 
     alert_queue: queue.Queue[
-        IntelPetAlert | IntelPetLocationCheer | IntelPetCombatCheer | IntelPetMissionCheer | str
+        IntelPetAlert | IntelPetLocationCheer | IntelPetCombatCheer | IntelPetMissionCheer | IntelPetVoiceStatus | str
     ] = queue.Queue()
     stop_event = threading.Event()
     channel_filter = channel_filter_from_args(args)
@@ -1295,6 +1436,99 @@ def run_overlay(
 
     if location_session is not None:
         threading.Thread(target=location_watcher, daemon=True).start()
+
+    def voice_practice_watcher() -> None:
+        transcriber: LocalVoskTranscriber | RealtimeTranscriber | None = None
+        transcriber_signature: tuple[Any, ...] | None = None
+        ready_announced = False
+        last_error = ""
+        while not stop_event.is_set():
+            settings = engine.current_settings()
+            if not settings.enable_voice_listener:
+                if transcriber is not None:
+                    transcriber.close()
+                    transcriber = None
+                    transcriber_signature = None
+                    ready_announced = False
+                stop_event.wait(0.5)
+                continue
+            try:
+                profile, profile_path = load_voice_profile()
+                commands = list(profile.commands)
+                if not commands:
+                    raise CorpIntelError(f"Voice profile has no commands: {profile_path}")
+                voice_engine = clean_voice_engine(settings.voice_engine)
+                api_key = pet_openai_api_key()
+                if voice_engine == VOICE_ENGINE_OPENAI and not api_key:
+                    raise CorpIntelError("OpenAI voice listener needs an API key.")
+                input_device_index = voice_input_device_index(settings.voice_input_device)
+                call_sign = clean_voice_call_sign(settings.voice_call_sign)
+                signature = (
+                    voice_engine,
+                    input_device_index,
+                    call_sign,
+                    voice_command_signature(commands),
+                    bool(api_key) if voice_engine == VOICE_ENGINE_OPENAI else False,
+                )
+                if transcriber is None or signature != transcriber_signature:
+                    if transcriber is not None:
+                        transcriber.close()
+                    if voice_engine == VOICE_ENGINE_OPENAI:
+                        transcriber = RealtimeTranscriber(
+                            api_key,
+                            lambda text: alert_queue.put(f"Voice listener: {text}"),
+                            input_device_index=input_device_index,
+                        )
+                    else:
+                        transcriber = LocalVoskTranscriber(
+                            commands,
+                            lambda text: alert_queue.put(f"Voice listener: {text}"),
+                            input_device_index=input_device_index,
+                            response_call_signs=response_call_signs(call_sign),
+                        )
+                    transcriber_signature = signature
+                    ready_announced = False
+
+                def on_ready() -> None:
+                    nonlocal ready_announced
+                    if ready_announced:
+                        return
+                    ready_announced = True
+                    alert_queue.put(
+                        IntelPetVoiceStatus(
+                            title="Voice practice listener",
+                            detail="Voice practice listening. No keys will be sent.",
+                            severity="info",
+                            recorded_at=now_iso(),
+                        )
+                    )
+
+                transcript = transcriber.record_until_stopped(stop_event, on_ready=on_ready)
+                status = voice_status_from_transcript(transcript, commands, response_call_sign=call_sign)
+                if status:
+                    alert_queue.put(status)
+                last_error = ""
+            except Exception as exc:  # pragma: no cover - surfaced in the UI.
+                if transcriber is not None:
+                    transcriber.close()
+                    transcriber = None
+                    transcriber_signature = None
+                message = f"Voice listener stopped: {exc}"
+                if message != last_error:
+                    alert_queue.put(
+                        IntelPetVoiceStatus(
+                            title="Voice listener problem",
+                            detail=message,
+                            severity="high",
+                            recorded_at=now_iso(),
+                        )
+                    )
+                    last_error = message
+                stop_event.wait(5.0)
+        if transcriber is not None:
+            transcriber.close()
+
+    threading.Thread(target=voice_practice_watcher, daemon=True).start()
 
     root = tk.Tk()
     root.title("EVE Intel Pet")
@@ -1896,6 +2130,14 @@ def run_overlay(
         response_engine_var = tk.StringVar(value=clean_response_engine(voice_settings.response_engine))
         response_voice_var = tk.StringVar(value=clean_response_voice(voice_settings.response_voice))
         response_style_var = tk.StringVar(value=clean_response_style(voice_settings.response_style))
+        voice_listener_var = tk.BooleanVar(value=voice_settings.enable_voice_listener)
+        speech_engine_var = tk.StringVar(value=clean_voice_engine(voice_settings.voice_engine))
+        voice_call_sign_var = tk.StringVar(value=clean_voice_call_sign(voice_settings.voice_call_sign))
+        try:
+            input_device_labels = [DEFAULT_INPUT_DEVICE_LABEL, *(device.label for device in list_input_devices())]
+        except Exception:
+            input_device_labels = [DEFAULT_INPUT_DEVICE_LABEL]
+        voice_input_device_var = tk.StringVar(value=voice_input_device_display(voice_settings.voice_input_device))
 
         def persist_voice_settings(action: str = "Voice settings saved") -> None:
             try:
@@ -1905,6 +2147,10 @@ def run_overlay(
                     response_engine=response_engine_var.get(),
                     response_voice=response_voice_var.get(),
                     response_style=response_style_var.get(),
+                    enable_voice_listener=voice_listener_var.get(),
+                    voice_engine=speech_engine_var.get(),
+                    voice_input_device=voice_input_device_var.get(),
+                    voice_call_sign=voice_call_sign_var.get(),
                 )
                 save_settings(settings_path, settings)
                 engine.update_settings(settings)
@@ -1919,30 +2165,80 @@ def run_overlay(
         voice_grid.pack(fill="x")
         voice_grid.columnconfigure(1, weight=1)
 
+        ttk.Label(voice_grid, text="Spoken pet replies", font=("Segoe UI", 10, "bold")).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(0, 6),
+        )
         ttk.Checkbutton(
             voice_grid,
             text="Speak pet messages",
             variable=speak_alerts_var,
             command=lambda: persist_voice_settings("Pet voice toggled"),
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-        ttk.Label(voice_grid, text="Voice engine").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="Voice engine").grid(row=2, column=0, sticky="w", pady=5)
         response_engine_box = ttk.Combobox(
             voice_grid,
             textvariable=response_engine_var,
             values=RESPONSE_ENGINES,
             state="readonly",
         )
-        response_engine_box.grid(row=1, column=1, sticky="ew", pady=5)
+        response_engine_box.grid(row=2, column=1, sticky="ew", pady=5)
         response_engine_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="OpenAI voice").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="OpenAI voice").grid(row=3, column=0, sticky="w", pady=5)
         response_voice_box = ttk.Combobox(voice_grid, textvariable=response_voice_var, values=OPENAI_TTS_VOICES)
-        response_voice_box.grid(row=2, column=1, sticky="ew", pady=5)
+        response_voice_box.grid(row=3, column=1, sticky="ew", pady=5)
         response_voice_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Voice style").grid(row=3, column=0, sticky="w", pady=5)
-        ttk.Entry(voice_grid, textvariable=response_style_var).grid(row=3, column=1, sticky="ew", pady=5)
+        ttk.Label(voice_grid, text="Voice style").grid(row=4, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=response_style_var).grid(row=4, column=1, sticky="ew", pady=5)
+
+        ttk.Separator(voice_grid).grid(row=5, column=0, columnspan=2, sticky="ew", pady=12)
+        ttk.Label(voice_grid, text="Command listener", font=("Segoe UI", 10, "bold")).grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(0, 6),
+        )
+        ttk.Label(
+            voice_grid,
+            text="Practice mode only. The pet shows matched Voice Pilot commands but does not send keys.",
+            wraplength=500,
+        ).grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Checkbutton(
+            voice_grid,
+            text="Listen for voice commands",
+            variable=voice_listener_var,
+            command=lambda: persist_voice_settings("Voice listener toggled"),
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        ttk.Label(voice_grid, text="Speech engine").grid(row=9, column=0, sticky="w", pady=5)
+        speech_engine_box = ttk.Combobox(
+            voice_grid,
+            textvariable=speech_engine_var,
+            values=VOICE_ENGINES,
+            state="readonly",
+        )
+        speech_engine_box.grid(row=9, column=1, sticky="ew", pady=5)
+        speech_engine_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
+
+        ttk.Label(voice_grid, text="Microphone").grid(row=10, column=0, sticky="w", pady=5)
+        voice_input_box = ttk.Combobox(
+            voice_grid,
+            textvariable=voice_input_device_var,
+            values=input_device_labels,
+            state="readonly",
+        )
+        voice_input_box.grid(row=10, column=1, sticky="ew", pady=5)
+        voice_input_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
+
+        ttk.Label(voice_grid, text="Response call sign").grid(row=11, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=voice_call_sign_var).grid(row=11, column=1, sticky="ew", pady=5)
 
         voice_buttons = ttk.Frame(voice_frame)
         voice_buttons.pack(fill="x", pady=(8, 0))
@@ -2264,11 +2560,22 @@ def run_overlay(
         start_behavior_cycle(behavior_for_kind("mission", settings))
         idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
 
+    def show_voice_status(status: IntelPetVoiceStatus) -> None:
+        nonlocal idle_after_id
+        if idle_after_id is not None:
+            root.after_cancel(idle_after_id)
+        settings = engine.current_settings()
+        show_message_bubble(display_message_from_voice_status(status), severity=status.severity)
+        remember_history(history_item_from_voice_status(status))
+        start_behavior_cycle(BEHAVIOR_ALERT if status.severity != "high" else BEHAVIOR_IDLE)
+        idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
+
     def poll_queue() -> None:
         chat_alerts: list[IntelPetAlert] = []
         location_cheers: list[IntelPetLocationCheer] = []
         combat_cheers: list[IntelPetCombatCheer] = []
         mission_cheers: list[IntelPetMissionCheer] = []
+        voice_statuses: list[IntelPetVoiceStatus] = []
         high_statuses: list[IntelPetHistoryItem] = []
         while True:
             try:
@@ -2283,6 +2590,8 @@ def run_overlay(
                 combat_cheers.append(item)
             elif isinstance(item, IntelPetMissionCheer):
                 mission_cheers.append(item)
+            elif isinstance(item, IntelPetVoiceStatus):
+                voice_statuses.append(item)
             elif isinstance(item, str):
                 status_item = history_item_from_status(item)
                 remember_history(status_item)
@@ -2296,6 +2605,8 @@ def run_overlay(
             show_combat_cheer(cheer)
         for cheer in mission_cheers:
             show_mission_cheer(cheer)
+        for status in voice_statuses:
+            show_voice_status(status)
         for status_item in high_statuses:
             show_message_bubble(status_item.detail, severity=status_item.severity)
         root.after(250, poll_queue)
@@ -2397,6 +2708,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--response-voice", default="", help="OpenAI TTS voice for spoken pet messages.")
     parser.add_argument("--response-style", default="", help="OpenAI TTS style instructions for spoken pet messages.")
+    parser.add_argument(
+        "--enable-voice-listener",
+        action="store_true",
+        default=None,
+        help="Listen for EVE Voice Pilot commands in practice mode only. No keys are sent.",
+    )
+    parser.add_argument(
+        "--no-voice-listener",
+        action="store_false",
+        dest="enable_voice_listener",
+        help="Disable the practice voice listener even if saved settings enable it.",
+    )
+    parser.add_argument("--voice-engine", default="", choices=VOICE_ENGINES, help="Speech engine for the practice listener.")
+    parser.add_argument("--voice-input-device", default="", help="Microphone label for the practice listener.")
+    parser.add_argument("--voice-call-sign", default="", help="Response call sign for voice commands, like Merlin or Aura.")
     parser.add_argument("--no-combat-cheer", action="store_true", help="Do not watch local game logs for kill cheers.")
     parser.add_argument("--no-mission-cheer", action="store_true", help="Do not watch local game logs for mission comments.")
     parser.add_argument(

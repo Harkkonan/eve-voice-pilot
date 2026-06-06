@@ -19,7 +19,9 @@ from eve_voice_pilot.intel_pet import (
     BEHAVIOR_NONE,
     DEFAULT_ALERT_SECONDS,
     DEFAULT_ALERT_BEHAVIORS,
+    DEFAULT_INPUT_DEVICE_LABEL,
     DEFAULT_PET_SPEECH_ENGINE,
+    DEFAULT_VOICE_ENGINE,
     IDLE_SPRITE_SEQUENCE,
     KILL_SPRITE_STEPS,
     LONG_COMBAT_SPRITE_STEPS,
@@ -33,6 +35,7 @@ from eve_voice_pilot.intel_pet import (
     IntelPetLocationSession,
     IntelPetEngine,
     IntelPetSettings,
+    IntelPetVoiceStatus,
     alert_behavior_key,
     alert_with_local_system_fallback,
     behavior_for_alert,
@@ -40,6 +43,8 @@ from eve_voice_pilot.intel_pet import (
     behavior_key_from_label,
     behavior_label,
     clean_alert_behaviors,
+    clean_voice_engine,
+    clean_voice_input_device,
     clean_user_terms,
     combat_cheer_from_game_log_line,
     display_message_from_alert,
@@ -47,6 +52,7 @@ from eve_voice_pilot.intel_pet import (
     display_message_from_cheer,
     display_message_from_combat_cheer,
     display_message_from_mission_cheer,
+    display_message_from_voice_status,
     fetch_pet_location,
     highest_severity_alert,
     history_item_from_alert,
@@ -54,6 +60,7 @@ from eve_voice_pilot.intel_pet import (
     history_item_from_combat_cheer,
     history_item_from_mission_cheer,
     history_item_from_status,
+    history_item_from_voice_status,
     is_kill_event_text,
     is_happy_system,
     listener_filter_from_args,
@@ -72,7 +79,10 @@ from eve_voice_pilot.intel_pet import (
     ship_sprite_frame_paths,
     spoken_pet_text,
     trim_history,
+    voice_input_device_display,
+    voice_status_from_transcript,
 )
+from eve_voice_pilot.commands import VoiceCommand
 from eve_voice_pilot.speech_responses import RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_WINDOWS
 
 
@@ -227,6 +237,10 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
         response_engine=RESPONSE_ENGINE_OPENAI,
         response_voice="nova",
         response_style="Short and calm.",
+        enable_voice_listener=True,
+        voice_engine="OpenAI realtime",
+        voice_input_device="3: Headset (48000 Hz)",
+        voice_call_sign="Aura",
     )
 
     save_settings(settings_path, settings)
@@ -236,17 +250,75 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     assert loaded.response_engine == RESPONSE_ENGINE_OPENAI
     assert loaded.response_voice == "nova"
     assert loaded.response_style == "Short and calm."
-    assert replace_voice_settings(
+    assert loaded.enable_voice_listener is True
+    assert loaded.voice_engine == "OpenAI realtime"
+    assert loaded.voice_input_device == "3: Headset (48000 Hz)"
+    assert loaded.voice_call_sign == "Aura"
+    cleaned = replace_voice_settings(
         loaded,
         speak_alerts=False,
         response_engine="not-real",
         response_voice="",
         response_style="",
-    ).response_engine == DEFAULT_PET_SPEECH_ENGINE == RESPONSE_ENGINE_WINDOWS
+        enable_voice_listener=False,
+        voice_engine="not-real",
+        voice_input_device=DEFAULT_INPUT_DEVICE_LABEL,
+        voice_call_sign="",
+    )
+
+    assert cleaned.response_engine == DEFAULT_PET_SPEECH_ENGINE == RESPONSE_ENGINE_WINDOWS
+    assert cleaned.voice_engine == DEFAULT_VOICE_ENGINE
+    assert cleaned.voice_input_device == ""
+    assert cleaned.voice_call_sign == "merlin"
 
 
 def test_spoken_pet_text_collapses_bubble_newlines():
     assert spoken_pet_text("18:15:00Z | Amarr\nbuy order appeared") == "18:15:00Z | Amarr. buy order appeared"
+
+
+def test_voice_input_device_display_uses_system_default_label():
+    assert clean_voice_input_device(DEFAULT_INPUT_DEVICE_LABEL) == ""
+    assert voice_input_device_display("") == DEFAULT_INPUT_DEVICE_LABEL
+    assert clean_voice_engine("not-real") == DEFAULT_VOICE_ENGINE
+
+
+def test_voice_status_from_transcript_matches_command_without_sending_keys():
+    command = VoiceCommand("Warp to", ["warp", "warp now"], "S", response_suffix="Aura")
+
+    status = voice_status_from_transcript("Aura warp now", [command], response_call_sign="Aura")
+
+    assert status is not None
+    assert status.title == "Voice command matched"
+    assert "Heard: Aura warp now" in status.detail
+    assert "Matched: Warp to -> S for 0.10s" in status.detail
+    assert "Practice only. No key sent." in status.detail
+    assert display_message_from_voice_status(status) == status.detail
+
+
+def test_voice_status_from_transcript_reports_unmatched_phrase():
+    command = VoiceCommand("Warp to", ["warp"], "S")
+
+    status = voice_status_from_transcript("open market", [command])
+
+    assert status is not None
+    assert status.title == "Voice heard"
+    assert "No exact command matched." in status.detail
+
+
+def test_history_item_from_voice_status_records_practice_listener_context():
+    status = IntelPetVoiceStatus(
+        title="Voice command matched",
+        detail="Practice only. No key sent.",
+        severity="info",
+        recorded_at="2026-06-06T20:00:00Z",
+    )
+
+    item = history_item_from_voice_status(status)
+
+    assert item.title == "Voice command matched"
+    assert item.detail == "Practice only. No key sent."
+    assert item.meta == "Voice practice listener"
+    assert item.recorded_at == "2026-06-06T20:00:00Z"
 
 
 def test_default_alert_duration_is_fifteen_seconds():

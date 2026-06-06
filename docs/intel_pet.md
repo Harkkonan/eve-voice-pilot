@@ -140,6 +140,26 @@ EVE_VOICE_OPENAI_API_KEY
 
 You can also turn spoken pet messages on or off in `Options` > `Voice`.
 
+## Optional Voice Command Practice
+
+The pet can also listen for the same phrases configured in EVE Voice Pilot and show what command matched. This first pet integration is practice-only: it does not send keys, click, move the mouse, or control EVE.
+
+To try it:
+
+```powershell
+.\scripts\run_intel_pet.ps1 --enable-voice-listener
+```
+
+When it recognizes a configured phrase, the bubble shows the heard phrase, the matched command, and the keybind it would use in the full Voice Pilot app. The message ends with:
+
+```text
+Practice only. No key sent.
+```
+
+The listener uses your saved EVE Voice Pilot command profile when available, then falls back to the sample profile. You can choose the speech engine, microphone, and call sign in `Options` > `Voice`.
+
+OpenAI realtime transcription needs a saved EVE Voice Pilot API key on this PC, or one of the same local environment variables used for spoken pet messages. Local/offline transcription needs the Vosk model from setup.
+
 ## Optional ESI Location Cheer
 
 Location cheer makes the ship fly happily when your connected EVE character reaches `Dihra`, `Amarr`, or `Jita`.
@@ -219,7 +239,7 @@ In the `Behaviors` tab, choose the ship animation for each alert type:
 
 Each row has a small animated preview next to the selector. The behavior choices include short alert, happy flight, combat burst, long flight, long shooting, long combo, calm wiggle, and no animation. Behavior changes are saved immediately to the same local settings file.
 
-In the `Voice` tab, turn spoken pet messages on or off and choose the voice engine/style. This only speaks local pet messages; it does not arm voice commands or control EVE.
+In the `Voice` tab, turn spoken pet messages on or off and choose the voice engine/style. You can also enable the practice voice-command listener there. The listener reports matched Voice Pilot commands but does not send keys.
 
 ## Alert History
 
@@ -254,6 +274,10 @@ Example:
   "response_engine": "Windows local",
   "response_voice": "ballad",
   "response_style": "Speak as a starship AI with a dramatic 1980s power ballad cadence: soaring, confident, a little theatrical, but concise and clear. Do not sing; speak the line.",
+  "enable_voice_listener": false,
+  "voice_engine": "Local (offline)",
+  "voice_input_device": "",
+  "voice_call_sign": "merlin",
   "alert_behaviors": {
     "mention": "alert",
     "help": "alert",
