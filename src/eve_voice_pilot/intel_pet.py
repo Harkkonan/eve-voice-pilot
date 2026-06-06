@@ -436,6 +436,19 @@ def history_item_from_combat_cheer(cheer: IntelPetCombatCheer) -> IntelPetHistor
     )
 
 
+def history_item_from_status(message: str) -> IntelPetHistoryItem:
+    clean_message = " ".join(str(message or "").split()) or "Intel Pet status update."
+    lowered = clean_message.casefold()
+    severity = "high" if "stopped" in lowered or "error" in lowered or "does not exist" in lowered else "info"
+    return IntelPetHistoryItem(
+        title="Pet watcher status",
+        detail=clean_message,
+        meta="Local watcher",
+        severity=severity,
+        recorded_at=now_iso(),
+    )
+
+
 def display_message_from_combat_cheer(cheer: IntelPetCombatCheer) -> str:
     return cheer.message
 
@@ -1484,6 +1497,11 @@ def run_overlay(
                 show_location_cheer(item)
             elif isinstance(item, IntelPetCombatCheer):
                 show_combat_cheer(item)
+            elif isinstance(item, str):
+                status_item = history_item_from_status(item)
+                remember_history(status_item)
+                if status_item.severity == "high":
+                    show_message_bubble(status_item.detail, severity=status_item.severity)
         root.after(250, poll_queue)
 
     def on_close() -> None:

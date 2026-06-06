@@ -1,10 +1,11 @@
 from pathlib import Path
 import sys
+import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from eve_voice_pilot.corp_intel import ChatMessage, EveSsoConfig
+from eve_voice_pilot.corp_intel import ChannelFilter, ChatMessage, EveSsoConfig, watch_chat_logs
 import eve_voice_pilot.intel_pet as intel_pet_module
 from eve_voice_pilot.intel_pet import (
     ALERT_SPRITE_SEQUENCE,
@@ -28,6 +29,7 @@ from eve_voice_pilot.intel_pet import (
     history_item_from_alert,
     history_item_from_cheer,
     history_item_from_combat_cheer,
+    history_item_from_status,
     is_kill_event_text,
     is_happy_system,
     load_sprite_frames,
@@ -364,6 +366,68 @@ def test_history_item_from_combat_cheer_records_local_context():
     assert "Local game log" in item.meta
     assert item.severity == "high"
     assert item.recorded_at == "2026-06-06T10:45:01Z"
+
+
+def test_history_item_from_status_surfaces_watcher_failures():
+    item = history_item_from_status("Watcher stopped: Chat log folder does not exist")
+
+    assert item.title == "Pet watcher status"
+    assert item.severity == "high"
+    assert "Watcher stopped" in item.detail
+    assert item.meta == "Local watcher"
+
+
+def test_chat_log_watcher_alerts_on_new_appended_name_mention(tmp_path):
+    chat_path = tmp_path / "Corp_20260606_193742_123.txt"
+    chat_path.write_text(
+        """
+        ---------------------------------------------------------------
+
+          Channel ID:      corp
+          Channel Name:    Corp
+          Listener:        Liet-kynes Ridderston
+          Session started: 2026.06.06 19:37:42
+        ---------------------------------------------------------------
+""".lstrip(),
+        encoding="utf-8",
+    )
+    engine = IntelPetEngine(IntelPetSettings(pilot_names=("Dandin",)))
+    stop_event = threading.Event()
+    alert_seen = threading.Event()
+    sharing_seen = threading.Event()
+    alerts = []
+
+    def on_message(message: ChatMessage) -> None:
+        alert = engine.analyze(message)
+        if alert:
+            alerts.append(alert)
+            alert_seen.set()
+
+    watcher = threading.Thread(
+        target=watch_chat_logs,
+        kwargs={
+            "log_dir": tmp_path,
+            "channel_filter": ChannelFilter(("Corp", "Local")),
+            "on_message": on_message,
+            "poll_seconds": 0.05,
+            "read_existing": False,
+            "stop_event": stop_event,
+            "log": lambda text: sharing_seen.set() if "Sharing channel" in text else None,
+        },
+        daemon=True,
+    )
+    watcher.start()
+    try:
+        assert sharing_seen.wait(2.0)
+        with chat_path.open("a", encoding="utf-8") as handle:
+            handle.write("\ufeff[ 2026.06.06 19:38:31 ] Liet-kynes Ridderston > Dandin\n")
+        assert alert_seen.wait(2.0)
+    finally:
+        stop_event.set()
+        watcher.join(timeout=2.0)
+
+    assert alerts[-1].title == "Your name was mentioned in Corp"
+    assert alerts[-1].keywords == ("name: Dandin",)
 
 
 def test_native_window_drag_noops_off_windows(monkeypatch):
