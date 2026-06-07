@@ -7454,7 +7454,7 @@ def build_flight_reprocessing_locations_payload(
         facility_yield_percent=None,
         station_tax_percent=None,
     )
-    station_options, total_matching = build_reprocessing_station_options(
+    station_options, total_matching, recommendations = build_reprocessing_station_options(
         cache=cache,
         route_cache=load_route_graph_cache(),
         standings=standings,
@@ -7478,6 +7478,7 @@ def build_flight_reprocessing_locations_payload(
         "structure_bonus_percent": clean_structure_bonus_percent,
         "current_location": current_location,
         "stations": station_options,
+        "recommendations": recommendations,
         "station_count": len(station_options),
         "total_matching_stations": total_matching,
         "truncated": total_matching > len(station_options),
@@ -7501,7 +7502,7 @@ def build_reprocessing_station_options(
     implant_profile: dict[str, Any],
     structure_bonus_percent: float,
     sort_mode: str = DEFAULT_REPROCESSING_STATION_SORT,
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
     systems = route_cache.systems or {} if route_cache.available else {}
     clean_sort_mode = normalize_reprocessing_station_sort(sort_mode)
     options = []
@@ -7556,8 +7557,44 @@ def build_reprocessing_station_options(
                 "capped": rates["capped"],
             }
         )
+    recommendations = build_reprocessing_station_recommendations(options)
     options.sort(key=lambda item: reprocessing_station_sort_key(item, clean_sort_mode))
-    return options[:MAX_REPROCESSING_STATION_OPTIONS], len(options)
+    return options[:MAX_REPROCESSING_STATION_OPTIONS], len(options), recommendations
+
+
+def build_reprocessing_station_recommendations(options: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    option_list = list(options or [])
+    if not option_list:
+        return []
+    recommendation_specs = (
+        (
+            "net_yield",
+            "Best net yield",
+            "Highest total efficiency after skills, implant, structure bonus, and processing fee.",
+        ),
+        (
+            "processing_fee",
+            "Lowest processing fee",
+            "Lowest standings-adjusted station take from the matched NPC stations.",
+        ),
+        (
+            "standing",
+            "Highest standing",
+            "Best exact corporation or faction standing row used for station tax.",
+        ),
+    )
+    recommendations = []
+    for sort_mode, title, reason in recommendation_specs:
+        station = sorted(option_list, key=lambda item: reprocessing_station_sort_key(item, sort_mode))[0]
+        recommendations.append(
+            {
+                **station,
+                "recommendation": sort_mode,
+                "recommendation_title": title,
+                "recommendation_reason": reason,
+            }
+        )
+    return recommendations
 
 
 def normalize_reprocessing_station_sort(value: Any) -> str:
@@ -10910,6 +10947,64 @@ def _render_flight_attendant_dashboard() -> str:
       resize: vertical;
       font-family: Consolas, monospace;
     }
+    .reprocess-location-cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .reprocess-location-cards[hidden] { display: none; }
+    .reprocess-location-card {
+      display: grid;
+      gap: 7px;
+      text-align: left;
+      border: 1px solid rgba(224, 168, 74, .4);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(224, 168, 74, .1), rgba(97, 199, 217, .05)),
+        rgba(8, 13, 15, .64);
+      color: var(--text);
+      padding: 10px;
+      min-height: 132px;
+      cursor: pointer;
+    }
+    .reprocess-location-card:hover,
+    .reprocess-location-card:focus {
+      border-color: rgba(224, 168, 74, .78);
+      box-shadow: 0 0 0 2px rgba(224, 168, 74, .12);
+    }
+    .reprocess-location-card span {
+      display: block;
+      color: var(--amber);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .reprocess-location-card strong {
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .reprocess-location-card small {
+      color: var(--muted);
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+    .reprocess-location-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .reprocess-location-metrics b {
+      border: 1px solid rgba(63, 85, 80, .58);
+      border-radius: 999px;
+      background: rgba(5, 9, 11, .38);
+      color: var(--muted);
+      padding: 2px 7px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
     .reprocess-copy-actions {
       display: flex;
       align-items: center;
@@ -12139,6 +12234,7 @@ def _render_flight_attendant_dashboard() -> str:
           "footer";
       }
       .reprocess-status-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .reprocess-location-cards { grid-template-columns: 1fr; }
       .assay-status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .status-rail-cell { border-bottom: 1px solid rgba(63, 85, 80, .5); }
     }
@@ -13112,6 +13208,7 @@ def _render_flight_attendant_dashboard() -> str:
                   <div id="reprocess-batch-status" class="meta" aria-live="polite"></div>
                 </div>
               </details>
+              <div id="reprocess-location-recommendations" class="reprocess-location-cards" hidden></div>
               <div class="row">
                 <label>Reprocessing location
                   <select id="reprocess-station-select" name="reprocessing_station_id">
@@ -13342,6 +13439,7 @@ def _render_flight_attendant_dashboard() -> str:
     const reprocessResults = document.querySelector("#reprocess-results");
     const reprocessBatchInput = document.querySelector("#reprocess-batch-input");
     const reprocessBatchStatus = document.querySelector("#reprocess-batch-status");
+    const reprocessLocationRecommendations = document.querySelector("#reprocess-location-recommendations");
     const reprocessCopyRaw = document.querySelector("#reprocess-copy-raw");
     const reprocessCopyMinerals = document.querySelector("#reprocess-copy-minerals");
     const reprocessCopyStatus = document.querySelector("#reprocess-copy-status");
@@ -15976,6 +16074,7 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(reprocessLocationKey, "current");
       reprocessLocationStatus.textContent = message;
       reprocessRefreshLocations.disabled = disabled;
+      renderReprocessingLocationRecommendations([]);
     }
 
     async function loadReprocessingLocations() {
@@ -15994,6 +16093,7 @@ def _render_flight_attendant_dashboard() -> str:
         return;
       }
       reprocessRefreshLocations.disabled = true;
+      renderReprocessingLocationRecommendations([]);
       reprocessLocationStatus.textContent = "Loading stations over 1.5 standing from ESI standings and local SDE data...";
       const params = new URLSearchParams({
         ore_type_id: settings.oreTypeId,
@@ -16016,6 +16116,8 @@ def _render_flight_attendant_dashboard() -> str:
     function renderReprocessingLocations(data, selectedLocationId) {
       const current = data.current_location || {};
       const stations = Array.isArray(data.stations) ? data.stations : [];
+      const recommendations = Array.isArray(data.recommendations) ? data.recommendations : [];
+      const dropdownStations = mergeReprocessingStationLists(stations, recommendations);
       reprocessStationSelect.innerHTML = "";
       const currentOption = document.createElement("option");
       currentOption.value = "current";
@@ -16023,7 +16125,7 @@ def _render_flight_attendant_dashboard() -> str:
         ? `Use current ESI location - ${current.location_name}`
         : "Use current ESI location";
       reprocessStationSelect.appendChild(currentOption);
-      for (const station of stations) {
+      for (const station of dropdownStations) {
         const option = document.createElement("option");
         option.value = String(station.station_id || "");
         option.textContent = station.label || `${formatPercent(station.net_yield_percent)} net - Station ${station.station_id}`;
@@ -16043,6 +16145,42 @@ def _render_flight_attendant_dashboard() -> str:
       } else {
         reprocessLocationStatus.textContent = `Loaded ${formatNumber(stations.length)} NPC stations over 1.5 standing, sorted by ${sortLabel}.`;
       }
+      renderReprocessingLocationRecommendations(recommendations);
+    }
+
+    function mergeReprocessingStationLists(stations, recommendations) {
+      const merged = [];
+      const seen = new Set();
+      [...(stations || []), ...(recommendations || [])].forEach((station) => {
+        const stationId = String(station.station_id || "").trim();
+        if (!stationId || seen.has(stationId)) return;
+        seen.add(stationId);
+        merged.push(station);
+      });
+      return merged;
+    }
+
+    function renderReprocessingLocationRecommendations(recommendations) {
+      if (!reprocessLocationRecommendations) return;
+      const rows = Array.isArray(recommendations) ? recommendations.filter((station) => station && station.station_id) : [];
+      if (!rows.length) {
+        reprocessLocationRecommendations.hidden = true;
+        reprocessLocationRecommendations.innerHTML = "";
+        return;
+      }
+      reprocessLocationRecommendations.hidden = false;
+      reprocessLocationRecommendations.innerHTML = rows.map((station) => `
+        <button class="reprocess-location-card" type="button" data-reprocess-location-card="${escapeHtml(station.station_id)}">
+          <span>${escapeHtml(station.recommendation_title || "Recommended")}</span>
+          <strong>${escapeHtml(station.solar_system_name || "Unknown system")} - ${escapeHtml(station.owner_name || "Unknown owner")}</strong>
+          <small>${escapeHtml(station.recommendation_reason || station.label || "Standing-qualified NPC reprocessing station.")}</small>
+          <span class="reprocess-location-metrics">
+            <b>${formatPercent(station.net_yield_percent)} net</b>
+            <b>${formatPercent(station.processing_fee_percent)} fee</b>
+            <b>${Number(station.standing || 0).toFixed(2)} standing</b>
+          </span>
+        </button>
+      `).join("");
     }
 
     function setReprocessingBatchStatus(message, isError = false) {
@@ -17769,6 +17907,17 @@ def _render_flight_attendant_dashboard() -> str:
     reprocessStationTax.addEventListener("change", updateReprocessingAndReset);
     reprocessImplantBonus.addEventListener("change", updateReprocessingStationsAndReset);
     reprocessStructureBonus.addEventListener("change", updateReprocessingStationsAndReset);
+    reprocessLocationRecommendations.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-reprocess-location-card]");
+      if (!button) return;
+      const stationId = String(button.dataset.reprocessLocationCard || "").trim();
+      const optionValues = Array.from(reprocessStationSelect.options).map((option) => option.value);
+      if (!optionValues.includes(stationId)) return;
+      reprocessStationSelect.value = stationId;
+      window.localStorage.setItem(reprocessLocationKey, stationId);
+      updateReprocessingAndReset();
+      reprocessLocationStatus.textContent = `Selected ${button.querySelector("strong")?.textContent || "recommended reprocessing station"}.`;
+    });
     reprocessResults.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-reprocess-sort]");
       if (!button) return;

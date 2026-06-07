@@ -369,10 +369,14 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Paste Ore Batch" in page
     assert "id=\"reprocess-copy-raw\"" in page
     assert "id=\"reprocess-copy-minerals\"" in page
+    assert "id=\"reprocess-location-recommendations\"" in page
+    assert "reprocess-location-card" in page
     assert "Compact Assay Table" in page
     assert "reprocessing-decision-card" in page
     assert "parseReprocessingBatchInput" in page
     assert "copyReprocessingText" in page
+    assert "renderReprocessingLocationRecommendations" in page
+    assert "data-reprocess-location-card" in page
     assert "data-reprocess-sort" in page
     assert "data-copy-reprocessing=\"minerals\"" in page
     assert "reprocess-field-desk" in page
@@ -2171,6 +2175,21 @@ def test_build_flight_reprocessing_locations_payload_filters_and_ranks_standing_
     assert payload["stations"][0]["standing_row"]["standing"] == pytest.approx(5.0)
     assert "standing 5.00" in payload["stations"][0]["label"]
     assert "processing fee 1.25%" in payload["stations"][0]["label"]
+    assert [station["recommendation"] for station in payload["recommendations"]] == [
+        "net_yield",
+        "processing_fee",
+        "standing",
+    ]
+    assert [station["recommendation_title"] for station in payload["recommendations"]] == [
+        "Best net yield",
+        "Lowest processing fee",
+        "Highest standing",
+    ]
+    assert payload["recommendations"][0]["station_id"] == 60000007
+    assert payload["recommendations"][1]["station_id"] == 60000019
+    assert payload["recommendations"][2]["station_id"] == 60000019
+    assert payload["recommendations"][1]["processing_fee_percent"] == pytest.approx(0.0)
+    assert payload["recommendations"][2]["standing"] == pytest.approx(8.0)
 
     fee_payload = build_flight_reprocessing_locations_payload(
         config=corp_market.EveSsoConfig(
