@@ -50,6 +50,7 @@ from eve_voice_pilot.intel_pet import (
     behavior_key_from_label,
     behavior_label,
     clean_alert_behaviors,
+    clean_spoken_alert_kinds,
     clean_voice_command_phrases,
     clean_voice_engine,
     clean_voice_input_device,
@@ -66,6 +67,7 @@ from eve_voice_pilot.intel_pet import (
     display_message_from_combat_cheer,
     display_message_from_mission_cheer,
     display_message_from_voice_status,
+    default_spoken_alert_kinds,
     duplicate_voice_command,
     editable_voice_profile_path,
     execute_voice_command,
@@ -96,9 +98,11 @@ from eve_voice_pilot.intel_pet import (
     replace_alert_behaviors,
     replace_alert_terms,
     replace_extra_keywords,
+    replace_spoken_alert_kinds,
     replace_voice_settings,
     save_settings,
     ship_sprite_frame_paths,
+    should_speak_alert_kind,
     spoken_pet_text,
     trim_history,
     filtered_voice_command_indices,
@@ -269,6 +273,16 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     settings = replace_voice_settings(
         IntelPetSettings(),
         speak_alerts=True,
+        spoken_alert_kinds={
+            "mention": True,
+            "help": False,
+            "hostile": True,
+            "keyword": False,
+            "location": True,
+            "combat": False,
+            "mission": True,
+            "unknown": False,
+        },
         response_engine=RESPONSE_ENGINE_OPENAI,
         response_voice="nova",
         response_style="Short and calm.",
@@ -287,6 +301,11 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     loaded = load_settings(settings_path)
 
     assert loaded.speak_alerts is True
+    assert loaded.spoken_alert_kinds["mention"] is True
+    assert loaded.spoken_alert_kinds["help"] is False
+    assert loaded.spoken_alert_kinds["keyword"] is False
+    assert loaded.spoken_alert_kinds["combat"] is False
+    assert "unknown" not in loaded.spoken_alert_kinds
     assert loaded.response_engine == RESPONSE_ENGINE_OPENAI
     assert loaded.response_voice == "nova"
     assert loaded.response_style == "Short and calm."
@@ -302,6 +321,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     cleaned = replace_voice_settings(
         loaded,
         speak_alerts=False,
+        spoken_alert_kinds={"mention": False, "location": True},
         response_engine="not-real",
         response_voice="",
         response_style="",
@@ -317,6 +337,9 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     )
 
     assert cleaned.response_engine == DEFAULT_PET_SPEECH_ENGINE == RESPONSE_ENGINE_WINDOWS
+    assert cleaned.spoken_alert_kinds["mention"] is False
+    assert cleaned.spoken_alert_kinds["location"] is True
+    assert cleaned.spoken_alert_kinds["help"] is True
     assert cleaned.voice_engine == DEFAULT_VOICE_ENGINE
     assert cleaned.voice_model_path == ""
     assert cleaned.voice_preview_text == DEFAULT_VOICE_PREVIEW_TEXT
@@ -325,6 +348,18 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     assert cleaned.allow_voice_command_sending is False
     assert cleaned.require_voice_target_window is False
     assert cleaned.voice_target_title == DEFAULT_VOICE_TARGET_TITLE
+
+
+def test_spoken_alert_kind_settings_gate_pet_speech():
+    defaults = default_spoken_alert_kinds()
+    assert all(defaults.values())
+    assert clean_spoken_alert_kinds({"mention": False, "unknown": False})["mention"] is False
+    assert "unknown" not in clean_spoken_alert_kinds({"unknown": False})
+
+    muted = replace_spoken_alert_kinds(IntelPetSettings(speak_alerts=True), {"combat": False})
+    assert should_speak_alert_kind("mention", muted) is True
+    assert should_speak_alert_kind("combat", muted) is False
+    assert should_speak_alert_kind("mission", IntelPetSettings(speak_alerts=False)) is False
 
 
 def test_spoken_pet_text_collapses_bubble_newlines():

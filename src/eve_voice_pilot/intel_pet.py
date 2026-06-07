@@ -155,6 +155,7 @@ ALERT_BEHAVIOR_KINDS = (
     ("combat", "Kill cheer", "When a local game-log kill line appears."),
     ("mission", "Agent mission", "When a local game-log mission acceptance or completion appears."),
 )
+SPOKEN_ALERT_KINDS = ALERT_BEHAVIOR_KINDS
 DEFAULT_ALERT_BEHAVIORS = {
     "mention": BEHAVIOR_ALERT,
     "help": BEHAVIOR_ALERT,
@@ -295,6 +296,10 @@ MISSION_COMMENTS = {
 
 def default_alert_behaviors() -> dict[str, str]:
     return dict(DEFAULT_ALERT_BEHAVIORS)
+
+
+def default_spoken_alert_kinds() -> dict[str, bool]:
+    return {kind: True for kind, _label, _description in SPOKEN_ALERT_KINDS}
 
 
 def clean_response_engine(value: Any) -> str:
@@ -942,6 +947,7 @@ class IntelPetSettings:
     alert_seconds: float = DEFAULT_ALERT_SECONDS
     alert_behaviors: dict[str, str] = field(default_factory=default_alert_behaviors)
     speak_alerts: bool = False
+    spoken_alert_kinds: dict[str, bool] = field(default_factory=default_spoken_alert_kinds)
     response_engine: str = DEFAULT_PET_SPEECH_ENGINE
     response_voice: str = DEFAULT_OPENAI_TTS_VOICE
     response_style: str = DEFAULT_PET_SPEECH_STYLE
@@ -965,6 +971,7 @@ class IntelPetSettings:
             alert_seconds=safe_float(payload.get("alert_seconds"), DEFAULT_ALERT_SECONDS),
             alert_behaviors=clean_alert_behaviors(payload.get("alert_behaviors")),
             speak_alerts=bool(payload.get("speak_alerts", False)),
+            spoken_alert_kinds=clean_spoken_alert_kinds(payload.get("spoken_alert_kinds")),
             response_engine=clean_response_engine(payload.get("response_engine")),
             response_voice=clean_response_voice(payload.get("response_voice")),
             response_style=clean_response_style(payload.get("response_style")),
@@ -994,6 +1001,7 @@ class IntelPetSettings:
             "alert_seconds": self.alert_seconds,
             "alert_behaviors": clean_alert_behaviors(self.alert_behaviors),
             "speak_alerts": bool(self.speak_alerts),
+            "spoken_alert_kinds": clean_spoken_alert_kinds(self.spoken_alert_kinds),
             "response_engine": clean_response_engine(self.response_engine),
             "response_voice": clean_response_voice(self.response_voice),
             "response_style": clean_response_style(self.response_style),
@@ -1290,6 +1298,10 @@ def replace_alert_behaviors(settings: IntelPetSettings, behaviors: dict[str, str
     return replace(settings, alert_behaviors=clean_alert_behaviors(behaviors))
 
 
+def replace_spoken_alert_kinds(settings: IntelPetSettings, spoken_kinds: dict[str, bool]) -> IntelPetSettings:
+    return replace(settings, spoken_alert_kinds=clean_spoken_alert_kinds(spoken_kinds))
+
+
 def replace_voice_settings(
     settings: IntelPetSettings,
     *,
@@ -1297,6 +1309,7 @@ def replace_voice_settings(
     response_engine: str,
     response_voice: str,
     response_style: str,
+    spoken_alert_kinds: dict[str, bool] | None = None,
     voice_preview_text: str | None = None,
     enable_voice_listener: bool | None = None,
     voice_engine: str | None = None,
@@ -1310,6 +1323,9 @@ def replace_voice_settings(
     return replace(
         settings,
         speak_alerts=bool(speak_alerts),
+        spoken_alert_kinds=(
+            settings.spoken_alert_kinds if spoken_alert_kinds is None else clean_spoken_alert_kinds(spoken_alert_kinds)
+        ),
         response_engine=clean_response_engine(response_engine),
         response_voice=clean_response_voice(response_voice),
         response_style=clean_response_style(response_style),
@@ -1354,6 +1370,23 @@ def clean_alert_behaviors(value: Any) -> dict[str, str]:
         if behavior in valid_behaviors:
             cleaned[kind] = behavior
     return cleaned
+
+
+def clean_spoken_alert_kinds(value: Any) -> dict[str, bool]:
+    cleaned = default_spoken_alert_kinds()
+    if not isinstance(value, dict):
+        return cleaned
+    for kind, _label, _description in SPOKEN_ALERT_KINDS:
+        if kind in value:
+            cleaned[kind] = bool(value[kind])
+    return cleaned
+
+
+def should_speak_alert_kind(kind: str, settings: IntelPetSettings) -> bool:
+    if not settings.speak_alerts:
+        return False
+    spoken_kinds = clean_spoken_alert_kinds(settings.spoken_alert_kinds)
+    return bool(spoken_kinds.get(kind, True))
 
 
 def behavior_label(behavior: str) -> str:
@@ -2817,6 +2850,10 @@ def run_overlay(
 
         voice_settings = engine.current_settings()
         speak_alerts_var = tk.BooleanVar(value=voice_settings.speak_alerts)
+        spoken_alert_kind_vars = {
+            kind: tk.BooleanVar(value=clean_spoken_alert_kinds(voice_settings.spoken_alert_kinds)[kind])
+            for kind, _label, _description in SPOKEN_ALERT_KINDS
+        }
         response_engine_var = tk.StringVar(value=clean_response_engine(voice_settings.response_engine))
         response_voice_var = tk.StringVar(value=clean_response_voice(voice_settings.response_voice))
         response_style_var = tk.StringVar(value=clean_response_style(voice_settings.response_style))
@@ -2841,6 +2878,7 @@ def run_overlay(
                 settings = replace_voice_settings(
                     engine.current_settings(),
                     speak_alerts=speak_alerts_var.get(),
+                    spoken_alert_kinds={kind: var.get() for kind, var in spoken_alert_kind_vars.items()},
                     response_engine=response_engine_var.get(),
                     response_voice=response_voice_var.get(),
                     response_style=response_style_var.get(),
@@ -2859,12 +2897,19 @@ def run_overlay(
                 configure_pet_speech(settings)
                 voice_model_var.set(voice_model_display(settings.voice_model_path))
                 voice_model_status_var.set(voice_model_status(settings.voice_model_path))
+                for kind, var in spoken_alert_kind_vars.items():
+                    var.set(clean_spoken_alert_kinds(settings.spoken_alert_kinds)[kind])
             except Exception as exc:
                 editor_status_var.set(f"Voice save failed: {exc}")
                 return
             state = "on" if settings.speak_alerts else "off"
             command_state = "enabled" if settings.allow_voice_command_sending else "practice only"
             editor_status_var.set(f"{action}. Spoken pet messages are {state}; commands are {command_state}.")
+
+        def set_all_spoken_kinds(value: bool) -> None:
+            for var in spoken_alert_kind_vars.values():
+                var.set(value)
+            persist_voice_settings("Spoken alert types saved")
 
         def apply_voice_preset(_event: Any | None = None) -> None:
             preset_name = response_preset_var.get()
@@ -2915,39 +2960,64 @@ def run_overlay(
             command=lambda: persist_voice_settings("Pet voice toggled"),
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-        ttk.Label(voice_grid, text="Voice engine").grid(row=2, column=0, sticky="w", pady=5)
+        spoken_kind_frame = ttk.LabelFrame(voice_grid, text="Spoken alert types", padding=8)
+        spoken_kind_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        spoken_kind_frame.columnconfigure(1, weight=1)
+        for row_index, (kind, label, description) in enumerate(SPOKEN_ALERT_KINDS):
+            ttk.Checkbutton(
+                spoken_kind_frame,
+                text=label,
+                variable=spoken_alert_kind_vars[kind],
+                command=lambda: persist_voice_settings("Spoken alert types saved"),
+            ).grid(row=row_index, column=0, sticky="w", pady=2)
+            ttk.Label(spoken_kind_frame, text=description, wraplength=360).grid(
+                row=row_index,
+                column=1,
+                sticky="ew",
+                padx=(10, 0),
+                pady=2,
+            )
+        spoken_kind_buttons = ttk.Frame(spoken_kind_frame)
+        spoken_kind_buttons.grid(row=len(SPOKEN_ALERT_KINDS), column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(spoken_kind_buttons, text="Speak All", command=lambda: set_all_spoken_kinds(True)).pack(side="left")
+        ttk.Button(spoken_kind_buttons, text="Mute All Types", command=lambda: set_all_spoken_kinds(False)).pack(
+            side="left",
+            padx=(6, 0),
+        )
+
+        ttk.Label(voice_grid, text="Voice engine").grid(row=3, column=0, sticky="w", pady=5)
         response_engine_box = ttk.Combobox(
             voice_grid,
             textvariable=response_engine_var,
             values=RESPONSE_ENGINES,
             state="readonly",
         )
-        response_engine_box.grid(row=2, column=1, sticky="ew", pady=5)
+        response_engine_box.grid(row=3, column=1, sticky="ew", pady=5)
         response_engine_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="OpenAI voice").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="OpenAI voice").grid(row=4, column=0, sticky="w", pady=5)
         response_voice_box = ttk.Combobox(voice_grid, textvariable=response_voice_var, values=OPENAI_TTS_VOICES)
-        response_voice_box.grid(row=3, column=1, sticky="ew", pady=5)
+        response_voice_box.grid(row=4, column=1, sticky="ew", pady=5)
         response_voice_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Voice preset").grid(row=4, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="Voice preset").grid(row=5, column=0, sticky="w", pady=5)
         response_preset_box = ttk.Combobox(
             voice_grid,
             textvariable=response_preset_var,
             values=(*pet_voice_preset_names(), "Custom"),
             state="readonly",
         )
-        response_preset_box.grid(row=4, column=1, sticky="ew", pady=5)
+        response_preset_box.grid(row=5, column=1, sticky="ew", pady=5)
         response_preset_box.bind("<<ComboboxSelected>>", apply_voice_preset)
 
-        ttk.Label(voice_grid, text="Voice style").grid(row=5, column=0, sticky="w", pady=5)
-        ttk.Entry(voice_grid, textvariable=response_style_var).grid(row=5, column=1, sticky="ew", pady=5)
+        ttk.Label(voice_grid, text="Voice style").grid(row=6, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=response_style_var).grid(row=6, column=1, sticky="ew", pady=5)
 
-        ttk.Label(voice_grid, text="Preview text").grid(row=6, column=0, sticky="w", pady=5)
-        ttk.Entry(voice_grid, textvariable=voice_preview_text_var).grid(row=6, column=1, sticky="ew", pady=5)
+        ttk.Label(voice_grid, text="Preview text").grid(row=7, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=voice_preview_text_var).grid(row=7, column=1, sticky="ew", pady=5)
 
         voice_studio_buttons = ttk.Frame(voice_grid)
-        voice_studio_buttons.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        voice_studio_buttons.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 8))
         ttk.Button(voice_studio_buttons, text="Preview Voice", command=lambda: cache_voice_preview(play=True)).pack(side="left")
         ttk.Button(voice_studio_buttons, text="Cache Preview", command=cache_voice_preview).pack(side="left", padx=(6, 0))
         ttk.Button(
@@ -2956,9 +3026,9 @@ def run_overlay(
             command=lambda: cache_voice_preview(force=True),
         ).pack(side="left", padx=(6, 0))
 
-        ttk.Separator(voice_grid).grid(row=8, column=0, columnspan=2, sticky="ew", pady=12)
+        ttk.Separator(voice_grid).grid(row=9, column=0, columnspan=2, sticky="ew", pady=12)
         ttk.Label(voice_grid, text="Command listener", font=("Segoe UI", 10, "bold")).grid(
-            row=9,
+            row=10,
             column=0,
             columnspan=2,
             sticky="w",
@@ -2968,71 +3038,71 @@ def run_overlay(
             voice_grid,
             text="Practice mode only. The pet shows matched Voice Pilot commands but does not send keys.",
             wraplength=500,
-        ).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ).grid(row=11, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(
             voice_grid,
             text="Listen for voice commands",
             variable=voice_listener_var,
             command=lambda: persist_voice_settings("Voice listener toggled"),
-        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-        ttk.Label(voice_grid, text="Speech engine").grid(row=12, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="Speech engine").grid(row=13, column=0, sticky="w", pady=5)
         speech_engine_box = ttk.Combobox(
             voice_grid,
             textvariable=speech_engine_var,
             values=VOICE_ENGINES,
             state="readonly",
         )
-        speech_engine_box.grid(row=12, column=1, sticky="ew", pady=5)
+        speech_engine_box.grid(row=13, column=1, sticky="ew", pady=5)
         speech_engine_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Local model").grid(row=13, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="Local model").grid(row=14, column=0, sticky="w", pady=5)
         voice_model_box = ttk.Combobox(
             voice_grid,
             textvariable=voice_model_var,
             values=installed_voice_model_labels(),
         )
-        voice_model_box.grid(row=13, column=1, sticky="ew", pady=5)
+        voice_model_box.grid(row=14, column=1, sticky="ew", pady=5)
         voice_model_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings("Voice model selected"))
         ttk.Label(voice_grid, textvariable=voice_model_status_var, wraplength=500).grid(
-            row=14,
+            row=15,
             column=0,
             columnspan=2,
             sticky="ew",
             pady=(0, 8),
         )
 
-        ttk.Label(voice_grid, text="Microphone").grid(row=15, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="Microphone").grid(row=16, column=0, sticky="w", pady=5)
         voice_input_box = ttk.Combobox(
             voice_grid,
             textvariable=voice_input_device_var,
             values=input_device_labels,
             state="readonly",
         )
-        voice_input_box.grid(row=15, column=1, sticky="ew", pady=5)
+        voice_input_box.grid(row=16, column=1, sticky="ew", pady=5)
         voice_input_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Response call sign").grid(row=16, column=0, sticky="w", pady=5)
-        ttk.Entry(voice_grid, textvariable=voice_call_sign_var).grid(row=16, column=1, sticky="ew", pady=5)
+        ttk.Label(voice_grid, text="Response call sign").grid(row=17, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=voice_call_sign_var).grid(row=17, column=1, sticky="ew", pady=5)
 
         ttk.Checkbutton(
             voice_grid,
             text="Allow command sending",
             variable=allow_command_sending_var,
             command=lambda: persist_voice_settings("Command sending setting saved"),
-        ).grid(row=17, column=0, columnspan=2, sticky="w", pady=(12, 4))
+        ).grid(row=18, column=0, columnspan=2, sticky="w", pady=(12, 4))
         ttk.Label(
             voice_grid,
             text="Leave this off for practice. When on, only exact Voice Pilot command matches can send their configured keybind.",
             wraplength=500,
-        ).grid(row=18, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ).grid(row=19, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(
             voice_grid,
             text="Only send when active window title matches",
             variable=require_target_window_var,
             command=lambda: persist_voice_settings("Window guard saved"),
-        ).grid(row=19, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        ttk.Entry(voice_grid, textvariable=voice_target_title_var).grid(row=20, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        ).grid(row=20, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Entry(voice_grid, textvariable=voice_target_title_var).grid(row=21, column=0, columnspan=2, sticky="ew", pady=(0, 5))
 
         voice_buttons = ttk.Frame(voice_frame)
         voice_buttons.pack(fill="x", pady=(8, 0))
@@ -3856,8 +3926,8 @@ def run_overlay(
         resize_overlay(OVERLAY_IDLE_WIDTH)
         apply_severity("idle")
 
-    def speak_pet_message(message: str, *, label: str) -> None:
-        if not engine.current_settings().speak_alerts:
+    def speak_pet_message(message: str, *, label: str, kind: str) -> None:
+        if not should_speak_alert_kind(kind, engine.current_settings()):
             return
         clean_text = spoken_pet_text(message)
         if clean_text:
@@ -3897,7 +3967,7 @@ def run_overlay(
         display_alert = highest_severity_alert(clean_alerts) or clean_alerts[-1]
         message = display_message_from_alerts(clean_alerts)
         show_message_bubble(message, severity=display_alert.severity)
-        speak_pet_message(message, label="pet chat alert")
+        speak_pet_message(message, label="pet chat alert", kind=alert_behavior_key(display_alert))
         for alert in clean_alerts:
             remember_history(history_item_from_alert(alert))
         start_behavior_cycle(behavior_for_alert(display_alert, settings))
@@ -3910,7 +3980,7 @@ def run_overlay(
         settings = engine.current_settings()
         message = display_message_from_cheer(cheer)
         show_message_bubble(message, severity="info")
-        speak_pet_message(message, label="pet location cheer")
+        speak_pet_message(message, label="pet location cheer", kind="location")
         remember_history(history_item_from_cheer(cheer))
         start_behavior_cycle(behavior_for_kind("location", settings))
         idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
@@ -3922,7 +3992,7 @@ def run_overlay(
         settings = engine.current_settings()
         message = display_message_from_combat_cheer(cheer)
         show_message_bubble(message, severity="high")
-        speak_pet_message(message, label="pet combat cheer")
+        speak_pet_message(message, label="pet combat cheer", kind="combat")
         remember_history(history_item_from_combat_cheer(cheer))
         start_behavior_cycle(behavior_for_kind("combat", settings))
         idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)
@@ -3934,7 +4004,7 @@ def run_overlay(
         settings = engine.current_settings()
         message = display_message_from_mission_cheer(cheer)
         show_message_bubble(message, severity="info")
-        speak_pet_message(message, label="pet mission cheer")
+        speak_pet_message(message, label="pet mission cheer", kind="mission")
         remember_history(history_item_from_mission_cheer(cheer))
         start_behavior_cycle(behavior_for_kind("mission", settings))
         idle_after_id = root.after(int(settings.alert_seconds * 1000), set_idle)

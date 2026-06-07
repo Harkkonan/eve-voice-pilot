@@ -148,6 +148,7 @@ Use `Options` > `Voice` to tune the pet voice:
 - `Preview Voice` saves the current voice settings and plays the preview sentence when the cache is ready.
 - `Cache Preview` prepares the current preview sentence without playing it.
 - `Regenerate Preview` rebuilds that sample if you changed engine, voice, or style and want a fresh clip.
+- `Spoken alert types` controls which alert kinds are spoken when `Speak pet messages` is on.
 
 The preview cache is for the deliberate sample sentence only. It does not cache raw chat alerts or alert history.
 
@@ -355,6 +356,15 @@ Example:
   "show_message_text": true,
   "alert_seconds": 15,
   "speak_alerts": false,
+  "spoken_alert_kinds": {
+    "mention": true,
+    "help": true,
+    "hostile": true,
+    "keyword": true,
+    "location": true,
+    "combat": true,
+    "mission": true
+  },
   "response_engine": "Windows local",
   "response_voice": "ballad",
   "response_style": "Speak as a starship AI with a dramatic 1980s power ballad cadence: soaring, confident, a little theatrical, but concise and clear. Do not sing; speak the line.",
