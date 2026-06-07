@@ -66,6 +66,7 @@ from eve_voice_pilot.intel_pet import (
     display_message_from_combat_cheer,
     display_message_from_mission_cheer,
     display_message_from_voice_status,
+    duplicate_voice_command,
     editable_voice_profile_path,
     execute_voice_command,
     fetch_pet_location,
@@ -100,6 +101,7 @@ from eve_voice_pilot.intel_pet import (
     ship_sprite_frame_paths,
     spoken_pet_text,
     trim_history,
+    filtered_voice_command_indices,
     voice_input_device_display,
     voice_model_display,
     voice_model_path,
@@ -107,6 +109,8 @@ from eve_voice_pilot.intel_pet import (
     voice_phrase_analysis_lines,
     voice_phrase_quality_issues,
     voice_phrase_quality_report,
+    voice_command_matches_filter,
+    voice_command_preview_text,
     voice_command_from_fields,
     voice_command_with_added_phrase,
     voice_training_phrase_from_detail,
@@ -407,6 +411,28 @@ def test_voice_command_with_added_phrase_dedupes_existing_phrases():
     assert updated.phrases == ["warp", "warp now"]
     assert duplicate.phrases == updated.phrases
     assert duplicate is updated
+
+
+def test_voice_lab_filter_duplicate_and_preview_helpers():
+    commands = [
+        VoiceCommand("Warp to", ["warp now"], "S", response_suffix="Aura", response_text="Warping."),
+        VoiceCommand("Dock", ["dock up"], "D"),
+    ]
+
+    assert voice_command_matches_filter(commands[0], "warp s")
+    assert not voice_command_matches_filter(commands[1], "warp s")
+    assert filtered_voice_command_indices(commands, "dock") == (1,)
+
+    duplicate = duplicate_voice_command(commands[0], ("Warp to", "Warp to Copy"))
+    assert duplicate.name == "Warp to Copy 2"
+    assert duplicate.phrases == commands[0].phrases
+    assert duplicate.key == commands[0].key
+
+    preview = voice_command_preview_text(commands[0])
+    assert "Warp to" in preview
+    assert "Keybind: S for 0.10s" in preview
+    assert "Phrases: warp now" in preview
+    assert "Response text: Warping." in preview
 
 
 def test_recent_voice_training_phrases_reads_in_memory_voice_history():

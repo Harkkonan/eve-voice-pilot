@@ -559,6 +559,53 @@ def voice_command_from_fields(
     )
 
 
+def voice_command_matches_filter(command: VoiceCommand, query: Any) -> bool:
+    tokens = normalize_response_text(str(query or "")).casefold().split()
+    if not tokens:
+        return True
+    haystack = normalize_response_text(
+        " ".join((command.name, command.key, command.action_summary, " ".join(command.phrases)))
+    ).casefold()
+    return all(token in haystack for token in tokens)
+
+
+def filtered_voice_command_indices(commands: list[VoiceCommand], query: Any) -> tuple[int, ...]:
+    return tuple(index for index, command in enumerate(commands) if voice_command_matches_filter(command, query))
+
+
+def next_voice_command_copy_name(name: str, existing_names: Iterable[str]) -> str:
+    clean_name = " ".join(str(name or "Command").split()) or "Command"
+    folded_existing = {str(item).casefold() for item in existing_names}
+    first = f"{clean_name} Copy"
+    if first.casefold() not in folded_existing:
+        return first
+    for index in range(2, 100):
+        candidate = f"{clean_name} Copy {index}"
+        if candidate.casefold() not in folded_existing:
+            return candidate
+    return f"{clean_name} Copy {int(time.time())}"
+
+
+def duplicate_voice_command(command: VoiceCommand, existing_names: Iterable[str]) -> VoiceCommand:
+    return replace(command, name=next_voice_command_copy_name(command.name, existing_names))
+
+
+def voice_command_preview_text(command: VoiceCommand | None) -> str:
+    if command is None:
+        return "No command selected."
+    phrases = ", ".join(command.phrases) if command.phrases else "(no phrases)"
+    lines = [
+        f"{command.name}",
+        f"Keybind: {command.action_summary}",
+        f"Phrases: {phrases}",
+    ]
+    if command.response_suffix:
+        lines.append(f"Voice label: {command.response_suffix}")
+    if command.response_text:
+        lines.append(f"Response text: {command.response_text}")
+    return "\n".join(lines)
+
+
 def voice_input_device_index(label: str) -> int | None:
     return resolve_input_device_label(clean_voice_input_device(label))
 
@@ -3010,6 +3057,8 @@ def run_overlay(
         voice_lab_state: dict[str, Any] = {}
         voice_profile_path_var = tk.StringVar(value="Loading voice profile...")
         voice_lab_status_var = tk.StringVar(value="Voice Lab tests never send keys.")
+        voice_command_filter_var = tk.StringVar()
+        voice_command_count_var = tk.StringVar(value="0 commands")
         ttk.Label(voice_lab_frame, textvariable=voice_profile_path_var, wraplength=520).pack(anchor="w", pady=(0, 8))
 
         voice_command_body = ttk.Frame(voice_lab_frame)
@@ -3020,8 +3069,28 @@ def run_overlay(
 
         voice_command_list_frame = ttk.Frame(voice_command_body)
         voice_command_list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        voice_command_list_frame.rowconfigure(0, weight=1)
+        voice_command_list_frame.rowconfigure(1, weight=1)
         voice_command_list_frame.columnconfigure(0, weight=1)
+
+        voice_command_filter_frame = ttk.Frame(voice_command_list_frame)
+        voice_command_filter_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        voice_command_filter_frame.columnconfigure(1, weight=1)
+        ttk.Label(voice_command_filter_frame, text="Search").grid(row=0, column=0, sticky="w")
+        voice_command_filter_entry = ttk.Entry(voice_command_filter_frame, textvariable=voice_command_filter_var)
+        voice_command_filter_entry.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        ttk.Button(voice_command_filter_frame, text="Clear", command=lambda: clear_voice_command_filter()).grid(
+            row=0,
+            column=2,
+            sticky="e",
+        )
+        ttk.Label(voice_command_filter_frame, textvariable=voice_command_count_var).grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="w",
+            pady=(3, 0),
+        )
+
         voice_command_tree = ttk.Treeview(
             voice_command_list_frame,
             columns=("phrases", "key"),
@@ -3036,8 +3105,8 @@ def run_overlay(
         voice_command_tree.column("key", width=130, minwidth=110, stretch=False)
         voice_command_scroll = ttk.Scrollbar(voice_command_list_frame, orient="vertical", command=voice_command_tree.yview)
         voice_command_tree.configure(yscrollcommand=voice_command_scroll.set)
-        voice_command_tree.grid(row=0, column=0, sticky="nsew")
-        voice_command_scroll.grid(row=0, column=1, sticky="ns")
+        voice_command_tree.grid(row=1, column=0, sticky="nsew")
+        voice_command_scroll.grid(row=1, column=1, sticky="ns")
 
         voice_edit_frame = ttk.LabelFrame(voice_command_body, text="Command", padding=8)
         voice_edit_frame.grid(row=0, column=1, sticky="nsew")
@@ -3050,6 +3119,7 @@ def run_overlay(
         command_repeat_gap_var = tk.StringVar(value=f"{DEFAULT_REPEAT_GAP_SECONDS:.2f}")
         command_response_suffix_var = tk.StringVar()
         command_response_text_var = tk.StringVar()
+        command_preview_var = tk.StringVar(value=voice_command_preview_text(None))
 
         ttk.Label(voice_edit_frame, text="Name").grid(row=0, column=0, sticky="w", pady=3)
         ttk.Entry(voice_edit_frame, textvariable=command_name_var).grid(row=0, column=1, sticky="ew", pady=3)
@@ -3067,6 +3137,12 @@ def run_overlay(
         ttk.Entry(voice_edit_frame, textvariable=command_response_suffix_var).grid(row=6, column=1, sticky="ew", pady=3)
         ttk.Label(voice_edit_frame, text="Response text").grid(row=7, column=0, sticky="w", pady=3)
         ttk.Entry(voice_edit_frame, textvariable=command_response_text_var).grid(row=7, column=1, sticky="ew", pady=3)
+        command_preview_frame = ttk.LabelFrame(voice_edit_frame, text="Selected preview", padding=6)
+        command_preview_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(command_preview_frame, textvariable=command_preview_var, wraplength=320, justify="left").pack(
+            anchor="w",
+            fill="x",
+        )
 
         def current_voice_lab_profile() -> CommandProfile:
             profile = voice_lab_state.get("profile")
@@ -3082,8 +3158,10 @@ def run_overlay(
 
         def refresh_voice_command_tree(select_index: int | None = None) -> None:
             profile = current_voice_lab_profile()
+            visible_indices = filtered_voice_command_indices(profile.commands, voice_command_filter_var.get())
             voice_command_tree.delete(*voice_command_tree.get_children())
-            for index, command in enumerate(profile.commands):
+            for index in visible_indices:
+                command = profile.commands[index]
                 voice_command_tree.insert(
                     "",
                     "end",
@@ -3091,7 +3169,11 @@ def run_overlay(
                     text=command.name,
                     values=(", ".join(command.phrases), command.key),
                 )
-            if select_index is not None and 0 <= select_index < len(profile.commands):
+            if voice_command_filter_var.get().strip():
+                voice_command_count_var.set(f"{len(visible_indices)} shown / {len(profile.commands)} commands")
+            else:
+                voice_command_count_var.set(f"{len(profile.commands)} commands")
+            if select_index is not None and select_index in visible_indices:
                 item_id = str(select_index)
                 voice_command_tree.selection_set(item_id)
                 voice_command_tree.see(item_id)
@@ -3113,12 +3195,21 @@ def run_overlay(
             )
             command_response_suffix_var.set(command.response_suffix if command else "")
             command_response_text_var.set(command.response_text if command else "")
+            command_preview_var.set(voice_command_preview_text(command))
 
         def fill_selected_voice_command(_event: Any | None = None) -> None:
             index = selected_voice_command_index()
             profile = current_voice_lab_profile()
             if index is not None and 0 <= index < len(profile.commands):
                 set_voice_command_fields(profile.commands[index])
+
+        def apply_voice_command_filter(_event: Any | None = None) -> None:
+            refresh_voice_command_tree(select_index=selected_voice_command_index())
+
+        def clear_voice_command_filter() -> None:
+            voice_command_filter_var.set("")
+            refresh_voice_command_tree(select_index=selected_voice_command_index())
+            voice_lab_status_var.set("Command filter cleared.")
 
         def load_voice_lab_profile() -> None:
             try:
@@ -3187,7 +3278,24 @@ def run_overlay(
             else:
                 profile.commands[index] = command
                 action = "Changed command"
+            if not voice_command_matches_filter(command, voice_command_filter_var.get()):
+                voice_command_filter_var.set("")
             save_voice_lab_profile(action, select_index=index)
+            refresh_phrase_quality()
+
+        def duplicate_selected_voice_command() -> None:
+            index = selected_voice_command_index()
+            profile = current_voice_lab_profile()
+            if index is None or not 0 <= index < len(profile.commands):
+                voice_lab_status_var.set("Select a command to duplicate.")
+                return
+            duplicate = duplicate_voice_command(
+                profile.commands[index],
+                (command.name for command in profile.commands),
+            )
+            profile.commands.insert(index + 1, duplicate)
+            save_voice_lab_profile("Duplicated command", select_index=index + 1)
+            set_voice_command_fields(duplicate)
             refresh_phrase_quality()
 
         def delete_voice_command() -> None:
@@ -3212,12 +3320,14 @@ def run_overlay(
         voice_command_buttons.pack(fill="x", pady=(8, 12))
         ttk.Button(voice_command_buttons, text="New", command=new_voice_command).pack(side="left")
         ttk.Button(voice_command_buttons, text="Save Command", command=save_voice_command).pack(side="left", padx=(6, 0))
+        ttk.Button(voice_command_buttons, text="Duplicate", command=duplicate_selected_voice_command).pack(side="left", padx=(6, 0))
         ttk.Button(voice_command_buttons, text="Delete", command=delete_voice_command).pack(side="left", padx=(6, 0))
         ttk.Button(
             voice_command_buttons,
             text="Reload",
             command=lambda: (load_voice_lab_profile(), refresh_phrase_quality()),
         ).pack(side="left", padx=(6, 0))
+        voice_command_filter_entry.bind("<KeyRelease>", apply_voice_command_filter)
 
         phrase_quality_frame = ttk.LabelFrame(voice_lab_frame, text="Phrase Quality", padding=8)
         phrase_quality_frame.pack(fill="both", expand=False, pady=(0, 12))

@@ -224,13 +224,15 @@ The status line shows whether the selected model is installed. Model files stay 
 
 ### Voice Lab
 
-Use `Options` > `Voice Lab` to add, change, remove, and dry-run voice commands from the pet.
+Use `Options` > `Voice Lab` to search, add, duplicate, change, remove, preview, and dry-run voice commands from the pet.
 
 The lab saves commands to your personal EVE Voice Pilot profile. If the pet is currently reading the bundled sample profile, the first edit is saved to:
 
 ```text
 profiles\my_eve_commands.json
 ```
+
+The command search filters by command name, phrase, keybind, and action text. `Duplicate` copies the selected command into a new editable command, which is useful when making safer variants of an existing phrase. The selected-command preview summarizes the keybind, phrases, and spoken response text before you save changes.
 
 The dry-run phrase test never sends keys. It only shows what the listener would hear, which command would match, and whether the live listener would stay in practice mode.
 
