@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import queue
@@ -31,6 +32,32 @@ from .transcription import (
 ROOT = Path(__file__).resolve().parents[2]
 LOCAL_RATE = 16000
 DEFAULT_MODEL_PATH = ROOT / "models" / "vosk-model-small-en-us-0.15"
+
+
+@dataclass(frozen=True)
+class LocalRecognitionDiagnostic:
+    transcript: str
+    partial_transcript: str
+    reason: str
+    speech_started: bool
+    max_rms: float
+    speech_threshold: float
+    duration_seconds: float
+    capture_rate: int
+    block_size: int
+    input_device_index: int | None
+    model_path: str
+    grammar_size: int
+
+    @property
+    def volume_state(self) -> str:
+        if self.max_rms < self.speech_threshold * 0.5:
+            return "very quiet"
+        if self.max_rms < self.speech_threshold:
+            return "below threshold"
+        if self.max_rms > 20000:
+            return "possibly clipped"
+        return "usable"
 
 
 def command_phrases_for_grammar(commands: list[VoiceCommand], response_call_signs: list[str] | None = None) -> list[str]:
@@ -159,6 +186,114 @@ class LocalVoskTranscriber:
         final_text = self._text_from_result(recognizer.FinalResult())
         return final_text or partial_transcript.strip()
 
+    def record_diagnostic(
+        self,
+        stop_event: threading.Event,
+        on_ready: Callable[[], None] | None = None,
+    ) -> LocalRecognitionDiagnostic:
+        model = self._load_model()
+        grammar = self._grammar()
+        recognizer = self._create_recognizer(model, grammar=grammar)
+        audio_queue: queue.Queue[bytes] = queue.Queue()
+        status_messages: queue.Queue[str] = queue.Queue()
+
+        def audio_callback(indata, frames, time_info, status) -> None:
+            if status:
+                status_messages.put(str(status))
+            audio_queue.put(bytes(indata))
+
+        capture_rate = capture_rate_for_device(self.input_device_index)
+        block_size = block_size_for_rate(capture_rate)
+        pre_roll: deque[bytes] = deque(maxlen=max(1, int(PRE_ROLL_SECONDS / BLOCK_SECONDS)))
+        started_at = time.monotonic()
+        last_speech_at: float | None = None
+        speech_started = False
+        partial_transcript = ""
+        transcript = ""
+        reason = "stopped"
+        max_rms_seen = 0.0
+        with sd.RawInputStream(
+            samplerate=capture_rate,
+            device=self.input_device_index,
+            channels=CHANNELS,
+            dtype="int16",
+            blocksize=block_size,
+            callback=audio_callback,
+        ):
+            if on_ready:
+                on_ready()
+            while not stop_event.is_set():
+                pump = self._process_audio_queue(
+                    recognizer,
+                    audio_queue,
+                    partial_transcript,
+                    None,
+                    process_audio=speech_started,
+                    pre_roll=pre_roll,
+                    source_rate=capture_rate,
+                )
+                partial_transcript = pump.partial_transcript
+                max_rms_seen = max(max_rms_seen, pump.max_rms)
+                if pump.saw_speech:
+                    speech_started = True
+                if pump.completed_transcript:
+                    transcript = pump.completed_transcript
+                    reason = "completed"
+                    break
+                now = time.monotonic()
+                if pump.max_rms >= SPEECH_RMS_THRESHOLD:
+                    last_speech_at = now
+                elif last_speech_at and now - last_speech_at >= AUTO_STOP_SILENCE_SECONDS:
+                    reason = "auto-stop silence"
+                    break
+                elif not last_speech_at and now - started_at >= INITIAL_SILENCE_SECONDS:
+                    reason = "initial silence"
+                    break
+                elif speech_started and now - started_at >= MAX_RECORD_SECONDS:
+                    reason = "max duration"
+                    break
+                self._log_status(status_messages)
+                time.sleep(0.01)
+
+            if not stop_event.is_set() and not transcript:
+                drain_until = time.monotonic() + DRAIN_SECONDS
+                while time.monotonic() < drain_until:
+                    pump = self._process_audio_queue(
+                        recognizer,
+                        audio_queue,
+                        partial_transcript,
+                        None,
+                        process_audio=speech_started,
+                        pre_roll=pre_roll,
+                        source_rate=capture_rate,
+                    )
+                    partial_transcript = pump.partial_transcript
+                    max_rms_seen = max(max_rms_seen, pump.max_rms)
+                    if pump.completed_transcript:
+                        transcript = pump.completed_transcript
+                        reason = "completed after drain"
+                        break
+                    time.sleep(0.01)
+
+        if stop_event.is_set():
+            reason = "stopped"
+        final_text = self._text_from_result(recognizer.FinalResult())
+        transcript = transcript or final_text or partial_transcript.strip()
+        return LocalRecognitionDiagnostic(
+            transcript=transcript,
+            partial_transcript=partial_transcript.strip(),
+            reason=reason,
+            speech_started=speech_started,
+            max_rms=max_rms_seen,
+            speech_threshold=float(SPEECH_RMS_THRESHOLD),
+            duration_seconds=max(0.0, time.monotonic() - started_at),
+            capture_rate=capture_rate,
+            block_size=block_size,
+            input_device_index=self.input_device_index,
+            model_path=str(self.model_path),
+            grammar_size=len(grammar),
+        )
+
     def close(self) -> None:
         return
 
@@ -184,14 +319,18 @@ class LocalVoskTranscriber:
             self.log("Local speech model ready.")
             return self.model
 
-    def _create_recognizer(self, model):
-        from vosk import KaldiRecognizer
-
+    def _grammar(self) -> list[str]:
         grammar = command_phrases_for_grammar(self.commands, self.response_call_signs)
         if not grammar:
-            grammar = ["[unk]"]
-        elif "[unk]" not in grammar:
+            return ["[unk]"]
+        if "[unk]" not in grammar:
             grammar.append("[unk]")
+        return grammar
+
+    def _create_recognizer(self, model, grammar: list[str] | None = None):
+        from vosk import KaldiRecognizer
+
+        grammar = grammar or self._grammar()
         recognizer = KaldiRecognizer(model, LOCAL_RATE, json.dumps(grammar))
         recognizer.SetWords(False)
         return recognizer

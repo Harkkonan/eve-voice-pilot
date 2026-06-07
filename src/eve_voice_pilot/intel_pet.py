@@ -58,7 +58,7 @@ from eve_voice_pilot.commands import (
 )
 from eve_voice_pilot.config import load_settings as load_app_settings
 from eve_voice_pilot.input_sender import active_window_title, parse_key_chord, send_key_chord
-from eve_voice_pilot.local_transcription import LocalVoskTranscriber
+from eve_voice_pilot.local_transcription import LocalRecognitionDiagnostic, LocalVoskTranscriber
 from eve_voice_pilot.speech_responses import (
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
@@ -583,6 +583,57 @@ def voice_status_from_transcript(
         severity="info",
         recorded_at=now_iso(),
     )
+
+
+def recognition_diagnostic_report(
+    diagnostic: LocalRecognitionDiagnostic,
+    commands: list[VoiceCommand],
+    *,
+    input_device_label: str = DEFAULT_INPUT_DEVICE_LABEL,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+) -> str:
+    transcript = diagnostic.transcript.strip()
+    partial = diagnostic.partial_transcript.strip()
+    lines = [
+        "Local recognition diagnostic",
+        f"Transcript: {transcript or '(empty)'}",
+        f"Partial: {partial or '(none)'}",
+        f"Stop reason: {diagnostic.reason}",
+        f"Speech started: {'yes' if diagnostic.speech_started else 'no'}",
+        (
+            f"Volume: max RMS {diagnostic.max_rms:.0f} / threshold {diagnostic.speech_threshold:.0f} "
+            f"({diagnostic.volume_state})"
+        ),
+        f"Timing: {diagnostic.duration_seconds:.2f}s",
+        f"Capture: {diagnostic.capture_rate} Hz, block {diagnostic.block_size}, mic {input_device_label}",
+        f"Model: {diagnostic.model_path}",
+        f"Grammar phrases: {diagnostic.grammar_size}",
+    ]
+    if transcript:
+        status = voice_status_from_transcript(
+            transcript,
+            commands,
+            response_call_sign=response_call_sign,
+            allow_command_sending=False,
+        )
+        if status is not None:
+            lines.append("")
+            lines.append(status.detail)
+    else:
+        lines.append("")
+        lines.append("No transcript. Check the selected microphone and input level.")
+
+    if diagnostic.volume_state in {"very quiet", "below threshold"}:
+        lines.append("Suggestion: move the mic closer, pick the headset mic explicitly, or raise input gain.")
+    elif diagnostic.volume_state == "possibly clipped":
+        lines.append("Suggestion: lower input gain or move the mic back; clipped audio can confuse recognition.")
+    if diagnostic.reason == "initial silence":
+        lines.append("Suggestion: start speaking after the lab says it is recording.")
+    elif diagnostic.reason in {"auto-stop silence", "max duration"} and not transcript:
+        lines.append("Suggestion: use a shorter phrase and speak in one steady burst.")
+    if diagnostic.grammar_size > 250:
+        lines.append("Suggestion: a large command grammar can increase confusion; test with fewer command phrases later.")
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -2869,6 +2920,127 @@ def run_overlay(
             voice_test_result.delete("1.0", tk.END)
             voice_test_result.insert(tk.END, text)
             voice_test_result.configure(state="disabled")
+
+        recognition_lab_frame = ttk.LabelFrame(voice_lab_frame, text="Recognition Lab", padding=8)
+        recognition_lab_frame.pack(fill="both", expand=False, pady=(8, 0))
+        recognition_lab_frame.columnconfigure(0, weight=1)
+        recognition_lab_status_var = tk.StringVar(value="Record one local phrase to inspect volume, transcript, and matching.")
+        ttk.Label(recognition_lab_frame, textvariable=recognition_lab_status_var, wraplength=520).grid(
+            row=0,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(0, 6),
+        )
+        recognition_lab_result = tk.Text(recognition_lab_frame, height=9, wrap="word", state="disabled")
+        recognition_lab_result.grid(row=1, column=0, columnspan=3, sticky="ew")
+        recognition_lab_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+
+        def set_recognition_lab_result(text: str) -> None:
+            recognition_lab_result.configure(state="normal")
+            recognition_lab_result.delete("1.0", tk.END)
+            recognition_lab_result.insert(tk.END, text)
+            recognition_lab_result.configure(state="disabled")
+
+        def stop_recognition_diagnostic() -> None:
+            stop_capture = voice_lab_state.get("recognition_stop")
+            if isinstance(stop_capture, threading.Event):
+                stop_capture.set()
+                recognition_lab_status_var.set("Stopping recognition diagnostic...")
+
+        def use_recognition_transcript() -> None:
+            transcript = str(voice_lab_state.get("last_recognition_transcript", "")).strip()
+            if not transcript:
+                recognition_lab_status_var.set("No diagnostic transcript to copy yet.")
+                return
+            voice_test_phrase_var.set(transcript)
+            recognition_lab_status_var.set("Diagnostic transcript copied into the dry-run tester.")
+
+        def poll_recognition_lab_queue() -> None:
+            try:
+                if not editor.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            while True:
+                try:
+                    kind, message = recognition_lab_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if kind == "status":
+                    recognition_lab_status_var.set(message)
+                elif kind == "result":
+                    set_recognition_lab_result(message)
+                elif kind == "transcript":
+                    voice_lab_state["last_recognition_transcript"] = message
+                elif kind == "done":
+                    voice_lab_state["recognition_running"] = False
+                    voice_lab_state.pop("recognition_stop", None)
+                    recognition_lab_status_var.set(message or "Recognition diagnostic complete.")
+            root.after(100, poll_recognition_lab_queue)
+
+        def start_recognition_diagnostic() -> None:
+            if bool(voice_lab_state.get("recognition_running")):
+                recognition_lab_status_var.set("Recognition diagnostic is already recording.")
+                return
+            settings = engine.current_settings()
+            if settings.enable_voice_listener:
+                recognition_lab_status_var.set("Turn off Listen for voice commands before running Recognition Lab.")
+                return
+            try:
+                profile, _profile_path = load_voice_profile()
+                commands = list(profile.commands)
+                if not commands:
+                    raise CorpIntelError("Voice profile has no commands.")
+                input_label = voice_input_device_display(settings.voice_input_device)
+                input_device_index = voice_input_device_index(settings.voice_input_device)
+                call_sign = clean_voice_call_sign(settings.voice_call_sign)
+            except Exception as exc:
+                recognition_lab_status_var.set(f"Recognition Lab setup failed: {exc}")
+                return
+            stop_capture = threading.Event()
+            voice_lab_state["recognition_stop"] = stop_capture
+            voice_lab_state["recognition_running"] = True
+            voice_lab_state["last_recognition_transcript"] = ""
+            set_recognition_lab_result("Recording local diagnostic. Speak one command phrase now.")
+            recognition_lab_status_var.set("Loading local model and opening microphone...")
+
+            def run_diagnostic() -> None:
+                try:
+                    transcriber = LocalVoskTranscriber(
+                        commands,
+                        lambda text: recognition_lab_queue.put(("status", text)),
+                        input_device_index=input_device_index,
+                        response_call_signs=response_call_signs(call_sign),
+                    )
+                    diagnostic = transcriber.record_diagnostic(
+                        stop_capture,
+                        on_ready=lambda: recognition_lab_queue.put(("status", "Recording now. Speak one phrase.")),
+                    )
+                    report = recognition_diagnostic_report(
+                        diagnostic,
+                        commands,
+                        input_device_label=input_label,
+                        response_call_sign=call_sign,
+                    )
+                    recognition_lab_queue.put(("transcript", diagnostic.transcript))
+                    recognition_lab_queue.put(("result", report))
+                    recognition_lab_queue.put(("done", "Recognition diagnostic complete."))
+                except Exception as exc:
+                    recognition_lab_queue.put(("result", f"Recognition Lab failed: {exc}"))
+                    recognition_lab_queue.put(("done", "Recognition diagnostic failed."))
+
+            threading.Thread(target=run_diagnostic, name="intel-pet-recognition-lab", daemon=True).start()
+
+        recognition_lab_buttons = ttk.Frame(recognition_lab_frame)
+        recognition_lab_buttons.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        ttk.Button(recognition_lab_buttons, text="Record Local Diagnostic", command=start_recognition_diagnostic).pack(side="left")
+        ttk.Button(recognition_lab_buttons, text="Stop", command=stop_recognition_diagnostic).pack(side="left", padx=(6, 0))
+        ttk.Button(recognition_lab_buttons, text="Use Transcript In Test", command=use_recognition_transcript).pack(
+            side="left",
+            padx=(6, 0),
+        )
+        poll_recognition_lab_queue()
 
         def selected_heard_phrase() -> str:
             selection = heard_phrase_list.curselection()

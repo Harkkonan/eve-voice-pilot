@@ -85,6 +85,7 @@ from eve_voice_pilot.intel_pet import (
     pet_voice_style_for_preset,
     read_new_combat_cheers,
     recent_voice_training_phrases,
+    recognition_diagnostic_report,
     read_new_game_log_cheers,
     read_new_mission_cheers,
     replace_alert_behaviors,
@@ -102,6 +103,7 @@ from eve_voice_pilot.intel_pet import (
     voice_status_from_transcript,
 )
 from eve_voice_pilot.commands import VoiceCommand
+from eve_voice_pilot.local_transcription import LocalRecognitionDiagnostic
 from eve_voice_pilot.speech_responses import RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_WINDOWS
 
 
@@ -396,6 +398,61 @@ def test_recent_voice_training_phrases_reads_in_memory_voice_history():
     phrases = recent_voice_training_phrases(items, response_call_sign="Aura")
 
     assert phrases == ("dock up", "warp now")
+
+
+def test_recognition_diagnostic_report_shows_volume_and_match_context():
+    command = VoiceCommand("Warp to", ["warp now"], "S")
+    diagnostic = LocalRecognitionDiagnostic(
+        transcript="warp now",
+        partial_transcript="warp",
+        reason="auto-stop silence",
+        speech_started=True,
+        max_rms=900,
+        speech_threshold=450,
+        duration_seconds=1.25,
+        capture_rate=48000,
+        block_size=960,
+        input_device_index=3,
+        model_path="models/vosk-model-small-en-us-0.15",
+        grammar_size=42,
+    )
+
+    report = recognition_diagnostic_report(
+        diagnostic,
+        [command],
+        input_device_label="3: Headset (48000 Hz)",
+        response_call_sign="Aura",
+    )
+
+    assert "Transcript: warp now" in report
+    assert "Volume: max RMS 900 / threshold 450 (usable)" in report
+    assert "Capture: 48000 Hz, block 960, mic 3: Headset (48000 Hz)" in report
+    assert "Matched: Warp to -> S for 0.10s" in report
+    assert "Practice only. No key sent." in report
+
+
+def test_recognition_diagnostic_report_warns_when_too_quiet():
+    diagnostic = LocalRecognitionDiagnostic(
+        transcript="",
+        partial_transcript="",
+        reason="initial silence",
+        speech_started=False,
+        max_rms=100,
+        speech_threshold=450,
+        duration_seconds=4.0,
+        capture_rate=48000,
+        block_size=960,
+        input_device_index=None,
+        model_path="models/vosk-model-small-en-us-0.15",
+        grammar_size=1,
+    )
+
+    report = recognition_diagnostic_report(diagnostic, [])
+
+    assert "Transcript: (empty)" in report
+    assert "very quiet" in report
+    assert "selected microphone and input level" in report
+    assert "start speaking after the lab says it is recording" in report
 
 
 def test_voice_status_from_transcript_matches_command_without_sending_keys():
