@@ -103,6 +103,7 @@ DEFAULT_HAUL_PURCHASE_BUDGET_ISK = 250_000_000.0
 MAX_HAUL_PURCHASE_BUDGET_ISK = 10_000_000_000.0
 DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT = 10.0
 MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT = 500.0
+MAX_HAUL_LOAD_PLAN_LINES = 8
 DEFAULT_ACQUISITION_BUDGET_ISK = 50_000_000.0
 MAX_ACQUISITION_BUDGET_ISK = 10_000_000_000.0
 DEFAULT_ACQUISITION_PICKUP_JUMPS = 2
@@ -4611,6 +4612,7 @@ def scan_route_hauling_opportunities(
                 "matched_pickup_system_count": depth_match["matched_pickup_system_count"],
                 "matched_pickup_systems": depth_match["matched_pickup_systems"],
                 "order_depth": depth_match["order_depth"],
+                "load_plan_depth": depth_match["load_plan_depth"],
                 "order_depth_truncated": depth_match["order_depth_truncated"],
                 "decision": hauling_decision(risk_level=risk_level, margin_percent=margin_percent),
                 "risk_level": risk_level,
@@ -4630,6 +4632,15 @@ def scan_route_hauling_opportunities(
             item["item_name"],
         )
     )
+    load_plan = build_haul_load_plan(
+        opportunities=opportunities,
+        cargo_capacity_m3=clean_cargo_capacity_m3,
+        purchase_budget_isk=clean_purchase_budget_isk,
+    )
+    visible_opportunities = [
+        {key: value for key, value in opportunity.items() if key != "load_plan_depth"}
+        for opportunity in opportunities[:MAX_FLIGHT_HAUL_OPPORTUNITIES]
+    ]
     return {
         "route_jumps": route_jumps,
         "detour_jumps": clean_detour_jumps,
@@ -4660,7 +4671,8 @@ def scan_route_hauling_opportunities(
         "caution_count": caution_signal_count,
         "detour_margin_rejected_count": detour_margin_rejected_count,
         "profitable_opportunities": len(opportunities),
-        "opportunities": opportunities[:MAX_FLIGHT_HAUL_OPPORTUNITIES],
+        "load_plan": load_plan,
+        "opportunities": visible_opportunities,
         "errors": errors[:12],
         "sales_tax": sales_tax,
         "market_cache": market_order_cache_status(),
@@ -4673,6 +4685,194 @@ def scan_route_hauling_opportunities(
             "orders. Public market orders are cached locally for 5 minutes. The page does not place orders or verify "
             "station docking access."
         ),
+    }
+
+
+def build_haul_load_plan(
+    *,
+    opportunities: Iterable[dict[str, Any]],
+    cargo_capacity_m3: float,
+    purchase_budget_isk: float,
+) -> dict[str, Any]:
+    clean_cargo_capacity_m3 = clamp_haul_cargo_m3(cargo_capacity_m3)
+    clean_purchase_budget_isk = clamp_haul_purchase_budget_isk(purchase_budget_isk)
+    remaining_cargo_m3 = clean_cargo_capacity_m3
+    remaining_budget_isk = clean_purchase_budget_isk
+    lines: list[dict[str, Any]] = []
+    stop_map: dict[int, dict[str, Any]] = {}
+    skipped_possible_trap_count = 0
+    skipped_unknown_volume_count = 0
+    skipped_low_profit_count = 0
+    source_depth_truncated = False
+
+    for opportunity in opportunities:
+        if len(lines) >= MAX_HAUL_LOAD_PLAN_LINES:
+            break
+        if str(opportunity.get("risk_level") or "") == "possible-trap":
+            skipped_possible_trap_count += 1
+            continue
+        unit_volume_m3 = clean_optional_float(opportunity.get("volume_m3"))
+        if unit_volume_m3 is None or unit_volume_m3 <= 0:
+            skipped_unknown_volume_count += 1
+            continue
+        if remaining_cargo_m3 + 1e-9 < unit_volume_m3 or remaining_budget_isk <= 0:
+            break
+
+        line_units = 0
+        line_volume_m3 = 0.0
+        line_pickup_cost = 0.0
+        line_gross_destination_revenue = 0.0
+        line_net_destination_revenue = 0.0
+        line_sales_tax_total = 0.0
+        line_net_profit = 0.0
+        line_system_ids: set[int] = set()
+        depth_rows = opportunity.get("load_plan_depth") or opportunity.get("order_depth") or []
+        source_depth_truncated = source_depth_truncated or bool(opportunity.get("order_depth_truncated"))
+
+        for depth_row in depth_rows:
+            pickup_price = clean_optional_float(depth_row.get("pickup_price"))
+            destination_price = clean_optional_float(depth_row.get("destination_price"))
+            net_destination_price = clean_optional_float(depth_row.get("net_destination_price"))
+            available_units = int(depth_row.get("units") or 0)
+            if (
+                pickup_price is None
+                or destination_price is None
+                or net_destination_price is None
+                or pickup_price <= 0
+                or available_units <= 0
+            ):
+                continue
+            cargo_units = int((remaining_cargo_m3 + 1e-9) / unit_volume_m3)
+            budget_units = int((remaining_budget_isk + 1e-9) // pickup_price)
+            plan_units = min(available_units, cargo_units, budget_units)
+            if plan_units <= 0:
+                break
+            pickup_order = depth_row.get("pickup_order") or {}
+            system_id = int(pickup_order.get("system_id") or 0)
+            system_name = str(pickup_order.get("system_name") or f"System {system_id}")
+            jumps = pickup_order.get("jumps")
+            row_pickup_cost = pickup_price * plan_units
+            row_gross_destination_revenue = destination_price * plan_units
+            row_net_destination_revenue = net_destination_price * plan_units
+            row_sales_tax_total = row_gross_destination_revenue - row_net_destination_revenue
+            row_net_profit = row_net_destination_revenue - row_pickup_cost
+            row_volume_m3 = unit_volume_m3 * plan_units
+
+            line_units += plan_units
+            line_volume_m3 += row_volume_m3
+            line_pickup_cost += row_pickup_cost
+            line_gross_destination_revenue += row_gross_destination_revenue
+            line_net_destination_revenue += row_net_destination_revenue
+            line_sales_tax_total += row_sales_tax_total
+            line_net_profit += row_net_profit
+            line_system_ids.add(system_id)
+            remaining_cargo_m3 = max(0.0, remaining_cargo_m3 - row_volume_m3)
+            remaining_budget_isk = max(0.0, remaining_budget_isk - row_pickup_cost)
+
+            stop = stop_map.setdefault(
+                system_id,
+                {
+                    "system_id": system_id,
+                    "system_name": system_name,
+                    "jumps": jumps,
+                    "units": 0,
+                    "item_count": 0,
+                    "pickup_cost": 0.0,
+                    "volume_m3": 0.0,
+                    "items": {},
+                },
+            )
+            stop_items = stop["items"]
+            item_key = str(opportunity.get("type_id") or opportunity.get("item_name") or "")
+            if item_key not in stop_items:
+                stop_items[item_key] = {
+                    "type_id": opportunity.get("type_id"),
+                    "item_name": opportunity.get("item_name"),
+                    "units": 0,
+                    "pickup_cost": 0.0,
+                    "volume_m3": 0.0,
+                }
+            stop_item = stop_items[item_key]
+            stop_item["units"] = int(stop_item["units"]) + plan_units
+            stop_item["pickup_cost"] = float(stop_item["pickup_cost"]) + row_pickup_cost
+            stop_item["volume_m3"] = float(stop_item["volume_m3"]) + row_volume_m3
+            stop["units"] = int(stop["units"]) + plan_units
+            stop["pickup_cost"] = float(stop["pickup_cost"]) + row_pickup_cost
+            stop["volume_m3"] = float(stop["volume_m3"]) + row_volume_m3
+            stop["item_count"] = len(stop_items)
+
+            if remaining_cargo_m3 + 1e-9 < unit_volume_m3 or remaining_budget_isk <= 0:
+                break
+
+        if line_units <= 0:
+            continue
+        if line_net_profit <= 0:
+            skipped_low_profit_count += 1
+            continue
+        lines.append(
+            {
+                "type_id": opportunity.get("type_id"),
+                "item_name": opportunity.get("item_name"),
+                "units": line_units,
+                "unit_volume_m3": unit_volume_m3,
+                "volume_m3": line_volume_m3,
+                "pickup_cost": line_pickup_cost,
+                "gross_destination_revenue": line_gross_destination_revenue,
+                "net_destination_revenue": line_net_destination_revenue,
+                "sales_tax_total": line_sales_tax_total,
+                "net_profit": line_net_profit,
+                "average_pickup_price": line_pickup_cost / line_units,
+                "average_destination_price": line_gross_destination_revenue / line_units,
+                "net_profit_per_unit": line_net_profit / line_units,
+                "net_profit_per_m3": line_net_profit / line_volume_m3 if line_volume_m3 > 0 else None,
+                "pickup_system_count": len(line_system_ids),
+                "risk_level": opportunity.get("risk_level"),
+                "extra_route_jumps": opportunity.get("extra_route_jumps"),
+            }
+        )
+
+    stops = []
+    for stop in stop_map.values():
+        stop_items = [
+            item
+            for item in sorted(
+                stop["items"].values(),
+                key=lambda item: (str(item.get("item_name") or ""), int(item.get("type_id") or 0)),
+            )
+        ]
+        stops.append({**{key: value for key, value in stop.items() if key != "items"}, "items": stop_items})
+    stops.sort(key=lambda item: (int(item.get("jumps") if item.get("jumps") is not None else 999), str(item["system_name"])))
+
+    used_cargo_m3 = clean_cargo_capacity_m3 - remaining_cargo_m3
+    used_budget_isk = clean_purchase_budget_isk - remaining_budget_isk
+    total_net_profit = sum(float(line["net_profit"]) for line in lines)
+    total_units = sum(int(line["units"]) for line in lines)
+    return {
+        "available": bool(lines),
+        "strategy": "Best ranked clear/caution opportunities with known volume",
+        "manual_note": "Verify live orders, docking access, and the route in EVE before buying. This page does not place orders.",
+        "line_count": len(lines),
+        "stop_count": len(stops),
+        "item_count": len({line.get("type_id") for line in lines}),
+        "units": total_units,
+        "cargo_capacity_m3": clean_cargo_capacity_m3,
+        "used_cargo_m3": used_cargo_m3,
+        "cargo_remaining_m3": remaining_cargo_m3,
+        "cargo_percent": (used_cargo_m3 / clean_cargo_capacity_m3 * 100.0) if clean_cargo_capacity_m3 > 0 else 0.0,
+        "purchase_budget_isk": clean_purchase_budget_isk,
+        "pickup_cost": used_budget_isk,
+        "budget_remaining_isk": remaining_budget_isk,
+        "gross_destination_revenue": sum(float(line["gross_destination_revenue"]) for line in lines),
+        "net_destination_revenue": sum(float(line["net_destination_revenue"]) for line in lines),
+        "sales_tax_total": sum(float(line["sales_tax_total"]) for line in lines),
+        "net_profit": total_net_profit,
+        "net_profit_per_m3": total_net_profit / used_cargo_m3 if used_cargo_m3 > 0 else None,
+        "lines": lines,
+        "stops": stops,
+        "skipped_possible_trap_count": skipped_possible_trap_count,
+        "skipped_unknown_volume_count": skipped_unknown_volume_count,
+        "skipped_low_profit_count": skipped_low_profit_count,
+        "source_depth_truncated": source_depth_truncated,
     }
 
 
@@ -5831,6 +6031,7 @@ def match_haul_order_depth(
             key=lambda item: (-int(item["units"]), str(item["system_name"]), int(item["system_id"])),
         ),
         "order_depth": matches[:12],
+        "load_plan_depth": matches,
         "order_depth_truncated": len(matches) > 12,
         "cargo_limited": cargo_units is not None and matched_units >= cargo_units,
         "budget_limited": budget_limited,
@@ -12052,6 +12253,36 @@ def _render_flight_attendant_dashboard() -> str:
     .decision-source, .decision-stock { background: rgba(97, 199, 217, .16); color: var(--cyan); }
     .decision-price, .decision-watch { background: rgba(224, 168, 74, .16); color: var(--amber); }
     .decision-skip { background: rgba(229, 116, 102, .16); color: var(--red); }
+    .load-plan-output { display: grid; gap: 9px; margin: 10px 0 12px; }
+    .load-plan-output:empty { display: none; }
+    .load-plan-box {
+      border: 1px solid rgba(97, 199, 217, .42);
+      border-radius: 7px;
+      background:
+        linear-gradient(135deg, rgba(97, 199, 217, .12), rgba(224, 168, 74, .08) 54%, rgba(8, 13, 15, .72)),
+        rgba(8, 13, 15, .48);
+      padding: 11px;
+    }
+    .load-plan-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .load-plan-head strong { color: var(--text); font-size: 16px; line-height: 1.25; }
+    .load-plan-list { display: grid; gap: 7px; margin-top: 8px; }
+    .load-plan-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      border: 1px solid rgba(63, 85, 80, .42);
+      border-radius: 6px;
+      padding: 8px;
+      background: rgba(17, 24, 25, .56);
+    }
+    .load-plan-row b { color: var(--text); text-align: right; overflow-wrap: anywhere; }
+    .load-plan-row .meta { margin-top: 2px; }
     .acquisition-strategy-grid,
     .planetary-strategy-grid,
     .planetary-target-grid {
@@ -12967,6 +13198,7 @@ def _render_flight_attendant_dashboard() -> str:
               <summary>Route Opportunity Results</summary>
               <div class="output-details-body">
                 <div id="haul-opportunity-summary" class="profit-summary">No route scan has run yet.</div>
+                <div id="haul-load-plan" class="load-plan-output"></div>
                 <div id="haul-quickbar-panel" class="quickbar-copy-panel" hidden>
                   <div>
                     <strong>Quickbar Import</strong>
@@ -13646,6 +13878,7 @@ def _render_flight_attendant_dashboard() -> str:
     const haulRoutePath = document.querySelector("#haul-route-path");
     const haulProgressLog = document.querySelector("#haul-progress-log");
     const haulOpportunitySummary = document.querySelector("#haul-opportunity-summary");
+    const haulLoadPlan = document.querySelector("#haul-load-plan");
     const haulQuickbarPanel = document.querySelector("#haul-quickbar-panel");
     const haulQuickbarStatus = document.querySelector("#haul-quickbar-status");
     const haulOpportunityTop = document.querySelector("#haul-opportunity-top");
@@ -15151,6 +15384,7 @@ def _render_flight_attendant_dashboard() -> str:
       haulProgressLog.hidden = true;
       haulProgressLog.innerHTML = "";
       haulOpportunitySummary.textContent = "No route scan has run yet.";
+      haulLoadPlan.textContent = "";
       resetQuickbarList(haulQuickbarPanel, haulQuickbarStatus, "hauling");
       haulOpportunityTop.textContent = "";
       haulScanButton.disabled = false;
@@ -15229,6 +15463,7 @@ def _render_flight_attendant_dashboard() -> str:
       haulProgressLog.innerHTML = "";
       resetQuickbarList(haulQuickbarPanel, haulQuickbarStatus, "hauling");
       startHaulProgressTimer(settings, routeRule, podRule);
+      haulLoadPlan.textContent = "";
       haulOpportunityTop.innerHTML = `<div class="decision-empty">Route opportunities will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
         origin_name: settings.originName,
@@ -15266,6 +15501,7 @@ def _render_flight_attendant_dashboard() -> str:
         appendHaulProgress("Stopped", {message: payload.error || "Route scan failed.", elapsed_seconds: elapsedSeconds});
         haulRouteSummary.textContent = `${payload.error || "Route scan failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
         haulOpportunitySummary.textContent = `Route scan failed after ${formatElapsedDuration(elapsedSeconds)}.`;
+        haulLoadPlan.textContent = "";
         haulOpportunityTop.textContent = "";
         haulScanButton.disabled = false;
       });
@@ -15285,6 +15521,7 @@ def _render_flight_attendant_dashboard() -> str:
         appendHaulProgress("Stopped", {message: "Route scan connection closed before results arrived.", elapsed_seconds: elapsedSeconds});
         haulRouteSummary.textContent = `Route scan connection closed before results arrived. Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
         haulOpportunitySummary.textContent = `Route scan failed after ${formatElapsedDuration(elapsedSeconds)}.`;
+        haulLoadPlan.textContent = "";
         haulOpportunityTop.textContent = "";
         haulScanButton.disabled = false;
       };
@@ -15345,6 +15582,7 @@ def _render_flight_attendant_dashboard() -> str:
         ${routeWarning}
       `;
       haulRoutePath.innerHTML = renderHaulRoutePath(route.systems || []);
+      haulLoadPlan.innerHTML = renderHaulLoadPlan(hauling.load_plan || {});
       haulQuickbarItems = Array.isArray(hauling.opportunities) ? hauling.opportunities : [];
       updateQuickbarPanel(haulQuickbarPanel, haulQuickbarStatus, haulQuickbarItems, "route item");
       haulOpportunitySummary.innerHTML = `
@@ -15376,6 +15614,74 @@ def _render_flight_attendant_dashboard() -> str:
       const visible = systems.slice(0, 18).map((system) => escapeHtml(system.name)).join(" &rarr; ");
       const hiddenCount = Math.max(0, systems.length - 18);
       return hiddenCount ? `${visible} &rarr; ${formatNumber(hiddenCount)} more` : visible;
+    }
+
+    function renderHaulLoadPlan(plan) {
+      if (!plan || !plan.available) {
+        const skipped = [];
+        if (plan && Number(plan.skipped_possible_trap_count || 0) > 0) skipped.push(`${formatNumber(plan.skipped_possible_trap_count)} possible trap`);
+        if (plan && Number(plan.skipped_unknown_volume_count || 0) > 0) skipped.push(`${formatNumber(plan.skipped_unknown_volume_count)} unknown volume`);
+        const skippedText = skipped.length ? ` Excluded ${escapeHtml(skipped.join(", "))}.` : "";
+        return `<div class="decision-empty">No manual load plan yet. The scan needs at least one clear or caution opportunity with known volume.${skippedText}</div>`;
+      }
+      const lineRows = (plan.lines || []).map((line) => `
+        <div class="load-plan-row">
+          <div>
+            <strong>${escapeHtml(line.item_name || "Unknown item")}</strong>
+            <div class="meta">${formatNumber(line.units)} units from ${formatNumber(line.pickup_system_count)} pickup system${Number(line.pickup_system_count || 0) === 1 ? "" : "s"}; ${formatVolume(line.volume_m3)} cargo.</div>
+          </div>
+          <b>${formatSignedIsk(line.net_profit)}</b>
+        </div>
+      `).join("");
+      const stopRows = (plan.stops || []).map((stop) => {
+        const itemText = (stop.items || [])
+          .slice(0, 4)
+          .map((item) => `${formatNumber(item.units)} ${escapeHtml(item.item_name || "item")}`)
+          .join("; ");
+        return `
+          <div class="load-plan-row">
+            <div>
+              <strong>${escapeHtml(stop.system_name || "Pickup system")}</strong>
+              <div class="meta">${escapeHtml(itemText || "No item rows")}.</div>
+            </div>
+            <b>${formatIsk(stop.pickup_cost)}</b>
+          </div>
+        `;
+      }).join("");
+      const skippedParts = [];
+      if (Number(plan.skipped_possible_trap_count || 0) > 0) skippedParts.push(`${formatNumber(plan.skipped_possible_trap_count)} possible-trap opportunities`);
+      if (Number(plan.skipped_unknown_volume_count || 0) > 0) skippedParts.push(`${formatNumber(plan.skipped_unknown_volume_count)} unknown-volume opportunities`);
+      const skippedNote = skippedParts.length ? `<div class="meta">Excluded from the load plan: ${escapeHtml(skippedParts.join(", "))}.</div>` : "";
+      const depthNote = plan.source_depth_truncated ? `<div class="meta">Some opportunity cards hide extra depth rows; the load plan used the full matched depth returned by the scan.</div>` : "";
+      return `
+        <div class="load-plan-box">
+          <div class="load-plan-head">
+            <div>
+              <strong>Manual Load Plan</strong>
+              <div class="meta">${escapeHtml(plan.strategy || "Best ranked route opportunities.")}</div>
+            </div>
+            <span class="pill decision-build">${formatSignedIsk(plan.net_profit)}</span>
+          </div>
+          <div class="profit-stats">
+            <div class="profit-stat"><span>Cargo Used</span><b>${formatVolume(plan.used_cargo_m3)}</b></div>
+            <div class="profit-stat"><span>Cargo Fill</span><b>${formatPercent(plan.cargo_percent)}</b></div>
+            <div class="profit-stat"><span>Pickup Cost</span><b>${formatIsk(plan.pickup_cost)}</b></div>
+            <div class="profit-stat"><span>Stops</span><b>${formatNumber(plan.stop_count)}</b></div>
+          </div>
+          <div class="meta">Budget remaining ${formatIsk(plan.budget_remaining_isk)}; cargo remaining ${formatVolume(plan.cargo_remaining_m3)}; ${formatNumber(plan.item_count)} item type${Number(plan.item_count || 0) === 1 ? "" : "s"}.</div>
+          <div class="meta">${escapeHtml(plan.manual_note || "Verify in EVE before buying.")}</div>
+          ${skippedNote}
+          ${depthNote}
+          <details class="profit-details" open>
+            <summary>Pickup order</summary>
+            <div class="load-plan-list">${stopRows || '<div class="decision-empty">No pickup stops.</div>'}</div>
+          </details>
+          <details class="profit-details">
+            <summary>Item lines</summary>
+            <div class="load-plan-list">${lineRows || '<div class="decision-empty">No item lines.</div>'}</div>
+          </details>
+        </div>
+      `;
     }
 
     function renderHaulOpportunities(opportunities) {

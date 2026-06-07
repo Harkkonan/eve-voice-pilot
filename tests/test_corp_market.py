@@ -294,6 +294,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-progress-log\"" in page
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page
+    assert "id=\"haul-load-plan\" class=\"load-plan-output\"" in page
+    assert "Manual Load Plan" in page
     assert "id=\"haul-quickbar-panel\" class=\"quickbar-copy-panel\" hidden" in page
     assert "data-copy-quickbar=\"hauling\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
@@ -3105,7 +3107,27 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert hauling["possible_trap_count"] == 0
     assert hauling["caution_count"] == 0
     assert sorted(history_calls) == [(100, 34), (200, 34)]
+    load_plan = hauling["load_plan"]
+    assert load_plan["available"] is True
+    assert load_plan["line_count"] == 1
+    assert load_plan["stop_count"] == 2
+    assert load_plan["item_count"] == 1
+    assert load_plan["units"] == 1000
+    assert load_plan["used_cargo_m3"] == pytest.approx(10.0)
+    assert load_plan["cargo_remaining_m3"] == pytest.approx(0.0)
+    assert load_plan["cargo_percent"] == pytest.approx(100.0)
+    assert load_plan["pickup_cost"] == pytest.approx(2200.0)
+    assert load_plan["budget_remaining_isk"] == pytest.approx(249_997_800.0)
+    assert load_plan["net_profit"] == pytest.approx(5288.4375)
+    assert load_plan["net_profit_per_m3"] == pytest.approx(528.84375)
+    assert load_plan["lines"][0]["item_name"] == "Tritanium"
+    assert load_plan["lines"][0]["units"] == 1000
+    assert load_plan["stops"][0]["system_name"] == "Middle"
+    assert load_plan["stops"][0]["pickup_cost"] == pytest.approx(1000.0)
+    assert load_plan["stops"][1]["system_name"] == "Side Pickup"
+    assert load_plan["stops"][1]["pickup_cost"] == pytest.approx(1200.0)
     opportunity = hauling["opportunities"][0]
+    assert "load_plan_depth" not in opportunity
     assert opportunity["item_name"] == "Tritanium"
     assert opportunity["risk_level"] == "clear"
     assert opportunity["decision"]["label"] == "Manual haul candidate"
@@ -3162,8 +3184,15 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     )
 
     budget_opportunity = budget_payload["hauling"]["opportunities"][0]
+    budget_load_plan = budget_payload["hauling"]["load_plan"]
     assert budget_payload["route"]["purchase_budget_isk"] == pytest.approx(1600.0)
     assert budget_payload["hauling"]["purchase_budget_isk"] == pytest.approx(1600.0)
+    assert budget_load_plan["available"] is True
+    assert budget_load_plan["units"] == 760
+    assert budget_load_plan["used_cargo_m3"] == pytest.approx(7.6)
+    assert budget_load_plan["pickup_cost"] == pytest.approx(1600.0)
+    assert budget_load_plan["budget_remaining_isk"] == pytest.approx(0.0)
+    assert budget_load_plan["net_profit"] == pytest.approx(4149.1875)
     assert budget_opportunity["units"] == 760
     assert budget_opportunity["cargo_limited"] is False
     assert budget_opportunity["budget_limited"] is True
@@ -3211,6 +3240,8 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert spiky_opportunity["risk_level"] == "possible-trap"
     assert spiky_opportunity["decision"]["label"] == "Verify in EVE first"
     assert spiky_opportunity["history_flags"][0]["label"] == "Possible trap: price spike"
+    assert spiky_hauling["load_plan"]["available"] is False
+    assert spiky_hauling["load_plan"]["skipped_possible_trap_count"] == 1
 
     sell_calls.clear()
     buy_calls.clear()
