@@ -297,6 +297,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-quickbar-panel\" class=\"quickbar-copy-panel\" hidden" in page
     assert "data-copy-quickbar=\"hauling\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
+    assert "Profit per m3" in page
+    assert "Profit per extra jump" in page
     assert "id=\"acquisition-form\"" in page
     assert "id=\"acq-budget\"" in page
     assert (
@@ -3122,6 +3124,9 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert opportunity["gross_spread_per_unit"] == pytest.approx(5.55)
     assert opportunity["net_profit_per_unit"] == pytest.approx(5.2884375)
     assert opportunity["net_profit"] == pytest.approx(5288.4375)
+    assert opportunity["matched_volume_m3"] == pytest.approx(10.0)
+    assert opportunity["net_profit_per_m3"] == pytest.approx(528.84375)
+    assert opportunity["net_profit_per_extra_jump"] == pytest.approx(2644.21875)
     assert opportunity["pickup_cost"] == pytest.approx(2200.0)
     assert opportunity["gross_destination_revenue"] == pytest.approx(7750.0)
     assert opportunity["sales_tax_total"] == pytest.approx(261.5625)
@@ -3158,6 +3163,9 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert budget_opportunity["sales_tax_total"] == pytest.approx(200.8125)
     assert budget_opportunity["net_destination_revenue"] == pytest.approx(5749.1875)
     assert budget_opportunity["net_profit"] == pytest.approx(4149.1875)
+    assert budget_opportunity["matched_volume_m3"] == pytest.approx(7.6)
+    assert budget_opportunity["net_profit_per_m3"] == pytest.approx(545.9457236842105)
+    assert budget_opportunity["net_profit_per_extra_jump"] == pytest.approx(2074.59375)
     assert budget_opportunity["order_depth"][2]["units"] == 160
 
     def fake_spiky_market_history(config, *, region_id, type_id):

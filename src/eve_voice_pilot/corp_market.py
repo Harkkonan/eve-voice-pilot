@@ -4511,6 +4511,16 @@ def scan_route_hauling_opportunities(
         if pickup_detour_jumps > 0 and (margin_percent is None or margin_percent < clean_min_detour_margin_percent):
             detour_margin_rejected_count += 1
             continue
+        matched_volume_m3 = None
+        net_profit_per_m3 = None
+        clean_volume_m3 = clean_optional_float(volume_m3)
+        if clean_volume_m3 is not None and clean_volume_m3 > 0:
+            matched_volume_m3 = clean_volume_m3 * int(depth_match["units"])
+            if matched_volume_m3 > 0:
+                net_profit_per_m3 = total_net_profit / matched_volume_m3
+        net_profit_per_extra_jump = None
+        if extra_route_jumps is not None:
+            net_profit_per_extra_jump = total_net_profit / max(1, int(extra_route_jumps))
         if progress is not None:
             progress(
                 "orders",
@@ -4579,6 +4589,9 @@ def scan_route_hauling_opportunities(
                 "gross_spread_per_unit": depth_match["gross_spread_per_unit"],
                 "net_profit_per_unit": depth_match["net_profit_per_unit"],
                 "net_profit": total_net_profit,
+                "net_profit_per_m3": net_profit_per_m3,
+                "net_profit_per_extra_jump": net_profit_per_extra_jump,
+                "matched_volume_m3": matched_volume_m3,
                 "pickup_cost": depth_match["pickup_cost"],
                 "gross_destination_revenue": depth_match["gross_destination_revenue"],
                 "net_destination_revenue": depth_match["net_destination_revenue"],
@@ -14012,9 +14025,26 @@ def _render_flight_attendant_dashboard() -> str:
       return `${sign}${formatIsk(number)}`;
     }
 
+    function formatSignedIskRate(value, suffix) {
+      const formatted = formatSignedIsk(value);
+      return formatted === "unknown" ? formatted : `${formatted}/${suffix}`;
+    }
+
     function formatPercent(value) {
       if (value == null) return "unknown";
       return `${Number(value || 0).toFixed(1)}%`;
+    }
+
+    function formatSignedPercent(value) {
+      if (value == null) return "unknown";
+      const number = Number(value || 0);
+      const sign = number > 0 ? "+" : "";
+      return `${sign}${number.toFixed(1)}%`;
+    }
+
+    function formatSignedIskPerM3(value) {
+      if (value == null) return "unknown/m3";
+      return `${formatSignedIsk(value)}/m3`;
     }
 
     function formatRatePercent(value) {
@@ -15229,6 +15259,13 @@ def _render_flight_attendant_dashboard() -> str:
         const pickup = item.pickup_order || {};
         const destination = item.destination_order || {};
         const extraJumps = item.extra_route_jumps == null ? "unknown" : `${formatNumber(item.extra_route_jumps)} extra`;
+        const efficiencyJumpNote = Number(item.extra_route_jumps || 0) <= 0
+          ? "Direct-route pickup; no added jumps."
+          : "After-tax profit divided by added jumps.";
+        const matchedVolumeText = item.matched_volume_m3 == null ? "unknown" : formatVolume(item.matched_volume_m3);
+        const efficiencyVolumeNote = item.net_profit_per_m3 == null
+          ? "Volume unknown."
+          : `${matchedVolumeText} matched volume.`;
         const pickupPrice = item.average_pickup_price == null ? pickup.price : item.average_pickup_price;
         const destinationPrice = item.average_destination_price == null ? destination.price : item.average_destination_price;
         const depthText = item.matched_order_pair_count
@@ -15265,6 +15302,7 @@ def _render_flight_attendant_dashboard() -> str:
               <div class="decision-metric"><span>After-Tax Per Unit</span><b>${formatSignedIsk(item.net_profit_per_unit)}</b><small>${formatPercent(item.margin_percent)} on pickup cost.</small></div>
               <div class="decision-metric"><span>Depth</span><b>${escapeHtml(depthText)}</b><small>${escapeHtml(pickupSystemsText)}.</small></div>
               <div class="decision-metric"><span>Route</span><b>${escapeHtml(extraJumps)}</b><small>Origin-pickup-destination compared with direct route.</small></div>
+              <div class="decision-metric"><span>Efficiency</span><b>${formatSignedIskRate(item.net_profit_per_extra_jump, "extra jump")}</b><small>${escapeHtml(efficiencyJumpNote)} ${formatSignedIskRate(item.net_profit_per_m3, "m3")} from ${escapeHtml(efficiencyVolumeNote)}</small></div>
             </div>
             <details class="profit-details">
               <summary>Order details</summary>
@@ -15278,6 +15316,9 @@ def _render_flight_attendant_dashboard() -> str:
                 <div class="profit-detail-row"><span>Sales tax</span><b>${formatIsk(item.sales_tax_total)} (${formatRatePercent(item.sales_tax_rate)})</b></div>
                 <div class="profit-detail-row"><span>Net destination revenue</span><b>${formatIsk(item.net_destination_revenue)}</b></div>
                 <div class="profit-detail-row"><span>Gross spread per unit</span><b>${formatSignedIsk(item.gross_spread_per_unit)}</b></div>
+                <div class="profit-detail-row"><span>Matched volume</span><b>${escapeHtml(matchedVolumeText)}</b></div>
+                <div class="profit-detail-row"><span>Profit per m3</span><b>${formatSignedIskRate(item.net_profit_per_m3, "m3")}</b></div>
+                <div class="profit-detail-row"><span>Profit per extra jump</span><b>${formatSignedIskRate(item.net_profit_per_extra_jump, "extra jump")}</b></div>
                 <div class="profit-detail-row"><span>Matched pairs</span><b>${formatNumber(item.matched_order_pair_count)}</b></div>
                 <div class="profit-detail-row"><span>Depth rows</span><b>${escapeHtml(depthRows || "not returned")}${item.order_depth_truncated ? "..." : ""}</b></div>
                 <div class="profit-detail-row"><span>Pickup history</span><b>${renderHistoryStats(item.pickup_history || {})}</b></div>
