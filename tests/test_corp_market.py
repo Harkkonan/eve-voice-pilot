@@ -372,6 +372,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "reprocess-output-panel" in page
     assert "id=\"reprocess-batch-input\"" in page
     assert "Paste Ore Batch" in page
+    assert "id=\"reprocess-after-tax-toggle\"" in page
+    assert "After market tax" in page
+    assert "Accounting sales tax; buy-order broker fee 0%." in page
     assert "id=\"reprocess-copy-raw\"" in page
     assert "id=\"reprocess-copy-minerals\"" in page
     assert "id=\"reprocess-location-recommendations\"" in page
@@ -380,6 +383,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "reprocessing-decision-card" in page
     assert "parseReprocessingBatchInput" in page
     assert "copyReprocessingText" in page
+    assert "reprocessingDisplayValuation" in page
+    assert "reprocessingJitaLensNote" in page
     assert "renderReprocessingLocationRecommendations" in page
     assert "data-reprocess-location-card" in page
     assert "data-reprocess-sort" in page
@@ -1752,6 +1757,7 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
                 {"skill_id": corp_market.REPROCESSING_SKILL_TYPE_ID, "active_skill_level": 5},
                 {"skill_id": corp_market.REPROCESSING_EFFICIENCY_SKILL_TYPE_ID, "active_skill_level": 4},
                 {"skill_id": 60377, "active_skill_level": 3},
+                {"skill_id": corp_market.ACCOUNTING_SKILL_TYPE_ID, "active_skill_level": 5},
             ]
         },
     )
@@ -1863,6 +1869,13 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     assert valuation["ore_value"] == pytest.approx(12000.0)
     assert valuation["ore_partial_value"] == pytest.approx(12000.0)
     assert valuation["value_delta"] == pytest.approx(4098.0)
+    assert payload["sales_tax"]["accounting_level"] == 5
+    assert payload["sales_tax"]["rate"] == pytest.approx(0.03375)
+    assert valuation["sales_tax"]["accounting_level"] == 5
+    assert valuation["after_tax"]["sales_tax_percent"] == pytest.approx(3.375)
+    assert valuation["after_tax"]["processed_material_value"] == pytest.approx(15554.6925)
+    assert valuation["after_tax"]["ore_value"] == pytest.approx(11595.0)
+    assert valuation["after_tax"]["value_delta"] == pytest.approx(3959.6925)
     assert valuation["processed_complete"] is True
     assert valuation["ore_complete"] is True
     assert valuation["eve_estimate"]["source"] == "ESI /markets/prices average_price with adjusted_price fallback"

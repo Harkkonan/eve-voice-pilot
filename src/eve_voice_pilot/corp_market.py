@@ -6670,6 +6670,56 @@ def build_sales_tax_profile(skills_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def value_after_sales_tax(value: Any, sales_tax_rate: Any) -> float | None:
+    clean_value = clean_optional_float(value)
+    if clean_value is None:
+        return None
+    clean_rate = clean_optional_float(sales_tax_rate)
+    if clean_rate is None:
+        clean_rate = 0.0
+    clean_rate = max(0.0, min(1.0, clean_rate))
+    return clean_value * (1.0 - clean_rate)
+
+
+def build_reprocessing_after_tax_valuation(
+    valuation: dict[str, Any],
+    sales_tax: dict[str, Any],
+) -> dict[str, Any]:
+    sales_tax_rate = clean_optional_float(sales_tax.get("rate")) or 0.0
+    processed_value = value_after_sales_tax(valuation.get("processed_material_value"), sales_tax_rate)
+    processed_partial_value = value_after_sales_tax(
+        valuation.get("processed_partial_material_value"),
+        sales_tax_rate,
+    )
+    ore_value = value_after_sales_tax(valuation.get("ore_value"), sales_tax_rate)
+    ore_partial_value = value_after_sales_tax(valuation.get("ore_partial_value"), sales_tax_rate)
+    value_delta = processed_value - ore_value if processed_value is not None and ore_value is not None else None
+    partial_value_delta = (
+        processed_partial_value - ore_partial_value
+        if processed_partial_value is not None and ore_partial_value is not None
+        else None
+    )
+    return {
+        "source": "Jita buy-order value after ESI Accounting sales tax",
+        "note": "Subtracts sales tax from immediate Jita buy-order proceeds. Broker fee is 0% for immediate sales to existing buy orders.",
+        "sales_tax_rate": sales_tax_rate,
+        "sales_tax_percent": sales_tax_rate * 100.0,
+        "accounting_level": sales_tax.get("accounting_level", 0),
+        "accounting_skill_type_id": sales_tax.get("accounting_skill_type_id", ACCOUNTING_SKILL_TYPE_ID),
+        "broker_fee_rate": sales_tax.get("broker_fee_rate", 0.0),
+        "broker_fee_note": sales_tax.get(
+            "broker_fee_note",
+            "Immediate sales to existing buy orders do not create a broker fee.",
+        ),
+        "processed_material_value": processed_value,
+        "processed_partial_material_value": processed_partial_value,
+        "ore_value": ore_value,
+        "ore_partial_value": ore_partial_value,
+        "value_delta": value_delta,
+        "partial_value_delta": partial_value_delta,
+    }
+
+
 def build_flight_planetary_payload(
     *,
     config: EveSsoConfig,
@@ -7330,6 +7380,7 @@ def build_flight_reprocessing_payload(
 
     clean_quantity = clean_reprocessing_quantity(quantity)
     skills = fetch_flight_skills(config, session)
+    sales_tax = build_sales_tax_profile(skills)
     standings = fetch_flight_standings(config, session)
     location = fetch_flight_location(config, session)
     implant_profile = build_reprocessing_implant_profile(
@@ -7389,11 +7440,14 @@ def build_flight_reprocessing_payload(
         input_quantity=clean_quantity,
         output_materials=output_materials,
     )
+    jita_valuation["sales_tax"] = sales_tax
+    jita_valuation["after_tax"] = build_reprocessing_after_tax_valuation(jita_valuation, sales_tax)
 
     notes = [
         "Uses ESI location, skills, standings, and implants when the connected session has those scopes.",
         "Uses CCP static data for ore portions, material outputs, and NPC station reprocessing values.",
         "Jita values use public Jita buy orders for immediate liquidation estimates.",
+        "After-tax Jita values subtract ESI Accounting sales tax from immediate buy-order proceeds; broker fee is 0% for immediate sales.",
     ]
     notes.extend(location_profile.get("notes", []))
     notes.extend(implant_profile.get("notes", []))
@@ -7442,6 +7496,7 @@ def build_flight_reprocessing_payload(
             "breakdown": yield_rates["breakdown"],
         },
         "materials": output_materials,
+        "sales_tax": sales_tax,
         "jita_valuation": jita_valuation,
         "notes": notes,
     }
@@ -11054,6 +11109,39 @@ def _render_flight_attendant_dashboard() -> str:
       gap: 8px;
       flex-wrap: wrap;
     }
+    .reprocess-tax-toggle {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      column-gap: 8px;
+      row-gap: 2px;
+      align-items: center;
+      min-height: 42px;
+      padding: 7px 10px;
+      border: 1px solid rgba(224, 168, 74, .36);
+      border-radius: 6px;
+      background:
+        linear-gradient(135deg, rgba(224, 168, 74, .1), rgba(97, 199, 217, .04)),
+        rgba(5, 9, 11, .58);
+      color: var(--text);
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-tax-toggle {
+      color: #e9e3d3;
+      font-size: 12px;
+      font-weight: 850;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .reprocess-tax-toggle input { grid-row: 1 / span 2; }
+    .reprocess-tax-toggle span { line-height: 1.1; }
+    .reprocess-tax-toggle small {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 1.2;
+    }
     .reprocess-copy-actions button {
       min-height: 38px;
       padding: 8px 11px;
@@ -13340,11 +13428,16 @@ def _render_flight_attendant_dashboard() -> str:
               <div>
                 <div class="profit-title">
                   <h2 id="reprocess-results-title">Mineral Output</h2>
-                  <span class="pill reserved">Net After Tax</span>
+                  <span class="pill reserved">Station-Net Minerals</span>
                 </div>
                 <div class="meta">Gross output, estimated station take, and final material stacks.</div>
               </div>
               <div class="reprocess-copy-actions">
+                <label class="reprocess-tax-toggle">
+                  <input id="reprocess-after-tax-toggle" name="after_market_tax" type="checkbox">
+                  <span>After market tax</span>
+                  <small>Accounting sales tax; buy-order broker fee 0%.</small>
+                </label>
                 <button id="reprocess-copy-raw" class="secondary" type="button" data-copy-reprocessing="raw">Copy Raw Ore</button>
                 <button id="reprocess-copy-minerals" class="secondary" type="button" data-copy-reprocessing="minerals">Copy Minerals</button>
                 <div id="reprocess-copy-status" class="meta quickbar-copy-status" aria-live="polite"></div>
@@ -13487,6 +13580,7 @@ def _render_flight_attendant_dashboard() -> str:
     const reprocessBatchInput = document.querySelector("#reprocess-batch-input");
     const reprocessBatchStatus = document.querySelector("#reprocess-batch-status");
     const reprocessLocationRecommendations = document.querySelector("#reprocess-location-recommendations");
+    const reprocessAfterTaxToggle = document.querySelector("#reprocess-after-tax-toggle");
     const reprocessCopyRaw = document.querySelector("#reprocess-copy-raw");
     const reprocessCopyMinerals = document.querySelector("#reprocess-copy-minerals");
     const reprocessCopyStatus = document.querySelector("#reprocess-copy-status");
@@ -13539,6 +13633,7 @@ def _render_flight_attendant_dashboard() -> str:
     const reprocessImplantBonusKey = "eve-flight-reprocess-implant-bonus-v1";
     const reprocessStructureBonusKey = "eve-flight-reprocess-structure-bonus-v1";
     const reprocessBatchKey = "eve-flight-reprocess-batch-v1";
+    const reprocessAfterTaxKey = "eve-flight-reprocess-after-market-tax-v1";
     const validTabs = new Set(["market", "flight", "hauling", "acquisition", "trade-pnl", "planetary", "reprocessing"]);
     let filterType = "";
     let includeClosed = false;
@@ -16071,6 +16166,7 @@ def _render_flight_attendant_dashboard() -> str:
         implantBonusPercent: String(window.localStorage.getItem(reprocessImplantBonusKey) || reprocessImplantBonus.value || "").trim(),
         structureBonusPercent: String(window.localStorage.getItem(reprocessStructureBonusKey) || reprocessStructureBonus.value || "0").trim() || "0",
         batchText: String(window.localStorage.getItem(reprocessBatchKey) || reprocessBatchInput.value || "").trim(),
+        afterMarketTax: window.localStorage.getItem(reprocessAfterTaxKey) === "1",
       };
     }
 
@@ -16091,6 +16187,7 @@ def _render_flight_attendant_dashboard() -> str:
       const implantBonusPercent = String(settings.implantBonusPercent || "").trim();
       const structureBonusPercent = String(settings.structureBonusPercent || "0").trim() || "0";
       const batchText = String(settings.batchText ?? reprocessBatchInput.value ?? "").trim();
+      const afterMarketTax = settings.afterMarketTax == null ? Boolean(reprocessAfterTaxToggle.checked) : Boolean(settings.afterMarketTax);
       reprocessOre.value = oreTypeId;
       reprocessQuantity.value = String(quantity);
       reprocessStationSelect.value = availableLocationValues.includes(locationId) ? locationId : "current";
@@ -16100,6 +16197,7 @@ def _render_flight_attendant_dashboard() -> str:
       reprocessImplantBonus.value = implantBonusPercent;
       reprocessStructureBonus.value = structureBonusPercent;
       reprocessBatchInput.value = batchText;
+      reprocessAfterTaxToggle.checked = afterMarketTax;
       window.localStorage.setItem(reprocessOreKey, oreTypeId);
       window.localStorage.setItem(reprocessQuantityKey, String(quantity));
       window.localStorage.setItem(reprocessLocationKey, locationId);
@@ -16109,6 +16207,7 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(reprocessImplantBonusKey, implantBonusPercent);
       window.localStorage.setItem(reprocessStructureBonusKey, structureBonusPercent);
       window.localStorage.setItem(reprocessBatchKey, batchText);
+      window.localStorage.setItem(reprocessAfterTaxKey, afterMarketTax ? "1" : "0");
       return {
         oreTypeId,
         quantity,
@@ -16119,6 +16218,7 @@ def _render_flight_attendant_dashboard() -> str:
         implantBonusPercent,
         structureBonusPercent,
         batchText,
+        afterMarketTax,
       };
     }
 
@@ -16518,6 +16618,57 @@ def _render_flight_attendant_dashboard() -> str:
       `;
     }
 
+    function currentReprocessingValueLens() {
+      return reprocessAfterTaxToggle && reprocessAfterTaxToggle.checked ? "after_tax" : "gross";
+    }
+
+    function reprocessingJitaLensLabel() {
+      return currentReprocessingValueLens() === "after_tax" ? "Jita after tax" : "Jita buy";
+    }
+
+    function reprocessingJitaMetricLabel() {
+      return currentReprocessingValueLens() === "after_tax" ? "Jita After Tax" : "Jita Buy";
+    }
+
+    function reprocessingDisplayValuation(valuation) {
+      const cleanValuation = valuation || {};
+      if (currentReprocessingValueLens() === "after_tax" && cleanValuation.after_tax) return cleanValuation.after_tax;
+      return cleanValuation;
+    }
+
+    function reprocessingSalesTaxProfile(source) {
+      const cleanSource = source || {};
+      const valuation = cleanSource.jita_valuation || cleanSource;
+      return cleanSource.sales_tax || valuation.sales_tax || valuation.after_tax || {};
+    }
+
+    function reprocessingSalesTaxRate(source) {
+      const profile = reprocessingSalesTaxProfile(source);
+      const rate = Number(profile.rate ?? profile.sales_tax_rate ?? 0);
+      return Number.isFinite(rate) ? Math.max(0, Math.min(1, rate)) : 0;
+    }
+
+    function reprocessingMarketTaxValue(value, source) {
+      if (value == null) return null;
+      const number = Number(value);
+      if (!Number.isFinite(number)) return null;
+      if (currentReprocessingValueLens() !== "after_tax") return number;
+      return number * (1 - reprocessingSalesTaxRate(source));
+    }
+
+    function reprocessingJitaLensNote(source) {
+      if (currentReprocessingValueLens() !== "after_tax") {
+        return "Gross buy-order value before market sales tax.";
+      }
+      const profile = reprocessingSalesTaxProfile(source);
+      if (!Object.keys(profile || {}).length) {
+        return "No market sales-tax profile was returned, so displayed Jita values fall back to gross buy-order value.";
+      }
+      const level = Number(profile.accounting_level || 0);
+      const percent = Number(profile.rate_percent ?? profile.sales_tax_percent ?? (reprocessingSalesTaxRate(source) * 100));
+      return `After Accounting ${formatNumber(level)} market sales tax (${formatPercent(percent)}); immediate buy-order broker fee is 0%.`;
+    }
+
     function reprocessingValuePair(source, valueKey, partialKey) {
       if (!source) return {value: null, complete: false};
       if (source[valueKey] != null) return {value: Number(source[valueKey]), complete: true};
@@ -16537,8 +16688,9 @@ def _render_flight_attendant_dashboard() -> str:
       let oreRequired = 0;
       (payloads || []).forEach((payload) => {
         const valuation = payload.jita_valuation || {};
-        const processedPair = reprocessingValuePair(valuation, "processed_material_value", "processed_partial_material_value");
-        const orePair = reprocessingValuePair(valuation, "ore_value", "ore_partial_value");
+        const displayValuation = reprocessingDisplayValuation(valuation);
+        const processedPair = reprocessingValuePair(displayValuation, "processed_material_value", "processed_partial_material_value");
+        const orePair = reprocessingValuePair(displayValuation, "ore_value", "ore_partial_value");
         if (processedPair.value == null) {
           hasProcessed = false;
         } else {
@@ -16596,12 +16748,13 @@ def _render_flight_attendant_dashboard() -> str:
       const percentText = aggregate.deltaPercent == null ? "" : ` (${formatPercent(aggregate.deltaPercent)})`;
       const processedText = aggregate.processedValue == null ? "unknown processed value" : formatIsk(aggregate.processedValue);
       const oreText = aggregate.oreValue == null ? "unknown raw value" : formatIsk(aggregate.oreValue);
+      const lensNote = reprocessingJitaLensNote((payloads || [])[0] || {});
       return `
         <div class="reprocessing-decision-card ${escapeHtml(decision.className)}">
           <div>
             <span>Recommended action</span>
             <strong>${escapeHtml(decision.label)}</strong>
-            <p>${escapeHtml(decision.note)} Processed ${processedText}; raw ${oreText}.</p>
+            <p>${escapeHtml(decision.note)} Processed ${processedText}; raw ${oreText}. ${escapeHtml(lensNote)}</p>
           </div>
           <div class="decision-score">${deltaText}${escapeHtml(percentText)}</div>
         </div>
@@ -16620,13 +16773,13 @@ def _render_flight_attendant_dashboard() -> str:
           <div class="assay-status-strip">
             ${renderAssayStatusMetric("Batch Lines", formatNumber(payloads.length), `${formatNumber(totalUnits)} ore units`, "is-amber")}
             ${renderAssayStatusMetric("Full Portions", formatNumber(fullPortions), "leftovers shown by row", "")}
-            ${renderAssayStatusMetric("Jita Buy Delta", aggregate.delta == null ? "unknown" : formatSignedIsk(aggregate.delta), "liquidation value", "is-amber")}
+            ${renderAssayStatusMetric(`${reprocessingJitaMetricLabel()} Delta`, aggregate.delta == null ? "unknown" : formatSignedIsk(aggregate.delta), currentReprocessingValueLens() === "after_tax" ? "estimated pocket value" : "liquidation value", "is-amber")}
             ${renderAssayStatusMetric("Facility", formatPercent(yieldData.net_yield_percent), "first-row net yield", "is-green")}
           </div>
           <div class="assay-status-sheet">
             <span class="notebook-ribbon">Batch Assay Log</span>
             ${renderAssayStatusRow("Input", `${formatNumber(payloads.length)} ore stack${payloads.length === 1 ? "" : "s"}`, `${formatNumber(totalUnits)} total units; ${formatNumber(fullPortions)} full portions processed.`)}
-            ${renderAssayStatusRow("Decision", reprocessingDecisionFromAggregate(aggregate).label, `Processed ${renderReprocessingJitaValue(aggregate.processedValue, null)}; ore ${renderReprocessingJitaValue(aggregate.oreValue, null)}.`)}
+            ${renderAssayStatusRow("Decision", reprocessingDecisionFromAggregate(aggregate).label, `Processed ${renderReprocessingJitaValue(aggregate.processedValue, null)}; ore ${renderReprocessingJitaValue(aggregate.oreValue, null)}. ${escapeHtml(reprocessingJitaLensNote(first))}`)}
             ${renderAssayStatusRow("Jita coverage", escapeHtml(valuationCoverage), "Depth-aware values stay labeled when coverage is partial.")}
           </div>
         </div>
@@ -16658,12 +16811,29 @@ def _render_flight_attendant_dashboard() -> str:
       setReprocessingCopyStatus("Batch raw ore and mineral lists are ready to copy.");
     }
 
+    function rerenderReprocessingLastPayloads() {
+      if (!reprocessLastPayloads.length) {
+        updateReprocessingAndReset();
+        return;
+      }
+      if (reprocessLastPayloads.length > 1) {
+        reprocessSummary.innerHTML = renderReprocessingDecisionHeadline(reprocessLastPayloads) + renderReprocessingBatchAssayStatus(reprocessLastPayloads);
+        reprocessLocationDetail.innerHTML = renderReprocessingFacilityStatus(reprocessLastPayloads[0] || {});
+      } else {
+        const data = reprocessLastPayloads[0] || {};
+        reprocessSummary.innerHTML = renderReprocessingDecisionHeadline(reprocessLastPayloads) + renderReprocessingAssayStatus(data);
+        reprocessLocationDetail.innerHTML = renderReprocessingFacilityStatus(data);
+      }
+      reprocessResults.innerHTML = renderReprocessingOutputFromPayloads(reprocessLastPayloads, reprocessLastNotes);
+    }
+
     function renderReprocessingAssayStatus(data) {
       const ore = data.ore || {};
       const input = data.input || {};
       const skills = data.skills || {};
       const yieldData = data.yield || {};
       const valuation = data.jita_valuation || {};
+      const displayValuation = reprocessingDisplayValuation(valuation);
       const eveEstimate = valuation.eve_estimate || {};
       const specializationName = skills.specialization_skill_name || "specialization";
       const oreName = ore.name || "Ore";
@@ -16676,7 +16846,7 @@ def _render_flight_attendant_dashboard() -> str:
           <div class="assay-status-strip">
             ${renderAssayStatusMetric("Net Yield", formatPercent(yieldData.net_yield_percent), "after processing fee", "is-green")}
             ${renderAssayStatusMetric("Processing Fee", formatPercent(yieldData.station_tax_percent), "station tax taken as minerals", "is-amber")}
-            ${renderAssayStatusMetric("Jita Buy Delta", renderReprocessingJitaDelta(valuation), "liquidation value", "is-amber")}
+            ${renderAssayStatusMetric(`${reprocessingJitaMetricLabel()} Delta`, renderReprocessingJitaDelta(displayValuation), currentReprocessingValueLens() === "after_tax" ? "estimated pocket value" : "liquidation value", "is-amber")}
             ${renderAssayStatusMetric("EVE Est. Delta", renderReprocessingEveEstimateDelta(eveEstimate), "cluster estimate", "")}
           </div>
           <div class="assay-status-sheet">
@@ -16690,9 +16860,9 @@ def _render_flight_attendant_dashboard() -> str:
               escapeHtml(eveEstimate.note || "This is a cluster market estimate, not Jita buy-order liquidation value.")
             )}
             ${renderAssayStatusRow(
-              "Jita buy-order value",
-              `processed ${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)}; ore ${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)}; delta ${renderReprocessingJitaDelta(valuation)}.`,
-              `Public buy orders in ${systemName}; ${escapeHtml(renderReprocessingJitaCoverage(valuation))}.`
+              reprocessingJitaLensLabel(),
+              `processed ${renderReprocessingJitaValue(displayValuation.processed_material_value, displayValuation.processed_partial_material_value)}; ore ${renderReprocessingJitaValue(displayValuation.ore_value, displayValuation.ore_partial_value)}; delta ${renderReprocessingJitaDelta(displayValuation)}.`,
+              `Public buy orders in ${systemName}; ${escapeHtml(renderReprocessingJitaCoverage(valuation))}. ${escapeHtml(reprocessingJitaLensNote(data))}`
             )}
           </div>
         </div>
@@ -16797,6 +16967,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     function renderReprocessingPriceComparison(valuation) {
       const eveEstimate = valuation.eve_estimate || {};
+      const displayValuation = reprocessingDisplayValuation(valuation);
       return `
         <div class="meta"><strong>EVE estimated price:</strong>
           processed ${renderReprocessingJitaValue(eveEstimate.processed_material_value, eveEstimate.processed_partial_material_value)};
@@ -16804,11 +16975,11 @@ def _render_flight_attendant_dashboard() -> str:
           delta ${renderReprocessingEveEstimateDelta(eveEstimate)}.
           <small>${escapeHtml(eveEstimate.note || "Uses ESI market estimate prices, not live buy orders.")}</small>
         </div>
-        <div class="meta"><strong>Jita buy-order value:</strong>
-          processed ${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)};
-          ore ${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)};
-          delta ${renderReprocessingJitaDelta(valuation)}.
-          <small>Public buy orders in ${escapeHtml((valuation.system || {}).name || "Jita")}; ${renderReprocessingJitaCoverage(valuation)}.</small>
+        <div class="meta"><strong>${escapeHtml(reprocessingJitaLensLabel())} value:</strong>
+          processed ${renderReprocessingJitaValue(displayValuation.processed_material_value, displayValuation.processed_partial_material_value)};
+          ore ${renderReprocessingJitaValue(displayValuation.ore_value, displayValuation.ore_partial_value)};
+          delta ${renderReprocessingJitaDelta(displayValuation)}.
+          <small>Public buy orders in ${escapeHtml((valuation.system || {}).name || "Jita")}; ${renderReprocessingJitaCoverage(valuation)}. ${escapeHtml(reprocessingJitaLensNote(valuation))}</small>
         </div>
       `;
     }
@@ -16967,6 +17138,7 @@ def _render_flight_attendant_dashboard() -> str:
       const input = data.input || {};
       const yieldData = data.yield || {};
       const valuation = data.jita_valuation || {};
+      const displayValuation = reprocessingDisplayValuation(valuation);
       const eveEstimate = valuation.eve_estimate || {};
       return `
         <aside class="ore-specimen">
@@ -16979,7 +17151,7 @@ def _render_flight_attendant_dashboard() -> str:
           <div class="ore-readouts">
             <div class="assay-cell"><span>Units</span><b>${formatNumber(input.quantity)}</b><small>${formatNumber(input.leftover_units)} leftover</small></div>
             <div class="assay-cell"><span>Net Yield</span><b>${formatPercent(yieldData.net_yield_percent)}</b><small>${formatPercent(yieldData.station_tax_percent)} fee</small></div>
-            <div class="assay-cell"><span>Ore Jita Buy</span><b>${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)}</b><small>${formatNumber(valuation.ore_priced_quantity || 0)} priced</small></div>
+            <div class="assay-cell"><span>Ore ${escapeHtml(reprocessingJitaMetricLabel())}</span><b>${renderReprocessingJitaValue(displayValuation.ore_value, displayValuation.ore_partial_value)}</b><small>${formatNumber(valuation.ore_priced_quantity || 0)} priced</small></div>
             <div class="assay-cell"><span>Ore EVE Est.</span><b>${renderReprocessingJitaValue(eveEstimate.ore_value, null)}</b><small>${escapeHtml(eveEstimate.ore_price_source || "estimate")}</small></div>
           </div>
         </aside>
@@ -16991,6 +17163,7 @@ def _render_flight_attendant_dashboard() -> str:
       const yieldData = data.yield || {};
       const breakdown = yieldData.breakdown || {};
       const valuation = data.jita_valuation || {};
+      const displayValuation = reprocessingDisplayValuation(valuation);
       const eveEstimate = valuation.eve_estimate || {};
       const specializationName = breakdown.specialization_skill_name || "Ore specialization";
       const baseFee = facility.base_station_tax_percent == null ? yieldData.station_tax_percent : facility.base_station_tax_percent;
@@ -17029,9 +17202,10 @@ def _render_flight_attendant_dashboard() -> str:
               <div class="notebook-value-row"><span>EVE estimate: ore</span><b>${renderReprocessingJitaValue(eveEstimate.ore_value, null)}</b></div>
               <div class="notebook-value-row"><span>EVE estimate: processed</span><b>${renderReprocessingJitaValue(eveEstimate.processed_material_value, eveEstimate.processed_partial_material_value)}</b></div>
               <div class="notebook-value-row is-total"><span>EVE estimate delta</span><b>${renderReprocessingEveEstimateDelta(eveEstimate)}</b></div>
-              <div class="notebook-value-row"><span>Jita buy: ore</span><b>${renderReprocessingJitaValue(valuation.ore_value, valuation.ore_partial_value)}</b></div>
-              <div class="notebook-value-row"><span>Jita buy: processed</span><b>${renderReprocessingJitaValue(valuation.processed_material_value, valuation.processed_partial_material_value)}</b></div>
-              <div class="notebook-value-row is-total"><span>Jita buy delta</span><b>${renderReprocessingJitaDelta(valuation)}</b></div>
+              <div class="notebook-value-row"><span>${escapeHtml(reprocessingJitaLensLabel())}: ore</span><b>${renderReprocessingJitaValue(displayValuation.ore_value, displayValuation.ore_partial_value)}</b></div>
+              <div class="notebook-value-row"><span>${escapeHtml(reprocessingJitaLensLabel())}: processed</span><b>${renderReprocessingJitaValue(displayValuation.processed_material_value, displayValuation.processed_partial_material_value)}</b></div>
+              <div class="notebook-value-row is-total"><span>${escapeHtml(reprocessingJitaLensLabel())} delta</span><b>${renderReprocessingJitaDelta(displayValuation)}</b></div>
+              <div class="notebook-note">${escapeHtml(reprocessingJitaLensNote(data))}</div>
             </div>
           </div>
           <div class="notebook-section">
@@ -17059,6 +17233,7 @@ def _render_flight_attendant_dashboard() -> str:
             eve_estimate_unit_price: material.eve_estimate_unit_price,
             eve_estimate_price_source: material.eve_estimate_price_source,
             jita_value: 0,
+            jita_display_value: 0,
             jita_buy_price: material.jita_buy_price,
             jita_priced_quantity: 0,
             jita_required_quantity: 0,
@@ -17079,6 +17254,7 @@ def _render_flight_attendant_dashboard() -> str:
           }
           if (material.jita_value != null) {
             current.jita_value += Number(material.jita_value || 0);
+            current.jita_display_value += Number(reprocessingMarketTaxValue(material.jita_value, payload) || 0);
             current.has_jita_value = true;
           }
           materialsByType.set(key, current);
@@ -17089,8 +17265,9 @@ def _render_flight_attendant_dashboard() -> str:
           ...material,
           eve_estimate_value: material.has_eve_estimate ? material.eve_estimate_value : null,
           jita_value: material.has_jita_value ? material.jita_value : null,
+          jita_display_value: material.has_jita_value ? material.jita_display_value : null,
         }))
-        .sort((left, right) => Number(right.jita_value || right.net_quantity || 0) - Number(left.jita_value || left.net_quantity || 0));
+        .sort((left, right) => Number(right.jita_display_value ?? right.jita_value ?? right.net_quantity ?? 0) - Number(left.jita_display_value ?? left.jita_value ?? left.net_quantity ?? 0));
     }
 
     function renderReprocessingOutputFromPayloads(payloads, notes) {
@@ -17119,8 +17296,8 @@ def _render_flight_attendant_dashboard() -> str:
             ${extraCount ? `<div class="notebook-note">+${formatNumber(extraCount)} more stack${extraCount === 1 ? "" : "s"} in the assay table.</div>` : ""}
           </div>
           <div class="ore-readouts">
-            <div class="assay-cell"><span>Raw Jita Buy</span><b>${renderReprocessingJitaValue(aggregate.oreValue, null)}</b><small>${formatNumber(aggregate.orePriced)} units priced</small></div>
-            <div class="assay-cell"><span>Processed Jita</span><b>${renderReprocessingJitaValue(aggregate.processedValue, null)}</b><small>${formatNumber(aggregate.processedTypes)} material rows priced</small></div>
+            <div class="assay-cell"><span>Raw ${escapeHtml(reprocessingJitaMetricLabel())}</span><b>${renderReprocessingJitaValue(aggregate.oreValue, null)}</b><small>${formatNumber(aggregate.orePriced)} units priced</small></div>
+            <div class="assay-cell"><span>Processed ${escapeHtml(reprocessingJitaMetricLabel())}</span><b>${renderReprocessingJitaValue(aggregate.processedValue, null)}</b><small>${formatNumber(aggregate.processedTypes)} material rows priced</small></div>
           </div>
         </aside>
       `;
@@ -17138,9 +17315,10 @@ def _render_flight_attendant_dashboard() -> str:
         <section class="field-notebook">
           <div class="notebook-section">
             <span class="notebook-ribbon">Batch Decision</span>
-            <div class="notebook-value-row"><span>Raw ore Jita buy</span><b>${renderReprocessingJitaValue(aggregate.oreValue, null)}</b></div>
-            <div class="notebook-value-row"><span>Processed Jita buy</span><b>${renderReprocessingJitaValue(aggregate.processedValue, null)}</b></div>
-            <div class="notebook-value-row is-total"><span>Jita buy delta</span><b>${aggregate.delta == null ? "unknown" : formatSignedIsk(aggregate.delta)}</b></div>
+            <div class="notebook-value-row"><span>Raw ore ${escapeHtml(reprocessingJitaLensLabel())}</span><b>${renderReprocessingJitaValue(aggregate.oreValue, null)}</b></div>
+            <div class="notebook-value-row"><span>Processed ${escapeHtml(reprocessingJitaLensLabel())}</span><b>${renderReprocessingJitaValue(aggregate.processedValue, null)}</b></div>
+            <div class="notebook-value-row is-total"><span>${escapeHtml(reprocessingJitaLensLabel())} delta</span><b>${aggregate.delta == null ? "unknown" : formatSignedIsk(aggregate.delta)}</b></div>
+            <div class="notebook-note">${escapeHtml(reprocessingJitaLensNote(first))}</div>
           </div>
           <div class="notebook-section">
             <span class="notebook-ribbon">Facility</span>
@@ -17175,7 +17353,7 @@ def _render_flight_attendant_dashboard() -> str:
             </div>
             <div class="sample-ledger">
               <div class="decision-metric"><span>EVE Est.</span><b>${renderReprocessingJitaValue(material.eve_estimate_value, null)}</b><small>${renderReprocessingEveMaterialEstimate(material)}</small></div>
-              <div class="decision-metric"><span>Jita Buy</span><b>${renderReprocessingJitaValue(material.jita_value, null)}</b><small>${renderReprocessingMaterialJitaDepth(material)}</small></div>
+              <div class="decision-metric"><span>${escapeHtml(reprocessingJitaMetricLabel())}</span><b>${renderReprocessingJitaValue(material.jita_display_value, null)}</b><small>${renderReprocessingMaterialJitaDepth(material)}</small></div>
             </div>
             <div class="sample-flow">
               <span>Base ${formatNumber(material.base_quantity)}</span>
@@ -17198,7 +17376,7 @@ def _render_flight_attendant_dashboard() -> str:
             </div>
             <div class="mineral-grid">${rows || `<div class="decision-empty">No output materials were calculated.</div>`}</div>
             <div class="minerals-total">
-              <span>Minerals Total (Jita Buy)</span>
+              <span>Minerals Total (${escapeHtml(reprocessingJitaMetricLabel())})</span>
               <b>${renderReprocessingJitaValue(aggregate.processedValue, null)}</b>
             </div>
           </div>
@@ -17226,7 +17404,7 @@ def _render_flight_attendant_dashboard() -> str:
               </div>
               <div class="decision-empty">No output materials were calculated.</div>
               <div class="minerals-total">
-                <span>Minerals Total (Jita Buy)</span>
+                <span>Minerals Total (${escapeHtml(reprocessingJitaMetricLabel())})</span>
                 <b>unknown</b>
               </div>
             </div>
@@ -17248,7 +17426,7 @@ def _render_flight_attendant_dashboard() -> str:
             </div>
             <div class="sample-ledger">
               <div class="decision-metric"><span>EVE Est.</span><b>${renderReprocessingJitaValue(material.eve_estimate_value, null)}</b><small>${renderReprocessingEveMaterialEstimate(material)}</small></div>
-              <div class="decision-metric"><span>Jita Buy</span><b>${renderReprocessingJitaValue(material.jita_value, null)}</b><small>${renderReprocessingMaterialJitaDepth(material)}</small></div>
+              <div class="decision-metric"><span>${escapeHtml(reprocessingJitaMetricLabel())}</span><b>${renderReprocessingJitaValue(reprocessingMarketTaxValue(material.jita_value, data), null)}</b><small>${renderReprocessingMaterialJitaDepth(material)}</small></div>
             </div>
             <div class="sample-flow">
               <span>Base ${formatNumber(material.base_quantity)}</span>
@@ -17271,8 +17449,8 @@ def _render_flight_attendant_dashboard() -> str:
             </div>
             <div class="mineral-grid">${rows}</div>
             <div class="minerals-total">
-              <span>Minerals Total (Jita Buy)</span>
-              <b>${renderReprocessingJitaValue((data.jita_valuation || {}).processed_material_value, (data.jita_valuation || {}).processed_partial_material_value)}</b>
+              <span>Minerals Total (${escapeHtml(reprocessingJitaMetricLabel())})</span>
+              <b>${renderReprocessingJitaValue(reprocessingDisplayValuation(data.jita_valuation || {}).processed_material_value, reprocessingDisplayValuation(data.jita_valuation || {}).processed_partial_material_value)}</b>
             </div>
           </div>
           ${renderReprocessingAssayTable([data])}
@@ -17289,9 +17467,10 @@ def _render_flight_attendant_dashboard() -> str:
         const ore = payload.ore || {};
         const input = payload.input || {};
         const valuation = payload.jita_valuation || {};
+        const displayValuation = reprocessingDisplayValuation(valuation);
         const yieldData = payload.yield || {};
-        const processedPair = reprocessingValuePair(valuation, "processed_material_value", "processed_partial_material_value");
-        const orePair = reprocessingValuePair(valuation, "ore_value", "ore_partial_value");
+        const processedPair = reprocessingValuePair(displayValuation, "processed_material_value", "processed_partial_material_value");
+        const orePair = reprocessingValuePair(displayValuation, "ore_value", "ore_partial_value");
         const delta = processedPair.value != null && orePair.value != null ? processedPair.value - orePair.value : null;
         const deltaPercent = delta != null && orePair.value > 0 ? (delta / orePair.value) * 100 : null;
         const complete = processedPair.complete && orePair.complete;
@@ -17363,7 +17542,7 @@ def _render_flight_attendant_dashboard() -> str:
         <div class="reprocessing-assay-table-wrap">
           <div class="reprocessing-assay-table-head">
             <strong>Compact Assay Table</strong>
-            <span>${formatNumber(rows.length)} row${rows.length === 1 ? "" : "s"}</span>
+            <span>${formatNumber(rows.length)} row${rows.length === 1 ? "" : "s"} - ${escapeHtml(reprocessingJitaMetricLabel())}</span>
           </div>
           <table class="reprocessing-assay-table">
             <thead>
@@ -17372,9 +17551,9 @@ def _render_flight_attendant_dashboard() -> str:
                 <th class="number-cell">${renderReprocessingSortButton("quantity", "Units")}</th>
                 <th class="number-cell">${renderReprocessingSortButton("yield", "Net")}</th>
                 <th class="number-cell">${renderReprocessingSortButton("fee", "Fee")}</th>
-                <th class="number-cell">${renderReprocessingSortButton("raw", "Raw Jita")}</th>
-                <th class="number-cell">${renderReprocessingSortButton("processed", "Processed")}</th>
-                <th class="number-cell">${renderReprocessingSortButton("delta", "Delta")}</th>
+                <th class="number-cell">${renderReprocessingSortButton("raw", currentReprocessingValueLens() === "after_tax" ? "Raw Net" : "Raw Jita")}</th>
+                <th class="number-cell">${renderReprocessingSortButton("processed", currentReprocessingValueLens() === "after_tax" ? "Processed Net" : "Processed")}</th>
+                <th class="number-cell">${renderReprocessingSortButton("delta", currentReprocessingValueLens() === "after_tax" ? "Net Delta" : "Delta")}</th>
                 <th>${renderReprocessingSortButton("coverage", "Coverage")}</th>
               </tr>
             </thead>
@@ -17465,8 +17644,9 @@ def _render_flight_attendant_dashboard() -> str:
     function renderReprocessingMaterialJitaDepth(material) {
       if (material.jita_buy_price == null) return "No Jita buy depth found.";
       const price = `${formatIsk(material.jita_buy_price)} top buy`;
-      if (material.jita_complete) return price;
-      return `${price}; ${formatNumber(material.jita_priced_quantity)} of ${formatNumber(material.jita_required_quantity)} priced`;
+      const taxNote = currentReprocessingValueLens() === "after_tax" ? "; after market sales tax" : "";
+      if (material.jita_complete) return `${price}${taxNote}`;
+      return `${price}; ${formatNumber(material.jita_priced_quantity)} of ${formatNumber(material.jita_required_quantity)} priced${taxNote}`;
     }
 
     function renderReprocessingEveMaterialEstimate(material) {
@@ -17980,6 +18160,10 @@ def _render_flight_attendant_dashboard() -> str:
     reprocessStationTax.addEventListener("change", updateReprocessingAndReset);
     reprocessImplantBonus.addEventListener("change", updateReprocessingStationsAndReset);
     reprocessStructureBonus.addEventListener("change", updateReprocessingStationsAndReset);
+    reprocessAfterTaxToggle.addEventListener("change", () => {
+      window.localStorage.setItem(reprocessAfterTaxKey, reprocessAfterTaxToggle.checked ? "1" : "0");
+      rerenderReprocessingLastPayloads();
+    });
     reprocessLocationRecommendations.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-reprocess-location-card]");
       if (!button) return;
