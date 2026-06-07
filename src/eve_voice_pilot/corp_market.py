@@ -11821,6 +11821,48 @@ def _render_flight_attendant_dashboard() -> str:
     .reprocessing-decision-card.is-reprocess .decision-score { color: var(--green); }
     .reprocessing-decision-card.is-sell strong { color: var(--red); }
     .reprocessing-decision-card.is-check strong { color: var(--amber); }
+    .reprocessing-quality-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin: -2px 0 10px;
+    }
+    .quality-chip {
+      border: 1px solid rgba(63, 85, 80, .62);
+      border-radius: 7px;
+      background:
+        linear-gradient(135deg, rgba(224, 168, 74, .08), rgba(97, 199, 217, .04)),
+        rgba(8, 13, 15, .64);
+      padding: 9px;
+      min-width: 0;
+    }
+    .quality-chip span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .quality-chip b {
+      display: block;
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.15;
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .quality-chip small {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+    .quality-chip.is-green b { color: var(--green); }
+    .quality-chip.is-amber b { color: var(--amber); }
+    .quality-chip.is-red b { color: var(--red); }
     .reprocessing-assay-table-wrap {
       grid-area: table;
       border: 1px solid rgba(63, 85, 80, .72);
@@ -12400,7 +12442,7 @@ def _render_flight_attendant_dashboard() -> str:
       .cache-row { grid-template-columns: 1fr; }
       .profit-panel { min-height: 360px; }
       .profit-actions { display: grid; grid-template-columns: 1fr; }
-      .reprocess-status-rail, .assay-status-strip, .ore-readouts, .sample-ledger, .mineral-grid { grid-template-columns: 1fr; }
+      .reprocess-status-rail, .assay-status-strip, .ore-readouts, .sample-ledger, .mineral-grid, .reprocessing-quality-strip { grid-template-columns: 1fr; }
       .assay-status-sheet, .assay-status-facility-card { padding-left: 32px; }
       .assay-status-row { grid-template-columns: 1fr; }
       .assay-status-row small { grid-column: 1; }
@@ -16766,6 +16808,104 @@ def _render_flight_attendant_dashboard() -> str:
       };
     }
 
+    function reprocessingPayloadVolumeM3(payload) {
+      const input = payload.input || {};
+      const ore = payload.ore || {};
+      const quantity = Number(input.quantity || 0);
+      const unitVolume = Number(ore.volume_m3 || 0);
+      return Number.isFinite(quantity) && Number.isFinite(unitVolume) && quantity > 0 && unitVolume > 0
+        ? quantity * unitVolume
+        : 0;
+    }
+
+    function aggregateReprocessingInputVolumeM3(payloads) {
+      return (payloads || []).reduce((sum, payload) => sum + reprocessingPayloadVolumeM3(payload), 0);
+    }
+
+    function reprocessingMarginProfile(payloads) {
+      const cleanPayloads = payloads || [];
+      const aggregate = aggregateReprocessingValuation(cleanPayloads);
+      const inputVolumeM3 = aggregateReprocessingInputVolumeM3(cleanPayloads);
+      const deltaPerM3 = aggregate.delta != null && inputVolumeM3 > 0 ? aggregate.delta / inputVolumeM3 : null;
+      let breakEvenNetYieldPercent = null;
+      let yieldCushionPercent = null;
+      if (cleanPayloads.length === 1 && aggregate.processedValue > 0 && aggregate.oreValue > 0) {
+        const netYieldPercent = Number(((cleanPayloads[0] || {}).yield || {}).net_yield_percent || 0);
+        if (Number.isFinite(netYieldPercent) && netYieldPercent > 0) {
+          breakEvenNetYieldPercent = netYieldPercent * (aggregate.oreValue / aggregate.processedValue);
+          yieldCushionPercent = netYieldPercent - breakEvenNetYieldPercent;
+        }
+      }
+      return {
+        aggregate,
+        inputVolumeM3,
+        marginPercent: aggregate.deltaPercent,
+        deltaPerM3,
+        breakEvenNetYieldPercent,
+        yieldCushionPercent,
+      };
+    }
+
+    function reprocessingQualityBand(profile) {
+      const aggregate = profile.aggregate || {};
+      if (aggregate.delta == null) {
+        return {label: "Needs price", className: "is-amber", note: "Jita buy-order values are incomplete."};
+      }
+      if (!aggregate.complete) {
+        return {label: "Depth check", className: "is-amber", note: "A partial buy-depth result needs manual order review."};
+      }
+      const margin = Math.abs(Number(profile.marginPercent || 0));
+      if (margin < 1) {
+        return {label: "Close call", className: "is-amber", note: "The spread is small enough that order movement can flip the answer."};
+      }
+      if (margin < 5) {
+        return {label: "Thin edge", className: "is-amber", note: "The spread is positive, but still sensitive to price and rounding."};
+      }
+      if (margin >= 15) {
+        return {label: aggregate.delta > 0 ? "Strong refine" : "Strong raw sale", className: aggregate.delta > 0 ? "is-green" : "is-red", note: "The spread is wide enough to stand out from ordinary price noise."};
+      }
+      return {label: aggregate.delta > 0 ? "Useful refine" : "Useful raw sale", className: aggregate.delta > 0 ? "is-green" : "is-red", note: "The spread is meaningful, but still worth checking depth before a large move."};
+    }
+
+    function renderReprocessingQualityStrip(payloads) {
+      const profile = reprocessingMarginProfile(payloads);
+      const quality = reprocessingQualityBand(profile);
+      const breakEven = profile.breakEvenNetYieldPercent == null ? "row detail" : formatPercent(profile.breakEvenNetYieldPercent);
+      const cushion = profile.yieldCushionPercent == null ? "row detail" : formatSignedPercent(profile.yieldCushionPercent);
+      return `
+        <div class="reprocessing-quality-strip">
+          <div class="quality-chip ${escapeHtml(quality.className)}"><span>Decision Quality</span><b>${escapeHtml(quality.label)}</b><small>${escapeHtml(quality.note)}</small></div>
+          <div class="quality-chip"><span>Margin</span><b>${formatSignedPercent(profile.marginPercent)}</b><small>${escapeHtml(reprocessingJitaMetricLabel())}</small></div>
+          <div class="quality-chip"><span>ISK / m3</span><b>${formatSignedIskPerM3(profile.deltaPerM3)}</b><small>${profile.inputVolumeM3 ? `${formatVolume(profile.inputVolumeM3)} priced volume` : "Volume unknown"}</small></div>
+          <div class="quality-chip"><span>Break-even Net</span><b>${escapeHtml(breakEven)}</b><small>Yield cushion ${escapeHtml(cushion)}</small></div>
+        </div>
+      `;
+    }
+
+    function renderReprocessingQualityNotebook(payloads) {
+      const cleanPayloads = payloads || [];
+      const profile = reprocessingMarginProfile(cleanPayloads);
+      const quality = reprocessingQualityBand(profile);
+      const breakEven = profile.breakEvenNetYieldPercent == null ? "row detail" : formatPercent(profile.breakEvenNetYieldPercent);
+      const cushion = profile.yieldCushionPercent == null ? "row detail" : formatSignedPercent(profile.yieldCushionPercent);
+      const note = cleanPayloads.length === 1
+        ? "Break-even net yield is approximate because EVE rounds each material stack down and market depth can move."
+        : "Batch break-even yield is row-specific for mixed ores; use the compact table for per-row margin checks.";
+      return `
+        <div class="notebook-section">
+          <span class="notebook-ribbon">Decision Quality</span>
+          <div class="notebook-value-grid">
+            <div class="notebook-value-row"><span>Quality</span><b>${escapeHtml(quality.label)}</b></div>
+            <div class="notebook-value-row"><span>Margin</span><b>${formatSignedPercent(profile.marginPercent)}</b></div>
+            <div class="notebook-value-row"><span>ISK / m3</span><b>${formatSignedIskPerM3(profile.deltaPerM3)}</b></div>
+            <div class="notebook-value-row"><span>Break-even net yield</span><b>${escapeHtml(breakEven)}</b></div>
+            <div class="notebook-value-row is-total"><span>Yield cushion</span><b>${escapeHtml(cushion)}</b></div>
+            <div class="notebook-note">${escapeHtml(note)}</div>
+          </div>
+        </div>
+      `;
+    }
+
     function reprocessingDecisionFromAggregate(aggregate) {
       if (aggregate.delta == null) {
         return {label: "Price check", className: "is-check", note: "Jita buy-order values are incomplete."};
@@ -16799,6 +16939,7 @@ def _render_flight_attendant_dashboard() -> str:
           </div>
           <div class="decision-score">${deltaText}${escapeHtml(percentText)}</div>
         </div>
+        ${renderReprocessingQualityStrip(payloads)}
       `;
     }
 
@@ -17249,6 +17390,7 @@ def _render_flight_attendant_dashboard() -> str:
               <div class="notebook-note">${escapeHtml(reprocessingJitaLensNote(data))}</div>
             </div>
           </div>
+          ${renderReprocessingQualityNotebook([data])}
           <div class="notebook-section">
             <span class="notebook-ribbon">Standing Row Used</span>
             <div class="notebook-standing-row"><span>${escapeHtml(standingText)}</span><b>${escapeHtml(facility.standing_source || "")}</b></div>
@@ -17361,6 +17503,7 @@ def _render_flight_attendant_dashboard() -> str:
             <div class="notebook-value-row is-total"><span>${escapeHtml(reprocessingJitaLensLabel())} delta</span><b>${aggregate.delta == null ? "unknown" : formatSignedIsk(aggregate.delta)}</b></div>
             <div class="notebook-note">${escapeHtml(reprocessingJitaLensNote(first))}</div>
           </div>
+          ${renderReprocessingQualityNotebook(payloads)}
           <div class="notebook-section">
             <span class="notebook-ribbon">Facility</span>
             <div class="notebook-math-row"><span>Selected location</span><b>${escapeHtml(facility.location_name || "current location")}</b></div>
@@ -17514,6 +17657,8 @@ def _render_flight_attendant_dashboard() -> str:
         const orePair = reprocessingValuePair(displayValuation, "ore_value", "ore_partial_value");
         const delta = processedPair.value != null && orePair.value != null ? processedPair.value - orePair.value : null;
         const deltaPercent = delta != null && orePair.value > 0 ? (delta / orePair.value) * 100 : null;
+        const inputVolumeM3 = reprocessingPayloadVolumeM3(payload);
+        const deltaPerM3 = delta != null && inputVolumeM3 > 0 ? delta / inputVolumeM3 : null;
         const complete = processedPair.complete && orePair.complete;
         const decision = reprocessingDecisionFromAggregate({
           delta,
@@ -17530,6 +17675,7 @@ def _render_flight_attendant_dashboard() -> str:
           oreValue: orePair.value,
           delta,
           deltaPercent,
+          deltaPerM3,
           complete,
           decision,
           coverage: renderReprocessingJitaCoverage(valuation),
@@ -17546,6 +17692,7 @@ def _render_flight_attendant_dashboard() -> str:
         raw: row.oreValue,
         processed: row.processedValue,
         delta: row.delta,
+        per_m3: row.deltaPerM3,
         coverage: row.complete ? 1 : 0,
       };
       return values[key] ?? values.delta;
@@ -17610,7 +17757,7 @@ def _render_flight_attendant_dashboard() -> str:
                     <td class="number-cell"><b>${formatPercent(row.processingFee)}</b></td>
                     <td class="number-cell"><b>${renderReprocessingJitaValue(row.oreValue, null)}</b></td>
                     <td class="number-cell"><b>${renderReprocessingJitaValue(row.processedValue, null)}</b></td>
-                    <td class="number-cell"><b class="${deltaClass}">${row.delta == null ? "unknown" : formatSignedIsk(row.delta)}</b><small>${row.deltaPercent == null ? "" : formatPercent(row.deltaPercent)}</small></td>
+                    <td class="number-cell"><b class="${deltaClass}">${row.delta == null ? "unknown" : formatSignedIsk(row.delta)}</b><small>${row.deltaPercent == null ? "" : `${formatSignedPercent(row.deltaPercent)}; ${formatSignedIskPerM3(row.deltaPerM3)}`}</small></td>
                     <td><b class="${depthClass}">${row.complete ? "Full depth" : "Partial depth"}</b><small>${escapeHtml(row.coverage)}</small></td>
                   </tr>
                 `;

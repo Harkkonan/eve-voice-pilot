@@ -383,8 +383,14 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "reprocess-location-card" in page
     assert "Compact Assay Table" in page
     assert "reprocessing-decision-card" in page
+    assert "reprocessing-quality-strip" in page
+    assert "Decision Quality" in page
+    assert "Break-even net yield" in page
+    assert "ISK / m3" in page
     assert "parseReprocessingBatchInput" in page
     assert "copyReprocessingText" in page
+    assert "reprocessingMarginProfile" in page
+    assert "formatSignedPercent" in page
     assert "reprocessingDisplayValuation" in page
     assert "reprocessingJitaLensNote" in page
     assert "renderReprocessingLocationRecommendations" in page
