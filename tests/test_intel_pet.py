@@ -21,8 +21,10 @@ from eve_voice_pilot.intel_pet import (
     DEFAULT_ALERT_BEHAVIORS,
     DEFAULT_INPUT_DEVICE_LABEL,
     DEFAULT_PET_SPEECH_ENGINE,
+    DEFAULT_VOICE_PROFILE,
     DEFAULT_VOICE_ENGINE,
     DEFAULT_VOICE_TARGET_TITLE,
+    USER_VOICE_PROFILE,
     IDLE_SPRITE_SEQUENCE,
     KILL_SPRITE_STEPS,
     LONG_COMBAT_SPRITE_STEPS,
@@ -44,6 +46,7 @@ from eve_voice_pilot.intel_pet import (
     behavior_key_from_label,
     behavior_label,
     clean_alert_behaviors,
+    clean_voice_command_phrases,
     clean_voice_engine,
     clean_voice_input_device,
     clean_voice_target_title,
@@ -55,6 +58,7 @@ from eve_voice_pilot.intel_pet import (
     display_message_from_combat_cheer,
     display_message_from_mission_cheer,
     display_message_from_voice_status,
+    editable_voice_profile_path,
     execute_voice_command,
     fetch_pet_location,
     highest_severity_alert,
@@ -83,6 +87,7 @@ from eve_voice_pilot.intel_pet import (
     spoken_pet_text,
     trim_history,
     voice_input_device_display,
+    voice_command_from_fields,
     voice_status_from_transcript,
 )
 from eve_voice_pilot.commands import VoiceCommand
@@ -296,6 +301,47 @@ def test_voice_input_device_display_uses_system_default_label():
     assert voice_input_device_display("") == DEFAULT_INPUT_DEVICE_LABEL
     assert clean_voice_engine("not-real") == DEFAULT_VOICE_ENGINE
     assert clean_voice_target_title("") == DEFAULT_VOICE_TARGET_TITLE
+
+
+def test_voice_lab_saves_personal_copy_when_source_is_default_profile():
+    assert editable_voice_profile_path(DEFAULT_VOICE_PROFILE) == USER_VOICE_PROFILE
+    custom_path = ROOT / "profiles" / "custom_commands.json"
+    assert editable_voice_profile_path(custom_path) == custom_path
+
+
+def test_clean_voice_command_phrases_splits_commas_newlines_and_dedupes():
+    assert clean_voice_command_phrases("Warp, warp\nDock up,  dock up ") == ["Warp", "Dock up"]
+
+
+def test_voice_command_from_fields_validates_and_cleans_values():
+    command = voice_command_from_fields(
+        name="  Orbit Target ",
+        phrases=" orbit, circle them ",
+        key=" alt + q ",
+        hold_seconds="0.25",
+        press_count="2",
+        repeat_gap_seconds="0.30",
+        response_suffix="Ballad",
+        response_text="Spinning up.",
+    )
+
+    assert command.name == "Orbit Target"
+    assert command.phrases == ["orbit", "circle them"]
+    assert command.key == "ALT + Q"
+    assert command.hold_seconds == 0.25
+    assert command.press_count == 2
+    assert command.repeat_gap_seconds == 0.30
+    assert command.response_suffix == "Ballad"
+    assert command.response_text == "Spinning up."
+
+
+def test_voice_command_from_fields_rejects_bad_keybind():
+    try:
+        voice_command_from_fields(name="Bad", phrases="bad", key="NOPEKEY")
+    except ValueError as exc:
+        assert "Unsupported key" in str(exc)
+    else:
+        raise AssertionError("Bad keybind should fail validation")
 
 
 def test_voice_status_from_transcript_matches_command_without_sending_keys():

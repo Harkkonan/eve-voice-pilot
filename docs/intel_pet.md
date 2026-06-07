@@ -189,6 +189,18 @@ The listener uses your saved EVE Voice Pilot command profile when available, the
 
 OpenAI realtime transcription needs a saved EVE Voice Pilot API key on this PC, or one of the same local environment variables used for spoken pet messages. Local/offline transcription needs the Vosk model from setup.
 
+### Voice Lab
+
+Use `Options` > `Voice Lab` to add, change, remove, and dry-run voice commands from the pet.
+
+The lab saves commands to your personal EVE Voice Pilot profile. If the pet is currently reading the bundled sample profile, the first edit is saved to:
+
+```text
+profiles\my_eve_commands.json
+```
+
+The dry-run phrase test never sends keys. It only shows what the listener would hear, which command would match, and whether the live listener would stay in practice mode.
+
 ## Optional ESI Location Cheer
 
 Location cheer makes the ship fly happily when your connected EVE character reaches `Dihra`, `Amarr`, or `Jita`.
@@ -269,6 +281,8 @@ In the `Behaviors` tab, choose the ship animation for each alert type:
 Each row has a small animated preview next to the selector. The behavior choices include short alert, happy flight, combat burst, long flight, long shooting, long combo, calm wiggle, and no animation. Behavior changes are saved immediately to the same local settings file.
 
 In the `Voice` tab, turn spoken pet messages on or off and choose the voice engine/style. You can also enable the voice-command listener there. `Allow command sending` is off by default; when it is on, the active-window guard is still on by default.
+
+In the `Voice Lab` tab, edit the command profile and test phrases without sending keys. Command changes are local profile changes and are shared with the main EVE Voice Pilot app.
 
 ## Alert History
 

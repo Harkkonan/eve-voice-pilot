@@ -46,7 +46,10 @@ from eve_voice_pilot.corp_intel import (
     watch_chat_logs,
 )
 from eve_voice_pilot.commands import (
+    DEFAULT_HOLD_SECONDS,
+    DEFAULT_PRESS_COUNT,
     DEFAULT_RESPONSE_CALL_SIGN,
+    DEFAULT_REPEAT_GAP_SECONDS,
     CommandProfile,
     VoiceCommand,
     find_exact_phrase_match,
@@ -54,7 +57,7 @@ from eve_voice_pilot.commands import (
     strip_response_call_sign,
 )
 from eve_voice_pilot.config import load_settings as load_app_settings
-from eve_voice_pilot.input_sender import active_window_title, send_key_chord
+from eve_voice_pilot.input_sender import active_window_title, parse_key_chord, send_key_chord
 from eve_voice_pilot.local_transcription import LocalVoskTranscriber
 from eve_voice_pilot.speech_responses import (
     DEFAULT_OPENAI_TTS_MODEL,
@@ -86,6 +89,7 @@ VOICE_ENGINES = (VOICE_ENGINE_LOCAL, VOICE_ENGINE_OPENAI)
 DEFAULT_VOICE_ENGINE = VOICE_ENGINE_LOCAL
 DEFAULT_INPUT_DEVICE_LABEL = "System default"
 DEFAULT_VOICE_TARGET_TITLE = "EVE"
+COMMAND_PHRASE_SPLIT_RE = re.compile(r"[\n,]+")
 LOCATION_SCOPE = "esi-location.read_location.v1"
 OVERLAY_IDLE_WIDTH = 220
 OVERLAY_ALERT_WIDTH = 430
@@ -327,6 +331,88 @@ def load_voice_profile() -> tuple[CommandProfile, Path]:
         if candidate and candidate.exists():
             return CommandProfile.load(candidate), candidate
     raise CorpIntelError("No EVE Voice Pilot command profile was found.")
+
+
+def editable_voice_profile_path(source_path: Path) -> Path:
+    try:
+        if Path(source_path).resolve() == DEFAULT_VOICE_PROFILE.resolve():
+            return USER_VOICE_PROFILE
+    except OSError:
+        pass
+    return Path(source_path)
+
+
+def load_editable_voice_profile() -> tuple[CommandProfile, Path, Path]:
+    profile, source_path = load_voice_profile()
+    return profile, editable_voice_profile_path(source_path), source_path
+
+
+def clean_voice_command_phrases(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = COMMAND_PHRASE_SPLIT_RE.split(value)
+    else:
+        raw_items = [str(item) for item in value]
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        phrase = " ".join(str(item).strip().split())
+        folded = phrase.casefold()
+        if phrase and folded not in seen:
+            phrases.append(phrase)
+            seen.add(folded)
+    return phrases
+
+
+def voice_command_from_fields(
+    *,
+    name: Any,
+    phrases: Any,
+    key: Any,
+    hold_seconds: Any = DEFAULT_HOLD_SECONDS,
+    press_count: Any = DEFAULT_PRESS_COUNT,
+    repeat_gap_seconds: Any = DEFAULT_REPEAT_GAP_SECONDS,
+    response_suffix: Any = "",
+    response_text: Any = "",
+) -> VoiceCommand:
+    clean_name = " ".join(str(name or "").strip().split())
+    clean_phrases = clean_voice_command_phrases(phrases)
+    clean_key = str(key or "").strip().upper()
+    if not clean_name:
+        raise ValueError("Give the command a short name.")
+    if not clean_phrases:
+        raise ValueError("Add at least one spoken phrase.")
+    try:
+        parse_key_chord(clean_key)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+    try:
+        clean_hold_seconds = float(hold_seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Hold seconds should be a number, like 0.10.") from exc
+    if not 0.01 <= clean_hold_seconds <= 2.0:
+        raise ValueError("Hold seconds should be between 0.01 and 2.0.")
+    try:
+        clean_press_count = int(press_count)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Press count should be a whole number, like 1 or 2.") from exc
+    if not 1 <= clean_press_count <= 10:
+        raise ValueError("Press count should be between 1 and 10.")
+    try:
+        clean_repeat_gap_seconds = float(repeat_gap_seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Delay between presses should be a number, like 0.10.") from exc
+    if not 0.0 <= clean_repeat_gap_seconds <= 2.0:
+        raise ValueError("Delay between presses should be between 0.00 and 2.0.")
+    return VoiceCommand(
+        name=clean_name,
+        phrases=clean_phrases,
+        key=clean_key,
+        hold_seconds=clean_hold_seconds,
+        press_count=clean_press_count,
+        repeat_gap_seconds=clean_repeat_gap_seconds,
+        response_suffix=str(response_suffix or "").strip(),
+        response_text=str(response_text or "").strip(),
+    )
 
 
 def voice_input_device_index(label: str) -> int | None:
@@ -1870,10 +1956,12 @@ def run_overlay(
         settings_frame = ttk.Frame(notebook, padding=12)
         behavior_frame = ttk.Frame(notebook, padding=12)
         voice_frame = ttk.Frame(notebook, padding=12)
+        voice_lab_frame = ttk.Frame(notebook, padding=12)
         history_frame = ttk.Frame(notebook, padding=12)
         notebook.add(settings_frame, text="Alerts")
         notebook.add(behavior_frame, text="Behaviors")
         notebook.add(voice_frame, text="Voice")
+        notebook.add(voice_lab_frame, text="Voice Lab")
         notebook.add(history_frame, text="History")
 
         editor_status_var = tk.StringVar(value="Saved locally only.")
@@ -2368,6 +2456,286 @@ def run_overlay(
                 pet_speech.play_text("Intel Pet voice online.", label="pet voice test"),
             ),
         ).pack(side="left", padx=(6, 0))
+
+        ttk.Label(voice_lab_frame, text="Voice Lab", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(
+            voice_lab_frame,
+            text="Edit the local Voice Pilot command profile and test phrases without sending keys.",
+            wraplength=520,
+        ).pack(anchor="w", pady=(2, 8))
+
+        voice_lab_state: dict[str, Any] = {}
+        voice_profile_path_var = tk.StringVar(value="Loading voice profile...")
+        voice_lab_status_var = tk.StringVar(value="Voice Lab tests never send keys.")
+        ttk.Label(voice_lab_frame, textvariable=voice_profile_path_var, wraplength=520).pack(anchor="w", pady=(0, 8))
+
+        voice_command_body = ttk.Frame(voice_lab_frame)
+        voice_command_body.pack(fill="both", expand=True)
+        voice_command_body.columnconfigure(0, weight=3)
+        voice_command_body.columnconfigure(1, weight=2)
+        voice_command_body.rowconfigure(0, weight=1)
+
+        voice_command_list_frame = ttk.Frame(voice_command_body)
+        voice_command_list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        voice_command_list_frame.rowconfigure(0, weight=1)
+        voice_command_list_frame.columnconfigure(0, weight=1)
+        voice_command_tree = ttk.Treeview(
+            voice_command_list_frame,
+            columns=("phrases", "key"),
+            show="tree headings",
+            height=10,
+        )
+        voice_command_tree.heading("#0", text="Command")
+        voice_command_tree.heading("phrases", text="Phrases")
+        voice_command_tree.heading("key", text="Keybind")
+        voice_command_tree.column("#0", width=150, minwidth=110, stretch=True)
+        voice_command_tree.column("phrases", width=230, minwidth=160, stretch=True)
+        voice_command_tree.column("key", width=90, minwidth=70, stretch=False)
+        voice_command_scroll = ttk.Scrollbar(voice_command_list_frame, orient="vertical", command=voice_command_tree.yview)
+        voice_command_tree.configure(yscrollcommand=voice_command_scroll.set)
+        voice_command_tree.grid(row=0, column=0, sticky="nsew")
+        voice_command_scroll.grid(row=0, column=1, sticky="ns")
+
+        voice_edit_frame = ttk.LabelFrame(voice_command_body, text="Command", padding=8)
+        voice_edit_frame.grid(row=0, column=1, sticky="nsew")
+        voice_edit_frame.columnconfigure(1, weight=1)
+        command_name_var = tk.StringVar()
+        command_phrases_var = tk.StringVar()
+        command_key_var = tk.StringVar()
+        command_hold_var = tk.StringVar(value=f"{DEFAULT_HOLD_SECONDS:.2f}")
+        command_press_count_var = tk.StringVar(value=str(DEFAULT_PRESS_COUNT))
+        command_repeat_gap_var = tk.StringVar(value=f"{DEFAULT_REPEAT_GAP_SECONDS:.2f}")
+        command_response_suffix_var = tk.StringVar()
+        command_response_text_var = tk.StringVar()
+
+        ttk.Label(voice_edit_frame, text="Name").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Entry(voice_edit_frame, textvariable=command_name_var).grid(row=0, column=1, sticky="ew", pady=3)
+        ttk.Label(voice_edit_frame, text="Phrases").grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Entry(voice_edit_frame, textvariable=command_phrases_var).grid(row=1, column=1, sticky="ew", pady=3)
+        ttk.Label(voice_edit_frame, text="Keybind").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Entry(voice_edit_frame, textvariable=command_key_var).grid(row=2, column=1, sticky="ew", pady=3)
+        ttk.Label(voice_edit_frame, text="Hold").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Entry(voice_edit_frame, textvariable=command_hold_var, width=10).grid(row=3, column=1, sticky="w", pady=3)
+        ttk.Label(voice_edit_frame, text="Presses").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Entry(voice_edit_frame, textvariable=command_press_count_var, width=10).grid(row=4, column=1, sticky="w", pady=3)
+        ttk.Label(voice_edit_frame, text="Gap").grid(row=5, column=0, sticky="w", pady=3)
+        ttk.Entry(voice_edit_frame, textvariable=command_repeat_gap_var, width=10).grid(row=5, column=1, sticky="w", pady=3)
+        ttk.Label(voice_edit_frame, text="Voice label").grid(row=6, column=0, sticky="w", pady=3)
+        ttk.Entry(voice_edit_frame, textvariable=command_response_suffix_var).grid(row=6, column=1, sticky="ew", pady=3)
+        ttk.Label(voice_edit_frame, text="Response text").grid(row=7, column=0, sticky="w", pady=3)
+        ttk.Entry(voice_edit_frame, textvariable=command_response_text_var).grid(row=7, column=1, sticky="ew", pady=3)
+
+        def current_voice_lab_profile() -> CommandProfile:
+            profile = voice_lab_state.get("profile")
+            if isinstance(profile, CommandProfile):
+                return profile
+            profile = CommandProfile()
+            voice_lab_state["profile"] = profile
+            return profile
+
+        def current_voice_lab_save_path() -> Path:
+            path = voice_lab_state.get("save_path")
+            return Path(path) if path else USER_VOICE_PROFILE
+
+        def refresh_voice_command_tree(select_index: int | None = None) -> None:
+            profile = current_voice_lab_profile()
+            voice_command_tree.delete(*voice_command_tree.get_children())
+            for index, command in enumerate(profile.commands):
+                voice_command_tree.insert(
+                    "",
+                    "end",
+                    iid=str(index),
+                    text=command.name,
+                    values=(", ".join(command.phrases), command.key),
+                )
+            if select_index is not None and 0 <= select_index < len(profile.commands):
+                item_id = str(select_index)
+                voice_command_tree.selection_set(item_id)
+                voice_command_tree.see(item_id)
+
+        def selected_voice_command_index() -> int | None:
+            selection = voice_command_tree.selection()
+            if not selection:
+                return None
+            return int(selection[0])
+
+        def set_voice_command_fields(command: VoiceCommand | None = None) -> None:
+            command_name_var.set(command.name if command else "")
+            command_phrases_var.set(", ".join(command.phrases) if command else "")
+            command_key_var.set(command.key if command else "")
+            command_hold_var.set(f"{command.hold_seconds:.2f}" if command else f"{DEFAULT_HOLD_SECONDS:.2f}")
+            command_press_count_var.set(str(command.press_count) if command else str(DEFAULT_PRESS_COUNT))
+            command_repeat_gap_var.set(
+                f"{command.repeat_gap_seconds:.2f}" if command else f"{DEFAULT_REPEAT_GAP_SECONDS:.2f}"
+            )
+            command_response_suffix_var.set(command.response_suffix if command else "")
+            command_response_text_var.set(command.response_text if command else "")
+
+        def fill_selected_voice_command(_event: Any | None = None) -> None:
+            index = selected_voice_command_index()
+            profile = current_voice_lab_profile()
+            if index is not None and 0 <= index < len(profile.commands):
+                set_voice_command_fields(profile.commands[index])
+
+        def load_voice_lab_profile() -> None:
+            try:
+                profile, save_path, source_path = load_editable_voice_profile()
+            except Exception as exc:
+                profile = CommandProfile()
+                save_path = USER_VOICE_PROFILE
+                source_path = USER_VOICE_PROFILE
+                voice_lab_status_var.set(f"Could not load voice profile: {exc}")
+            voice_lab_state["profile"] = profile
+            voice_lab_state["save_path"] = save_path
+            voice_lab_state["source_path"] = source_path
+            source_note = "" if Path(source_path) == Path(save_path) else f" copied from {source_path}"
+            voice_profile_path_var.set(f"Saving commands to {save_path}{source_note}")
+            refresh_voice_command_tree(select_index=0 if profile.commands else None)
+            if profile.commands:
+                set_voice_command_fields(profile.commands[0])
+            else:
+                set_voice_command_fields()
+
+        def save_voice_lab_profile(action: str, select_index: int | None = None) -> None:
+            profile = current_voice_lab_profile()
+            save_path = current_voice_lab_save_path()
+            try:
+                profile.save(save_path)
+            except Exception as exc:
+                voice_lab_status_var.set(f"Save failed: {exc}")
+                return
+            voice_lab_state["save_path"] = save_path
+            voice_lab_state["source_path"] = save_path
+            voice_profile_path_var.set(f"Saving commands to {save_path}")
+            refresh_voice_command_tree(select_index=select_index)
+            voice_lab_status_var.set(f"{action}. {len(profile.commands)} command{'s' if len(profile.commands) != 1 else ''} saved.")
+
+        def command_from_voice_lab_fields() -> VoiceCommand | None:
+            try:
+                return voice_command_from_fields(
+                    name=command_name_var.get(),
+                    phrases=command_phrases_var.get(),
+                    key=command_key_var.get(),
+                    hold_seconds=command_hold_var.get(),
+                    press_count=command_press_count_var.get(),
+                    repeat_gap_seconds=command_repeat_gap_var.get(),
+                    response_suffix=command_response_suffix_var.get(),
+                    response_text=command_response_text_var.get(),
+                )
+            except ValueError as exc:
+                voice_lab_status_var.set(str(exc))
+                return None
+
+        def new_voice_command() -> None:
+            voice_command_tree.selection_remove(voice_command_tree.selection())
+            set_voice_command_fields()
+            voice_lab_status_var.set("Enter a command, then Save Command.")
+
+        def save_voice_command() -> None:
+            command = command_from_voice_lab_fields()
+            if command is None:
+                return
+            profile = current_voice_lab_profile()
+            index = selected_voice_command_index()
+            if index is None or not 0 <= index < len(profile.commands):
+                profile.commands.append(command)
+                index = len(profile.commands) - 1
+                action = "Added command"
+            else:
+                profile.commands[index] = command
+                action = "Changed command"
+            save_voice_lab_profile(action, select_index=index)
+
+        def delete_voice_command() -> None:
+            index = selected_voice_command_index()
+            profile = current_voice_lab_profile()
+            if index is None or not 0 <= index < len(profile.commands):
+                voice_lab_status_var.set("Select a command to delete.")
+                return
+            deleted = profile.commands[index].name
+            del profile.commands[index]
+            next_index = min(index, len(profile.commands) - 1) if profile.commands else None
+            save_voice_lab_profile(f"Deleted {deleted}", select_index=next_index)
+            if next_index is not None:
+                set_voice_command_fields(profile.commands[next_index])
+            else:
+                set_voice_command_fields()
+
+        voice_command_tree.bind("<<TreeviewSelect>>", fill_selected_voice_command)
+
+        voice_command_buttons = ttk.Frame(voice_lab_frame)
+        voice_command_buttons.pack(fill="x", pady=(8, 12))
+        ttk.Button(voice_command_buttons, text="New", command=new_voice_command).pack(side="left")
+        ttk.Button(voice_command_buttons, text="Save Command", command=save_voice_command).pack(side="left", padx=(6, 0))
+        ttk.Button(voice_command_buttons, text="Delete", command=delete_voice_command).pack(side="left", padx=(6, 0))
+        ttk.Button(voice_command_buttons, text="Reload", command=load_voice_lab_profile).pack(side="left", padx=(6, 0))
+
+        voice_test_frame = ttk.LabelFrame(voice_lab_frame, text="Dry-run phrase test", padding=8)
+        voice_test_frame.pack(fill="both", expand=False)
+        voice_test_frame.columnconfigure(1, weight=1)
+        voice_test_phrase_var = tk.StringVar()
+        ttk.Label(voice_test_frame, text="Phrase").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Entry(voice_test_frame, textvariable=voice_test_phrase_var).grid(row=0, column=1, sticky="ew", pady=3)
+        voice_test_result = tk.Text(voice_test_frame, height=5, wrap="word", state="disabled")
+        voice_test_result.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+
+        def set_voice_test_result(text: str) -> None:
+            voice_test_result.configure(state="normal")
+            voice_test_result.delete("1.0", tk.END)
+            voice_test_result.insert(tk.END, text)
+            voice_test_result.configure(state="disabled")
+
+        def test_voice_lab_phrase() -> None:
+            phrase = voice_test_phrase_var.get().strip()
+            if not phrase:
+                index = selected_voice_command_index()
+                profile = current_voice_lab_profile()
+                if index is not None and 0 <= index < len(profile.commands) and profile.commands[index].phrases:
+                    phrase = profile.commands[index].phrases[0]
+                    voice_test_phrase_var.set(phrase)
+            if not phrase:
+                voice_lab_status_var.set("Enter a phrase to test.")
+                return
+            status = voice_status_from_transcript(
+                phrase,
+                list(current_voice_lab_profile().commands),
+                response_call_sign=clean_voice_call_sign(engine.current_settings().voice_call_sign),
+                allow_command_sending=False,
+            )
+            if status is None:
+                set_voice_test_result("No speech recognized.")
+                voice_lab_status_var.set("No speech recognized.")
+                return
+            set_voice_test_result(status.detail)
+            voice_lab_status_var.set(f"Dry run: {status.title}. No keys sent.")
+
+        def test_selected_voice_command() -> None:
+            index = selected_voice_command_index()
+            profile = current_voice_lab_profile()
+            if index is None or not 0 <= index < len(profile.commands):
+                voice_lab_status_var.set("Select a command to test.")
+                return
+            command = profile.commands[index]
+            if not command.phrases:
+                voice_lab_status_var.set("Selected command has no phrases.")
+                return
+            voice_test_phrase_var.set(command.phrases[0])
+            test_voice_lab_phrase()
+
+        ttk.Button(voice_test_frame, text="Test Phrase", command=test_voice_lab_phrase).grid(
+            row=0,
+            column=2,
+            sticky="e",
+            padx=(6, 0),
+        )
+        ttk.Button(voice_test_frame, text="Test Selected", command=test_selected_voice_command).grid(
+            row=2,
+            column=2,
+            sticky="e",
+            pady=(6, 0),
+        )
+        ttk.Label(voice_lab_frame, textvariable=voice_lab_status_var, wraplength=520).pack(anchor="w", pady=(8, 0))
+        load_voice_lab_profile()
 
         ttk.Label(history_frame, text="Alert history", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(
