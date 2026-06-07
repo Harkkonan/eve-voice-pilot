@@ -206,6 +206,8 @@ This tab is advisory only. It never starts a reprocessing job, moves items, pres
 
 Jita values are immediate liquidation estimates against visible public buy-order depth in Jita. If buy depth does not cover every output material or the whole ore stack, the tab labels the value as partial.
 
+Batch paste mode includes a paste manifest before calculation. It shows accepted ore stacks, total units, merged duplicate ore lines, ignored comment lines, and the first parsing issues so testers can catch inventory-copy mistakes before trusting the assay.
+
 ### Buyer Order Scanner
 
 The Flight Attendant buyer scanner uses your connected ESI location and blueprint list, the local recipe cache, the local route graph, and public ESI market orders. It does not reveal buyer character names because public ESI market orders do not expose those identities. It shows public buy orders by product, price, remaining volume, system, and jumps from your current location.

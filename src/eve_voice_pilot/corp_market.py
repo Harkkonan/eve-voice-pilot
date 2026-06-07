@@ -11057,6 +11057,87 @@ def _render_flight_attendant_dashboard() -> str:
       resize: vertical;
       font-family: Consolas, monospace;
     }
+    .reprocess-batch-manifest {
+      display: grid;
+      gap: 9px;
+      border: 1px solid rgba(224, 168, 74, .36);
+      border-radius: 8px;
+      padding: 10px;
+      background:
+        repeating-linear-gradient(0deg, rgba(224, 168, 74, .04) 0 1px, transparent 1px 22px),
+        linear-gradient(135deg, rgba(224, 168, 74, .11), rgba(97, 199, 217, .055)),
+        rgba(6, 11, 12, .72);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+    }
+    .reprocess-batch-manifest[hidden] { display: none; }
+    .reprocess-batch-manifest.has-errors {
+      border-color: rgba(255, 107, 107, .55);
+      background:
+        repeating-linear-gradient(0deg, rgba(255, 107, 107, .035) 0 1px, transparent 1px 22px),
+        linear-gradient(135deg, rgba(255, 107, 107, .12), rgba(224, 168, 74, .05)),
+        rgba(13, 7, 8, .72);
+    }
+    .batch-manifest-head,
+    .batch-manifest-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: baseline;
+    }
+    .batch-manifest-head span,
+    .batch-manifest-metric span {
+      color: var(--amber);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    .batch-manifest-head b {
+      color: var(--text);
+      font-size: 14px;
+    }
+    .batch-manifest-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .batch-manifest-metric {
+      border: 1px solid rgba(63, 85, 80, .56);
+      border-radius: 6px;
+      padding: 7px;
+      background: rgba(9, 14, 15, .72);
+      min-width: 0;
+    }
+    .batch-manifest-metric b {
+      display: block;
+      color: var(--text);
+      font-size: 15px;
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .batch-manifest-lines {
+      display: grid;
+      gap: 4px;
+      border-top: 1px solid rgba(224, 168, 74, .18);
+      padding-top: 8px;
+    }
+    .batch-manifest-row span {
+      color: var(--text);
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .batch-manifest-row b {
+      color: var(--green);
+      white-space: nowrap;
+    }
+    .batch-manifest-note {
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .batch-manifest-error {
+      color: var(--red);
+      line-height: 1.35;
+    }
     .reprocess-location-cards {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -12442,7 +12523,7 @@ def _render_flight_attendant_dashboard() -> str:
       .cache-row { grid-template-columns: 1fr; }
       .profit-panel { min-height: 360px; }
       .profit-actions { display: grid; grid-template-columns: 1fr; }
-      .reprocess-status-rail, .assay-status-strip, .ore-readouts, .sample-ledger, .mineral-grid, .reprocessing-quality-strip { grid-template-columns: 1fr; }
+      .reprocess-status-rail, .assay-status-strip, .ore-readouts, .sample-ledger, .mineral-grid, .reprocessing-quality-strip, .batch-manifest-metrics { grid-template-columns: 1fr; }
       .assay-status-sheet, .assay-status-facility-card { padding-left: 32px; }
       .assay-status-row { grid-template-columns: 1fr; }
       .assay-status-row small { grid-column: 1; }
@@ -13395,6 +13476,7 @@ def _render_flight_attendant_dashboard() -> str:
                     <small class="input-note">Leave blank for the selected ore. Paste one ore stack per line as quantity then name, or name then quantity.</small>
                   </label>
                   <div id="reprocess-batch-status" class="meta" aria-live="polite"></div>
+                  <div id="reprocess-batch-manifest" class="reprocess-batch-manifest" hidden></div>
                 </div>
               </details>
               <div id="reprocess-location-recommendations" class="reprocess-location-cards" hidden></div>
@@ -13634,6 +13716,7 @@ def _render_flight_attendant_dashboard() -> str:
     const reprocessResults = document.querySelector("#reprocess-results");
     const reprocessBatchInput = document.querySelector("#reprocess-batch-input");
     const reprocessBatchStatus = document.querySelector("#reprocess-batch-status");
+    const reprocessBatchManifest = document.querySelector("#reprocess-batch-manifest");
     const reprocessLocationRecommendations = document.querySelector("#reprocess-location-recommendations");
     const reprocessAfterTaxToggle = document.querySelector("#reprocess-after-tax-toggle");
     const reprocessCopyRaw = document.querySelector("#reprocess-copy-raw");
@@ -16541,7 +16624,17 @@ def _render_flight_attendant_dashboard() -> str:
       const index = buildReprocessingOreAliasIndex();
       const errors = [];
       const stacksByType = new Map();
+      let inputLineCount = 0;
+      let ignoredLineCount = 0;
+      let duplicateLineCount = 0;
       String(text || "").split(/\\r?\\n/).forEach((line, lineIndex) => {
+        const cleanLine = String(line || "").trim();
+        if (!cleanLine) return;
+        if (cleanLine.startsWith("#")) {
+          ignoredLineCount += 1;
+          return;
+        }
+        inputLineCount += 1;
         const parsed = parseReprocessingBatchLine(line, index);
         if (!parsed) return;
         if (parsed.error) {
@@ -16552,11 +16645,74 @@ def _render_flight_attendant_dashboard() -> str:
         if (current) {
           current.quantity += parsed.quantity;
           current.line = `${current.line}; ${parsed.line}`;
+          duplicateLineCount += 1;
         } else {
           stacksByType.set(parsed.oreTypeId, parsed);
         }
       });
-      return {stacks: Array.from(stacksByType.values()), errors};
+      return {stacks: Array.from(stacksByType.values()), errors, inputLineCount, ignoredLineCount, duplicateLineCount};
+    }
+
+    function renderReprocessingBatchManifestMetric(label, value) {
+      return `<div class="batch-manifest-metric"><span>${escapeHtml(label)}</span><b>${value}</b></div>`;
+    }
+
+    function updateReprocessingBatchManifest(parsedBatch = null, batchText = null) {
+      if (!reprocessBatchManifest) return;
+      const text = String(batchText ?? reprocessBatchInput.value ?? "");
+      if (!text.trim()) {
+        reprocessBatchManifest.hidden = true;
+        reprocessBatchManifest.classList.remove("has-errors");
+        reprocessBatchManifest.innerHTML = "";
+        return;
+      }
+      const parsed = parsedBatch || parseReprocessingBatchInput(text);
+      const stacks = Array.isArray(parsed.stacks) ? parsed.stacks : [];
+      const errors = Array.isArray(parsed.errors) ? parsed.errors : [];
+      const totalUnits = stacks.reduce((sum, stack) => sum + Number(stack.quantity || 0), 0);
+      const duplicateLines = Number(parsed.duplicateLineCount || 0);
+      const ignoredLines = Number(parsed.ignoredLineCount || 0);
+      const parsedLines = Number(parsed.inputLineCount || 0);
+      const stackLabel = stacks.length === 1 ? "stack" : "stacks";
+      const errorLabel = errors.length === 1 ? "issue" : "issues";
+      const acceptedRows = stacks.slice(0, 5).map((stack) => `
+        <div class="batch-manifest-row">
+          <span>${escapeHtml(stack.name)}</span>
+          <b>x${formatNumber(stack.quantity || 0)}</b>
+        </div>
+      `).join("");
+      const extraRows = stacks.length > 5
+        ? `<div class="batch-manifest-note">+${formatNumber(stacks.length - 5)} more accepted ${stackLabel} in this paste.</div>`
+        : "";
+      const errorRows = errors.slice(0, 3).map((error) => `<div class="batch-manifest-error">${escapeHtml(error)}</div>`).join("");
+      const moreErrors = errors.length > 3
+        ? `<div class="batch-manifest-error">+${formatNumber(errors.length - 3)} more paste ${errorLabel}.</div>`
+        : "";
+      const notes = [
+        `${formatNumber(parsedLines)} parsed line${parsedLines === 1 ? "" : "s"}`,
+        duplicateLines ? `${formatNumber(duplicateLines)} duplicate line${duplicateLines === 1 ? "" : "s"} merged` : "",
+        ignoredLines ? `${formatNumber(ignoredLines)} comment line${ignoredLines === 1 ? "" : "s"} ignored` : "",
+      ].filter(Boolean).join("; ");
+      reprocessBatchManifest.hidden = false;
+      reprocessBatchManifest.classList.toggle("has-errors", Boolean(errors.length));
+      reprocessBatchManifest.innerHTML = `
+        <div class="batch-manifest-head">
+          <span>Paste Manifest</span>
+          <b>${errors.length ? `${formatNumber(errors.length)} ${errorLabel}` : `${formatNumber(stacks.length)} accepted ${stackLabel}`}</b>
+        </div>
+        <div class="batch-manifest-metrics">
+          ${renderReprocessingBatchManifestMetric("Ore stacks", formatNumber(stacks.length))}
+          ${renderReprocessingBatchManifestMetric("Total units", formatNumber(totalUnits))}
+          ${renderReprocessingBatchManifestMetric("Merged", formatNumber(duplicateLines))}
+          ${renderReprocessingBatchManifestMetric("Ignored", formatNumber(ignoredLines))}
+        </div>
+        <div class="batch-manifest-lines">
+          ${errorRows || acceptedRows || `<div class="batch-manifest-note">No ore stacks were read from this paste yet.</div>`}
+          ${moreErrors}
+          ${!errors.length ? extraRows : ""}
+          ${notes ? `<div class="batch-manifest-note">${escapeHtml(notes)}.</div>` : ""}
+        </div>
+      `;
     }
 
     function buildReprocessingCalculationParams(settings, oreTypeId, quantity) {
@@ -16591,6 +16747,7 @@ def _render_flight_attendant_dashboard() -> str:
         return;
       }
       const parsedBatch = parseReprocessingBatchInput(settings.batchText);
+      updateReprocessingBatchManifest(parsedBatch, settings.batchText);
       if (settings.batchText.trim()) {
         if (parsedBatch.errors.length) {
           const errorMessage = parsedBatch.errors.slice(0, 3).join(" ");
@@ -18318,6 +18475,7 @@ def _render_flight_attendant_dashboard() -> str:
         batchText: reprocessBatchInput.value,
       });
       const parsedBatch = parseReprocessingBatchInput(settings.batchText);
+      updateReprocessingBatchManifest(parsedBatch, settings.batchText);
       if (settings.batchText.trim() && !parsedBatch.errors.length && parsedBatch.stacks.length) {
         resetReprocessing(`Ready to calculate ${formatNumber(parsedBatch.stacks.length)} pasted ore stack${parsedBatch.stacks.length === 1 ? "" : "s"}.`);
         setReprocessingBatchStatus(`${formatNumber(parsedBatch.stacks.length)} ore stack${parsedBatch.stacks.length === 1 ? "" : "s"} ready for batch assay.`);
@@ -18334,6 +18492,20 @@ def _render_flight_attendant_dashboard() -> str:
       loadReprocessingLocations();
     }
 
+    function previewReprocessingBatchInput() {
+      const batchText = String(reprocessBatchInput.value || "").trim();
+      window.localStorage.setItem(reprocessBatchKey, batchText);
+      const parsedBatch = parseReprocessingBatchInput(batchText);
+      updateReprocessingBatchManifest(parsedBatch, batchText);
+      if (!batchText) {
+        setReprocessingBatchStatus("");
+      } else if (parsedBatch.errors.length) {
+        setReprocessingBatchStatus(parsedBatch.errors[0], true);
+      } else {
+        setReprocessingBatchStatus(`${formatNumber(parsedBatch.stacks.length)} ore stack${parsedBatch.stacks.length === 1 ? "" : "s"} ready for batch assay.`);
+      }
+    }
+
     reprocessingForm.addEventListener("submit", (event) => {
       event.preventDefault();
       loadReprocessingCalculation();
@@ -18343,6 +18515,7 @@ def _render_flight_attendant_dashboard() -> str:
     reprocessStationSelect.addEventListener("change", updateReprocessingAndReset);
     reprocessStationSort.addEventListener("change", updateReprocessingStationsAndReset);
     reprocessRefreshLocations.addEventListener("click", loadReprocessingLocations);
+    reprocessBatchInput.addEventListener("input", previewReprocessingBatchInput);
     reprocessBatchInput.addEventListener("change", updateReprocessingAndReset);
     reprocessFacilityYield.addEventListener("change", updateReprocessingAndReset);
     reprocessStationTax.addEventListener("change", updateReprocessingAndReset);
@@ -18408,6 +18581,7 @@ def _render_flight_attendant_dashboard() -> str:
     writeTradePnlSettings(readTradePnlSettings());
     writePlanetarySettings(readPlanetarySettings());
     writeReprocessingSettings(readReprocessingSettings());
+    updateReprocessingBatchManifest(parseReprocessingBatchInput(reprocessBatchInput.value), reprocessBatchInput.value);
     showTab(initialTab());
     updateFilterButtons();
     renderNotes();

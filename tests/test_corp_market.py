@@ -373,7 +373,12 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Facility Row" in page
     assert "reprocess-output-panel" in page
     assert "id=\"reprocess-batch-input\"" in page
+    assert "id=\"reprocess-batch-manifest\"" in page
     assert "Paste Ore Batch" in page
+    assert "Paste Manifest" in page
+    assert "previewReprocessingBatchInput" in page
+    assert "duplicateLineCount" in page
+    assert "comment line" in page
     assert "id=\"reprocess-after-tax-toggle\"" in page
     assert "After market tax" in page
     assert "Accounting sales tax; buy-order broker fee 0%." in page
