@@ -270,6 +270,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Leave blank to start from your live ESI system." in page
     assert "id=\"haul-destination\"" in page
     assert "id=\"haul-cargo-m3\" name=\"cargo_m3\" type=\"number\" min=\"1\" max=\"10000000\" step=\"any\"" in page
+    assert (
+        "id=\"haul-purchase-budget\" name=\"purchase_budget_isk\" type=\"number\" min=\"1\" "
+        "max=\"10000000000\" step=\"1\" inputmode=\"decimal\" value=\"250000000\""
+    ) in page
+    assert "Caps pickup cost; this is not read from your wallet." in page
     assert "id=\"haul-route-preference\"" in page
     assert "Prefer safer" in page
     assert "id=\"haul-avoid-pod-kills\"" in page
@@ -963,6 +968,10 @@ def test_haul_cargo_capacity_preserves_decimal_values():
     assert corp_market.clamp_haul_cargo_m3("1234.56") == pytest.approx(1234.56)
     assert corp_market.clamp_haul_cargo_m3("0") == 1.0
     assert corp_market.clamp_haul_cargo_m3("20000000") == 10_000_000.0
+    assert corp_market.clamp_haul_purchase_budget_isk("1234567.89") == pytest.approx(1_234_567.89)
+    assert corp_market.clamp_haul_purchase_budget_isk("bad") == pytest.approx(250_000_000.0)
+    assert corp_market.clamp_haul_purchase_budget_isk("0") == 1.0
+    assert corp_market.clamp_haul_purchase_budget_isk("10000000001") == pytest.approx(10_000_000_000.0)
 
 
 def test_haul_detour_margin_clamps_to_slider_range():
@@ -3077,6 +3086,9 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert opportunity["history_flags"][0]["label"] == "History supports a cautious haul"
     assert opportunity["pickup_history"]["days"] == 30
     assert opportunity["destination_history"]["days"] == 30
+    assert opportunity["purchase_budget_isk"] == pytest.approx(250_000_000.0)
+    assert opportunity["budget_limited"] is False
+    assert opportunity["budget_remaining_isk"] == pytest.approx(249_997_800.0)
     assert opportunity["units"] == 1000
     assert opportunity["cargo_limited"] is True
     assert opportunity["pickup_order"]["system_name"] == "Side Pickup"
@@ -3108,6 +3120,32 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert "orders" in event_names
     assert any(payload["message"].startswith("Scanning route stop") for event, payload in progress_events if event == "route_step")
     assert any(payload["message"].startswith("Checking nearby") for event, payload in progress_events if event == "nearby_system")
+
+    history_calls.clear()
+    budget_payload = build_flight_hauling_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        destination_name="Jita",
+        detour_jumps=1,
+        cargo_capacity_m3=10,
+        purchase_budget_isk=1600,
+        min_detour_margin_percent=10,
+    )
+
+    budget_opportunity = budget_payload["hauling"]["opportunities"][0]
+    assert budget_payload["route"]["purchase_budget_isk"] == pytest.approx(1600.0)
+    assert budget_payload["hauling"]["purchase_budget_isk"] == pytest.approx(1600.0)
+    assert budget_opportunity["units"] == 760
+    assert budget_opportunity["cargo_limited"] is False
+    assert budget_opportunity["budget_limited"] is True
+    assert budget_opportunity["purchase_budget_isk"] == pytest.approx(1600.0)
+    assert budget_opportunity["budget_remaining_isk"] == pytest.approx(0.0)
+    assert budget_opportunity["pickup_cost"] == pytest.approx(1600.0)
+    assert budget_opportunity["gross_destination_revenue"] == pytest.approx(5950.0)
+    assert budget_opportunity["sales_tax_total"] == pytest.approx(200.8125)
+    assert budget_opportunity["net_destination_revenue"] == pytest.approx(5749.1875)
+    assert budget_opportunity["net_profit"] == pytest.approx(4149.1875)
+    assert budget_opportunity["order_depth"][2]["units"] == 160
 
     def fake_spiky_market_history(config, *, region_id, type_id):
         history_calls.append((region_id, type_id))

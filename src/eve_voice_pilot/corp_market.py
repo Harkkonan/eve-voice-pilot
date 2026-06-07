@@ -99,6 +99,8 @@ DEFAULT_HAUL_DETOUR_JUMPS = 1
 MAX_HAUL_DETOUR_JUMPS = 5
 DEFAULT_HAUL_CARGO_M3 = 10_000.0
 MAX_HAUL_CARGO_M3 = 10_000_000.0
+DEFAULT_HAUL_PURCHASE_BUDGET_ISK = 250_000_000.0
+MAX_HAUL_PURCHASE_BUDGET_ISK = 10_000_000_000.0
 DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT = 10.0
 MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT = 500.0
 DEFAULT_ACQUISITION_BUDGET_ISK = 50_000_000.0
@@ -3670,6 +3672,7 @@ def build_flight_hauling_payload(
     destination_name: str = DEFAULT_HAUL_DESTINATION_SYSTEM,
     detour_jumps: int = DEFAULT_HAUL_DETOUR_JUMPS,
     cargo_capacity_m3: float = DEFAULT_HAUL_CARGO_M3,
+    purchase_budget_isk: float = DEFAULT_HAUL_PURCHASE_BUDGET_ISK,
     min_detour_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT,
     route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE,
     avoid_recent_pod_kills: bool = DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
@@ -3725,6 +3728,7 @@ def build_flight_hauling_payload(
         route_path=route_path,
         detour_jumps=detour_jumps,
         cargo_capacity_m3=cargo_capacity_m3,
+        purchase_budget_isk=purchase_budget_isk,
         min_detour_margin_percent=min_detour_margin_percent,
         sales_tax=sales_tax,
         include_common_materials=include_common_materials,
@@ -3747,6 +3751,7 @@ def build_flight_hauling_payload(
             "route_jumps": max(0, len(route_path) - 1),
             "detour_jumps": clamp_haul_detour_jumps(detour_jumps),
             "cargo_capacity_m3": clamp_haul_cargo_m3(cargo_capacity_m3),
+            "purchase_budget_isk": clamp_haul_purchase_budget_isk(purchase_budget_isk),
             "min_detour_margin_percent": clamp_haul_min_detour_margin_percent(min_detour_margin_percent),
             "route_preference": route_plan["preference"],
             "route_preference_label": route_plan["preference_label"],
@@ -4330,6 +4335,7 @@ def scan_route_hauling_opportunities(
     route_path: list[int],
     detour_jumps: int,
     cargo_capacity_m3: float,
+    purchase_budget_isk: float,
     min_detour_margin_percent: float,
     sales_tax: dict[str, Any],
     include_common_materials: bool,
@@ -4341,6 +4347,7 @@ def scan_route_hauling_opportunities(
     adjacency = route_cache.adjacency or {}
     clean_detour_jumps = clamp_haul_detour_jumps(detour_jumps)
     clean_cargo_capacity_m3 = clamp_haul_cargo_m3(cargo_capacity_m3)
+    clean_purchase_budget_isk = clamp_haul_purchase_budget_isk(purchase_budget_isk)
     clean_min_detour_margin_percent = clamp_haul_min_detour_margin_percent(min_detour_margin_percent)
     pickup_detours = route_corridor_systems(
         route_path=route_path,
@@ -4474,6 +4481,7 @@ def scan_route_hauling_opportunities(
             sell_orders=sell_orders,
             buy_orders=buy_orders,
             cargo_capacity_m3=clean_cargo_capacity_m3,
+            purchase_budget_isk=clean_purchase_budget_isk,
             volume_m3=clean_optional_float(volume_m3),
             sales_tax_rate=sales_tax_rate,
         )
@@ -4562,6 +4570,9 @@ def scan_route_hauling_opportunities(
                 "units": int(depth_match["units"]),
                 "cargo_limited": bool(depth_match["cargo_limited"]),
                 "cargo_capacity_m3": clean_cargo_capacity_m3,
+                "budget_limited": bool(depth_match["budget_limited"]),
+                "purchase_budget_isk": clean_purchase_budget_isk,
+                "budget_remaining_isk": depth_match["budget_remaining_isk"],
                 "average_pickup_price": depth_match["average_pickup_price"],
                 "average_destination_price": depth_match["average_destination_price"],
                 "average_net_destination_price": depth_match["average_net_destination_price"],
@@ -4610,6 +4621,7 @@ def scan_route_hauling_opportunities(
         "route_jumps": route_jumps,
         "detour_jumps": clean_detour_jumps,
         "cargo_capacity_m3": clean_cargo_capacity_m3,
+        "purchase_budget_isk": clean_purchase_budget_isk,
         "min_detour_margin_percent": clean_min_detour_margin_percent,
         "pickup_system_count": len(pickup_jump_distances),
         "pickup_regions_scanned": len(scan_pickup_region_ids),
@@ -4642,7 +4654,7 @@ def scan_route_hauling_opportunities(
         "history_cache": market_history_cache_status(),
         "pricing_note": (
             "This scan walks public sell-order depth along the route corridor against public buy-order depth in the "
-            "destination system until the profitable depth or cargo capacity runs out. It then checks public market "
+            "destination system until the profitable depth, cargo capacity, or purchase budget runs out. It then checks public market "
             "history for the matched pickup and destination regions so price spikes, thin volume, and sparse order "
             "activity are labeled before you undock. Profit is after sales tax for selling into destination buy "
             "orders. Public market orders are cached locally for 5 minutes. The page does not place orders or verify "
@@ -5664,11 +5676,13 @@ def match_haul_order_depth(
     sell_orders: list[dict[str, Any]],
     buy_orders: list[dict[str, Any]],
     cargo_capacity_m3: float,
+    purchase_budget_isk: float,
     volume_m3: float | None,
     sales_tax_rate: float,
 ) -> dict[str, Any] | None:
     clean_tax_rate = max(0.0, min(1.0, float(sales_tax_rate or 0.0)))
     clean_cargo_capacity_m3 = clamp_haul_cargo_m3(cargo_capacity_m3)
+    clean_purchase_budget_isk = clamp_haul_purchase_budget_isk(purchase_budget_isk)
     unit_volume = clean_optional_float(volume_m3)
     cargo_units = None
     if unit_volume is not None and unit_volume > 0:
@@ -5693,6 +5707,8 @@ def match_haul_order_depth(
     pickup_cost = 0.0
     gross_destination_revenue = 0.0
     net_destination_revenue = 0.0
+    remaining_budget_isk = clean_purchase_budget_isk
+    budget_limited = False
     matches: list[dict[str, Any]] = []
 
     while sell_index < len(sell_depth) and buy_index < len(buy_depth):
@@ -5707,6 +5723,13 @@ def match_haul_order_depth(
         available_units = min(int(sell_order["_remaining"]), int(buy_order["_remaining"]))
         if remaining_cargo_units is not None:
             available_units = min(available_units, remaining_cargo_units)
+        affordable_units = int((remaining_budget_isk + 1e-9) // sell_price)
+        if affordable_units <= 0:
+            budget_limited = True
+            break
+        if affordable_units < available_units:
+            budget_limited = True
+            available_units = affordable_units
         if available_units <= 0:
             break
 
@@ -5717,6 +5740,7 @@ def match_haul_order_depth(
         gross_destination_revenue += line_gross_destination_revenue
         net_destination_revenue += line_net_destination_revenue
         matched_units += available_units
+        remaining_budget_isk = max(0.0, remaining_budget_isk - line_pickup_cost)
         matches.append(
             {
                 "units": available_units,
@@ -5784,6 +5808,7 @@ def match_haul_order_depth(
         "gross_destination_revenue": gross_destination_revenue,
         "net_destination_revenue": net_destination_revenue,
         "sales_tax_total": gross_destination_revenue - net_destination_revenue,
+        "budget_remaining_isk": remaining_budget_isk,
         "matched_sell_order_count": len(pickup_order_ids),
         "matched_buy_order_count": len(destination_order_ids),
         "matched_order_pair_count": len(matches),
@@ -5795,6 +5820,7 @@ def match_haul_order_depth(
         "order_depth": matches[:12],
         "order_depth_truncated": len(matches) > 12,
         "cargo_limited": cargo_units is not None and matched_units >= cargo_units,
+        "budget_limited": budget_limited,
     }
 
 
@@ -6413,6 +6439,14 @@ def clamp_haul_cargo_m3(value: Any) -> float:
     except (TypeError, ValueError):
         cargo_m3 = DEFAULT_HAUL_CARGO_M3
     return max(1.0, min(MAX_HAUL_CARGO_M3, cargo_m3))
+
+
+def clamp_haul_purchase_budget_isk(value: Any) -> float:
+    try:
+        budget = float(value)
+    except (TypeError, ValueError):
+        budget = DEFAULT_HAUL_PURCHASE_BUDGET_ISK
+    return max(1.0, min(MAX_HAUL_PURCHASE_BUDGET_ISK, budget))
 
 
 def clamp_haul_min_detour_margin_percent(value: Any) -> float:
@@ -8842,6 +8876,9 @@ def build_http_server(
             destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
             detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
             cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
+            purchase_budget_isk = clamp_haul_purchase_budget_isk(
+                (query.get("purchase_budget_isk") or [DEFAULT_HAUL_PURCHASE_BUDGET_ISK])[0]
+            )
             min_detour_margin = clamp_haul_min_detour_margin_percent(
                 (query.get("min_detour_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
             )
@@ -8866,6 +8903,7 @@ def build_http_server(
                     destination_name=destination,
                     detour_jumps=detour_jumps,
                     cargo_capacity_m3=cargo_m3,
+                    purchase_budget_isk=purchase_budget_isk,
                     min_detour_margin_percent=min_detour_margin,
                     route_preference=route_preference,
                     avoid_recent_pod_kills=avoid_recent_pod_kills,
@@ -8900,6 +8938,9 @@ def build_http_server(
             destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
             detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
             cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
+            purchase_budget_isk = clamp_haul_purchase_budget_isk(
+                (query.get("purchase_budget_isk") or [DEFAULT_HAUL_PURCHASE_BUDGET_ISK])[0]
+            )
             min_detour_margin = clamp_haul_min_detour_margin_percent(
                 (query.get("min_detour_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
             )
@@ -8924,6 +8965,7 @@ def build_http_server(
                     destination_name=destination,
                     detour_jumps=detour_jumps,
                     cargo_capacity_m3=cargo_m3,
+                    purchase_budget_isk=purchase_budget_isk,
                     min_detour_margin_percent=min_detour_margin,
                     route_preference=route_preference,
                     avoid_recent_pod_kills=avoid_recent_pod_kills,
@@ -12603,6 +12645,10 @@ def _render_flight_attendant_dashboard() -> str:
                 <label>Cargo m3
                   <input id="haul-cargo-m3" name="cargo_m3" type="number" min="1" max="10000000" step="any" inputmode="decimal" value="10000">
                 </label>
+                <label>Purchase budget ISK
+                  <input id="haul-purchase-budget" name="purchase_budget_isk" type="number" min="1" max="10000000000" step="1" inputmode="decimal" value="250000000">
+                  <small class="input-note">Caps pickup cost; this is not read from your wallet.</small>
+                </label>
                 <label>Route preference
                   <select id="haul-route-preference" name="route_preference">
                     <option value="safer" selected>Prefer safer</option>
@@ -13353,6 +13399,7 @@ def _render_flight_attendant_dashboard() -> str:
     const haulOrigin = document.querySelector("#haul-origin");
     const haulDestination = document.querySelector("#haul-destination");
     const haulCargoM3 = document.querySelector("#haul-cargo-m3");
+    const haulPurchaseBudget = document.querySelector("#haul-purchase-budget");
     const haulRoutePreference = document.querySelector("#haul-route-preference");
     const haulAvoidPodKills = document.querySelector("#haul-avoid-pod-kills");
     const haulDetourJumps = document.querySelector("#haul-detour-jumps");
@@ -13451,6 +13498,7 @@ def _render_flight_attendant_dashboard() -> str:
     const haulOriginKey = "eve-flight-haul-origin-v1";
     const haulDestinationKey = "eve-flight-haul-destination-v1";
     const haulCargoKey = "eve-flight-haul-cargo-m3-v1";
+    const haulPurchaseBudgetKey = "eve-flight-haul-purchase-budget-v1";
     const haulDetourKey = "eve-flight-haul-detour-jumps-v1";
     const haulMinMarginKey = "eve-flight-haul-min-margin-v1";
     const haulRoutePreferenceKey = "eve-flight-haul-route-preference-v1";
@@ -13952,6 +14000,12 @@ def _render_flight_attendant_dashboard() -> str:
       return Math.max(1, Math.min(10000000, cargo));
     }
 
+    function clampHaulPurchaseBudget(value) {
+      const budget = Number(value);
+      if (!Number.isFinite(budget)) return 250000000;
+      return Math.max(1, Math.min(10000000000, budget));
+    }
+
     function clampHaulMinMargin(value) {
       const margin = Number(value);
       if (!Number.isFinite(margin)) return 10;
@@ -14047,6 +14101,7 @@ def _render_flight_attendant_dashboard() -> str:
       const originName = String(window.localStorage.getItem(haulOriginKey) || haulOrigin.value || "").trim();
       const destination = String(window.localStorage.getItem(haulDestinationKey) || haulDestination.value || "Jita").trim() || "Jita";
       const cargo = Number(window.localStorage.getItem(haulCargoKey) || haulCargoM3.value || 10000);
+      const purchaseBudget = Number(window.localStorage.getItem(haulPurchaseBudgetKey) || haulPurchaseBudget.value || 250000000);
       const detour = Number(window.localStorage.getItem(haulDetourKey) || haulDetourJumps.value || 1);
       const minMargin = Number(window.localStorage.getItem(haulMinMarginKey) || haulMinMargin.value || 10);
       const routePreference = normalizeHaulRoutePreference(window.localStorage.getItem(haulRoutePreferenceKey) || haulRoutePreference.value || "safer");
@@ -14056,6 +14111,7 @@ def _render_flight_attendant_dashboard() -> str:
         originName,
         destination,
         cargoM3: clampHaulCargoM3(Number.isFinite(cargo) ? cargo : 10000),
+        purchaseBudgetIsk: clampHaulPurchaseBudget(Number.isFinite(purchaseBudget) ? purchaseBudget : 250000000),
         detourJumps: Math.max(0, Math.min(5, Math.round(Number.isFinite(detour) ? detour : 1))),
         minDetourMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
         routePreference,
@@ -14070,6 +14126,7 @@ def _render_flight_attendant_dashboard() -> str:
       const originName = String(settings.originName || "").trim();
       const destination = String(settings.destination || "Jita").trim() || "Jita";
       const cargoM3 = clampHaulCargoM3(settings.cargoM3);
+      const purchaseBudgetIsk = clampHaulPurchaseBudget(settings.purchaseBudgetIsk);
       const detourJumps = Math.max(0, Math.min(5, Math.round(Number(settings.detourJumps) || 0)));
       const minDetourMarginPercent = clampHaulMinMargin(settings.minDetourMarginPercent);
       const routePreference = normalizeHaulRoutePreference(settings.routePreference || haulRoutePreference.value || "safer");
@@ -14080,6 +14137,7 @@ def _render_flight_attendant_dashboard() -> str:
       haulOrigin.value = originName;
       haulDestination.value = destination;
       haulCargoM3.value = String(cargoM3);
+      haulPurchaseBudget.value = String(purchaseBudgetIsk);
       haulDetourJumps.value = String(detourJumps);
       haulMinMargin.value = String(minDetourMarginPercent);
       haulRoutePreference.value = routePreference;
@@ -14092,6 +14150,7 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(haulOriginKey, originName);
       window.localStorage.setItem(haulDestinationKey, destination);
       window.localStorage.setItem(haulCargoKey, String(cargoM3));
+      window.localStorage.setItem(haulPurchaseBudgetKey, String(purchaseBudgetIsk));
       window.localStorage.setItem(haulDetourKey, String(detourJumps));
       window.localStorage.setItem(haulMinMarginKey, String(minDetourMarginPercent));
       window.localStorage.setItem(haulRoutePreferenceKey, routePreference);
@@ -14099,7 +14158,7 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(haulCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
       window.localStorage.setItem(haulMarketGroupIdsKey, JSON.stringify(marketGroupIds));
       window.localStorage.setItem(haulMarketTypeIdsKey, JSON.stringify(marketTypeIds));
-      return {originName, destination, cargoM3, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds};
+      return {originName, destination, cargoM3, purchaseBudgetIsk, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds};
     }
 
     function clampAcquisitionBudget(value) {
@@ -14877,7 +14936,7 @@ def _render_flight_attendant_dashboard() -> str:
           <span class="progress-spinner" aria-hidden="true"></span>
           <div class="progress-copy">
             <strong>Comparing corridor sell orders and destination buy orders</strong>
-            <span><strong>Elapsed ${escapeHtml(elapsed)}</strong> &middot; ${escapeHtml(itemScope)}; route ${escapeHtml(haulRouteLabel(settings))}; cargo ${formatVolume(settings.cargoM3)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
+            <span><strong>Elapsed ${escapeHtml(elapsed)}</strong> &middot; ${escapeHtml(itemScope)}; route ${escapeHtml(haulRouteLabel(settings))}; cargo ${formatVolume(settings.cargoM3)}; budget ${formatIsk(settings.purchaseBudgetIsk)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
           </div>
         </div>
         <div class="progress-bar" aria-hidden="true"><span></span></div>
@@ -14898,6 +14957,7 @@ def _render_flight_attendant_dashboard() -> str:
         originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
+        purchaseBudgetIsk: haulPurchaseBudget.value,
         routePreference: haulRoutePreference.value,
         avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
@@ -14924,6 +14984,7 @@ def _render_flight_attendant_dashboard() -> str:
         origin_name: settings.originName,
         destination: settings.destination,
         cargo_m3: String(settings.cargoM3),
+        purchase_budget_isk: String(settings.purchaseBudgetIsk),
         route_preference: settings.routePreference,
         avoid_recent_pod_kills: settings.avoidRecentPodKills ? "1" : "0",
         common_materials: settings.includeCommonMaterials ? "1" : "0",
@@ -15028,7 +15089,7 @@ def _render_flight_attendant_dashboard() -> str:
         <strong>${escapeHtml(origin.name || "Current system")}</strong> to
         <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>:
         ${formatNumber(route.route_jumps)} jumps, ${formatNumber(hauling.pickup_system_count)} pickup systems,
-        ${formatVolume(route.cargo_capacity_m3)} cargo.
+        ${formatVolume(route.cargo_capacity_m3)} cargo, ${formatIsk(route.purchase_budget_isk || hauling.purchase_budget_isk)} purchase budget.
         <div class="meta">Start: ${escapeHtml(originSourceLabel)}. ${escapeHtml(routeLabel)} route from ${escapeHtml(sourceLabel)}; ${escapeHtml(avoidLabel)}. Avoided ${formatNumber(route.avoided_pod_kill_system_count)} recent pod-kill systems; ${formatNumber(route.route_pod_kill_system_count)} remain on this path.</div>
         ${scanDuration}
         ${routeWarning}
@@ -15050,6 +15111,7 @@ def _render_flight_attendant_dashboard() -> str:
           pickup regions; detour threshold ${formatNumber(hauling.min_detour_margin_percent)}%.${escapeHtml(materialLimit + regionLimit)}
         </div>
         <div class="meta">${escapeHtml(commonText)}${groupText}${typeText}</div>
+        <div class="meta">Purchase budget ${formatIsk(hauling.purchase_budget_isk)} caps pickup cost before cargo and history checks.</div>
         <div class="meta">${formatNumber(hauling.detour_margin_rejected_count)} detour candidates were below the selected profit threshold.</div>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on destination buy-order sales.</div>
         <div class="meta">Market cache: ${formatNumber(marketCache.entries)} entries, ${formatNumber(marketCache.ttl_seconds || 300)}s reuse window.</div>
@@ -15087,9 +15149,12 @@ def _render_flight_attendant_dashboard() -> str:
         }).join("; ");
         const decision = item.decision || {};
         const riskClass = acquisitionRiskClass(item.risk_level);
+        const limitNotes = [];
+        if (item.cargo_limited) limitNotes.push("cargo limited");
+        if (item.budget_limited) limitNotes.push("budget limited");
         const cargoNote = item.volume_m3 == null
-          ? "volume unknown"
-          : `${formatVolume(item.volume_m3)} each${item.cargo_limited ? "; cargo limited" : ""}`;
+          ? `volume unknown${limitNotes.length ? `; ${limitNotes.join("; ")}` : ""}`
+          : `${formatVolume(item.volume_m3)} each${limitNotes.length ? `; ${limitNotes.join("; ")}` : ""}`;
         return `
           <div class="decision-row">
             <div class="decision-head">
@@ -15111,6 +15176,8 @@ def _render_flight_attendant_dashboard() -> str:
               <div class="profit-detail-grid">
                 <div class="profit-detail-row"><span>Primary pickup</span><b>${escapeHtml(pickup.system_name || "unknown")} (${formatNumber(pickup.jumps)} jumps)</b></div>
                 <div class="profit-detail-row"><span>Pickup detour</span><b>${formatNumber(item.pickup_detour_jumps)} max; ${formatNumber(item.primary_pickup_detour_jumps)} primary</b></div>
+                <div class="profit-detail-row"><span>Purchase budget</span><b>${formatIsk(item.purchase_budget_isk)}</b></div>
+                <div class="profit-detail-row"><span>Budget remaining</span><b>${formatIsk(item.budget_remaining_isk)}</b></div>
                 <div class="profit-detail-row"><span>Pickup cost</span><b>${formatIsk(item.pickup_cost)}</b></div>
                 <div class="profit-detail-row"><span>Destination gross</span><b>${formatIsk(item.gross_destination_revenue)}</b></div>
                 <div class="profit-detail-row"><span>Sales tax</span><b>${formatIsk(item.sales_tax_total)} (${formatRatePercent(item.sales_tax_rate)})</b></div>
@@ -17669,6 +17736,7 @@ def _render_flight_attendant_dashboard() -> str:
         originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
+        purchaseBudgetIsk: haulPurchaseBudget.value,
         routePreference: haulRoutePreference.value,
         avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
@@ -17683,6 +17751,7 @@ def _render_flight_attendant_dashboard() -> str:
         originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
+        purchaseBudgetIsk: haulPurchaseBudget.value,
         routePreference: haulRoutePreference.value,
         avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
@@ -17695,6 +17764,7 @@ def _render_flight_attendant_dashboard() -> str:
         originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
+        purchaseBudgetIsk: haulPurchaseBudget.value,
         routePreference: haulRoutePreference.value,
         avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
@@ -17709,6 +17779,7 @@ def _render_flight_attendant_dashboard() -> str:
         originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
+        purchaseBudgetIsk: haulPurchaseBudget.value,
         routePreference: haulRoutePreference.value,
         avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
@@ -17723,6 +17794,7 @@ def _render_flight_attendant_dashboard() -> str:
         originName: haulOrigin.value,
         destination: haulDestination.value,
         cargoM3: haulCargoM3.value,
+        purchaseBudgetIsk: haulPurchaseBudget.value,
         routePreference: haulRoutePreference.value,
         avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
@@ -17737,6 +17809,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     haulOrigin.addEventListener("change", updateHaulScopeAndReset);
     haulDestination.addEventListener("change", updateHaulScopeAndReset);
+    haulPurchaseBudget.addEventListener("change", updateHaulScopeAndReset);
     haulCommonMaterials.addEventListener("change", updateHaulScopeAndReset);
     haulMarketGroups.addEventListener("click", (event) => {
       if (handleMarketGroupShowMore(haulMarketGroups, event)) return;
