@@ -212,6 +212,8 @@ profiles\my_eve_commands.json
 
 The dry-run phrase test never sends keys. It only shows what the listener would hear, which command would match, and whether the live listener would stay in practice mode.
 
+Use `Recent heard phrases` in Voice Lab when the listener heard you but did not match the command you expected. Select the command, select or type the phrase, then use `Add Heard To Selected` or `Add Test To Selected`. This only adds an exact phrase to the local command profile; it does not turn on fuzzy matching or send keys from the lab.
+
 ## Optional ESI Location Cheer
 
 Location cheer makes the ship fly happily when your connected EVE character reaches `Dihra`, `Amarr`, or `Jita`.

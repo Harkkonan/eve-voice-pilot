@@ -35,6 +35,7 @@ from eve_voice_pilot.intel_pet import (
     SHIP_FRAME_COUNT,
     GameLogState,
     IntelPetCombatCheer,
+    IntelPetHistoryItem,
     IntelPetLocationCheer,
     IntelPetLocationSession,
     IntelPetEngine,
@@ -51,6 +52,7 @@ from eve_voice_pilot.intel_pet import (
     clean_voice_engine,
     clean_voice_input_device,
     clean_voice_preview_text,
+    clean_voice_training_phrase,
     clean_voice_target_title,
     clean_user_terms,
     combat_cheer_from_game_log_line,
@@ -82,6 +84,7 @@ from eve_voice_pilot.intel_pet import (
     pet_voice_preview_for_preset,
     pet_voice_style_for_preset,
     read_new_combat_cheers,
+    recent_voice_training_phrases,
     read_new_game_log_cheers,
     read_new_mission_cheers,
     replace_alert_behaviors,
@@ -94,6 +97,8 @@ from eve_voice_pilot.intel_pet import (
     trim_history,
     voice_input_device_display,
     voice_command_from_fields,
+    voice_command_with_added_phrase,
+    voice_training_phrase_from_detail,
     voice_status_from_transcript,
 )
 from eve_voice_pilot.commands import VoiceCommand
@@ -362,6 +367,35 @@ def test_voice_command_from_fields_rejects_bad_keybind():
         assert "Unsupported key" in str(exc)
     else:
         raise AssertionError("Bad keybind should fail validation")
+
+
+def test_voice_training_phrase_strips_response_call_sign():
+    assert clean_voice_training_phrase("Aura warp now", response_call_sign="Aura") == "warp now"
+    assert voice_training_phrase_from_detail("Heard: Aura dock up\nNo exact command matched.", response_call_sign="Aura") == "dock up"
+
+
+def test_voice_command_with_added_phrase_dedupes_existing_phrases():
+    command = VoiceCommand("Warp to", ["warp"], "S")
+
+    updated = voice_command_with_added_phrase(command, "Aura warp now", response_call_sign="Aura")
+    duplicate = voice_command_with_added_phrase(updated, "warp now", response_call_sign="Aura")
+
+    assert updated.phrases == ["warp", "warp now"]
+    assert duplicate.phrases == updated.phrases
+    assert duplicate is updated
+
+
+def test_recent_voice_training_phrases_reads_in_memory_voice_history():
+    items = [
+        IntelPetHistoryItem("Other", "No voice here.", "Local watcher", "info", "1"),
+        IntelPetHistoryItem("Voice heard", "Heard: Aura dock up\nNo exact command matched.", "Voice practice listener", "info", "2"),
+        IntelPetHistoryItem("Voice heard", "Heard: Aura warp now\nNo exact command matched.", "Voice practice listener", "info", "3"),
+        IntelPetHistoryItem("Voice heard", "Heard: Aura dock up\nNo exact command matched.", "Voice practice listener", "info", "4"),
+    ]
+
+    phrases = recent_voice_training_phrases(items, response_call_sign="Aura")
+
+    assert phrases == ("dock up", "warp now")
 
 
 def test_voice_status_from_transcript_matches_command_without_sending_keys():

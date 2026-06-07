@@ -420,6 +420,30 @@ def clean_voice_command_phrases(value: Any) -> list[str]:
     return phrases
 
 
+def clean_voice_training_phrase(value: Any, *, response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN) -> str:
+    phrase = normalize_response_text(str(value or ""))
+    if response_call_sign:
+        cleaned, _response_requested = strip_response_call_sign(
+            phrase,
+            response_call_signs(clean_voice_call_sign(response_call_sign)),
+        )
+        phrase = cleaned or phrase
+    return normalize_response_text(phrase)
+
+
+def voice_command_with_added_phrase(
+    command: VoiceCommand,
+    phrase: Any,
+    *,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+) -> VoiceCommand:
+    cleaned_phrase = clean_voice_training_phrase(phrase, response_call_sign=response_call_sign)
+    phrases = clean_voice_command_phrases((*command.phrases, cleaned_phrase))
+    if phrases == command.phrases:
+        return command
+    return replace(command, phrases=phrases)
+
+
 def voice_command_from_fields(
     *,
     name: Any,
@@ -710,6 +734,41 @@ class IntelPetHistoryItem:
     meta: str
     severity: str
     recorded_at: str
+
+
+def voice_training_phrase_from_detail(
+    detail: str,
+    *,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+) -> str:
+    for line in str(detail or "").splitlines():
+        if not line.casefold().startswith("heard:"):
+            continue
+        phrase = line.split(":", maxsplit=1)[1].strip()
+        return clean_voice_training_phrase(phrase, response_call_sign=response_call_sign)
+    return ""
+
+
+def recent_voice_training_phrases(
+    history_items: Iterable[IntelPetHistoryItem],
+    *,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+    limit: int = 8,
+) -> tuple[str, ...]:
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for item in reversed(tuple(history_items)):
+        if item.meta != "Voice practice listener":
+            continue
+        phrase = voice_training_phrase_from_detail(item.detail, response_call_sign=response_call_sign)
+        folded = phrase.casefold()
+        if not phrase or folded in seen:
+            continue
+        phrases.append(phrase)
+        seen.add(folded)
+        if len(phrases) >= limit:
+            break
+    return tuple(phrases)
 
 
 @dataclass
@@ -2796,12 +2855,75 @@ def run_overlay(
         ttk.Entry(voice_test_frame, textvariable=voice_test_phrase_var).grid(row=0, column=1, sticky="ew", pady=3)
         voice_test_result = tk.Text(voice_test_frame, height=5, wrap="word", state="disabled")
         voice_test_result.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        heard_phrase_frame = ttk.LabelFrame(voice_lab_frame, text="Recent heard phrases", padding=8)
+        heard_phrase_frame.pack(fill="both", expand=False, pady=(8, 0))
+        heard_phrase_frame.columnconfigure(0, weight=1)
+        heard_phrase_list = tk.Listbox(heard_phrase_frame, height=4, exportselection=False)
+        heard_phrase_list.grid(row=0, column=0, sticky="ew")
+        heard_phrase_scroll = ttk.Scrollbar(heard_phrase_frame, orient="vertical", command=heard_phrase_list.yview)
+        heard_phrase_scroll.grid(row=0, column=1, sticky="ns")
+        heard_phrase_list.configure(yscrollcommand=heard_phrase_scroll.set)
 
         def set_voice_test_result(text: str) -> None:
             voice_test_result.configure(state="normal")
             voice_test_result.delete("1.0", tk.END)
             voice_test_result.insert(tk.END, text)
             voice_test_result.configure(state="disabled")
+
+        def selected_heard_phrase() -> str:
+            selection = heard_phrase_list.curselection()
+            if not selection:
+                return ""
+            return str(heard_phrase_list.get(selection[0])).strip()
+
+        def refresh_heard_phrases() -> None:
+            previous = selected_heard_phrase()
+            phrases = recent_voice_training_phrases(
+                history_items,
+                response_call_sign=clean_voice_call_sign(engine.current_settings().voice_call_sign),
+            )
+            heard_phrase_list.delete(0, tk.END)
+            for phrase in phrases:
+                heard_phrase_list.insert(tk.END, phrase)
+            if previous:
+                for index, phrase in enumerate(phrases):
+                    if phrase == previous:
+                        heard_phrase_list.selection_set(index)
+                        break
+
+        def use_heard_phrase() -> None:
+            phrase = selected_heard_phrase()
+            if not phrase:
+                voice_lab_status_var.set("Select a heard phrase first.")
+                return
+            voice_test_phrase_var.set(phrase)
+            voice_lab_status_var.set("Heard phrase copied into the dry-run tester.")
+
+        def add_phrase_to_selected_command(phrase: str) -> None:
+            phrase = clean_voice_training_phrase(
+                phrase,
+                response_call_sign=clean_voice_call_sign(engine.current_settings().voice_call_sign),
+            )
+            if not phrase:
+                voice_lab_status_var.set("Choose or enter a phrase first.")
+                return
+            index = selected_voice_command_index()
+            profile = current_voice_lab_profile()
+            if index is None or not 0 <= index < len(profile.commands):
+                voice_lab_status_var.set("Select the command that should learn this phrase.")
+                return
+            before_count = len(profile.commands[index].phrases)
+            profile.commands[index] = voice_command_with_added_phrase(
+                profile.commands[index],
+                phrase,
+                response_call_sign=clean_voice_call_sign(engine.current_settings().voice_call_sign),
+            )
+            after_count = len(profile.commands[index].phrases)
+            set_voice_command_fields(profile.commands[index])
+            if after_count == before_count:
+                voice_lab_status_var.set(f"{phrase!r} is already on {profile.commands[index].name}.")
+                return
+            save_voice_lab_profile(f"Added phrase {phrase!r}", select_index=index)
 
         def test_voice_lab_phrase() -> None:
             phrase = voice_test_phrase_var.get().strip()
@@ -2852,8 +2974,24 @@ def run_overlay(
             sticky="e",
             pady=(6, 0),
         )
+        heard_phrase_buttons = ttk.Frame(heard_phrase_frame)
+        heard_phrase_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(heard_phrase_buttons, text="Refresh Heard", command=refresh_heard_phrases).pack(side="left")
+        ttk.Button(heard_phrase_buttons, text="Use In Test", command=use_heard_phrase).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            heard_phrase_buttons,
+            text="Add Heard To Selected",
+            command=lambda: add_phrase_to_selected_command(selected_heard_phrase()),
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            heard_phrase_buttons,
+            text="Add Test To Selected",
+            command=lambda: add_phrase_to_selected_command(voice_test_phrase_var.get()),
+        ).pack(side="left", padx=(6, 0))
         ttk.Label(voice_lab_frame, textvariable=voice_lab_status_var, wraplength=520).pack(anchor="w", pady=(8, 0))
+        history_refreshers.append(refresh_heard_phrases)
         load_voice_lab_profile()
+        refresh_heard_phrases()
 
         ttk.Label(history_frame, text="Alert history", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(
@@ -2884,6 +3022,7 @@ def run_overlay(
         def clear_history() -> None:
             history_items.clear()
             refresh_history_text()
+            refresh_heard_phrases()
 
         history_buttons = ttk.Frame(history_frame)
         history_buttons.pack(fill="x", pady=(8, 0))
@@ -2893,8 +3032,11 @@ def run_overlay(
         history_refreshers.append(refresh_history_text)
 
         def forget_history_refresher(event: Any) -> None:
-            if event.widget is editor and refresh_history_text in history_refreshers:
-                history_refreshers.remove(refresh_history_text)
+            if event.widget is not editor:
+                return
+            for refresher in (refresh_history_text, refresh_heard_phrases):
+                if refresher in history_refreshers:
+                    history_refreshers.remove(refresher)
 
         editor.bind("<Destroy>", forget_history_refresher, add="+")
 
