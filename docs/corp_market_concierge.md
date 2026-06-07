@@ -273,7 +273,29 @@ Cargo capacity is applied when the local recipe cache includes `volume_m3`. Run 
 python .\scripts\update_industry_recipe_cache.py
 ```
 
-## Discord Channel Posting
+## Discord Alert Router
+
+The first dashboard tab is being changed from a market-offer board into a Discord alert-router settings page.
+
+The new target is not "sign in to Discord" inside the site. It is a local settings surface for deciding which local events are allowed to become Discord messages:
+
+- phrase rules such as `war target`, `enemy vessels`, `gate camp`, or `structure under attack`;
+- event rules such as help calls, hostile intel, structure alarms, market triggers, or future local opt-in pet events;
+- route rules such as `Alliance alert channel`, `Corp logistics`, or `Director DMs`;
+- payload rules such as summary-only by default, with matched text disabled unless explicitly enabled for that route.
+
+Current first-slice behavior is planning-only in the browser. It shows the router shape, example rule draft, and privacy posture. Automatic Discord alert sending is not enabled yet.
+
+Safe implementation rules for later slices:
+
+- Discord delivery must be off by default.
+- Channel alerts can use Discord webhooks.
+- DMs require a Discord bot and explicit recipient opt-in; webhooks cannot send DMs.
+- Raw chat logs, full alert history, tokens, webhook URLs, and profile paths must never be forwarded.
+- User-controlled text must disable Discord mentions and use `allowed_mentions: {"parse": []}`.
+- Every route should have a dry-run preview before live sending is enabled.
+
+## Legacy Discord Market Posting
 
 The first version uses a Discord channel webhook. A new offer created from the local board can post a Discord message with a link to the offer page. The offer page has a copyable EVE mail draft.
 

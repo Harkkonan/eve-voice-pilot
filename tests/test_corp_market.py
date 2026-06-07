@@ -12,6 +12,9 @@ import pytest
 import eve_voice_pilot.corp_market as corp_market
 from eve_voice_pilot.corp_market import (
     CorpMarketError,
+    DiscordAlertEvent,
+    DiscordAlertRoute,
+    DiscordAlertRule,
     FlightEsiSession,
     FlightEsiSessionStore,
     IndustryMaterial,
@@ -26,6 +29,7 @@ from eve_voice_pilot.corp_market import (
     RouteGraphCache,
     RouteSystem,
     analyze_trade_pnl_transactions,
+    build_discord_alert_webhook_payload,
     build_discord_webhook_payload,
     build_flight_planetary_payload,
     build_flight_reprocessing_locations_payload,
@@ -222,6 +226,9 @@ def test_dashboard_keeps_market_offer_workflow_controls():
 
     assert "id=\"offer-form\"" in page
     assert "data-tab-target=\"market\"" in page
+    assert "Discord Alerts" in page
+    assert "Discord Alert Router" in page
+    assert "Legacy Market Board" in page
     assert "Post Offer" in page
     assert "/api/offers" in page
     assert "Mail draft" in page
@@ -4481,6 +4488,69 @@ def test_discord_payload_contains_copy_mail_link_and_no_mentions(tmp_path):
     assert payload["embeds"][0]["fields"][3]["value"] == format_isk(1_000_000)
     assert payload["embeds"][0]["fields"][6]["name"] == "Seller"
     assert "thread_name" not in payload
+
+
+def test_discord_alert_payload_is_summary_only_by_default():
+    route = DiscordAlertRoute(
+        name="Alliance alert channel",
+        destination="#alliance-alerts",
+        webhook_env_var="CORP_ALERTS_WEBHOOK_URL",
+        enabled=False,
+    )
+    rule = DiscordAlertRule(
+        name="Enemy vessels near structure",
+        event_type="intel",
+        severity="high",
+        phrases=("war target", "enemy vessels"),
+        route_name=route.name,
+        include_matched_text=False,
+    )
+    event = DiscordAlertEvent(
+        event_type="intel",
+        severity="high",
+        summary="@everyone hostile vessels near Athanor",
+        source="local opt-in alert router",
+        channel="Corp",
+        system_name="Dihra",
+        matched_text="@everyone full raw line should stay private",
+        observed_at="2026-06-07T12:00:00Z",
+    )
+
+    payload = build_discord_alert_webhook_payload(event, rule, route)
+    embed = payload["embeds"][0]
+    field_names = [field["name"] for field in embed["fields"]]
+
+    assert payload["allowed_mentions"] == {"parse": []}
+    assert "@everyone" not in payload["content"]
+    assert "Matched Text" not in field_names
+    assert "full raw line" not in json.dumps(payload)
+    assert embed["title"] == "@ everyone hostile vessels near Athanor"
+    assert next(field for field in embed["fields"] if field["name"] == "System")["value"] == "Dihra"
+
+
+def test_discord_alert_payload_can_include_matched_text_when_explicit():
+    route = DiscordAlertRoute("Alliance alert channel", "#alliance-alerts", "CORP_ALERTS_WEBHOOK_URL")
+    rule = DiscordAlertRule(
+        name="Help call",
+        event_type="help",
+        severity="critical",
+        phrases=("need help",),
+        route_name=route.name,
+        include_matched_text=True,
+    )
+    event = DiscordAlertEvent(
+        event_type="help",
+        severity="critical",
+        summary="Help call in Amarr",
+        source="local opt-in alert router",
+        matched_text="@here need help on undock",
+    )
+
+    payload = build_discord_alert_webhook_payload(event, rule, route)
+    matched = next(field for field in payload["embeds"][0]["fields"] if field["name"] == "Matched Text")
+
+    assert matched["value"] == "@ here need help on undock"
+    assert payload["allowed_mentions"] == {"parse": []}
 
 
 def test_discord_payload_marks_reserved_listing_status(tmp_path):

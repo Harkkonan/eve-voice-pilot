@@ -203,7 +203,9 @@ Always check the orders in EVE before hauling. The helper reads live EVE Workben
 
 ## Corp Market Concierge
 
-The corp market concierge is a Discord-friendly buy/sell board for corporation members. It posts offers or requests to a Discord channel through a webhook, syncs listing status changes back to that Discord post, then gives buyers and sellers a copyable EVE mail draft. It does not send EVE mail, create contracts, place orders, or automate the game client.
+The corp market concierge is being reshaped into a Discord alert-router settings site for corporation coordination. The first tab now sketches rules for deciding which phrases, events, and severity levels may become Discord alert summaries, with matched text off by default and no raw-log forwarding.
+
+The legacy market board still exists below that first tab. It can post offers or requests to a Discord channel through a webhook, sync listing status changes back to that Discord post, then give buyers and sellers a copyable EVE mail draft. It does not send EVE mail, create contracts, place orders, or automate the game client.
 
 Double-click `Start-EveCorpMarket.bat` for the local board at `http://127.0.0.1:8770/`.
 

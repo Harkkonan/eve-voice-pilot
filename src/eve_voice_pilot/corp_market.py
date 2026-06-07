@@ -462,6 +462,56 @@ class DiscordPostResult:
 
 
 @dataclass(frozen=True)
+class DiscordAlertRoute:
+    name: str
+    destination: str
+    webhook_env_var: str
+    enabled: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "destination": self.destination,
+            "webhook_env_var": self.webhook_env_var,
+            "enabled": self.enabled,
+        }
+
+
+@dataclass(frozen=True)
+class DiscordAlertRule:
+    name: str
+    event_type: str
+    severity: str
+    phrases: tuple[str, ...]
+    route_name: str
+    include_matched_text: bool = False
+    enabled: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "event_type": self.event_type,
+            "severity": self.severity,
+            "phrases": list(self.phrases),
+            "route_name": self.route_name,
+            "include_matched_text": self.include_matched_text,
+            "enabled": self.enabled,
+        }
+
+
+@dataclass(frozen=True)
+class DiscordAlertEvent:
+    event_type: str
+    severity: str
+    summary: str
+    source: str
+    channel: str = ""
+    system_name: str = ""
+    matched_text: str = ""
+    observed_at: str = ""
+
+
+@dataclass(frozen=True)
 class FlightEsiSession:
     character_id: int
     character_name: str
@@ -1765,6 +1815,67 @@ def build_discord_webhook_payload(
         if tag_ids:
             payload["applied_tags"] = list(tag_ids)
     return payload
+
+
+DISCORD_ALERT_COLORS = {
+    "critical": 0xE05A47,
+    "high": 0xF0BA57,
+    "medium": 0x61C7D9,
+    "info": 0x89A69A,
+}
+
+
+def sanitize_discord_alert_text(value: Any, *, max_length: int = 500) -> str:
+    text = " ".join(str(value or "").split())
+    text = text.replace("@", "@ ")
+    return shorten(text, max_length)
+
+
+def build_discord_alert_webhook_payload(
+    event: DiscordAlertEvent,
+    rule: DiscordAlertRule,
+    route: DiscordAlertRoute,
+) -> dict[str, Any]:
+    severity = event.severity or rule.severity or "info"
+    fields = [
+        {"name": "Severity", "value": severity.title(), "inline": True},
+        {"name": "Event", "value": sanitize_discord_alert_text(event.event_type or rule.event_type), "inline": True},
+        {"name": "Route", "value": sanitize_discord_alert_text(route.name), "inline": True},
+        {"name": "Source", "value": sanitize_discord_alert_text(event.source or "local opt-in alert router"), "inline": False},
+    ]
+    if event.channel:
+        fields.append({"name": "Channel", "value": sanitize_discord_alert_text(event.channel), "inline": True})
+    if event.system_name:
+        fields.append({"name": "System", "value": sanitize_discord_alert_text(event.system_name), "inline": True})
+    if rule.phrases:
+        fields.append(
+            {
+                "name": "Matched Rule",
+                "value": sanitize_discord_alert_text(", ".join(rule.phrases), max_length=300),
+                "inline": False,
+            }
+        )
+    if rule.include_matched_text and event.matched_text:
+        fields.append(
+            {
+                "name": "Matched Text",
+                "value": sanitize_discord_alert_text(event.matched_text, max_length=700),
+                "inline": False,
+            }
+        )
+
+    embed: dict[str, Any] = {
+        "title": sanitize_discord_alert_text(event.summary or rule.name, max_length=180),
+        "color": DISCORD_ALERT_COLORS.get(severity, DISCORD_ALERT_COLORS["info"]),
+        "fields": fields,
+        "footer": {"text": "Corp Discord alert router · manual opt-in rules"},
+        "timestamp": event.observed_at or now_iso(),
+    }
+    return {
+        "content": sanitize_discord_alert_text(f"[{severity.upper()}] {event.summary or rule.name}", max_length=240),
+        "embeds": [embed],
+        "allowed_mentions": {"parse": []},
+    }
 
 
 def post_discord_webhook(
@@ -14546,7 +14657,7 @@ def _render_flight_attendant_dashboard() -> str:
     </header>
 
     <nav class="tabbar" aria-label="Dashboard tabs">
-      <button type="button" data-tab-target="market" aria-selected="true">Market Board</button>
+      <button type="button" data-tab-target="market" aria-selected="true">Discord Alerts</button>
       <button type="button" data-tab-target="flight" aria-selected="false">Flight Attendant</button>
       <button type="button" data-tab-target="hauling" aria-selected="false">Hauler Routes</button>
       <button type="button" data-tab-target="acquisition" aria-selected="false">Acquisition Planner</button>
@@ -14557,6 +14668,60 @@ def _render_flight_attendant_dashboard() -> str:
 
     <main>
       <section id="tab-market" class="tab-panel" data-tab-panel="market">
+        <div class="market-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Discord Alert Router</h2>
+                <div class="meta">Configure which local intel phrases and events should become Discord alert summaries.</div>
+              </div>
+              <span class="pill warning">Planning</span>
+            </div>
+            <div class="ops-strip">
+              <div class="ops-tile"><span>Default</span><strong>Off</strong></div>
+              <div class="ops-tile"><span>Text</span><strong>Summary First</strong></div>
+              <div class="ops-tile"><span>Routes</span><strong>Webhook Later</strong></div>
+              <div class="ops-tile"><span>Safety</span><strong>No Raw Logs</strong></div>
+            </div>
+            <p class="meta">This page is becoming the control room for Discord messaging. The first safe version stores alert-routing intent: phrases, event types, severity, and destination labels. Actual Discord sending should stay disabled until each route has an explicit webhook or bot configuration.</p>
+            <div class="offer-grid">
+              <div class="readout"><span class="meta">Example phrase rule</span><b>war target, gate camp, enemy vessels</b></div>
+              <div class="readout"><span class="meta">Example event rule</span><b>structure alarm or help call</b></div>
+              <div class="readout"><span class="meta">Example route</span><b>Alliance alert channel</b></div>
+              <div class="readout"><span class="meta">Matched text</span><b>Off by default</b></div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Rule Draft</h2>
+                <div class="meta">Shape the message before any Discord route is enabled.</div>
+              </div>
+            </div>
+            <label>Route name
+              <input autocomplete="off" value="Alliance alert channel" disabled>
+            </label>
+            <label>Trigger phrases
+              <textarea disabled>war target
+enemy vessels
+gate camp
+structure under attack</textarea>
+            </label>
+            <label>Discord preview
+              <textarea disabled>[HIGH] Structure alert near Dihra
+Source: local opt-in alert router
+Matched rule: war target, enemy vessels, gate camp
+Matched text: hidden unless explicitly enabled</textarea>
+            </label>
+            <button type="button" disabled>Save Rule Later</button>
+            <p class="meta">Next implementation step: persist rules locally, then add a dry-run preview and explicit webhook test button.</p>
+          </section>
+        </div>
+
+        <details class="module note-module">
+          <summary><h3>Legacy Market Board</h3></summary>
+          <div class="module-content">
         <div class="market-grid">
           <section class="panel">
             <div class="panel-header">
@@ -14634,6 +14799,8 @@ def _render_flight_attendant_dashboard() -> str:
             <div id="offers" class="offers"></div>
           </section>
         </div>
+          </div>
+        </details>
       </section>
 
       <section id="tab-flight" class="tab-panel" data-tab-panel="flight" hidden>
