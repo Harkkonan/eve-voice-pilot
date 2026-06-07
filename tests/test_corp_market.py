@@ -365,6 +365,16 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "assay-status-facility-card" in page
     assert "Facility Row" in page
     assert "reprocess-output-panel" in page
+    assert "id=\"reprocess-batch-input\"" in page
+    assert "Paste Ore Batch" in page
+    assert "id=\"reprocess-copy-raw\"" in page
+    assert "id=\"reprocess-copy-minerals\"" in page
+    assert "Compact Assay Table" in page
+    assert "reprocessing-decision-card" in page
+    assert "parseReprocessingBatchInput" in page
+    assert "copyReprocessingText" in page
+    assert "data-reprocess-sort" in page
+    assert "data-copy-reprocessing=\"minerals\"" in page
     assert "reprocess-field-desk" in page
     assert "reprocess-status-rail" in page
     assert "field-notebook" in page

@@ -9499,6 +9499,7 @@ def _render_legacy_market_dashboard() -> str:
     }
     button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .full-span { grid-column: 1 / -1; }
     .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
     .filters button { padding: 7px 10px; font-size: 13px; }
     .offers { display: grid; gap: 10px; }
@@ -9776,7 +9777,12 @@ def render_reprocessing_ore_options() -> str:
     options = []
     for ore in ores:
         label = f"{ore.group_name} - {ore.name} (portion {ore.portion_size:,})"
-        options.append(f'                    <option value="{ore.type_id}">{html.escape(label)}</option>')
+        options.append(
+            f'                    <option value="{ore.type_id}"'
+            f' data-ore-name="{html.escape(ore.name, quote=True)}"'
+            f' data-ore-group="{html.escape(ore.group_name, quote=True)}"'
+            f' data-ore-portion="{ore.portion_size}">{html.escape(label)}</option>'
+        )
     return "\n".join(options)
 
 
@@ -10893,6 +10899,34 @@ def _render_flight_attendant_dashboard() -> str:
     body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .charter-list li {
       border-left-color: rgba(45, 107, 52, .72);
     }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-batch-panel {
+      border-color: rgba(224, 168, 74, .38);
+      background:
+        linear-gradient(135deg, rgba(224, 168, 74, .08), rgba(97, 199, 217, .04)),
+        rgba(7, 11, 13, .5);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-batch-panel textarea {
+      min-height: 92px;
+      resize: vertical;
+      font-family: Consolas, monospace;
+    }
+    .reprocess-copy-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .reprocess-copy-actions button {
+      min-height: 38px;
+      padding: 8px 11px;
+      font-size: 12px;
+    }
+    .reprocess-copy-actions .quickbar-copy-status {
+      flex: 1 1 180px;
+      min-width: 150px;
+      text-align: right;
+    }
     body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-summary-panel {
       padding: 0;
       overflow: hidden;
@@ -11081,6 +11115,7 @@ def _render_flight_attendant_dashboard() -> str:
       grid-template-areas:
         "rail rail rail"
         "sample notebook tray"
+        "table table table"
         "footer footer footer";
       gap: 13px;
       position: relative;
@@ -11099,6 +11134,7 @@ def _render_flight_attendant_dashboard() -> str:
     .reprocess-status-rail,
     .field-notebook,
     .mineral-tray,
+    .reprocessing-assay-table-wrap,
     .reprocess-desk-footer {
       position: relative;
       z-index: 1;
@@ -11502,6 +11538,111 @@ def _render_flight_attendant_dashboard() -> str:
       padding: 2px 7px;
       background: rgba(5, 9, 11, .36);
     }
+    .reprocessing-decision-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+      border: 1px solid rgba(224, 168, 74, .44);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(224, 168, 74, .12), rgba(97, 199, 217, .06)),
+        rgba(8, 13, 15, .72);
+      padding: 12px;
+    }
+    .reprocessing-decision-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .reprocessing-decision-card strong {
+      display: block;
+      color: var(--text);
+      font-size: 23px;
+      line-height: 1.12;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+    .reprocessing-decision-card p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .reprocessing-decision-card .decision-score {
+      color: var(--amber);
+      font-size: 22px;
+      font-weight: 900;
+      text-align: right;
+      white-space: nowrap;
+    }
+    .reprocessing-decision-card.is-reprocess strong,
+    .reprocessing-decision-card.is-reprocess .decision-score { color: var(--green); }
+    .reprocessing-decision-card.is-sell strong { color: var(--red); }
+    .reprocessing-decision-card.is-check strong { color: var(--amber); }
+    .reprocessing-assay-table-wrap {
+      grid-area: table;
+      border: 1px solid rgba(63, 85, 80, .72);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(17, 24, 25, .9), rgba(6, 10, 12, .74)),
+        rgba(8, 13, 15, .82);
+      overflow: auto;
+    }
+    .reprocessing-assay-table-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(63, 85, 80, .5);
+    }
+    .reprocessing-assay-table-head strong { color: var(--text); }
+    .reprocessing-assay-table-head span { color: var(--amber); font-size: 12px; font-weight: 800; }
+    .reprocessing-assay-table {
+      width: 100%;
+      min-width: 820px;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .reprocessing-assay-table th,
+    .reprocessing-assay-table td {
+      border-bottom: 1px solid rgba(63, 85, 80, .34);
+      padding: 8px 9px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .reprocessing-assay-table th {
+      color: var(--muted);
+      background: rgba(5, 9, 11, .48);
+      font-size: 11px;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+    .reprocessing-assay-table th button {
+      all: unset;
+      cursor: pointer;
+      color: inherit;
+      font: inherit;
+    }
+    .reprocessing-assay-table td b {
+      display: block;
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
+    .reprocessing-assay-table td small {
+      display: block;
+      color: var(--muted);
+      margin-top: 2px;
+      line-height: 1.25;
+    }
+    .reprocessing-assay-table .number-cell { text-align: right; white-space: nowrap; }
+    .reprocessing-assay-table .delta-positive { color: var(--green); font-weight: 900; }
+    .reprocessing-assay-table .delta-negative { color: var(--red); font-weight: 900; }
+    .reprocessing-assay-table .delta-partial { color: var(--amber); font-weight: 900; }
     .reprocess-notes {
       position: relative;
       z-index: 1;
@@ -11994,6 +12135,7 @@ def _render_flight_attendant_dashboard() -> str:
           "sample"
           "notebook"
           "tray"
+          "table"
           "footer";
       }
       .reprocess-status-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -12960,6 +13102,16 @@ def _render_flight_attendant_dashboard() -> str:
                   <small class="input-note">Only full ore portions reprocess; leftovers are shown in the result.</small>
                 </label>
               </div>
+              <details class="output-details reprocess-batch-panel">
+                <summary>Paste Ore Batch</summary>
+                <div class="output-details-body">
+                  <label class="full-span">Ore list
+                    <textarea id="reprocess-batch-input" name="ore_batch" rows="4" placeholder="1000 Compressed Veldspar&#10;Compressed Scordite 0-Grade 500"></textarea>
+                    <small class="input-note">Leave blank for the selected ore. Paste one ore stack per line as quantity then name, or name then quantity.</small>
+                  </label>
+                  <div id="reprocess-batch-status" class="meta" aria-live="polite"></div>
+                </div>
+              </details>
               <div class="row">
                 <label>Reprocessing location
                   <select id="reprocess-station-select" name="reprocessing_station_id">
@@ -13048,6 +13200,11 @@ def _render_flight_attendant_dashboard() -> str:
                   <span class="pill reserved">Net After Tax</span>
                 </div>
                 <div class="meta">Gross output, estimated station take, and final material stacks.</div>
+              </div>
+              <div class="reprocess-copy-actions">
+                <button id="reprocess-copy-raw" class="secondary" type="button" data-copy-reprocessing="raw">Copy Raw Ore</button>
+                <button id="reprocess-copy-minerals" class="secondary" type="button" data-copy-reprocessing="minerals">Copy Minerals</button>
+                <div id="reprocess-copy-status" class="meta quickbar-copy-status" aria-live="polite"></div>
               </div>
             </div>
             <details class="output-details" open>
@@ -13183,6 +13340,11 @@ def _render_flight_attendant_dashboard() -> str:
     const reprocessSummary = document.querySelector("#reprocess-summary");
     const reprocessLocationDetail = document.querySelector("#reprocess-location-detail");
     const reprocessResults = document.querySelector("#reprocess-results");
+    const reprocessBatchInput = document.querySelector("#reprocess-batch-input");
+    const reprocessBatchStatus = document.querySelector("#reprocess-batch-status");
+    const reprocessCopyRaw = document.querySelector("#reprocess-copy-raw");
+    const reprocessCopyMinerals = document.querySelector("#reprocess-copy-minerals");
+    const reprocessCopyStatus = document.querySelector("#reprocess-copy-status");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
@@ -13230,6 +13392,7 @@ def _render_flight_attendant_dashboard() -> str:
     const reprocessStationTaxKey = "eve-flight-reprocess-station-tax-v1";
     const reprocessImplantBonusKey = "eve-flight-reprocess-implant-bonus-v1";
     const reprocessStructureBonusKey = "eve-flight-reprocess-structure-bonus-v1";
+    const reprocessBatchKey = "eve-flight-reprocess-batch-v1";
     const validTabs = new Set(["market", "flight", "hauling", "acquisition", "trade-pnl", "planetary", "reprocessing"]);
     let filterType = "";
     let includeClosed = false;
@@ -13251,6 +13414,10 @@ def _render_flight_attendant_dashboard() -> str:
     let acquisitionQuickbarItems = [];
     let planetaryShoppingQuickbarItems = [];
     let planetarySellQuickbarItems = [];
+    let reprocessLastPayloads = [];
+    let reprocessLastNotes = [];
+    let reprocessAssaySortKey = "delta";
+    let reprocessAssaySortDirection = "desc";
 
     function escapeHtml(value) {
       const replacements = {
@@ -15738,6 +15905,7 @@ def _render_flight_attendant_dashboard() -> str:
         stationTaxPercent: String(window.localStorage.getItem(reprocessStationTaxKey) || reprocessStationTax.value || "").trim(),
         implantBonusPercent: String(window.localStorage.getItem(reprocessImplantBonusKey) || reprocessImplantBonus.value || "").trim(),
         structureBonusPercent: String(window.localStorage.getItem(reprocessStructureBonusKey) || reprocessStructureBonus.value || "0").trim() || "0",
+        batchText: String(window.localStorage.getItem(reprocessBatchKey) || reprocessBatchInput.value || "").trim(),
       };
     }
 
@@ -15757,6 +15925,7 @@ def _render_flight_attendant_dashboard() -> str:
       const stationTaxPercent = String(settings.stationTaxPercent || "").trim();
       const implantBonusPercent = String(settings.implantBonusPercent || "").trim();
       const structureBonusPercent = String(settings.structureBonusPercent || "0").trim() || "0";
+      const batchText = String(settings.batchText ?? reprocessBatchInput.value ?? "").trim();
       reprocessOre.value = oreTypeId;
       reprocessQuantity.value = String(quantity);
       reprocessStationSelect.value = availableLocationValues.includes(locationId) ? locationId : "current";
@@ -15765,6 +15934,7 @@ def _render_flight_attendant_dashboard() -> str:
       reprocessStationTax.value = stationTaxPercent;
       reprocessImplantBonus.value = implantBonusPercent;
       reprocessStructureBonus.value = structureBonusPercent;
+      reprocessBatchInput.value = batchText;
       window.localStorage.setItem(reprocessOreKey, oreTypeId);
       window.localStorage.setItem(reprocessQuantityKey, String(quantity));
       window.localStorage.setItem(reprocessLocationKey, locationId);
@@ -15773,6 +15943,7 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(reprocessStationTaxKey, stationTaxPercent);
       window.localStorage.setItem(reprocessImplantBonusKey, implantBonusPercent);
       window.localStorage.setItem(reprocessStructureBonusKey, structureBonusPercent);
+      window.localStorage.setItem(reprocessBatchKey, batchText);
       return {
         oreTypeId,
         quantity,
@@ -15782,14 +15953,19 @@ def _render_flight_attendant_dashboard() -> str:
         stationTaxPercent,
         implantBonusPercent,
         structureBonusPercent,
+        batchText,
       };
     }
 
     function resetReprocessing(message) {
+      reprocessLastPayloads = [];
+      reprocessLastNotes = [];
       reprocessSummary.innerHTML = renderReprocessingPendingAssay(message);
       reprocessLocationDetail.innerHTML = "";
       reprocessResults.innerHTML = renderReprocessingEmptyWorkbench(message);
       reprocessLocationStatus.textContent = message;
+      setReprocessingCopyStatus("");
+      setReprocessingBatchStatus("");
       reprocessCalculateButton.disabled = false;
       reprocessRefreshLocations.disabled = false;
     }
@@ -15869,6 +16045,147 @@ def _render_flight_attendant_dashboard() -> str:
       }
     }
 
+    function setReprocessingBatchStatus(message, isError = false) {
+      if (!reprocessBatchStatus) return;
+      reprocessBatchStatus.textContent = message || "";
+      reprocessBatchStatus.classList.toggle("error", Boolean(isError));
+    }
+
+    function setReprocessingCopyStatus(message, isError = false) {
+      if (!reprocessCopyStatus) return;
+      reprocessCopyStatus.textContent = message || "";
+      reprocessCopyStatus.classList.toggle("error", Boolean(isError));
+    }
+
+    function normalizeReprocessingOreText(value) {
+      return String(value || "")
+        .toLowerCase()
+        .replace(/\\([^)]*\\)/g, " ")
+        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/\\s+/g, " ")
+        .trim();
+    }
+
+    function buildReprocessingOreAliasIndex() {
+      const entries = Array.from(reprocessOre.options)
+        .filter((option) => String(option.value || "").trim())
+        .map((option) => {
+          const label = String(option.textContent || "").replace(/\\s*\\(portion\\s+[\\d,]+\\)\\s*$/i, "").trim();
+          const name = String(option.dataset.oreName || label.split(" - ").pop() || label).trim();
+          const group = String(option.dataset.oreGroup || "").trim();
+          return {
+            oreTypeId: String(option.value || "").trim(),
+            name,
+            group,
+            label,
+          };
+        });
+      const buckets = new Map();
+      function addAlias(alias, entry) {
+        const key = normalizeReprocessingOreText(alias);
+        if (!key) return;
+        const bucket = buckets.get(key) || [];
+        if (!bucket.some((item) => item.oreTypeId === entry.oreTypeId)) bucket.push(entry);
+        buckets.set(key, bucket);
+      }
+      entries.forEach((entry) => {
+        addAlias(entry.name, entry);
+        addAlias(entry.label, entry);
+        if (entry.group && entry.group !== entry.name) addAlias(`${entry.group} ${entry.name}`, entry);
+      });
+      return {entries, buckets};
+    }
+
+    function parseReprocessingQuantityText(value) {
+      const cleaned = String(value || "").replace(/[,_]/g, "");
+      const number = Number(cleaned);
+      if (!Number.isFinite(number)) return null;
+      const quantity = Math.floor(number);
+      return quantity > 0 ? quantity : null;
+    }
+
+    function findReprocessingOreMatch(nameText, index) {
+      const key = normalizeReprocessingOreText(nameText);
+      if (!key) return {error: "missing ore name"};
+      const exact = index.buckets.get(key) || [];
+      if (exact.length === 1) return {ore: exact[0]};
+      if (exact.length > 1) return {error: `${nameText} matches multiple ore types; paste the exact dropdown name`};
+      const partial = index.entries.filter((entry) => {
+        const nameKey = normalizeReprocessingOreText(entry.name);
+        const labelKey = normalizeReprocessingOreText(entry.label);
+        return nameKey === key || labelKey === key || nameKey.includes(key) || labelKey.includes(key);
+      });
+      if (partial.length === 1) return {ore: partial[0]};
+      if (partial.length > 1) return {error: `${nameText} is ambiguous; paste the exact ore name`};
+      return {error: `${nameText} was not found in the ore cache`};
+    }
+
+    function parseReprocessingBatchLine(line, index) {
+      const cleanLine = String(line || "").replace(/\\t/g, " ").replace(/\\s+/g, " ").trim();
+      if (!cleanLine || cleanLine.startsWith("#")) return null;
+      let match = cleanLine.match(/^([0-9][0-9,_.]*)\\s*(?:x\\s+)?(.+)$/i);
+      let quantity = null;
+      let nameText = "";
+      if (match) {
+        quantity = parseReprocessingQuantityText(match[1]);
+        nameText = match[2];
+      } else {
+        match = cleanLine.match(/^(.+?)\\s+(?:x\\s*)?([0-9][0-9,_.]*)$/i);
+        if (match) {
+          nameText = match[1];
+          quantity = parseReprocessingQuantityText(match[2]);
+        }
+      }
+      if (!quantity || !nameText) {
+        return {error: `Could not read "${cleanLine}". Use "1000 Ore Name" or "Ore Name 1000".`};
+      }
+      const matchResult = findReprocessingOreMatch(nameText, index);
+      if (matchResult.error) return {error: matchResult.error};
+      return {
+        oreTypeId: matchResult.ore.oreTypeId,
+        name: matchResult.ore.name,
+        quantity,
+        line: cleanLine,
+      };
+    }
+
+    function parseReprocessingBatchInput(text) {
+      const index = buildReprocessingOreAliasIndex();
+      const errors = [];
+      const stacksByType = new Map();
+      String(text || "").split(/\\r?\\n/).forEach((line, lineIndex) => {
+        const parsed = parseReprocessingBatchLine(line, index);
+        if (!parsed) return;
+        if (parsed.error) {
+          errors.push(`Line ${lineIndex + 1}: ${parsed.error}.`);
+          return;
+        }
+        const current = stacksByType.get(parsed.oreTypeId);
+        if (current) {
+          current.quantity += parsed.quantity;
+          current.line = `${current.line}; ${parsed.line}`;
+        } else {
+          stacksByType.set(parsed.oreTypeId, parsed);
+        }
+      });
+      return {stacks: Array.from(stacksByType.values()), errors};
+    }
+
+    function buildReprocessingCalculationParams(settings, oreTypeId, quantity) {
+      const params = new URLSearchParams({
+        ore_type_id: String(oreTypeId || settings.oreTypeId || ""),
+        quantity: String(clampReprocessQuantity(quantity || settings.quantity)),
+        structure_bonus_percent: settings.structureBonusPercent || "0",
+      });
+      if (settings.locationId && settings.locationId !== "current") {
+        params.set("reprocessing_station_id", settings.locationId);
+      }
+      if (settings.facilityYieldPercent) params.set("facility_yield_percent", settings.facilityYieldPercent);
+      if (settings.stationTaxPercent) params.set("station_tax_percent", settings.stationTaxPercent);
+      if (settings.implantBonusPercent) params.set("implant_bonus_percent", settings.implantBonusPercent);
+      return params;
+    }
+
     async function loadReprocessingCalculation() {
       const settings = writeReprocessingSettings({
         oreTypeId: reprocessOre.value,
@@ -15879,35 +16196,77 @@ def _render_flight_attendant_dashboard() -> str:
         stationTaxPercent: readOptionalPercentInput(reprocessStationTax),
         implantBonusPercent: readOptionalPercentInput(reprocessImplantBonus),
         structureBonusPercent: readOptionalPercentInput(reprocessStructureBonus) || "0",
+        batchText: reprocessBatchInput.value,
       });
       if (!settings.oreTypeId) {
         resetReprocessing("Reprocessing cache is missing ore options. Run the cache refresh first.");
         return;
       }
+      const parsedBatch = parseReprocessingBatchInput(settings.batchText);
+      if (settings.batchText.trim()) {
+        if (parsedBatch.errors.length) {
+          const errorMessage = parsedBatch.errors.slice(0, 3).join(" ");
+          reprocessSummary.innerHTML = renderReprocessingPendingAssay(errorMessage);
+          reprocessLocationDetail.innerHTML = "";
+          reprocessResults.innerHTML = renderReprocessingEmptyWorkbench(errorMessage);
+          setReprocessingBatchStatus(errorMessage, true);
+          return;
+        }
+        if (parsedBatch.stacks.length) {
+          await loadReprocessingBatchCalculation(settings, parsedBatch.stacks);
+          return;
+        }
+      }
       reprocessCalculateButton.disabled = true;
+      reprocessLastPayloads = [];
+      reprocessLastNotes = [];
+      setReprocessingCopyStatus("");
+      setReprocessingBatchStatus("");
       reprocessSummary.innerHTML = renderReprocessingPendingAssay(`Calculating ${formatNumber(settings.quantity)} ore units...`);
       reprocessLocationDetail.innerHTML = "";
       reprocessResults.innerHTML = renderReprocessingEmptyWorkbench("Mineral output will appear here when the calculation finishes.");
-      const params = new URLSearchParams({
-        ore_type_id: settings.oreTypeId,
-        quantity: String(settings.quantity),
-        structure_bonus_percent: settings.structureBonusPercent || "0",
-      });
-      if (settings.locationId && settings.locationId !== "current") {
-        params.set("reprocessing_station_id", settings.locationId);
-      }
-      if (settings.facilityYieldPercent) params.set("facility_yield_percent", settings.facilityYieldPercent);
-      if (settings.stationTaxPercent) params.set("station_tax_percent", settings.stationTaxPercent);
-      if (settings.implantBonusPercent) params.set("implant_bonus_percent", settings.implantBonusPercent);
+      const params = buildReprocessingCalculationParams(settings, settings.oreTypeId, settings.quantity);
       try {
         const response = await fetch(`/api/flight/reprocessing?${params}`);
-        const data = await response.json();
-        if (!data.ok) throw new Error(data.error || "Could not calculate ore reprocessing");
+        const data = await readJsonApiResponse(response, "Could not calculate ore reprocessing");
         renderReprocessingCalculation(data);
       } catch (error) {
         reprocessSummary.innerHTML = renderReprocessingPendingAssay(error.message);
         reprocessLocationDetail.innerHTML = "";
         reprocessResults.innerHTML = renderReprocessingEmptyWorkbench(error.message);
+        setReprocessingBatchStatus(error.message, true);
+      } finally {
+        reprocessCalculateButton.disabled = false;
+      }
+    }
+
+    async function loadReprocessingBatchCalculation(settings, stacks) {
+      reprocessCalculateButton.disabled = true;
+      reprocessLastPayloads = [];
+      reprocessLastNotes = [];
+      setReprocessingCopyStatus("");
+      setReprocessingBatchStatus(`Calculating ${formatNumber(stacks.length)} ore stack${stacks.length === 1 ? "" : "s"}...`);
+      reprocessSummary.innerHTML = renderReprocessingPendingAssay(`Calculating ${formatNumber(stacks.length)} pasted ore stack${stacks.length === 1 ? "" : "s"}...`);
+      reprocessLocationDetail.innerHTML = "";
+      reprocessResults.innerHTML = renderReprocessingEmptyWorkbench("Batch mineral output will appear here when the calculation finishes.");
+      const payloads = [];
+      try {
+        for (let index = 0; index < stacks.length; index += 1) {
+          const stack = stacks[index];
+          setReprocessingBatchStatus(`Calculating ${formatNumber(index + 1)} of ${formatNumber(stacks.length)}: ${stack.name} x${formatNumber(stack.quantity)}.`);
+          const params = buildReprocessingCalculationParams(settings, stack.oreTypeId, stack.quantity);
+          const response = await fetch(`/api/flight/reprocessing?${params}`);
+          const data = await readJsonApiResponse(response, `Could not calculate ${stack.name}`);
+          data.batch_line = stack.line;
+          payloads.push(data);
+        }
+        renderReprocessingBatchCalculation(payloads);
+        setReprocessingBatchStatus(`Batch complete: ${formatNumber(payloads.length)} ore stack${payloads.length === 1 ? "" : "s"} calculated.`);
+      } catch (error) {
+        reprocessSummary.innerHTML = renderReprocessingPendingAssay(error.message);
+        reprocessLocationDetail.innerHTML = "";
+        reprocessResults.innerHTML = renderReprocessingEmptyWorkbench(error.message);
+        setReprocessingBatchStatus(error.message, true);
       } finally {
         reprocessCalculateButton.disabled = false;
       }
@@ -15954,13 +16313,144 @@ def _render_flight_attendant_dashboard() -> str:
       `;
     }
 
+    function reprocessingValuePair(source, valueKey, partialKey) {
+      if (!source) return {value: null, complete: false};
+      if (source[valueKey] != null) return {value: Number(source[valueKey]), complete: true};
+      if (source[partialKey] != null) return {value: Number(source[partialKey]), complete: false};
+      return {value: null, complete: false};
+    }
+
+    function aggregateReprocessingValuation(payloads) {
+      let processed = 0;
+      let ore = 0;
+      let hasProcessed = true;
+      let hasOre = true;
+      let complete = true;
+      let processedTypes = 0;
+      let processedRequiredTypes = 0;
+      let orePriced = 0;
+      let oreRequired = 0;
+      (payloads || []).forEach((payload) => {
+        const valuation = payload.jita_valuation || {};
+        const processedPair = reprocessingValuePair(valuation, "processed_material_value", "processed_partial_material_value");
+        const orePair = reprocessingValuePair(valuation, "ore_value", "ore_partial_value");
+        if (processedPair.value == null) {
+          hasProcessed = false;
+        } else {
+          processed += processedPair.value;
+          complete = complete && processedPair.complete;
+        }
+        if (orePair.value == null) {
+          hasOre = false;
+        } else {
+          ore += orePair.value;
+          complete = complete && orePair.complete;
+        }
+        processedTypes += Number(valuation.processed_material_types || 0);
+        processedRequiredTypes += Number(valuation.processed_required_material_types || 0);
+        orePriced += Number(valuation.ore_priced_quantity || 0);
+        oreRequired += Number(valuation.ore_required_quantity || 0);
+      });
+      const processedValue = hasProcessed ? processed : null;
+      const oreValue = hasOre ? ore : null;
+      const delta = processedValue != null && oreValue != null ? processedValue - oreValue : null;
+      const deltaPercent = delta != null && oreValue > 0 ? (delta / oreValue) * 100 : null;
+      return {
+        processedValue,
+        oreValue,
+        delta,
+        deltaPercent,
+        complete,
+        processedTypes,
+        processedRequiredTypes,
+        orePriced,
+        oreRequired,
+      };
+    }
+
+    function reprocessingDecisionFromAggregate(aggregate) {
+      if (aggregate.delta == null) {
+        return {label: "Price check", className: "is-check", note: "Jita buy-order values are incomplete."};
+      }
+      if (!aggregate.complete) {
+        return {label: "Check depth", className: "is-check", note: "Some Jita buy orders do not fully cover the stack."};
+      }
+      if (aggregate.delta > 0) {
+        return {label: "Reprocess", className: "is-reprocess", note: "Processed minerals beat the raw ore Jita buy value."};
+      }
+      if (aggregate.delta < 0) {
+        return {label: "Sell raw", className: "is-sell", note: "Raw ore beats the processed mineral Jita buy value."};
+      }
+      return {label: "Break even", className: "is-check", note: "Raw and processed values are effectively tied."};
+    }
+
+    function renderReprocessingDecisionHeadline(payloads) {
+      const aggregate = aggregateReprocessingValuation(payloads);
+      const decision = reprocessingDecisionFromAggregate(aggregate);
+      const deltaText = aggregate.delta == null ? "unknown" : formatSignedIsk(aggregate.delta);
+      const percentText = aggregate.deltaPercent == null ? "" : ` (${formatPercent(aggregate.deltaPercent)})`;
+      const processedText = aggregate.processedValue == null ? "unknown processed value" : formatIsk(aggregate.processedValue);
+      const oreText = aggregate.oreValue == null ? "unknown raw value" : formatIsk(aggregate.oreValue);
+      return `
+        <div class="reprocessing-decision-card ${escapeHtml(decision.className)}">
+          <div>
+            <span>Recommended action</span>
+            <strong>${escapeHtml(decision.label)}</strong>
+            <p>${escapeHtml(decision.note)} Processed ${processedText}; raw ${oreText}.</p>
+          </div>
+          <div class="decision-score">${deltaText}${escapeHtml(percentText)}</div>
+        </div>
+      `;
+    }
+
+    function renderReprocessingBatchAssayStatus(payloads) {
+      const aggregate = aggregateReprocessingValuation(payloads);
+      const totalUnits = (payloads || []).reduce((sum, payload) => sum + Number((payload.input || {}).quantity || 0), 0);
+      const fullPortions = (payloads || []).reduce((sum, payload) => sum + Number((payload.input || {}).portions || 0), 0);
+      const first = (payloads || [])[0] || {};
+      const yieldData = first.yield || {};
+      const valuationCoverage = `${formatNumber(aggregate.processedTypes)}/${formatNumber(aggregate.processedRequiredTypes)} material types; ${formatNumber(aggregate.orePriced)}/${formatNumber(aggregate.oreRequired)} raw ore units priced`;
+      return `
+        <div class="assay-status-ledger">
+          <div class="assay-status-strip">
+            ${renderAssayStatusMetric("Batch Lines", formatNumber(payloads.length), `${formatNumber(totalUnits)} ore units`, "is-amber")}
+            ${renderAssayStatusMetric("Full Portions", formatNumber(fullPortions), "leftovers shown by row", "")}
+            ${renderAssayStatusMetric("Jita Buy Delta", aggregate.delta == null ? "unknown" : formatSignedIsk(aggregate.delta), "liquidation value", "is-amber")}
+            ${renderAssayStatusMetric("Facility", formatPercent(yieldData.net_yield_percent), "first-row net yield", "is-green")}
+          </div>
+          <div class="assay-status-sheet">
+            <span class="notebook-ribbon">Batch Assay Log</span>
+            ${renderAssayStatusRow("Input", `${formatNumber(payloads.length)} ore stack${payloads.length === 1 ? "" : "s"}`, `${formatNumber(totalUnits)} total units; ${formatNumber(fullPortions)} full portions processed.`)}
+            ${renderAssayStatusRow("Decision", reprocessingDecisionFromAggregate(aggregate).label, `Processed ${renderReprocessingJitaValue(aggregate.processedValue, null)}; ore ${renderReprocessingJitaValue(aggregate.oreValue, null)}.`)}
+            ${renderAssayStatusRow("Jita coverage", escapeHtml(valuationCoverage), "Depth-aware values stay labeled when coverage is partial.")}
+          </div>
+        </div>
+      `;
+    }
+
     function renderReprocessingCalculation(data) {
       const valuation = data.jita_valuation || {};
       const notes = Array.isArray(data.notes) ? data.notes : [];
       const valuationNotes = Array.isArray(valuation.notes) ? valuation.notes : [];
-      reprocessSummary.innerHTML = renderReprocessingAssayStatus(data);
+      reprocessLastPayloads = [data];
+      reprocessLastNotes = notes.concat(valuationNotes);
+      reprocessSummary.innerHTML = renderReprocessingDecisionHeadline(reprocessLastPayloads) + renderReprocessingAssayStatus(data);
       reprocessLocationDetail.innerHTML = renderReprocessingFacilityStatus(data);
-      reprocessResults.innerHTML = renderReprocessingMaterials(data, notes.concat(valuationNotes));
+      reprocessResults.innerHTML = renderReprocessingOutputFromPayloads(reprocessLastPayloads, reprocessLastNotes);
+      setReprocessingCopyStatus("Raw ore and mineral lists are ready to copy.");
+    }
+
+    function renderReprocessingBatchCalculation(payloads) {
+      const notes = payloads.flatMap((payload) => {
+        const valuation = payload.jita_valuation || {};
+        return (Array.isArray(payload.notes) ? payload.notes : []).concat(Array.isArray(valuation.notes) ? valuation.notes : []);
+      });
+      reprocessLastPayloads = payloads;
+      reprocessLastNotes = notes;
+      reprocessSummary.innerHTML = renderReprocessingDecisionHeadline(payloads) + renderReprocessingBatchAssayStatus(payloads);
+      reprocessLocationDetail.innerHTML = renderReprocessingFacilityStatus(payloads[0] || {});
+      reprocessResults.innerHTML = renderReprocessingOutputFromPayloads(payloads, notes);
+      setReprocessingCopyStatus("Batch raw ore and mineral lists are ready to copy.");
     }
 
     function renderReprocessingAssayStatus(data) {
@@ -16348,6 +16838,174 @@ def _render_flight_attendant_dashboard() -> str:
       `;
     }
 
+    function aggregateReprocessingMaterials(payloads) {
+      const materialsByType = new Map();
+      (payloads || []).forEach((payload) => {
+        (payload.materials || []).forEach((material) => {
+          const key = String(material.type_id || material.name || "");
+          const current = materialsByType.get(key) || {
+            type_id: material.type_id,
+            name: material.name,
+            base_quantity: 0,
+            gross_quantity: 0,
+            station_tax_quantity: 0,
+            net_quantity: 0,
+            eve_estimate_value: 0,
+            eve_estimate_unit_price: material.eve_estimate_unit_price,
+            eve_estimate_price_source: material.eve_estimate_price_source,
+            jita_value: 0,
+            jita_buy_price: material.jita_buy_price,
+            jita_priced_quantity: 0,
+            jita_required_quantity: 0,
+            jita_complete: true,
+            has_eve_estimate: false,
+            has_jita_value: false,
+          };
+          current.base_quantity += Number(material.base_quantity || 0);
+          current.gross_quantity += Number(material.gross_quantity || 0);
+          current.station_tax_quantity += Number(material.station_tax_quantity || 0);
+          current.net_quantity += Number(material.net_quantity || 0);
+          current.jita_priced_quantity += Number(material.jita_priced_quantity || 0);
+          current.jita_required_quantity += Number(material.jita_required_quantity || material.net_quantity || 0);
+          current.jita_complete = current.jita_complete && Boolean(material.jita_complete);
+          if (material.eve_estimate_value != null) {
+            current.eve_estimate_value += Number(material.eve_estimate_value || 0);
+            current.has_eve_estimate = true;
+          }
+          if (material.jita_value != null) {
+            current.jita_value += Number(material.jita_value || 0);
+            current.has_jita_value = true;
+          }
+          materialsByType.set(key, current);
+        });
+      });
+      return Array.from(materialsByType.values())
+        .map((material) => ({
+          ...material,
+          eve_estimate_value: material.has_eve_estimate ? material.eve_estimate_value : null,
+          jita_value: material.has_jita_value ? material.jita_value : null,
+        }))
+        .sort((left, right) => Number(right.jita_value || right.net_quantity || 0) - Number(left.jita_value || left.net_quantity || 0));
+    }
+
+    function renderReprocessingOutputFromPayloads(payloads, notes) {
+      if ((payloads || []).length > 1) return renderReprocessingBatchMaterials(payloads, notes);
+      return renderReprocessingMaterials((payloads || [])[0] || {}, notes);
+    }
+
+    function renderReprocessingBatchSpecimen(payloads) {
+      const aggregate = aggregateReprocessingValuation(payloads);
+      const totalUnits = (payloads || []).reduce((sum, payload) => sum + Number((payload.input || {}).quantity || 0), 0);
+      const oreRows = (payloads || []).slice(0, 6).map((payload) => {
+        const ore = payload.ore || {};
+        const input = payload.input || {};
+        return `<div class="notebook-value-row"><span>${escapeHtml(ore.name || "Ore")}</span><b>${formatNumber(input.quantity || 0)}</b></div>`;
+      }).join("");
+      const extraCount = Math.max(0, (payloads || []).length - 6);
+      return `
+        <aside class="ore-specimen">
+          <div class="ore-copy">
+            <span class="bench-label">Input Batch</span>
+            <strong>${formatNumber(payloads.length)} ore stack${payloads.length === 1 ? "" : "s"}</strong>
+            <p>${formatNumber(totalUnits)} total ore units; ${aggregate.complete ? "Jita depth fully covers displayed values." : "Some values use partial Jita depth."}</p>
+          </div>
+          <div class="notebook-value-grid">
+            ${oreRows}
+            ${extraCount ? `<div class="notebook-note">+${formatNumber(extraCount)} more stack${extraCount === 1 ? "" : "s"} in the assay table.</div>` : ""}
+          </div>
+          <div class="ore-readouts">
+            <div class="assay-cell"><span>Raw Jita Buy</span><b>${renderReprocessingJitaValue(aggregate.oreValue, null)}</b><small>${formatNumber(aggregate.orePriced)} units priced</small></div>
+            <div class="assay-cell"><span>Processed Jita</span><b>${renderReprocessingJitaValue(aggregate.processedValue, null)}</b><small>${formatNumber(aggregate.processedTypes)} material rows priced</small></div>
+          </div>
+        </aside>
+      `;
+    }
+
+    function renderReprocessingBatchNotebook(payloads, notes) {
+      const first = (payloads || [])[0] || {};
+      const facility = first.facility || {};
+      const yieldData = first.yield || {};
+      const aggregate = aggregateReprocessingValuation(payloads);
+      const baseFee = facility.base_station_tax_percent == null ? yieldData.station_tax_percent : facility.base_station_tax_percent;
+      const adjustedFee = facility.adjusted_station_tax_percent ?? yieldData.station_tax_percent;
+      const noteRows = (notes || []).slice(0, 4).map((note) => `<div class="notebook-note">${escapeHtml(note)}</div>`).join("");
+      return `
+        <section class="field-notebook">
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Batch Decision</span>
+            <div class="notebook-value-row"><span>Raw ore Jita buy</span><b>${renderReprocessingJitaValue(aggregate.oreValue, null)}</b></div>
+            <div class="notebook-value-row"><span>Processed Jita buy</span><b>${renderReprocessingJitaValue(aggregate.processedValue, null)}</b></div>
+            <div class="notebook-value-row is-total"><span>Jita buy delta</span><b>${aggregate.delta == null ? "unknown" : formatSignedIsk(aggregate.delta)}</b></div>
+          </div>
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Facility</span>
+            <div class="notebook-math-row"><span>Selected location</span><b>${escapeHtml(facility.location_name || "current location")}</b></div>
+            <div class="notebook-math-row"><span>First-row net yield</span><b>${formatPercent(yieldData.net_yield_percent)}</b></div>
+            <div class="notebook-fee-card">
+              <div><span>Base Fee</span><b>${formatPercent(baseFee)}</b></div>
+              <div class="fee-arrow">-></div>
+              <div><span>Adjusted Fee</span><b>${formatPercent(adjustedFee)}</b></div>
+            </div>
+          </div>
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Depth Check</span>
+            <div class="notebook-note">${aggregate.complete ? "All displayed Jita buy values were fully covered by public order depth." : "At least one displayed Jita value is partial. Treat the decision as a price check before moving a large batch."}</div>
+          </div>
+          ${noteRows ? `<div class="notebook-section"><span class="notebook-ribbon">Notes</span>${noteRows}</div>` : ""}
+        </section>
+      `;
+    }
+
+    function renderReprocessingBatchMaterials(payloads, notes) {
+      const materials = aggregateReprocessingMaterials(payloads);
+      const aggregate = aggregateReprocessingValuation(payloads);
+      const first = (payloads || [])[0] || {};
+      const rows = materials.map((material) => `
+        <article class="mineral-card" style="--sample-accent: ${escapeHtml(reprocessingSampleAccent(material.type_id))}">
+          ${renderEveTypeIcon(material.type_id, material.name, "mineral-image", 64)}
+          <div class="mineral-copy">
+            <div class="mineral-card-head">
+              <strong>${escapeHtml(material.name)}</strong>
+              <span class="sample-qty">${formatNumber(material.net_quantity)}</span>
+            </div>
+            <div class="sample-ledger">
+              <div class="decision-metric"><span>EVE Est.</span><b>${renderReprocessingJitaValue(material.eve_estimate_value, null)}</b><small>${renderReprocessingEveMaterialEstimate(material)}</small></div>
+              <div class="decision-metric"><span>Jita Buy</span><b>${renderReprocessingJitaValue(material.jita_value, null)}</b><small>${renderReprocessingMaterialJitaDepth(material)}</small></div>
+            </div>
+            <div class="sample-flow">
+              <span>Base ${formatNumber(material.base_quantity)}</span>
+              <span>Gross ${formatNumber(material.gross_quantity)}</span>
+              <span>Fee ${formatNumber(material.station_tax_quantity)}</span>
+              <span>Net ${formatNumber(material.net_quantity)}</span>
+            </div>
+          </div>
+        </article>
+      `).join("");
+      return `
+        <div class="reprocess-field-desk">
+          ${renderReprocessingStatusRail(first)}
+          ${renderReprocessingBatchSpecimen(payloads)}
+          ${renderReprocessingBatchNotebook(payloads, notes)}
+          <div class="mineral-tray">
+            <div class="tray-heading">
+              <strong>Recovered Minerals</strong>
+              <span>${formatNumber(materials.length)} stack${materials.length === 1 ? "" : "s"}</span>
+            </div>
+            <div class="mineral-grid">${rows || `<div class="decision-empty">No output materials were calculated.</div>`}</div>
+            <div class="minerals-total">
+              <span>Minerals Total (Jita Buy)</span>
+              <b>${renderReprocessingJitaValue(aggregate.processedValue, null)}</b>
+            </div>
+          </div>
+          ${renderReprocessingAssayTable(payloads)}
+          <div class="reprocess-desk-footer">
+            <span><b>Batch:</b> ${formatNumber(payloads.length)} ore stack${payloads.length === 1 ? "" : "s"} calculated with the selected facility settings.</span>
+            <span><b>Cache:</b> ${escapeHtml(((payloads[0] || {}).cache || {}).build_number || "unknown")}</span>
+          </div>
+        </div>
+      `;
+    }
+
     function renderReprocessingMaterials(data, notes) {
       const materials = data.materials || [];
       if (!materials.length) {
@@ -16367,6 +17025,7 @@ def _render_flight_attendant_dashboard() -> str:
                 <b>unknown</b>
               </div>
             </div>
+            ${renderReprocessingAssayTable([data])}
             <div class="reprocess-desk-footer">
               <span><b>Skills:</b> Reprocessing ${formatNumber((data.skills || {}).reprocessing_level)}, Reprocessing Efficiency ${formatNumber((data.skills || {}).reprocessing_efficiency_level)}</span>
               <span><b>Cache:</b> ${escapeHtml((data.cache || {}).build_number || "unknown")}</span>
@@ -16411,12 +17070,191 @@ def _render_flight_attendant_dashboard() -> str:
               <b>${renderReprocessingJitaValue((data.jita_valuation || {}).processed_material_value, (data.jita_valuation || {}).processed_partial_material_value)}</b>
             </div>
           </div>
+          ${renderReprocessingAssayTable([data])}
           <div class="reprocess-desk-footer">
             <span><b>Skills:</b> Reprocessing ${formatNumber((data.skills || {}).reprocessing_level)}, Reprocessing Efficiency ${formatNumber((data.skills || {}).reprocessing_efficiency_level)}</span>
             <span><b>Cache:</b> ${escapeHtml((data.cache || {}).build_number || "unknown")}</span>
           </div>
         </div>
       `;
+    }
+
+    function reprocessingAssayRows(payloads) {
+      return (payloads || []).map((payload) => {
+        const ore = payload.ore || {};
+        const input = payload.input || {};
+        const valuation = payload.jita_valuation || {};
+        const yieldData = payload.yield || {};
+        const processedPair = reprocessingValuePair(valuation, "processed_material_value", "processed_partial_material_value");
+        const orePair = reprocessingValuePair(valuation, "ore_value", "ore_partial_value");
+        const delta = processedPair.value != null && orePair.value != null ? processedPair.value - orePair.value : null;
+        const deltaPercent = delta != null && orePair.value > 0 ? (delta / orePair.value) * 100 : null;
+        const complete = processedPair.complete && orePair.complete;
+        const decision = reprocessingDecisionFromAggregate({
+          delta,
+          complete,
+        });
+        return {
+          oreName: ore.name || "Ore",
+          groupName: ore.group_name || "",
+          quantity: Number(input.quantity || 0),
+          leftover: Number(input.leftover_units || 0),
+          netYield: Number(yieldData.net_yield_percent || 0),
+          processingFee: Number(yieldData.station_tax_percent || 0),
+          processedValue: processedPair.value,
+          oreValue: orePair.value,
+          delta,
+          deltaPercent,
+          complete,
+          decision,
+          coverage: renderReprocessingJitaCoverage(valuation),
+        };
+      });
+    }
+
+    function reprocessingAssaySortValue(row, key) {
+      const values = {
+        ore: row.oreName,
+        quantity: row.quantity,
+        yield: row.netYield,
+        fee: row.processingFee,
+        raw: row.oreValue,
+        processed: row.processedValue,
+        delta: row.delta,
+        coverage: row.complete ? 1 : 0,
+      };
+      return values[key] ?? values.delta;
+    }
+
+    function sortedReprocessingAssayRows(payloads) {
+      const rows = reprocessingAssayRows(payloads);
+      const key = reprocessAssaySortKey || "delta";
+      const direction = reprocessAssaySortDirection === "asc" ? 1 : -1;
+      return rows.sort((left, right) => {
+        const leftValue = reprocessingAssaySortValue(left, key);
+        const rightValue = reprocessingAssaySortValue(right, key);
+        if (typeof leftValue === "string" || typeof rightValue === "string") {
+          return String(leftValue || "").localeCompare(String(rightValue || "")) * direction;
+        }
+        const leftNumber = Number(leftValue);
+        const rightNumber = Number(rightValue);
+        if (!Number.isFinite(leftNumber) && !Number.isFinite(rightNumber)) return 0;
+        if (!Number.isFinite(leftNumber)) return 1;
+        if (!Number.isFinite(rightNumber)) return -1;
+        return (leftNumber - rightNumber) * direction;
+      });
+    }
+
+    function renderReprocessingSortButton(key, label) {
+      const active = reprocessAssaySortKey === key;
+      const arrow = active ? (reprocessAssaySortDirection === "asc" ? " up" : " down") : "";
+      return `<button type="button" data-reprocess-sort="${escapeHtml(key)}">${escapeHtml(label)}${escapeHtml(arrow)}</button>`;
+    }
+
+    function renderReprocessingAssayTable(payloads) {
+      const rows = sortedReprocessingAssayRows(payloads);
+      if (!rows.length) return "";
+      return `
+        <div class="reprocessing-assay-table-wrap">
+          <div class="reprocessing-assay-table-head">
+            <strong>Compact Assay Table</strong>
+            <span>${formatNumber(rows.length)} row${rows.length === 1 ? "" : "s"}</span>
+          </div>
+          <table class="reprocessing-assay-table">
+            <thead>
+              <tr>
+                <th>${renderReprocessingSortButton("ore", "Ore")}</th>
+                <th class="number-cell">${renderReprocessingSortButton("quantity", "Units")}</th>
+                <th class="number-cell">${renderReprocessingSortButton("yield", "Net")}</th>
+                <th class="number-cell">${renderReprocessingSortButton("fee", "Fee")}</th>
+                <th class="number-cell">${renderReprocessingSortButton("raw", "Raw Jita")}</th>
+                <th class="number-cell">${renderReprocessingSortButton("processed", "Processed")}</th>
+                <th class="number-cell">${renderReprocessingSortButton("delta", "Delta")}</th>
+                <th>${renderReprocessingSortButton("coverage", "Coverage")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map((row) => {
+                const deltaClass = row.delta == null ? "delta-partial" : (row.delta >= 0 ? "delta-positive" : "delta-negative");
+                const depthClass = row.complete ? "" : " delta-partial";
+                return `
+                  <tr>
+                    <td><b>${escapeHtml(row.oreName)}</b><small>${escapeHtml(row.decision.label)}${row.groupName ? ` - ${escapeHtml(row.groupName)}` : ""}</small></td>
+                    <td class="number-cell"><b>${formatNumber(row.quantity)}</b><small>${formatNumber(row.leftover)} leftover</small></td>
+                    <td class="number-cell"><b>${formatPercent(row.netYield)}</b></td>
+                    <td class="number-cell"><b>${formatPercent(row.processingFee)}</b></td>
+                    <td class="number-cell"><b>${renderReprocessingJitaValue(row.oreValue, null)}</b></td>
+                    <td class="number-cell"><b>${renderReprocessingJitaValue(row.processedValue, null)}</b></td>
+                    <td class="number-cell"><b class="${deltaClass}">${row.delta == null ? "unknown" : formatSignedIsk(row.delta)}</b><small>${row.deltaPercent == null ? "" : formatPercent(row.deltaPercent)}</small></td>
+                    <td><b class="${depthClass}">${row.complete ? "Full depth" : "Partial depth"}</b><small>${escapeHtml(row.coverage)}</small></td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function aggregateReprocessingRawStacks(payloads) {
+      const rowsByName = new Map();
+      (payloads || []).forEach((payload) => {
+        const ore = payload.ore || {};
+        const input = payload.input || {};
+        const name = ore.name || "Ore";
+        rowsByName.set(name, (rowsByName.get(name) || 0) + Number(input.quantity || 0));
+      });
+      return Array.from(rowsByName.entries()).sort((left, right) => left[0].localeCompare(right[0]));
+    }
+
+    function reprocessingCopyQuantity(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "0";
+      return String(Math.max(0, Math.floor(number)));
+    }
+
+    function reprocessingRawCopyText(payloads) {
+      return aggregateReprocessingRawStacks(payloads)
+        .map(([name, quantity]) => `${name}\t${reprocessingCopyQuantity(quantity)}`)
+        .join("\\n");
+    }
+
+    function reprocessingMineralCopyText(payloads) {
+      return aggregateReprocessingMaterials(payloads)
+        .filter((material) => Number(material.net_quantity || 0) > 0)
+        .map((material) => `${material.name}\t${reprocessingCopyQuantity(material.net_quantity)}`)
+        .join("\\n");
+    }
+
+    async function copyReprocessingText(kind, button) {
+      if (!reprocessLastPayloads.length) {
+        setReprocessingCopyStatus("Run an assay before copying.", true);
+        return;
+      }
+      const text = kind === "minerals"
+        ? reprocessingMineralCopyText(reprocessLastPayloads)
+        : reprocessingRawCopyText(reprocessLastPayloads);
+      if (!text.trim()) {
+        setReprocessingCopyStatus("No copyable rows are ready yet.", true);
+        return;
+      }
+      const previousText = button ? button.textContent : "";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Copying...";
+      }
+      try {
+        await writeTextToClipboard(text);
+        const rowCount = text.split(/\\n/).filter(Boolean).length;
+        setReprocessingCopyStatus(`Copied ${formatNumber(rowCount)} ${kind === "minerals" ? "mineral" : "raw ore"} row${rowCount === 1 ? "" : "s"}.`);
+      } catch (error) {
+        setReprocessingCopyStatus(error.message || "Clipboard copy failed.", true);
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = previousText;
+        }
+      }
     }
 
     function renderReprocessingMaterialJitaDepth(material) {
@@ -16898,8 +17736,18 @@ def _render_flight_attendant_dashboard() -> str:
         stationTaxPercent: readOptionalPercentInput(reprocessStationTax),
         implantBonusPercent: readOptionalPercentInput(reprocessImplantBonus),
         structureBonusPercent: readOptionalPercentInput(reprocessStructureBonus) || "0",
+        batchText: reprocessBatchInput.value,
       });
-      resetReprocessing(`Ready to calculate ${formatNumber(settings.quantity)} ore units.`);
+      const parsedBatch = parseReprocessingBatchInput(settings.batchText);
+      if (settings.batchText.trim() && !parsedBatch.errors.length && parsedBatch.stacks.length) {
+        resetReprocessing(`Ready to calculate ${formatNumber(parsedBatch.stacks.length)} pasted ore stack${parsedBatch.stacks.length === 1 ? "" : "s"}.`);
+        setReprocessingBatchStatus(`${formatNumber(parsedBatch.stacks.length)} ore stack${parsedBatch.stacks.length === 1 ? "" : "s"} ready for batch assay.`);
+      } else if (settings.batchText.trim() && parsedBatch.errors.length) {
+        resetReprocessing(parsedBatch.errors[0]);
+        setReprocessingBatchStatus(parsedBatch.errors[0], true);
+      } else {
+        resetReprocessing(`Ready to calculate ${formatNumber(settings.quantity)} ore units.`);
+      }
     }
 
     function updateReprocessingStationsAndReset() {
@@ -16916,10 +17764,28 @@ def _render_flight_attendant_dashboard() -> str:
     reprocessStationSelect.addEventListener("change", updateReprocessingAndReset);
     reprocessStationSort.addEventListener("change", updateReprocessingStationsAndReset);
     reprocessRefreshLocations.addEventListener("click", loadReprocessingLocations);
+    reprocessBatchInput.addEventListener("change", updateReprocessingAndReset);
     reprocessFacilityYield.addEventListener("change", updateReprocessingAndReset);
     reprocessStationTax.addEventListener("change", updateReprocessingAndReset);
     reprocessImplantBonus.addEventListener("change", updateReprocessingStationsAndReset);
     reprocessStructureBonus.addEventListener("change", updateReprocessingStationsAndReset);
+    reprocessResults.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-reprocess-sort]");
+      if (!button) return;
+      const key = button.dataset.reprocessSort || "delta";
+      if (reprocessAssaySortKey === key) {
+        reprocessAssaySortDirection = reprocessAssaySortDirection === "asc" ? "desc" : "asc";
+      } else {
+        reprocessAssaySortKey = key;
+        reprocessAssaySortDirection = key === "ore" ? "asc" : "desc";
+      }
+      reprocessResults.innerHTML = renderReprocessingOutputFromPayloads(reprocessLastPayloads, reprocessLastNotes);
+    });
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-copy-reprocessing]");
+      if (!button) return;
+      copyReprocessingText(button.dataset.copyReprocessing, button);
+    });
 
     flightProfitFilters.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-profit-filter]");
