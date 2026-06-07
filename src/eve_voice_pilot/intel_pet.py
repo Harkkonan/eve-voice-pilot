@@ -58,7 +58,14 @@ from eve_voice_pilot.commands import (
 )
 from eve_voice_pilot.config import load_settings as load_app_settings
 from eve_voice_pilot.input_sender import active_window_title, parse_key_chord, send_key_chord
-from eve_voice_pilot.local_transcription import LocalRecognitionDiagnostic, LocalVoskTranscriber
+from eve_voice_pilot.local_transcription import (
+    DEFAULT_MODEL_NAME,
+    DEFAULT_MODEL_PATH,
+    RECOMMENDED_MODEL_NAME,
+    RECOMMENDED_MODEL_PATH,
+    LocalRecognitionDiagnostic,
+    LocalVoskTranscriber,
+)
 from eve_voice_pilot.speech_responses import (
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
@@ -90,6 +97,8 @@ VOICE_ENGINES = (VOICE_ENGINE_LOCAL, VOICE_ENGINE_OPENAI)
 DEFAULT_VOICE_ENGINE = VOICE_ENGINE_LOCAL
 DEFAULT_INPUT_DEVICE_LABEL = "System default"
 DEFAULT_VOICE_TARGET_TITLE = "EVE"
+DEFAULT_VOICE_MODEL_LABEL = f"Default small ({DEFAULT_MODEL_NAME})"
+RECOMMENDED_VOICE_MODEL_LABEL = f"Recommended lgraph ({RECOMMENDED_MODEL_NAME})"
 COMMAND_PHRASE_SPLIT_RE = re.compile(r"[\n,]+")
 PET_VOICE_STYLE_PRESETS = (
     (
@@ -338,6 +347,58 @@ def clean_voice_preview_text(value: Any) -> str:
 def clean_voice_engine(value: Any) -> str:
     engine = str(value or "").strip()
     return engine if engine in VOICE_ENGINES else DEFAULT_VOICE_ENGINE
+
+
+def clean_voice_model_path(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text == DEFAULT_VOICE_MODEL_LABEL:
+        return ""
+    if text == RECOMMENDED_VOICE_MODEL_LABEL:
+        return str(RECOMMENDED_MODEL_PATH)
+    if text.startswith("Installed: "):
+        text = text.split("Installed: ", maxsplit=1)[1].strip()
+    return text
+
+
+def voice_model_path(settings_value: Any) -> Path:
+    cleaned = clean_voice_model_path(settings_value)
+    if not cleaned:
+        return DEFAULT_MODEL_PATH
+    path = Path(cleaned).expanduser()
+    return path if path.is_absolute() else ROOT / path
+
+
+def voice_model_display(settings_value: Any) -> str:
+    cleaned = clean_voice_model_path(settings_value)
+    if not cleaned:
+        return DEFAULT_VOICE_MODEL_LABEL
+    path = voice_model_path(cleaned)
+    try:
+        if path.resolve() == RECOMMENDED_MODEL_PATH.resolve():
+            return RECOMMENDED_VOICE_MODEL_LABEL
+    except OSError:
+        pass
+    return cleaned
+
+
+def installed_voice_model_labels() -> tuple[str, ...]:
+    labels = [DEFAULT_VOICE_MODEL_LABEL, RECOMMENDED_VOICE_MODEL_LABEL]
+    models_root = DEFAULT_MODEL_PATH.parent
+    if models_root.exists():
+        for path in sorted(models_root.iterdir()):
+            if path.is_dir() and (path / "conf" / "model.conf").exists():
+                label = DEFAULT_VOICE_MODEL_LABEL if path == DEFAULT_MODEL_PATH else f"Installed: {path}"
+                if label not in labels:
+                    labels.append(label)
+    return tuple(labels)
+
+
+def voice_model_status(settings_value: Any) -> str:
+    path = voice_model_path(settings_value)
+    config = path / "conf" / "model.conf"
+    if config.exists():
+        return f"Model ready: {path}"
+    return f"Model missing: {path}. Run .\\scripts\\download-vosk-model.ps1 -ModelName {path.name}"
 
 
 def clean_voice_input_device(value: Any) -> str:
@@ -651,6 +712,7 @@ class IntelPetSettings:
     voice_preview_text: str = DEFAULT_VOICE_PREVIEW_TEXT
     enable_voice_listener: bool = False
     voice_engine: str = DEFAULT_VOICE_ENGINE
+    voice_model_path: str = ""
     voice_input_device: str = ""
     voice_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN
     allow_voice_command_sending: bool = False
@@ -673,6 +735,7 @@ class IntelPetSettings:
             voice_preview_text=clean_voice_preview_text(payload.get("voice_preview_text")),
             enable_voice_listener=bool(payload.get("enable_voice_listener", False)),
             voice_engine=clean_voice_engine(payload.get("voice_engine")),
+            voice_model_path=clean_voice_model_path(payload.get("voice_model_path")),
             voice_input_device=clean_voice_input_device(payload.get("voice_input_device")),
             voice_call_sign=clean_voice_call_sign(payload.get("voice_call_sign")),
             allow_voice_command_sending=bool(payload.get("allow_voice_command_sending", False)),
@@ -701,6 +764,7 @@ class IntelPetSettings:
             "voice_preview_text": clean_voice_preview_text(self.voice_preview_text),
             "enable_voice_listener": bool(self.enable_voice_listener),
             "voice_engine": clean_voice_engine(self.voice_engine),
+            "voice_model_path": clean_voice_model_path(self.voice_model_path),
             "voice_input_device": clean_voice_input_device(self.voice_input_device),
             "voice_call_sign": clean_voice_call_sign(self.voice_call_sign),
             "allow_voice_command_sending": bool(self.allow_voice_command_sending),
@@ -939,6 +1003,8 @@ def load_settings(path: Path | None, *, overrides: argparse.Namespace | None = N
         settings = replace(settings, enable_voice_listener=bool(overrides.enable_voice_listener))
     if getattr(overrides, "voice_engine", ""):
         settings = replace(settings, voice_engine=clean_voice_engine(overrides.voice_engine))
+    if getattr(overrides, "voice_model_path", ""):
+        settings = replace(settings, voice_model_path=clean_voice_model_path(overrides.voice_model_path))
     if getattr(overrides, "voice_input_device", ""):
         settings = replace(settings, voice_input_device=clean_voice_input_device(overrides.voice_input_device))
     if getattr(overrides, "voice_call_sign", ""):
@@ -998,6 +1064,7 @@ def replace_voice_settings(
     voice_preview_text: str | None = None,
     enable_voice_listener: bool | None = None,
     voice_engine: str | None = None,
+    voice_model_path: str | None = None,
     voice_input_device: str | None = None,
     voice_call_sign: str | None = None,
     allow_voice_command_sending: bool | None = None,
@@ -1015,6 +1082,7 @@ def replace_voice_settings(
         ),
         enable_voice_listener=settings.enable_voice_listener if enable_voice_listener is None else bool(enable_voice_listener),
         voice_engine=settings.voice_engine if voice_engine is None else clean_voice_engine(voice_engine),
+        voice_model_path=settings.voice_model_path if voice_model_path is None else clean_voice_model_path(voice_model_path),
         voice_input_device=settings.voice_input_device if voice_input_device is None else clean_voice_input_device(voice_input_device),
         voice_call_sign=settings.voice_call_sign if voice_call_sign is None else clean_voice_call_sign(voice_call_sign),
         allow_voice_command_sending=(
@@ -1808,10 +1876,12 @@ def run_overlay(
                 if voice_engine == VOICE_ENGINE_OPENAI and not api_key:
                     raise CorpIntelError("OpenAI voice listener needs an API key.")
                 input_device_index = voice_input_device_index(settings.voice_input_device)
+                selected_model_path = voice_model_path(settings.voice_model_path)
                 call_sign = clean_voice_call_sign(settings.voice_call_sign)
                 signature = (
                     voice_engine,
                     input_device_index,
+                    str(selected_model_path) if voice_engine == VOICE_ENGINE_LOCAL else "",
                     call_sign,
                     voice_command_signature(commands),
                     bool(api_key) if voice_engine == VOICE_ENGINE_OPENAI else False,
@@ -1830,6 +1900,7 @@ def run_overlay(
                             commands,
                             lambda text: alert_queue.put(f"Voice listener: {text}"),
                             input_device_index=input_device_index,
+                            model_path=selected_model_path,
                             response_call_signs=response_call_signs(call_sign),
                         )
                     transcriber_signature = signature
@@ -2489,6 +2560,8 @@ def run_overlay(
         voice_preview_text_var = tk.StringVar(value=clean_voice_preview_text(voice_settings.voice_preview_text))
         voice_listener_var = tk.BooleanVar(value=voice_settings.enable_voice_listener)
         speech_engine_var = tk.StringVar(value=clean_voice_engine(voice_settings.voice_engine))
+        voice_model_var = tk.StringVar(value=voice_model_display(voice_settings.voice_model_path))
+        voice_model_status_var = tk.StringVar(value=voice_model_status(voice_settings.voice_model_path))
         voice_call_sign_var = tk.StringVar(value=clean_voice_call_sign(voice_settings.voice_call_sign))
         try:
             input_device_labels = [DEFAULT_INPUT_DEVICE_LABEL, *(device.label for device in list_input_devices())]
@@ -2510,6 +2583,7 @@ def run_overlay(
                     voice_preview_text=voice_preview_text_var.get(),
                     enable_voice_listener=voice_listener_var.get(),
                     voice_engine=speech_engine_var.get(),
+                    voice_model_path=voice_model_var.get(),
                     voice_input_device=voice_input_device_var.get(),
                     voice_call_sign=voice_call_sign_var.get(),
                     allow_voice_command_sending=allow_command_sending_var.get(),
@@ -2519,6 +2593,8 @@ def run_overlay(
                 save_settings(settings_path, settings)
                 engine.update_settings(settings)
                 configure_pet_speech(settings)
+                voice_model_var.set(voice_model_display(settings.voice_model_path))
+                voice_model_status_var.set(voice_model_status(settings.voice_model_path))
             except Exception as exc:
                 editor_status_var.set(f"Voice save failed: {exc}")
                 return
@@ -2551,6 +2627,11 @@ def run_overlay(
                 editor_status_var.set(f"Voice preview already cached: {pet_speech.text_cache_path(text).name}")
             else:
                 editor_status_var.set("Voice preview cache queued.")
+
+        def refresh_voice_model_choices() -> None:
+            voice_model_box.configure(values=installed_voice_model_labels())
+            voice_model_status_var.set(voice_model_status(engine.current_settings().voice_model_path))
+            editor_status_var.set("Voice model list refreshed.")
 
         voice_grid = ttk.Frame(voice_frame)
         voice_grid.pack(fill="x")
@@ -2641,41 +2722,58 @@ def run_overlay(
         speech_engine_box.grid(row=12, column=1, sticky="ew", pady=5)
         speech_engine_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Microphone").grid(row=13, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="Local model").grid(row=13, column=0, sticky="w", pady=5)
+        voice_model_box = ttk.Combobox(
+            voice_grid,
+            textvariable=voice_model_var,
+            values=installed_voice_model_labels(),
+        )
+        voice_model_box.grid(row=13, column=1, sticky="ew", pady=5)
+        voice_model_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings("Voice model selected"))
+        ttk.Label(voice_grid, textvariable=voice_model_status_var, wraplength=500).grid(
+            row=14,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(0, 8),
+        )
+
+        ttk.Label(voice_grid, text="Microphone").grid(row=15, column=0, sticky="w", pady=5)
         voice_input_box = ttk.Combobox(
             voice_grid,
             textvariable=voice_input_device_var,
             values=input_device_labels,
             state="readonly",
         )
-        voice_input_box.grid(row=13, column=1, sticky="ew", pady=5)
+        voice_input_box.grid(row=15, column=1, sticky="ew", pady=5)
         voice_input_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Response call sign").grid(row=14, column=0, sticky="w", pady=5)
-        ttk.Entry(voice_grid, textvariable=voice_call_sign_var).grid(row=14, column=1, sticky="ew", pady=5)
+        ttk.Label(voice_grid, text="Response call sign").grid(row=16, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=voice_call_sign_var).grid(row=16, column=1, sticky="ew", pady=5)
 
         ttk.Checkbutton(
             voice_grid,
             text="Allow command sending",
             variable=allow_command_sending_var,
             command=lambda: persist_voice_settings("Command sending setting saved"),
-        ).grid(row=15, column=0, columnspan=2, sticky="w", pady=(12, 4))
+        ).grid(row=17, column=0, columnspan=2, sticky="w", pady=(12, 4))
         ttk.Label(
             voice_grid,
             text="Leave this off for practice. When on, only exact Voice Pilot command matches can send their configured keybind.",
             wraplength=500,
-        ).grid(row=16, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ).grid(row=18, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(
             voice_grid,
             text="Only send when active window title matches",
             variable=require_target_window_var,
             command=lambda: persist_voice_settings("Window guard saved"),
-        ).grid(row=17, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        ttk.Entry(voice_grid, textvariable=voice_target_title_var).grid(row=18, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        ).grid(row=19, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Entry(voice_grid, textvariable=voice_target_title_var).grid(row=20, column=0, columnspan=2, sticky="ew", pady=(0, 5))
 
         voice_buttons = ttk.Frame(voice_frame)
         voice_buttons.pack(fill="x", pady=(8, 0))
         ttk.Button(voice_buttons, text="Save Voice Settings", command=persist_voice_settings).pack(side="left")
+        ttk.Button(voice_buttons, text="Refresh Models", command=refresh_voice_model_choices).pack(side="left", padx=(6, 0))
         ttk.Button(
             voice_buttons,
             text="Test Pet Voice",
@@ -2994,6 +3092,7 @@ def run_overlay(
                     raise CorpIntelError("Voice profile has no commands.")
                 input_label = voice_input_device_display(settings.voice_input_device)
                 input_device_index = voice_input_device_index(settings.voice_input_device)
+                selected_model_path = voice_model_path(settings.voice_model_path)
                 call_sign = clean_voice_call_sign(settings.voice_call_sign)
             except Exception as exc:
                 recognition_lab_status_var.set(f"Recognition Lab setup failed: {exc}")
@@ -3003,7 +3102,7 @@ def run_overlay(
             voice_lab_state["recognition_running"] = True
             voice_lab_state["last_recognition_transcript"] = ""
             set_recognition_lab_result("Recording local diagnostic. Speak one command phrase now.")
-            recognition_lab_status_var.set("Loading local model and opening microphone...")
+            recognition_lab_status_var.set(f"Loading {voice_model_display(settings.voice_model_path)} and opening microphone...")
 
             def run_diagnostic() -> None:
                 try:
@@ -3011,6 +3110,7 @@ def run_overlay(
                         commands,
                         lambda text: recognition_lab_queue.put(("status", text)),
                         input_device_index=input_device_index,
+                        model_path=selected_model_path,
                         response_call_signs=response_call_signs(call_sign),
                     )
                     diagnostic = transcriber.record_diagnostic(
@@ -3639,6 +3739,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Disable the practice voice listener even if saved settings enable it.",
     )
     parser.add_argument("--voice-engine", default="", choices=VOICE_ENGINES, help="Speech engine for the practice listener.")
+    parser.add_argument("--voice-model-path", default="", help="Local Vosk model path for offline voice recognition.")
     parser.add_argument("--voice-input-device", default="", help="Microphone label for the practice listener.")
     parser.add_argument("--voice-call-sign", default="", help="Response call sign for voice commands, like Merlin or Aura.")
     parser.add_argument(

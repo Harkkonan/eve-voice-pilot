@@ -200,6 +200,28 @@ The listener uses your saved EVE Voice Pilot command profile when available, the
 
 OpenAI realtime transcription needs a saved EVE Voice Pilot API key on this PC, or one of the same local environment variables used for spoken pet messages. Local/offline transcription needs the Vosk model from setup.
 
+### Local Recognition Models
+
+Setup installs the lightweight local model:
+
+```text
+models\vosk-model-small-en-us-0.15
+```
+
+If local recognition is too weak, install the recommended larger model:
+
+```powershell
+.\scripts\download-vosk-model.ps1 -ModelName vosk-model-en-us-0.22-lgraph
+```
+
+Then open `Options` > `Voice` and choose:
+
+```text
+Recommended lgraph (vosk-model-en-us-0.22-lgraph)
+```
+
+The status line shows whether the selected model is installed. Model files stay under the ignored local `models\` folder and should not be committed.
+
 ### Voice Lab
 
 Use `Options` > `Voice Lab` to add, change, remove, and dry-run voice commands from the pet.
@@ -335,6 +357,7 @@ Example:
   "voice_preview_text": "Intel Pet voice online. Systems are green.",
   "enable_voice_listener": false,
   "voice_engine": "Local (offline)",
+  "voice_model_path": "",
   "voice_input_device": "",
   "voice_call_sign": "merlin",
   "allow_voice_command_sending": false,

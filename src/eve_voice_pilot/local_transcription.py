@@ -31,7 +31,11 @@ from .transcription import (
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCAL_RATE = 16000
-DEFAULT_MODEL_PATH = ROOT / "models" / "vosk-model-small-en-us-0.15"
+MODELS_ROOT = ROOT / "models"
+DEFAULT_MODEL_NAME = "vosk-model-small-en-us-0.15"
+RECOMMENDED_MODEL_NAME = "vosk-model-en-us-0.22-lgraph"
+DEFAULT_MODEL_PATH = MODELS_ROOT / DEFAULT_MODEL_NAME
+RECOMMENDED_MODEL_PATH = MODELS_ROOT / RECOMMENDED_MODEL_NAME
 
 
 @dataclass(frozen=True)

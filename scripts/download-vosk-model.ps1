@@ -1,8 +1,13 @@
+param(
+    [ValidatePattern("^[A-Za-z0-9_.-]+$")]
+    [string]$ModelName = "vosk-model-small-en-us-0.15"
+)
+
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 $modelsRoot = Join-Path $root "models"
-$modelName = "vosk-model-small-en-us-0.15"
+$modelName = $ModelName
 $modelDir = Join-Path $modelsRoot $modelName
 $modelConfig = Join-Path $modelDir "conf\model.conf"
 $zipPath = Join-Path $modelsRoot "$modelName.zip"

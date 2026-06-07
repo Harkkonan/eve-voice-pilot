@@ -23,8 +23,10 @@ from eve_voice_pilot.intel_pet import (
     DEFAULT_PET_SPEECH_ENGINE,
     DEFAULT_VOICE_PROFILE,
     DEFAULT_VOICE_ENGINE,
+    DEFAULT_VOICE_MODEL_LABEL,
     DEFAULT_VOICE_PREVIEW_TEXT,
     DEFAULT_VOICE_TARGET_TITLE,
+    RECOMMENDED_VOICE_MODEL_LABEL,
     USER_VOICE_PROFILE,
     IDLE_SPRITE_SEQUENCE,
     KILL_SPRITE_STEPS,
@@ -51,6 +53,7 @@ from eve_voice_pilot.intel_pet import (
     clean_voice_command_phrases,
     clean_voice_engine,
     clean_voice_input_device,
+    clean_voice_model_path,
     clean_voice_preview_text,
     clean_voice_training_phrase,
     clean_voice_target_title,
@@ -97,13 +100,16 @@ from eve_voice_pilot.intel_pet import (
     spoken_pet_text,
     trim_history,
     voice_input_device_display,
+    voice_model_display,
+    voice_model_path,
+    voice_model_status,
     voice_command_from_fields,
     voice_command_with_added_phrase,
     voice_training_phrase_from_detail,
     voice_status_from_transcript,
 )
 from eve_voice_pilot.commands import VoiceCommand
-from eve_voice_pilot.local_transcription import LocalRecognitionDiagnostic
+from eve_voice_pilot.local_transcription import DEFAULT_MODEL_PATH, RECOMMENDED_MODEL_PATH, LocalRecognitionDiagnostic
 from eve_voice_pilot.speech_responses import RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_WINDOWS
 
 
@@ -261,6 +267,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
         voice_preview_text="  Systems are green.\nDocking path is clear.  ",
         enable_voice_listener=True,
         voice_engine="OpenAI realtime",
+        voice_model_path=str(RECOMMENDED_MODEL_PATH),
         voice_input_device="3: Headset (48000 Hz)",
         voice_call_sign="Aura",
         allow_voice_command_sending=True,
@@ -278,6 +285,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     assert loaded.voice_preview_text == "Systems are green. Docking path is clear."
     assert loaded.enable_voice_listener is True
     assert loaded.voice_engine == "OpenAI realtime"
+    assert loaded.voice_model_path == str(RECOMMENDED_MODEL_PATH)
     assert loaded.voice_input_device == "3: Headset (48000 Hz)"
     assert loaded.voice_call_sign == "Aura"
     assert loaded.allow_voice_command_sending is True
@@ -292,6 +300,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
         voice_preview_text="",
         enable_voice_listener=False,
         voice_engine="not-real",
+        voice_model_path=DEFAULT_VOICE_MODEL_LABEL,
         voice_input_device=DEFAULT_INPUT_DEVICE_LABEL,
         voice_call_sign="",
         allow_voice_command_sending=False,
@@ -301,6 +310,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
 
     assert cleaned.response_engine == DEFAULT_PET_SPEECH_ENGINE == RESPONSE_ENGINE_WINDOWS
     assert cleaned.voice_engine == DEFAULT_VOICE_ENGINE
+    assert cleaned.voice_model_path == ""
     assert cleaned.voice_preview_text == DEFAULT_VOICE_PREVIEW_TEXT
     assert cleaned.voice_input_device == ""
     assert cleaned.voice_call_sign == "merlin"
@@ -318,6 +328,14 @@ def test_voice_input_device_display_uses_system_default_label():
     assert voice_input_device_display("") == DEFAULT_INPUT_DEVICE_LABEL
     assert clean_voice_engine("not-real") == DEFAULT_VOICE_ENGINE
     assert clean_voice_target_title("") == DEFAULT_VOICE_TARGET_TITLE
+
+
+def test_voice_model_helpers_use_default_and_recommended_paths():
+    assert clean_voice_model_path(DEFAULT_VOICE_MODEL_LABEL) == ""
+    assert voice_model_path("") == DEFAULT_MODEL_PATH
+    assert clean_voice_model_path(RECOMMENDED_VOICE_MODEL_LABEL) == str(RECOMMENDED_MODEL_PATH)
+    assert voice_model_display(str(RECOMMENDED_MODEL_PATH)) == RECOMMENDED_VOICE_MODEL_LABEL
+    assert str(DEFAULT_MODEL_PATH) in voice_model_status("")
 
 
 def test_pet_voice_presets_provide_style_and_preview_text():
