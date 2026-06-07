@@ -23,6 +23,7 @@ from eve_voice_pilot.intel_pet import (
     DEFAULT_PET_SPEECH_ENGINE,
     DEFAULT_VOICE_PROFILE,
     DEFAULT_VOICE_ENGINE,
+    DEFAULT_VOICE_PREVIEW_TEXT,
     DEFAULT_VOICE_TARGET_TITLE,
     USER_VOICE_PROFILE,
     IDLE_SPRITE_SEQUENCE,
@@ -49,6 +50,7 @@ from eve_voice_pilot.intel_pet import (
     clean_voice_command_phrases,
     clean_voice_engine,
     clean_voice_input_device,
+    clean_voice_preview_text,
     clean_voice_target_title,
     clean_user_terms,
     combat_cheer_from_game_log_line,
@@ -75,6 +77,10 @@ from eve_voice_pilot.intel_pet import (
     mission_action_from_text,
     mission_cheer_from_game_log_line,
     load_settings,
+    pet_voice_preset_for_style,
+    pet_voice_preset_names,
+    pet_voice_preview_for_preset,
+    pet_voice_style_for_preset,
     read_new_combat_cheers,
     read_new_game_log_cheers,
     read_new_mission_cheers,
@@ -245,6 +251,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
         response_engine=RESPONSE_ENGINE_OPENAI,
         response_voice="nova",
         response_style="Short and calm.",
+        voice_preview_text="  Systems are green.\nDocking path is clear.  ",
         enable_voice_listener=True,
         voice_engine="OpenAI realtime",
         voice_input_device="3: Headset (48000 Hz)",
@@ -261,6 +268,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     assert loaded.response_engine == RESPONSE_ENGINE_OPENAI
     assert loaded.response_voice == "nova"
     assert loaded.response_style == "Short and calm."
+    assert loaded.voice_preview_text == "Systems are green. Docking path is clear."
     assert loaded.enable_voice_listener is True
     assert loaded.voice_engine == "OpenAI realtime"
     assert loaded.voice_input_device == "3: Headset (48000 Hz)"
@@ -274,6 +282,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
         response_engine="not-real",
         response_voice="",
         response_style="",
+        voice_preview_text="",
         enable_voice_listener=False,
         voice_engine="not-real",
         voice_input_device=DEFAULT_INPUT_DEVICE_LABEL,
@@ -285,6 +294,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
 
     assert cleaned.response_engine == DEFAULT_PET_SPEECH_ENGINE == RESPONSE_ENGINE_WINDOWS
     assert cleaned.voice_engine == DEFAULT_VOICE_ENGINE
+    assert cleaned.voice_preview_text == DEFAULT_VOICE_PREVIEW_TEXT
     assert cleaned.voice_input_device == ""
     assert cleaned.voice_call_sign == "merlin"
     assert cleaned.allow_voice_command_sending is False
@@ -301,6 +311,16 @@ def test_voice_input_device_display_uses_system_default_label():
     assert voice_input_device_display("") == DEFAULT_INPUT_DEVICE_LABEL
     assert clean_voice_engine("not-real") == DEFAULT_VOICE_ENGINE
     assert clean_voice_target_title("") == DEFAULT_VOICE_TARGET_TITLE
+
+
+def test_pet_voice_presets_provide_style_and_preview_text():
+    assert "Power ballad" in pet_voice_preset_names()
+    style = pet_voice_style_for_preset("Clear comms")
+
+    assert "clear fleet channel" in style
+    assert pet_voice_preset_for_style(style) == "Clear comms"
+    assert pet_voice_preview_for_preset("Tiny scout").startswith("Scout ship online.")
+    assert clean_voice_preview_text("") == DEFAULT_VOICE_PREVIEW_TEXT
 
 
 def test_voice_lab_saves_personal_copy_when_source_is_default_profile():

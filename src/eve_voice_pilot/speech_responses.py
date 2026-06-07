@@ -376,6 +376,19 @@ class SpeechResponseManager:
             return
         self._prepare_text_async(clean_text, label=label, play_when_ready=True)
 
+    def prepare_text_async(self, text: str, label: str = "pet message", force: bool = False) -> None:
+        clean_text = normalize_response_text(text)
+        if not clean_text:
+            return
+        self._prepare_text_async(clean_text, label=label, play_when_ready=False, force=force)
+
+    def text_cache_path(self, text: str) -> Path:
+        return self._text_cache_path(normalize_response_text(text))
+
+    def text_cached(self, text: str) -> bool:
+        clean_text = normalize_response_text(text)
+        return bool(clean_text) and self._text_cache_path(clean_text).exists()
+
     def _play_path(self, path: Path, label: str) -> None:
         try:
             normalize_cached_wav(path)

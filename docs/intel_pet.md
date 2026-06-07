@@ -140,6 +140,17 @@ EVE_VOICE_OPENAI_API_KEY
 
 You can also turn spoken pet messages on or off in `Options` > `Voice`.
 
+### Ballad Voice Studio
+
+Use `Options` > `Voice` to tune the pet voice:
+
+- `Voice preset` fills in a style and a safe sample line.
+- `Preview Voice` saves the current voice settings and plays the preview sentence when the cache is ready.
+- `Cache Preview` prepares the current preview sentence without playing it.
+- `Regenerate Preview` rebuilds that sample if you changed engine, voice, or style and want a fresh clip.
+
+The preview cache is for the deliberate sample sentence only. It does not cache raw chat alerts or alert history.
+
 ## Optional Voice Command Listener
 
 The pet can also listen for the same phrases configured in EVE Voice Pilot and show what command matched. It starts in practice mode: it does not send keys, click, move the mouse, or control EVE.
@@ -317,6 +328,7 @@ Example:
   "response_engine": "Windows local",
   "response_voice": "ballad",
   "response_style": "Speak as a starship AI with a dramatic 1980s power ballad cadence: soaring, confident, a little theatrical, but concise and clear. Do not sing; speak the line.",
+  "voice_preview_text": "Intel Pet voice online. Systems are green.",
   "enable_voice_listener": false,
   "voice_engine": "Local (offline)",
   "voice_input_device": "",

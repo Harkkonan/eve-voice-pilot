@@ -81,6 +81,7 @@ DEFAULT_HAPPY_SYSTEMS = ("Dihra", "Amarr", "Jita")
 DEFAULT_HISTORY_LIMIT = 25
 DEFAULT_PET_SPEECH_ENGINE = RESPONSE_ENGINE_WINDOWS
 DEFAULT_PET_SPEECH_STYLE = DEFAULT_POWER_BALLAD_INSTRUCTIONS
+DEFAULT_VOICE_PREVIEW_TEXT = "Intel Pet voice online. Systems are green."
 DEFAULT_VOICE_PROFILE = ROOT / "profiles" / "eve_sample.json"
 USER_VOICE_PROFILE = ROOT / "profiles" / "my_eve_commands.json"
 VOICE_ENGINE_LOCAL = "Local (offline)"
@@ -90,6 +91,28 @@ DEFAULT_VOICE_ENGINE = VOICE_ENGINE_LOCAL
 DEFAULT_INPUT_DEVICE_LABEL = "System default"
 DEFAULT_VOICE_TARGET_TITLE = "EVE"
 COMMAND_PHRASE_SPLIT_RE = re.compile(r"[\n,]+")
+PET_VOICE_STYLE_PRESETS = (
+    (
+        "Power ballad",
+        DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+        "Intel Pet voice online. Engines bright, warnings sharp.",
+    ),
+    (
+        "Clear comms",
+        "Speak as a calm starship AI on a clear fleet channel: concise, steady, and easy to understand.",
+        "Intel Pet online. Clear comms, clean signal.",
+    ),
+    (
+        "Mission control",
+        "Speak as a professional mission-control operator: warm, precise, and lightly dramatic.",
+        "Mission control confirms. The route is open.",
+    ),
+    (
+        "Tiny scout",
+        "Speak as a small loyal scout ship AI: upbeat, quick, and helpful without being childish.",
+        "Scout ship online. I found a signal for you.",
+    ),
+)
 LOCATION_SCOPE = "esi-location.read_location.v1"
 OVERLAY_IDLE_WIDTH = 220
 OVERLAY_ALERT_WIDTH = 430
@@ -276,6 +299,40 @@ def clean_response_voice(value: Any) -> str:
 def clean_response_style(value: Any) -> str:
     style = str(value or "").strip()
     return style or DEFAULT_PET_SPEECH_STYLE
+
+
+def pet_voice_preset_names() -> tuple[str, ...]:
+    return tuple(name for name, _style, _preview in PET_VOICE_STYLE_PRESETS)
+
+
+def pet_voice_style_for_preset(name: Any) -> str:
+    selected = str(name or "").strip()
+    for preset_name, style, _preview in PET_VOICE_STYLE_PRESETS:
+        if preset_name.casefold() == selected.casefold():
+            return style
+    return DEFAULT_PET_SPEECH_STYLE
+
+
+def pet_voice_preview_for_preset(name: Any) -> str:
+    selected = str(name or "").strip()
+    for preset_name, _style, preview in PET_VOICE_STYLE_PRESETS:
+        if preset_name.casefold() == selected.casefold():
+            return preview
+    return DEFAULT_VOICE_PREVIEW_TEXT
+
+
+def pet_voice_preset_for_style(style: Any) -> str:
+    cleaned = clean_response_style(style)
+    for preset_name, preset_style, _preview in PET_VOICE_STYLE_PRESETS:
+        if preset_style == cleaned:
+            return preset_name
+    return "Custom"
+
+
+def clean_voice_preview_text(value: Any) -> str:
+    text = normalize_response_text(str(value or "").replace("\n", ". "))
+    text = re.sub(r"\.\s*\.", ".", text)
+    return text[:240].strip() or DEFAULT_VOICE_PREVIEW_TEXT
 
 
 def clean_voice_engine(value: Any) -> str:
@@ -516,6 +573,7 @@ class IntelPetSettings:
     response_engine: str = DEFAULT_PET_SPEECH_ENGINE
     response_voice: str = DEFAULT_OPENAI_TTS_VOICE
     response_style: str = DEFAULT_PET_SPEECH_STYLE
+    voice_preview_text: str = DEFAULT_VOICE_PREVIEW_TEXT
     enable_voice_listener: bool = False
     voice_engine: str = DEFAULT_VOICE_ENGINE
     voice_input_device: str = ""
@@ -537,6 +595,7 @@ class IntelPetSettings:
             response_engine=clean_response_engine(payload.get("response_engine")),
             response_voice=clean_response_voice(payload.get("response_voice")),
             response_style=clean_response_style(payload.get("response_style")),
+            voice_preview_text=clean_voice_preview_text(payload.get("voice_preview_text")),
             enable_voice_listener=bool(payload.get("enable_voice_listener", False)),
             voice_engine=clean_voice_engine(payload.get("voice_engine")),
             voice_input_device=clean_voice_input_device(payload.get("voice_input_device")),
@@ -564,6 +623,7 @@ class IntelPetSettings:
             "response_engine": clean_response_engine(self.response_engine),
             "response_voice": clean_response_voice(self.response_voice),
             "response_style": clean_response_style(self.response_style),
+            "voice_preview_text": clean_voice_preview_text(self.voice_preview_text),
             "enable_voice_listener": bool(self.enable_voice_listener),
             "voice_engine": clean_voice_engine(self.voice_engine),
             "voice_input_device": clean_voice_input_device(self.voice_input_device),
@@ -763,6 +823,8 @@ def load_settings(path: Path | None, *, overrides: argparse.Namespace | None = N
         settings = replace(settings, response_voice=clean_response_voice(overrides.response_voice))
     if getattr(overrides, "response_style", ""):
         settings = replace(settings, response_style=clean_response_style(overrides.response_style))
+    if getattr(overrides, "voice_preview_text", ""):
+        settings = replace(settings, voice_preview_text=clean_voice_preview_text(overrides.voice_preview_text))
     if getattr(overrides, "enable_voice_listener", None) is not None:
         settings = replace(settings, enable_voice_listener=bool(overrides.enable_voice_listener))
     if getattr(overrides, "voice_engine", ""):
@@ -823,6 +885,7 @@ def replace_voice_settings(
     response_engine: str,
     response_voice: str,
     response_style: str,
+    voice_preview_text: str | None = None,
     enable_voice_listener: bool | None = None,
     voice_engine: str | None = None,
     voice_input_device: str | None = None,
@@ -837,6 +900,9 @@ def replace_voice_settings(
         response_engine=clean_response_engine(response_engine),
         response_voice=clean_response_voice(response_voice),
         response_style=clean_response_style(response_style),
+        voice_preview_text=(
+            settings.voice_preview_text if voice_preview_text is None else clean_voice_preview_text(voice_preview_text)
+        ),
         enable_voice_listener=settings.enable_voice_listener if enable_voice_listener is None else bool(enable_voice_listener),
         voice_engine=settings.voice_engine if voice_engine is None else clean_voice_engine(voice_engine),
         voice_input_device=settings.voice_input_device if voice_input_device is None else clean_voice_input_device(voice_input_device),
@@ -1944,8 +2010,8 @@ def run_overlay(
     def open_options() -> None:
         editor = tk.Toplevel(root)
         editor.title("Intel Pet Options")
-        editor.geometry("620x640+80+80")
-        editor.minsize(500, 520)
+        editor.geometry("720x760+80+80")
+        editor.minsize(620, 640)
         editor.transient(root)
         editor.attributes("-topmost", True)
 
@@ -2309,6 +2375,8 @@ def run_overlay(
         response_engine_var = tk.StringVar(value=clean_response_engine(voice_settings.response_engine))
         response_voice_var = tk.StringVar(value=clean_response_voice(voice_settings.response_voice))
         response_style_var = tk.StringVar(value=clean_response_style(voice_settings.response_style))
+        response_preset_var = tk.StringVar(value=pet_voice_preset_for_style(voice_settings.response_style))
+        voice_preview_text_var = tk.StringVar(value=clean_voice_preview_text(voice_settings.voice_preview_text))
         voice_listener_var = tk.BooleanVar(value=voice_settings.enable_voice_listener)
         speech_engine_var = tk.StringVar(value=clean_voice_engine(voice_settings.voice_engine))
         voice_call_sign_var = tk.StringVar(value=clean_voice_call_sign(voice_settings.voice_call_sign))
@@ -2329,6 +2397,7 @@ def run_overlay(
                     response_engine=response_engine_var.get(),
                     response_voice=response_voice_var.get(),
                     response_style=response_style_var.get(),
+                    voice_preview_text=voice_preview_text_var.get(),
                     enable_voice_listener=voice_listener_var.get(),
                     voice_engine=speech_engine_var.get(),
                     voice_input_device=voice_input_device_var.get(),
@@ -2346,6 +2415,32 @@ def run_overlay(
             state = "on" if settings.speak_alerts else "off"
             command_state = "enabled" if settings.allow_voice_command_sending else "practice only"
             editor_status_var.set(f"{action}. Spoken pet messages are {state}; commands are {command_state}.")
+
+        def apply_voice_preset(_event: Any | None = None) -> None:
+            preset_name = response_preset_var.get()
+            if preset_name == "Custom":
+                persist_voice_settings("Custom voice style saved")
+                return
+            response_style_var.set(pet_voice_style_for_preset(preset_name))
+            voice_preview_text_var.set(pet_voice_preview_for_preset(preset_name))
+            persist_voice_settings(f"{preset_name} preset applied")
+
+        def cache_voice_preview(*, force: bool = False, play: bool = False) -> None:
+            persist_voice_settings("Voice preview saved")
+            text = clean_voice_preview_text(voice_preview_text_var.get())
+            voice_preview_text_var.set(text)
+            configure_pet_speech(engine.current_settings())
+            if play:
+                pet_speech.play_text(text, label="voice preview")
+                editor_status_var.set("Preview requested. It will play when cached.")
+                return
+            pet_speech.prepare_text_async(text, label="voice preview", force=force)
+            if force:
+                editor_status_var.set("Voice preview regeneration queued.")
+            elif pet_speech.text_cached(text):
+                editor_status_var.set(f"Voice preview already cached: {pet_speech.text_cache_path(text).name}")
+            else:
+                editor_status_var.set("Voice preview cache queued.")
 
         voice_grid = ttk.Frame(voice_frame)
         voice_grid.pack(fill="x")
@@ -2380,12 +2475,35 @@ def run_overlay(
         response_voice_box.grid(row=3, column=1, sticky="ew", pady=5)
         response_voice_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Voice style").grid(row=4, column=0, sticky="w", pady=5)
-        ttk.Entry(voice_grid, textvariable=response_style_var).grid(row=4, column=1, sticky="ew", pady=5)
+        ttk.Label(voice_grid, text="Voice preset").grid(row=4, column=0, sticky="w", pady=5)
+        response_preset_box = ttk.Combobox(
+            voice_grid,
+            textvariable=response_preset_var,
+            values=(*pet_voice_preset_names(), "Custom"),
+            state="readonly",
+        )
+        response_preset_box.grid(row=4, column=1, sticky="ew", pady=5)
+        response_preset_box.bind("<<ComboboxSelected>>", apply_voice_preset)
 
-        ttk.Separator(voice_grid).grid(row=5, column=0, columnspan=2, sticky="ew", pady=12)
+        ttk.Label(voice_grid, text="Voice style").grid(row=5, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=response_style_var).grid(row=5, column=1, sticky="ew", pady=5)
+
+        ttk.Label(voice_grid, text="Preview text").grid(row=6, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=voice_preview_text_var).grid(row=6, column=1, sticky="ew", pady=5)
+
+        voice_studio_buttons = ttk.Frame(voice_grid)
+        voice_studio_buttons.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        ttk.Button(voice_studio_buttons, text="Preview Voice", command=lambda: cache_voice_preview(play=True)).pack(side="left")
+        ttk.Button(voice_studio_buttons, text="Cache Preview", command=cache_voice_preview).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            voice_studio_buttons,
+            text="Regenerate Preview",
+            command=lambda: cache_voice_preview(force=True),
+        ).pack(side="left", padx=(6, 0))
+
+        ttk.Separator(voice_grid).grid(row=8, column=0, columnspan=2, sticky="ew", pady=12)
         ttk.Label(voice_grid, text="Command listener", font=("Segoe UI", 10, "bold")).grid(
-            row=6,
+            row=9,
             column=0,
             columnspan=2,
             sticky="w",
@@ -2395,55 +2513,55 @@ def run_overlay(
             voice_grid,
             text="Practice mode only. The pet shows matched Voice Pilot commands but does not send keys.",
             wraplength=500,
-        ).grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(
             voice_grid,
             text="Listen for voice commands",
             variable=voice_listener_var,
             command=lambda: persist_voice_settings("Voice listener toggled"),
-        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-        ttk.Label(voice_grid, text="Speech engine").grid(row=9, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="Speech engine").grid(row=12, column=0, sticky="w", pady=5)
         speech_engine_box = ttk.Combobox(
             voice_grid,
             textvariable=speech_engine_var,
             values=VOICE_ENGINES,
             state="readonly",
         )
-        speech_engine_box.grid(row=9, column=1, sticky="ew", pady=5)
+        speech_engine_box.grid(row=12, column=1, sticky="ew", pady=5)
         speech_engine_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Microphone").grid(row=10, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="Microphone").grid(row=13, column=0, sticky="w", pady=5)
         voice_input_box = ttk.Combobox(
             voice_grid,
             textvariable=voice_input_device_var,
             values=input_device_labels,
             state="readonly",
         )
-        voice_input_box.grid(row=10, column=1, sticky="ew", pady=5)
+        voice_input_box.grid(row=13, column=1, sticky="ew", pady=5)
         voice_input_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Response call sign").grid(row=11, column=0, sticky="w", pady=5)
-        ttk.Entry(voice_grid, textvariable=voice_call_sign_var).grid(row=11, column=1, sticky="ew", pady=5)
+        ttk.Label(voice_grid, text="Response call sign").grid(row=14, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=voice_call_sign_var).grid(row=14, column=1, sticky="ew", pady=5)
 
         ttk.Checkbutton(
             voice_grid,
             text="Allow command sending",
             variable=allow_command_sending_var,
             command=lambda: persist_voice_settings("Command sending setting saved"),
-        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(12, 4))
+        ).grid(row=15, column=0, columnspan=2, sticky="w", pady=(12, 4))
         ttk.Label(
             voice_grid,
             text="Leave this off for practice. When on, only exact Voice Pilot command matches can send their configured keybind.",
             wraplength=500,
-        ).grid(row=13, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ).grid(row=16, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(
             voice_grid,
             text="Only send when active window title matches",
             variable=require_target_window_var,
             command=lambda: persist_voice_settings("Window guard saved"),
-        ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        ttk.Entry(voice_grid, textvariable=voice_target_title_var).grid(row=15, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        ).grid(row=17, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Entry(voice_grid, textvariable=voice_target_title_var).grid(row=18, column=0, columnspan=2, sticky="ew", pady=(0, 5))
 
         voice_buttons = ttk.Frame(voice_frame)
         voice_buttons.pack(fill="x", pady=(8, 0))
@@ -2453,7 +2571,7 @@ def run_overlay(
             text="Test Pet Voice",
             command=lambda: (
                 persist_voice_settings("Voice test saved"),
-                pet_speech.play_text("Intel Pet voice online.", label="pet voice test"),
+                pet_speech.play_text(clean_voice_preview_text(voice_preview_text_var.get()), label="pet voice test"),
             ),
         ).pack(side="left", padx=(6, 0))
 
@@ -3193,6 +3311,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--response-voice", default="", help="OpenAI TTS voice for spoken pet messages.")
     parser.add_argument("--response-style", default="", help="OpenAI TTS style instructions for spoken pet messages.")
+    parser.add_argument("--voice-preview-text", default="", help="Sample text used by the pet voice preview cache.")
     parser.add_argument(
         "--enable-voice-listener",
         action="store_true",

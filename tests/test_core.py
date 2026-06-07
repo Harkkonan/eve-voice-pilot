@@ -21,6 +21,7 @@ from eve_voice_pilot.speech_responses import (
     DEFAULT_RESPONSE_ENGINE,
     RESPONSE_ENGINE_OPENAI,
     RESPONSE_ENGINE_WINDOWS,
+    SpeechResponseManager,
     normalize_wav_bytes,
     normalize_response_text,
     response_cache_path,
@@ -228,6 +229,14 @@ def test_response_text_cache_normalizes_and_separates_engines():
     assert first == second
     assert first.name.startswith("text-")
     assert first != openai
+
+
+def test_speech_response_manager_exposes_text_cache_path():
+    manager = SpeechResponseManager(lambda _message: None)
+    manager.configure(engine=RESPONSE_ENGINE_WINDOWS)
+
+    assert manager.text_cache_path("Arrived   in Amarr.") == response_text_cache_path("Arrived in Amarr.")
+    assert manager.text_cached("") is False
 
 
 def test_voice_standard_includes_added_catalog_shortcuts():
