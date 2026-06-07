@@ -84,6 +84,7 @@ from eve_voice_pilot.intel_pet import (
     history_item_from_mission_cheer,
     history_item_from_status,
     history_item_from_voice_status,
+    intel_pet_diagnostics_report,
     is_kill_event_text,
     is_happy_system,
     listener_filter_from_args,
@@ -1210,6 +1211,73 @@ def test_history_item_from_status_surfaces_watcher_failures():
     assert item.severity == "high"
     assert "Watcher stopped" in item.detail
     assert item.meta == "Local watcher"
+
+
+def test_intel_pet_diagnostics_report_summarizes_runtime_without_alert_text(tmp_path):
+    settings = IntelPetSettings(
+        pilot_names=("Dandin",),
+        extra_keywords=("buy order",),
+        help_phrases=("need evac",),
+        show_message_text=False,
+        alert_seconds=15,
+        speak_alerts=True,
+        spoken_alert_kinds=clean_spoken_alert_kinds({"combat": False}),
+        enable_voice_listener=True,
+        allow_voice_command_sending=True,
+    )
+    history = (
+        IntelPetHistoryItem(
+            "Pet watcher status",
+            "Sharing channel 'Corp' from Corp_20260607_120000_123.txt",
+            "Local watcher",
+            "info",
+            "2026-06-07T12:00:00.000Z",
+        ),
+        IntelPetHistoryItem(
+            "Keyword match",
+            "raw private alert text should not be in diagnostics",
+            "Corp | Scout",
+            "medium",
+            "2026-06-07T12:01:00.000Z",
+        ),
+    )
+    session = IntelPetLocationSession(
+        character_id=123,
+        character_name="Dandin Ridderston",
+        scopes=(LOCATION_SCOPE,),
+        access_token="secret-token",
+        expires_at=9999999999.0,
+    )
+
+    report = intel_pet_diagnostics_report(
+        settings=settings,
+        settings_path=tmp_path / "intel_pet_settings.json",
+        chat_log_dir=tmp_path / "Chatlogs",
+        game_log_dir=tmp_path / "Gamelogs",
+        channel_filter=ChannelFilter(("Corp", "Local")),
+        listener_filter=("Dandin Ridderston",),
+        poll_seconds=1.0,
+        read_existing=False,
+        combat_cheer_enabled=True,
+        mission_cheer_enabled=False,
+        location_enabled=True,
+        location_poll_seconds=30.0,
+        happy_systems=("Amarr", "Jita"),
+        history_items=history,
+        voice_profile_path=tmp_path / "my_eve_commands.json",
+        location_session=session,
+        current_system="Amarr",
+    )
+
+    assert "Intel Pet Diagnostics" in report
+    assert "Channels: corp, local" in report
+    assert "Listener filter: Dandin Ridderston" in report
+    assert "Watched chat files reported: 1" in report
+    assert "Location cheer: connected as Dandin Ridderston; current system Amarr" in report
+    assert "Muted spoken alert types: Kill cheer" in report
+    assert "exact matches can send keys with active-window guard" in report
+    assert "raw private alert text" not in report
+    assert "secret-token" not in report
 
 
 def test_chat_log_watcher_alerts_on_new_appended_name_mention(tmp_path):

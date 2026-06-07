@@ -330,6 +330,12 @@ Use `Export Settings` and `Import Settings` at the bottom of the options window 
 
 Exported settings include your alert terms, pilot names, alert behavior choices, spoken alert choices, and voice preferences. They do not include raw chat logs, alert history, EVE SSO tokens, Discord webhooks, or the separate Voice Lab command profile. Treat exported files as private because pilot names and watched terms can still reveal how you use the pet.
 
+## Diagnostics
+
+The `Diagnostics` tab summarizes the pet's current local runtime state: settings file, watched folders, channel and listener filters, polling mode, game-log cheer status, ESI location-cheer state, voice listener state, selected local model, command profile path, and in-memory history counts.
+
+Use `Copy Diagnostics` when troubleshooting. The copied report is summary-only: it does not include raw chat lines, alert message text, EVE SSO tokens, Discord webhooks, or voice recordings.
+
 ## Alert History
 
 The `History` tab in `Options` shows recent chat alerts and location cheer events from this pet run.

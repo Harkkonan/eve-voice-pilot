@@ -1646,6 +1646,124 @@ def display_message_from_mission_cheer(cheer: IntelPetMissionCheer) -> str:
     return cheer.comment
 
 
+def on_off(value: bool) -> str:
+    return "on" if value else "off"
+
+
+def diagnostic_count_label(count: int, singular: str, plural: str | None = None) -> str:
+    return f"{count} {singular if count == 1 else plural or singular + 's'}"
+
+
+def latest_history_detail(items: Iterable[IntelPetHistoryItem], *, meta: str) -> str:
+    for item in reversed(tuple(items)):
+        if item.meta == meta:
+            return f"{item.detail} ({item.recorded_at})"
+    return "none reported yet"
+
+
+def count_history_details(items: Iterable[IntelPetHistoryItem], *, meta: str, prefix: str) -> int:
+    return sum(1 for item in items if item.meta == meta and item.detail.startswith(prefix))
+
+
+def intel_pet_diagnostics_report(
+    *,
+    settings: IntelPetSettings,
+    settings_path: Path,
+    chat_log_dir: Path,
+    game_log_dir: Path,
+    channel_filter: ChannelFilter,
+    listener_filter: Iterable[str],
+    poll_seconds: float,
+    read_existing: bool,
+    combat_cheer_enabled: bool,
+    mission_cheer_enabled: bool,
+    location_enabled: bool,
+    location_poll_seconds: float,
+    happy_systems: Iterable[str],
+    history_items: Iterable[IntelPetHistoryItem],
+    voice_profile_path: Path | str,
+    location_session: IntelPetLocationSession | None = None,
+    current_system: str = "",
+) -> str:
+    history_snapshot = tuple(history_items)
+    listeners = tuple(listener_filter)
+    happy_system_tuple = tuple(happy_systems)
+    spoken_kinds = clean_spoken_alert_kinds(settings.spoken_alert_kinds)
+    muted_spoken = tuple(
+        label for kind, label, _description in SPOKEN_ALERT_KINDS if not spoken_kinds.get(kind, True)
+    )
+    alert_behaviors = clean_alert_behaviors(settings.alert_behaviors)
+    behavior_summary = ", ".join(
+        f"{label}: {behavior_label(alert_behaviors[kind])}" for kind, label, _description in ALERT_BEHAVIOR_KINDS
+    )
+    severity_counts = {
+        severity: sum(1 for item in history_snapshot if item.severity == severity)
+        for severity in ("critical", "high", "medium", "info")
+    }
+    location_status = "off"
+    if location_session is not None:
+        location_status = f"connected as {location_session.character_name}"
+        if current_system:
+            location_status += f"; current system {current_system}"
+    elif location_enabled:
+        location_status = "enabled, not connected"
+
+    command_mode = "practice only"
+    if settings.allow_voice_command_sending:
+        guard = "with active-window guard" if settings.require_voice_target_window else "without active-window guard"
+        command_mode = f"exact matches can send keys {guard}"
+
+    lines = [
+        "Intel Pet Diagnostics",
+        f"Generated: {now_iso()}",
+        "",
+        "Settings",
+        f"- Settings file: {settings_path}",
+        f"- Alert terms: {diagnostic_count_label(len(settings.pilot_names), 'pilot name')}, "
+        f"{diagnostic_count_label(len(settings.help_phrases), 'help phrase')}, "
+        f"{diagnostic_count_label(len(settings.extra_keywords), 'extra keyword')}",
+        f"- Message text in bubbles: {on_off(settings.show_message_text)}",
+        f"- Alert duration: {settings.alert_seconds:g}s",
+        f"- Alert animations: {behavior_summary}",
+        "",
+        "Watchers",
+        f"- Chat log folder: {chat_log_dir}",
+        f"- Channels: {channel_filter.describe()}",
+        f"- Listener filter: {', '.join(listeners) if listeners else 'all matching local listeners'}",
+        f"- Poll interval: {poll_seconds:g}s; read existing lines: {on_off(read_existing)}",
+        f"- Watched chat files reported: {count_history_details(history_snapshot, meta='Local watcher', prefix='Sharing channel')}",
+        f"- Latest local watcher status: {latest_history_detail(history_snapshot, meta='Local watcher')}",
+        f"- Game log folder: {game_log_dir}",
+        f"- Kill cheer: {on_off(combat_cheer_enabled)}; mission comments: {on_off(mission_cheer_enabled)}",
+        f"- Watched game files reported: {count_history_details(history_snapshot, meta='Local watcher', prefix='Watching game log')}",
+        "",
+        "Location",
+        f"- Location cheer: {location_status}",
+        f"- Location poll interval: {location_poll_seconds:g}s",
+        f"- Happy systems: {', '.join(happy_system_tuple) if happy_system_tuple else 'none'}",
+        f"- Required ESI scope when enabled: {LOCATION_SCOPE}",
+        "",
+        "Voice",
+        f"- Spoken pet messages: {on_off(settings.speak_alerts)}",
+        f"- Muted spoken alert types: {', '.join(muted_spoken) if muted_spoken else 'none'}",
+        f"- Spoken response engine: {clean_response_engine(settings.response_engine)}",
+        f"- Voice listener: {on_off(settings.enable_voice_listener)}; engine: {clean_voice_engine(settings.voice_engine)}",
+        f"- Voice model: {voice_model_display(settings.voice_model_path)} ({voice_model_status(settings.voice_model_path)})",
+        f"- Microphone: {voice_input_device_display(settings.voice_input_device)}",
+        f"- Voice command profile: {voice_profile_path}",
+        f"- Voice command mode: {command_mode}",
+        "",
+        "History",
+        f"- In-memory history: {diagnostic_count_label(len(history_snapshot), 'item')}",
+        f"- Severity counts: critical {severity_counts['critical']}, high {severity_counts['high']}, "
+        f"medium {severity_counts['medium']}, info {severity_counts['info']}",
+        "",
+        "Privacy",
+        "- This diagnostics report is local only and does not include raw chat lines, alert text history, tokens, or webhooks.",
+    ]
+    return "\n".join(lines)
+
+
 def start_native_window_drag(window: Any) -> bool:
     if os.name != "nt":
         return False
@@ -2540,11 +2658,13 @@ def run_overlay(
         behavior_tab, behavior_frame = scrollable_tab(notebook)
         voice_tab, voice_frame = scrollable_tab(notebook)
         voice_lab_tab, voice_lab_frame = scrollable_tab(notebook)
+        diagnostics_tab, diagnostics_frame = scrollable_tab(notebook)
         history_tab, history_frame = scrollable_tab(notebook)
         notebook.add(settings_tab, text="Alerts")
         notebook.add(behavior_tab, text="Behaviors")
         notebook.add(voice_tab, text="Voice")
         notebook.add(voice_lab_tab, text="Voice Lab")
+        notebook.add(diagnostics_tab, text="Diagnostics")
         notebook.add(history_tab, text="History")
 
         editor_status_var = tk.StringVar(value="Saved locally only.")
@@ -3736,6 +3856,64 @@ def run_overlay(
         refresh_heard_phrases()
         refresh_phrase_quality()
 
+        ttk.Label(diagnostics_frame, text="Diagnostics", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(
+            diagnostics_frame,
+            text="Local runtime summary for troubleshooting. This does not include raw chat lines or alert message text.",
+            wraplength=520,
+        ).pack(anchor="w", pady=(2, 8))
+        diagnostics_text = tk.Text(diagnostics_frame, height=26, wrap="word", state="disabled")
+        diagnostics_text.pack(fill="both", expand=True)
+
+        def voice_profile_path_for_diagnostics() -> Path | str:
+            try:
+                _profile, editable_path, _source_path = load_editable_voice_profile()
+            except Exception as exc:
+                return f"unavailable: {exc}"
+            return editable_path
+
+        def current_diagnostics_report() -> str:
+            return intel_pet_diagnostics_report(
+                settings=engine.current_settings(),
+                settings_path=settings_path,
+                chat_log_dir=args.log_dir.expanduser(),
+                game_log_dir=args.game_log_dir.expanduser(),
+                channel_filter=channel_filter,
+                listener_filter=listener_filter,
+                poll_seconds=max(0.1, safe_float(args.poll_seconds, DEFAULT_POLL_SECONDS)),
+                read_existing=args.read_existing,
+                combat_cheer_enabled=not args.no_combat_cheer,
+                mission_cheer_enabled=not args.no_mission_cheer,
+                location_enabled=location_config is not None,
+                location_poll_seconds=location_poll_seconds,
+                happy_systems=happy_systems,
+                history_items=history_items,
+                voice_profile_path=voice_profile_path_for_diagnostics(),
+                location_session=location_session,
+                current_system=current_local_system(),
+            )
+
+        def refresh_diagnostics_text() -> None:
+            diagnostics_text.configure(state="normal")
+            diagnostics_text.delete("1.0", tk.END)
+            diagnostics_text.insert(tk.END, current_diagnostics_report())
+            diagnostics_text.configure(state="disabled")
+
+        def copy_diagnostics_text() -> None:
+            editor.clipboard_clear()
+            editor.clipboard_append(current_diagnostics_report())
+            editor_status_var.set("Diagnostics copied to clipboard.")
+
+        diagnostics_buttons = ttk.Frame(diagnostics_frame)
+        diagnostics_buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(diagnostics_buttons, text="Refresh Diagnostics", command=refresh_diagnostics_text).pack(side="left")
+        ttk.Button(diagnostics_buttons, text="Copy Diagnostics", command=copy_diagnostics_text).pack(
+            side="left",
+            padx=(6, 0),
+        )
+        refresh_diagnostics_text()
+        history_refreshers.append(refresh_diagnostics_text)
+
         ttk.Label(history_frame, text="Alert history", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(
             history_frame,
@@ -3844,7 +4022,7 @@ def run_overlay(
         def forget_history_refresher(event: Any) -> None:
             if event.widget is not editor:
                 return
-            for refresher in (refresh_history_text, refresh_heard_phrases):
+            for refresher in (refresh_history_text, refresh_heard_phrases, refresh_diagnostics_text):
                 if refresher in history_refreshers:
                     history_refreshers.remove(refresher)
 
