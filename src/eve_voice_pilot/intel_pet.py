@@ -656,6 +656,14 @@ class VoicePhraseSuggestion:
     score: float
 
 
+@dataclass(frozen=True)
+class VoicePhraseQualityIssue:
+    severity: str
+    title: str
+    detail: str
+    score: float = 0.0
+
+
 def closest_voice_phrase_suggestions(
     transcript: str,
     commands: list[VoiceCommand],
@@ -731,6 +739,90 @@ def voice_phrase_analysis_lines(
     elif not exact_match:
         lines.append("Analysis: not close to the configured command phrases. Add the heard phrase or choose clearer wording.")
     return lines
+
+
+def voice_phrase_quality_issues(commands: list[VoiceCommand], *, limit: int = 12) -> tuple[VoicePhraseQualityIssue, ...]:
+    issues: list[VoicePhraseQualityIssue] = []
+    phrase_entries: list[tuple[VoiceCommand, str, str]] = []
+    by_phrase: dict[str, list[tuple[VoiceCommand, str]]] = {}
+    for command in commands:
+        for phrase in command.phrases:
+            normalized = normalize_phrase(phrase)
+            if not normalized:
+                continue
+            phrase_entries.append((command, phrase, normalized))
+            by_phrase.setdefault(normalized, []).append((command, phrase))
+
+            words = normalized.split()
+            if len(words) == 1 and len(normalized) <= 5:
+                issues.append(
+                    VoicePhraseQualityIssue(
+                        severity="medium",
+                        title=f"Short single-word phrase: {phrase}",
+                        detail=(
+                            f"{command.name} uses a short one-word phrase. Short phrases are easier for Vosk to confuse; "
+                            "consider a two-word synonym."
+                        ),
+                        score=0.70,
+                    )
+                )
+
+    for normalized, entries in by_phrase.items():
+        command_names = sorted({command.name for command, _phrase in entries})
+        if len(command_names) > 1:
+            issues.append(
+                VoicePhraseQualityIssue(
+                    severity="high",
+                    title=f"Duplicate phrase across commands: {normalized}",
+                    detail=f"Used by {', '.join(command_names)}. Exact matching can reject competing commands.",
+                    score=1.0,
+                )
+            )
+
+    for index, (left_command, left_phrase, left_normalized) in enumerate(phrase_entries):
+        for right_command, right_phrase, right_normalized in phrase_entries[index + 1:]:
+            if left_command.name == right_command.name:
+                continue
+            if left_normalized == right_normalized:
+                continue
+            score = SequenceMatcher(None, left_normalized, right_normalized).ratio()
+            if score < 0.84:
+                continue
+            issues.append(
+                VoicePhraseQualityIssue(
+                    severity="high" if score >= 0.92 else "medium",
+                    title=f"Similar phrases: {left_phrase} / {right_phrase}",
+                    detail=(
+                        f"{left_command.name} and {right_command.name} sound close ({score:.0%}). "
+                        "Use more distinct wording before enabling command sending."
+                    ),
+                    score=score,
+                )
+            )
+
+    severity_rank = {"high": 2, "medium": 1, "low": 0}
+    issues.sort(key=lambda item: (severity_rank.get(item.severity, 0), item.score, item.title), reverse=True)
+    return tuple(issues[: max(1, limit)])
+
+
+def voice_phrase_quality_report(commands: list[VoiceCommand], *, limit: int = 12) -> str:
+    issues = voice_phrase_quality_issues(commands, limit=limit)
+    phrase_count = sum(len(command.phrases) for command in commands)
+    lines = [
+        "Phrase quality report",
+        f"Commands: {len(commands)}",
+        f"Phrases: {phrase_count}",
+    ]
+    if not issues:
+        lines.append("No high-risk phrase collisions found.")
+        return "\n".join(lines)
+
+    lines.append(f"Issues shown: {len(issues)}")
+    lines.append("")
+    for issue in issues:
+        lines.append(f"[{issue.severity.upper()}] {issue.title}")
+        lines.append(issue.detail)
+    return "\n".join(lines)
 
 
 def recognition_diagnostic_report(
@@ -3096,6 +3188,7 @@ def run_overlay(
                 profile.commands[index] = command
                 action = "Changed command"
             save_voice_lab_profile(action, select_index=index)
+            refresh_phrase_quality()
 
         def delete_voice_command() -> None:
             index = selected_voice_command_index()
@@ -3111,6 +3204,7 @@ def run_overlay(
                 set_voice_command_fields(profile.commands[next_index])
             else:
                 set_voice_command_fields()
+            refresh_phrase_quality()
 
         voice_command_tree.bind("<<TreeviewSelect>>", fill_selected_voice_command)
 
@@ -3119,7 +3213,39 @@ def run_overlay(
         ttk.Button(voice_command_buttons, text="New", command=new_voice_command).pack(side="left")
         ttk.Button(voice_command_buttons, text="Save Command", command=save_voice_command).pack(side="left", padx=(6, 0))
         ttk.Button(voice_command_buttons, text="Delete", command=delete_voice_command).pack(side="left", padx=(6, 0))
-        ttk.Button(voice_command_buttons, text="Reload", command=load_voice_lab_profile).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            voice_command_buttons,
+            text="Reload",
+            command=lambda: (load_voice_lab_profile(), refresh_phrase_quality()),
+        ).pack(side="left", padx=(6, 0))
+
+        phrase_quality_frame = ttk.LabelFrame(voice_lab_frame, text="Phrase Quality", padding=8)
+        phrase_quality_frame.pack(fill="both", expand=False, pady=(0, 12))
+        phrase_quality_frame.columnconfigure(0, weight=1)
+        phrase_quality_result = tk.Text(phrase_quality_frame, height=8, wrap="word", state="disabled")
+        phrase_quality_result.grid(row=0, column=0, sticky="ew")
+        phrase_quality_scroll = ttk.Scrollbar(phrase_quality_frame, orient="vertical", command=phrase_quality_result.yview)
+        phrase_quality_scroll.grid(row=0, column=1, sticky="ns")
+        phrase_quality_result.configure(yscrollcommand=phrase_quality_scroll.set)
+
+        def set_phrase_quality_result(text: str) -> None:
+            phrase_quality_result.configure(state="normal")
+            phrase_quality_result.delete("1.0", tk.END)
+            phrase_quality_result.insert(tk.END, text)
+            phrase_quality_result.configure(state="disabled")
+
+        def refresh_phrase_quality() -> None:
+            report = voice_phrase_quality_report(list(current_voice_lab_profile().commands))
+            set_phrase_quality_result(report)
+            voice_lab_status_var.set("Phrase quality refreshed. Review before enabling command sending.")
+
+        ttk.Button(phrase_quality_frame, text="Refresh Phrase Quality", command=refresh_phrase_quality).grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
 
         voice_test_frame = ttk.LabelFrame(voice_lab_frame, text="Dry-run phrase test", padding=8)
         voice_test_frame.pack(fill="both", expand=False)
@@ -3389,6 +3515,7 @@ def run_overlay(
         history_refreshers.append(refresh_heard_phrases)
         load_voice_lab_profile()
         refresh_heard_phrases()
+        refresh_phrase_quality()
 
         ttk.Label(history_frame, text="Alert history", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(

@@ -105,6 +105,8 @@ from eve_voice_pilot.intel_pet import (
     voice_model_path,
     voice_model_status,
     voice_phrase_analysis_lines,
+    voice_phrase_quality_issues,
+    voice_phrase_quality_report,
     voice_command_from_fields,
     voice_command_with_added_phrase,
     voice_training_phrase_from_detail,
@@ -517,6 +519,24 @@ def test_voice_phrase_analysis_warns_when_top_matches_are_ambiguous():
     assert suggestions[0].command_name == "Dock"
     assert any("Nearest command phrases:" in line for line in lines)
     assert any("distinct phrase" in line for line in lines)
+
+
+def test_voice_phrase_quality_report_flags_duplicate_and_similar_phrases():
+    commands = [
+        VoiceCommand("Dock", ["jump gate", "dock"], "D"),
+        VoiceCommand("Date", ["jump date"], "CTRL+D"),
+        VoiceCommand("Jump", ["dock"], "J"),
+    ]
+
+    issues = voice_phrase_quality_issues(commands)
+    report = voice_phrase_quality_report(commands)
+
+    assert any(issue.severity == "high" and "Duplicate phrase across commands: dock" in issue.title for issue in issues)
+    assert any("Similar phrases: jump gate / jump date" in issue.title for issue in issues)
+    assert any("Short single-word phrase: dock" in issue.title for issue in issues)
+    assert "Phrase quality report" in report
+    assert "Commands: 3" in report
+    assert "Duplicate phrase across commands: dock" in report
 
 
 def test_voice_status_from_transcript_matches_command_without_sending_keys():

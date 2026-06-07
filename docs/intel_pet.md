@@ -234,6 +234,8 @@ profiles\my_eve_commands.json
 
 The dry-run phrase test never sends keys. It only shows what the listener would hear, which command would match, and whether the live listener would stay in practice mode.
 
+Use `Phrase Quality` to find phrases that are likely to confuse local recognition before command sending is enabled. It reports duplicate phrases across commands, highly similar phrases, and short single-word phrases. The report is advisory only: it does not remove phrases or turn on fuzzy matching.
+
 Use `Recent heard phrases` in Voice Lab when the listener heard you but did not match the command you expected. Select the command, select or type the phrase, then use `Add Heard To Selected` or `Add Test To Selected`. This only adds an exact phrase to the local command profile; it does not turn on fuzzy matching or send keys from the lab.
 
 Use `Recognition Lab` when local voice recognition feels wrong. Turn off `Listen for voice commands`, press `Record Local Diagnostic`, say one phrase, and review the local transcript, volume/RMS, stop reason, selected microphone, model path, grammar size, exact-match result, nearest configured command phrases, and ambiguity guidance. The lab does not send keys and does not save the recording.
