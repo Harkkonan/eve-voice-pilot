@@ -14495,6 +14495,28 @@ def _render_flight_attendant_dashboard() -> str:
       display: grid;
       gap: 8px;
     }
+    .planetary-chain-copy-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .planetary-chain-copy-actions button {
+      min-height: 38px;
+      white-space: normal;
+    }
+    .planetary-chain-copy-actions .quickbar-copy-status {
+      grid-column: 1 / -1;
+      color: #244a26;
+      font-size: 12px;
+      font-weight: 900;
+    }
+    body[data-active-tab="planetary"] #tab-planetary .planetary-chain-copy-actions .quickbar-copy-status {
+      color: #244a26;
+    }
+    .planetary-chain-copy-actions .quickbar-copy-status.error { color: #8d1f1f; }
+    body[data-active-tab="planetary"] #tab-planetary .planetary-chain-copy-actions .quickbar-copy-status.error {
+      color: #8d1f1f;
+    }
     .planetary-same-planet {
       color: var(--green);
       font-weight: 900;
@@ -16022,6 +16044,8 @@ Matched text: hidden unless explicitly enabled</textarea>
     let acquisitionQuickbarItems = [];
     let planetaryShoppingQuickbarItems = [];
     let planetarySellQuickbarItems = [];
+    let planetaryExtractedQuickbarItems = [];
+    let planetaryProducedQuickbarItems = [];
     let reprocessLastPayloads = [];
     let reprocessLastNotes = [];
     let reprocessAssaySortKey = "delta";
@@ -16092,8 +16116,12 @@ Matched text: hidden unless explicitly enabled</textarea>
 
     async function writeTextToClipboard(text) {
       if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text);
-        return;
+        try {
+          await navigator.clipboard.writeText(text);
+          return;
+        } catch (_error) {
+          // Fall back for browser automation or focus edge cases.
+        }
       }
       const textarea = document.createElement("textarea");
       textarea.value = text;
@@ -16101,7 +16129,9 @@ Matched text: hidden unless explicitly enabled</textarea>
       textarea.style.position = "fixed";
       textarea.style.left = "-9999px";
       document.body.appendChild(textarea);
+      textarea.focus();
       textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
       const copied = document.execCommand("copy");
       textarea.remove();
       if (!copied) throw new Error("Clipboard copy was blocked by this browser.");
@@ -16128,6 +16158,8 @@ Matched text: hidden unless explicitly enabled</textarea>
       if (listRefName === "acquisition") acquisitionQuickbarItems = [];
       if (listRefName === "planetary-shopping") planetaryShoppingQuickbarItems = [];
       if (listRefName === "planetary-sell") planetarySellQuickbarItems = [];
+      if (listRefName === "planetary-extracted") planetaryExtractedQuickbarItems = [];
+      if (listRefName === "planetary-produced") planetaryProducedQuickbarItems = [];
       if (panel) panel.hidden = true;
       setQuickbarStatus(statusEl, "");
     }
@@ -16138,6 +16170,16 @@ Matched text: hidden unless explicitly enabled</textarea>
         acquisition: {items: acquisitionQuickbarItems, status: acqQuickbarStatus, label: "acquisition recommendation"},
         "planetary-shopping": {items: planetaryShoppingQuickbarItems, status: planetaryShoppingQuickbarStatus, label: "PI input"},
         "planetary-sell": {items: planetarySellQuickbarItems, status: planetarySellQuickbarStatus, label: "PI output"},
+        "planetary-extracted": {
+          items: planetaryExtractedQuickbarItems,
+          status: document.querySelector("#planetary-extracted-quickbar-status"),
+          label: "PI extracted resource",
+        },
+        "planetary-produced": {
+          items: planetaryProducedQuickbarItems,
+          status: document.querySelector("#planetary-produced-quickbar-status"),
+          label: "PI produced resource",
+        },
       };
       return sources[kind] || null;
     }
@@ -18686,6 +18728,8 @@ Matched text: hidden unless explicitly enabled</textarea>
       planetaryChainPanel.innerHTML = "";
       planetaryShoppingQuickbarItems = [];
       planetarySellQuickbarItems = [];
+      planetaryExtractedQuickbarItems = [];
+      planetaryProducedQuickbarItems = [];
       setQuickbarStatus(planetaryShoppingQuickbarStatus, "");
       setQuickbarStatus(planetarySellQuickbarStatus, "");
       planetaryShoppingList.innerHTML = "";
@@ -18710,6 +18754,8 @@ Matched text: hidden unless explicitly enabled</textarea>
       planetaryRankButton.disabled = true;
       planetarySummary.textContent = `Pricing ${settings.outputTier} planetary chains in ${settings.hub}...`;
       planetaryChainPanel.innerHTML = "";
+      planetaryExtractedQuickbarItems = [];
+      planetaryProducedQuickbarItems = [];
       planetaryResults.innerHTML = `<div class="decision-empty">PI ranking will appear here when pricing finishes.</div>`;
       const params = new URLSearchParams({
         hub: settings.hub,
@@ -18762,6 +18808,8 @@ Matched text: hidden unless explicitly enabled</textarea>
       planetaryChainPanel.innerHTML = renderPlanetaryChain(planetary.chain);
       planetaryShoppingQuickbarItems = Array.isArray(planetary.shopping_list) ? planetary.shopping_list : [];
       planetarySellQuickbarItems = Array.isArray(planetary.sell_targets) ? planetary.sell_targets : [];
+      planetaryExtractedQuickbarItems = planetaryExtractedResourcesForQuickbar(planetary.chain);
+      planetaryProducedQuickbarItems = planetaryProducedResourcesForQuickbar(planetary.chain);
       setQuickbarStatus(
         planetaryShoppingQuickbarStatus,
         planetaryShoppingQuickbarItems.length
@@ -18774,9 +18822,53 @@ Matched text: hidden unless explicitly enabled</textarea>
           ? `${formatNumber(quickbarImportNames(planetarySellQuickbarItems).length)} PI output names ready for Quickbar import.`
           : "",
       );
+      setQuickbarStatus(
+        document.querySelector("#planetary-extracted-quickbar-status"),
+        planetaryExtractedQuickbarItems.length
+          ? `${formatNumber(quickbarImportNames(planetaryExtractedQuickbarItems).length)} extracted resource names ready for Quickbar import.`
+          : "",
+      );
+      setQuickbarStatus(
+        document.querySelector("#planetary-produced-quickbar-status"),
+        planetaryProducedQuickbarItems.length
+          ? `${formatNumber(quickbarImportNames(planetaryProducedQuickbarItems).length)} produced resource names ready for Quickbar import.`
+          : "",
+      );
       planetaryShoppingList.innerHTML = renderPlanetaryPlanList(planetary.shopping_list || [], "input");
       planetarySellTargets.innerHTML = renderPlanetaryPlanList(planetary.sell_targets || [], "output");
       planetaryResults.innerHTML = renderPlanetaryOpportunities(opportunities);
+    }
+
+    function planetaryQuickbarItem(item) {
+      return {
+        type_id: item.type_id,
+        name: item.name,
+        item_name: item.name,
+        tier: item.tier,
+        quantity: item.quantity || item.required_quantity || item.produced_quantity || 0,
+      };
+    }
+
+    function planetaryExtractedResourcesForQuickbar(chain) {
+      if (!chain || !chain.available || !Array.isArray(chain.raw_inputs)) return [];
+      return chain.raw_inputs.map(planetaryQuickbarItem);
+    }
+
+    function collectPlanetaryProducedResources(node, items) {
+      if (!node || typeof node !== "object") return;
+      if (node.name && !node.raw_resource) {
+        items.push(planetaryQuickbarItem(node));
+      }
+      (Array.isArray(node.children) ? node.children : []).forEach((child) => {
+        collectPlanetaryProducedResources(child, items);
+      });
+    }
+
+    function planetaryProducedResourcesForQuickbar(chain) {
+      if (!chain || !chain.available || !chain.node) return [];
+      const items = [];
+      collectPlanetaryProducedResources(chain.node, items);
+      return items;
     }
 
     function renderPlanetaryStrategy(strategy) {
@@ -18863,6 +18955,16 @@ Matched text: hidden unless explicitly enabled</textarea>
             <div class="planetary-note-list">
               ${notes.slice(0, 5).map((note) => `<div class="notebook-note">${escapeHtml(note)}</div>`).join("")}
             </div>
+          </div>
+          <div class="notebook-section">
+            <span class="notebook-ribbon">Quickbar Copies</span>
+            <div class="planetary-chain-copy-actions">
+              <button class="secondary" type="button" data-copy-quickbar="planetary-extracted">Copy Extracted Resources</button>
+              <button class="secondary" type="button" data-copy-quickbar="planetary-produced">Copy Produced Resources</button>
+              <div id="planetary-extracted-quickbar-status" class="meta quickbar-copy-status" aria-live="polite"></div>
+              <div id="planetary-produced-quickbar-status" class="meta quickbar-copy-status" aria-live="polite"></div>
+            </div>
+            <div class="notebook-note">Names only. Extracted resources are the P0 planet scan targets; produced resources are the factory/output materials in this chain.</div>
           </div>
         </section>
       `;

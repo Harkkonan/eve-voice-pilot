@@ -405,10 +405,16 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-copy-quickbar=\"planetary-shopping\"" in page
     assert "id=\"planetary-sell-targets\"" in page
     assert "data-copy-quickbar=\"planetary-sell\"" in page
+    assert "data-copy-quickbar=\"planetary-extracted\"" in page
+    assert "data-copy-quickbar=\"planetary-produced\"" in page
+    assert "id=\"planetary-extracted-quickbar-status\"" in page
+    assert "id=\"planetary-produced-quickbar-status\"" in page
     assert "id=\"planetary-results\" class=\"decision-output\"" in page
     assert "Customs Transfer" in page
     assert "renderPlanetaryStrategy" in page
     assert "renderPlanetaryChain" in page
+    assert "planetaryExtractedResourcesForQuickbar" in page
+    assert "planetaryProducedResourcesForQuickbar" in page
     assert "renderPlanetaryPlanList" in page
     assert "renderPlanetaryOpportunities" in page
     assert "quickbarImportText" in page
