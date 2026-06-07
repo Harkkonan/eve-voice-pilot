@@ -326,6 +326,10 @@ In the `Voice` tab, turn spoken pet messages on or off and choose the voice engi
 
 In the `Voice Lab` tab, edit the command profile and test phrases without sending keys. Command changes are local profile changes and are shared with the main EVE Voice Pilot app.
 
+Use `Export Settings` and `Import Settings` at the bottom of the options window to back up or move Intel Pet settings. Importing refreshes the live matcher and saves the cleaned settings to the normal ignored local profile.
+
+Exported settings include your alert terms, pilot names, alert behavior choices, spoken alert choices, and voice preferences. They do not include raw chat logs, alert history, EVE SSO tokens, Discord webhooks, or the separate Voice Lab command profile. Treat exported files as private because pilot names and watched terms can still reveal how you use the pet.
+
 ## Alert History
 
 The `History` tab in `Options` shows recent chat alerts and location cheer events from this pet run.

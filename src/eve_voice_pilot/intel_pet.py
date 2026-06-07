@@ -1017,6 +1017,10 @@ class IntelPetSettings:
         }
 
 
+INTEL_PET_SETTINGS_KEYS = frozenset(IntelPetSettings.__dataclass_fields__)
+INTEL_PET_SETTINGS_EXPORT_KIND = "eve-voice-pilot.intel-pet-settings.v1"
+
+
 @dataclass(frozen=True)
 class IntelPetAlert:
     title: str
@@ -1269,6 +1273,41 @@ def save_settings(path: Path, settings: IntelPetSettings) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(body, encoding="utf-8")
     tmp_path.replace(path)
+
+
+def export_settings_payload(settings: IntelPetSettings, *, exported_at: str | None = None) -> dict[str, Any]:
+    return {
+        "kind": INTEL_PET_SETTINGS_EXPORT_KIND,
+        "exported_at": exported_at or now_iso(),
+        "settings": settings.to_dict(),
+    }
+
+
+def settings_from_import_payload(payload: Any) -> IntelPetSettings:
+    if not isinstance(payload, dict):
+        raise CorpIntelError("Intel Pet settings import must be a JSON object.")
+
+    settings_payload = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
+    if not any(key in settings_payload for key in INTEL_PET_SETTINGS_KEYS):
+        raise CorpIntelError("Import file does not look like Intel Pet settings.")
+    return IntelPetSettings.from_dict(settings_payload)
+
+
+def export_settings(path: Path, settings: IntelPetSettings) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = json.dumps(export_settings_payload(settings), indent=2) + "\n"
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(body, encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def import_settings(path: Path) -> IntelPetSettings:
+    try:
+        payload = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CorpIntelError(f"Could not read intel pet settings import {path}: {exc}") from exc
+    return settings_from_import_payload(payload)
 
 
 def replace_alert_terms(
@@ -2005,7 +2044,7 @@ def run_overlay(
     location_session: IntelPetLocationSession | None = None,
 ) -> None:
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import filedialog, ttk
 
     alert_queue: queue.Queue[
         IntelPetAlert | IntelPetLocationCheer | IntelPetCombatCheer | IntelPetMissionCheer | IntelPetVoiceStatus | str
@@ -3735,6 +3774,73 @@ def run_overlay(
         refresh_history_text()
         history_refreshers.append(refresh_history_text)
 
+        def refresh_editor_settings(settings: IntelPetSettings) -> None:
+            refresh_list("pilot_names", settings.pilot_names)
+            refresh_list("help_phrases", settings.help_phrases)
+            refresh_list("extra_keywords", settings.extra_keywords)
+            for term_var in term_vars.values():
+                term_var.set("")
+
+            refresh_behavior_vars(settings)
+
+            speak_alerts_var.set(settings.speak_alerts)
+            for kind, var in spoken_alert_kind_vars.items():
+                var.set(clean_spoken_alert_kinds(settings.spoken_alert_kinds)[kind])
+            response_engine_var.set(clean_response_engine(settings.response_engine))
+            response_voice_var.set(clean_response_voice(settings.response_voice))
+            response_style_var.set(clean_response_style(settings.response_style))
+            response_preset_var.set(pet_voice_preset_for_style(settings.response_style))
+            voice_preview_text_var.set(clean_voice_preview_text(settings.voice_preview_text))
+            voice_listener_var.set(settings.enable_voice_listener)
+            speech_engine_var.set(clean_voice_engine(settings.voice_engine))
+            voice_model_var.set(voice_model_display(settings.voice_model_path))
+            voice_model_status_var.set(voice_model_status(settings.voice_model_path))
+            voice_input_device_var.set(voice_input_device_display(settings.voice_input_device))
+            voice_call_sign_var.set(clean_voice_call_sign(settings.voice_call_sign))
+            allow_command_sending_var.set(settings.allow_voice_command_sending)
+            require_target_window_var.set(settings.require_voice_target_window)
+            voice_target_title_var.set(clean_voice_target_title(settings.voice_target_title))
+            refresh_heard_phrases()
+
+        def export_pet_settings() -> None:
+            default_name = f"intel_pet_settings_{time.strftime('%Y%m%d_%H%M%S')}.json"
+            export_path = filedialog.asksaveasfilename(
+                parent=editor,
+                title="Export Intel Pet Settings",
+                initialdir=str(settings_path.parent),
+                initialfile=default_name,
+                defaultextension=".json",
+                filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
+            )
+            if not export_path:
+                return
+            try:
+                export_settings(Path(export_path), engine.current_settings())
+            except Exception as exc:
+                editor_status_var.set(f"Export failed: {exc}")
+                return
+            editor_status_var.set(f"Exported settings to {Path(export_path).name}.")
+
+        def import_pet_settings() -> None:
+            import_path = filedialog.askopenfilename(
+                parent=editor,
+                title="Import Intel Pet Settings",
+                initialdir=str(settings_path.parent),
+                filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
+            )
+            if not import_path:
+                return
+            try:
+                settings = import_settings(Path(import_path))
+                save_settings(settings_path, settings)
+                engine.update_settings(settings)
+                configure_pet_speech(settings)
+                refresh_editor_settings(settings)
+            except Exception as exc:
+                editor_status_var.set(f"Import failed: {exc}")
+                return
+            editor_status_var.set(f"Imported settings from {Path(import_path).name}. Saved to local profile.")
+
         def forget_history_refresher(event: Any) -> None:
             if event.widget is not editor:
                 return
@@ -3749,6 +3855,8 @@ def run_overlay(
         ttk.Label(footer, textvariable=editor_status_var, wraplength=380).pack(side="left", anchor="w")
         ttk.Button(footer, text="Quit Pet", command=on_close).pack(side="right", padx=(6, 0))
         ttk.Button(footer, text="Close", command=editor.destroy).pack(side="right")
+        ttk.Button(footer, text="Import Settings", command=import_pet_settings).pack(side="right", padx=(6, 0))
+        ttk.Button(footer, text="Export Settings", command=export_pet_settings).pack(side="right")
         if first_entry is not None:
             first_entry.focus_set()
 

@@ -1,11 +1,14 @@
+import json
 from pathlib import Path
 import sys
 import threading
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from eve_voice_pilot.corp_intel import ChannelFilter, ChatMessage, EveSsoConfig, watch_chat_logs
+from eve_voice_pilot.corp_intel import ChannelFilter, ChatMessage, CorpIntelError, EveSsoConfig, watch_chat_logs
 import eve_voice_pilot.intel_pet as intel_pet_module
 from eve_voice_pilot.intel_pet import (
     ALERT_SPRITE_SEQUENCE,
@@ -71,6 +74,8 @@ from eve_voice_pilot.intel_pet import (
     duplicate_voice_command,
     editable_voice_profile_path,
     execute_voice_command,
+    export_settings,
+    export_settings_payload,
     fetch_pet_location,
     highest_severity_alert,
     history_item_from_alert,
@@ -85,6 +90,7 @@ from eve_voice_pilot.intel_pet import (
     load_sprite_frames,
     mission_action_from_text,
     mission_cheer_from_game_log_line,
+    import_settings,
     load_settings,
     pet_voice_preset_for_style,
     pet_voice_preset_names,
@@ -101,6 +107,7 @@ from eve_voice_pilot.intel_pet import (
     replace_spoken_alert_kinds,
     replace_voice_settings,
     save_settings,
+    settings_from_import_payload,
     ship_sprite_frame_paths,
     should_speak_alert_kind,
     spoken_pet_text,
@@ -266,6 +273,53 @@ def test_save_settings_persists_keywords_for_later_load(tmp_path):
     loaded = load_settings(settings_path)
 
     assert loaded == settings
+
+
+def test_exported_settings_import_round_trips_clean_payload(tmp_path):
+    settings = IntelPetSettings(
+        pilot_names=("Dandin Ridderston",),
+        extra_keywords=("buy order",),
+        help_phrases=("need evac",),
+        show_message_text=False,
+        alert_seconds=11,
+        alert_behaviors=clean_alert_behaviors({"mention": BEHAVIOR_HAPPY, "combat": BEHAVIOR_LONG_COMBAT}),
+    )
+    export_path = tmp_path / "intel_pet_export.json"
+
+    payload = export_settings_payload(settings, exported_at="2026-06-07T00:00:00.000Z")
+    assert payload["kind"] == "eve-voice-pilot.intel-pet-settings.v1"
+    assert payload["exported_at"] == "2026-06-07T00:00:00.000Z"
+    assert "access_token" not in json.dumps(payload)
+    assert "history" not in payload["settings"]
+
+    export_settings(export_path, settings)
+    imported = import_settings(export_path)
+
+    assert imported == settings
+
+
+def test_import_settings_accepts_raw_profile_json_and_rejects_unrelated_json(tmp_path):
+    raw_path = tmp_path / "raw_settings.json"
+    raw_path.write_text(
+        json.dumps(
+            {
+                "pilot_names": ["Dandin Ridderston"],
+                "extra_keywords": ["buy order"],
+                "help_phrases": ["need evac"],
+                "unknown": "ignored",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    imported = import_settings(raw_path)
+
+    assert imported.pilot_names == ("Dandin Ridderston",)
+    assert imported.extra_keywords == ("buy order",)
+    assert imported.help_phrases == ("need evac",)
+    assert settings_from_import_payload({"settings": {"extra_keywords": ["PLEX"]}}).extra_keywords == ("PLEX",)
+    with pytest.raises(CorpIntelError, match="does not look like Intel Pet settings"):
+        settings_from_import_payload({"kind": "not-intel-pet"})
 
 
 def test_pet_voice_settings_persist_and_clean_values(tmp_path):
