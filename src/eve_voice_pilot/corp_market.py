@@ -4466,21 +4466,19 @@ def scan_route_hauling_opportunities(
         total_buy_order_count += len(buy_orders)
         if not sell_orders or not buy_orders:
             continue
-        sell_order = sell_orders[0]
-        buy_order = buy_orders[0]
-        units = min(int(sell_order["volume_remain"]), int(buy_order["volume_remain"]))
         volume_m3 = target.get("volume_m3")
-        cargo_limited = False
-        if volume_m3 is not None and float(volume_m3) > 0:
-            cargo_units = max(0, int((clean_cargo_capacity_m3 + 1e-9) / float(volume_m3)))
-            units = min(units, cargo_units)
-            cargo_limited = cargo_units < min(int(sell_order["volume_remain"]), int(buy_order["volume_remain"]))
-        if units <= 0:
+        depth_match = match_haul_order_depth(
+            sell_orders=sell_orders,
+            buy_orders=buy_orders,
+            cargo_capacity_m3=clean_cargo_capacity_m3,
+            volume_m3=clean_optional_float(volume_m3),
+            sales_tax_rate=sales_tax_rate,
+        )
+        if depth_match is None:
             continue
-        gross_spread_per_unit = float(buy_order["price"]) - float(sell_order["price"])
-        net_sell_price = float(buy_order["price"]) * (1.0 - sales_tax_rate)
-        net_profit_per_unit = net_sell_price - float(sell_order["price"])
-        total_net_profit = net_profit_per_unit * units
+        sell_order = depth_match["pickup_order"]
+        buy_order = depth_match["destination_order"]
+        total_net_profit = float(depth_match["net_profit"])
         if total_net_profit <= 0:
             continue
         pickup_system_id = int(sell_order["system_id"])
@@ -4489,8 +4487,16 @@ def scan_route_hauling_opportunities(
         extra_route_jumps = None
         if origin_to_pickup is not None and pickup_to_destination is not None:
             extra_route_jumps = max(0, origin_to_pickup + pickup_to_destination - route_jumps)
-        margin_percent = profit_margin_percent(net_profit_per_unit, float(sell_order["price"]))
-        pickup_detour_jumps = pickup_detours.get(pickup_system_id, 0)
+        margin_percent = profit_margin_percent(
+            float(depth_match["net_profit_per_unit"]),
+            float(depth_match["average_pickup_price"]),
+        )
+        matched_pickup_detours = [
+            pickup_detours.get(int(system.get("system_id") or 0), 0)
+            for system in depth_match.get("matched_pickup_systems", [])
+        ]
+        pickup_detour_jumps = max(matched_pickup_detours or [pickup_detours.get(pickup_system_id, 0)])
+        primary_pickup_detour_jumps = pickup_detours.get(pickup_system_id, 0)
         if pickup_detour_jumps > 0 and (margin_percent is None or margin_percent < clean_min_detour_margin_percent):
             detour_margin_rejected_count += 1
             continue
@@ -4501,20 +4507,35 @@ def scan_route_hauling_opportunities(
                 "recipe_count": int(target.get("recipe_count") or 0),
                 "source_labels": target.get("source_labels", []),
                 "volume_m3": volume_m3,
-                "units": units,
-                "cargo_limited": cargo_limited,
+                "units": int(depth_match["units"]),
+                "cargo_limited": bool(depth_match["cargo_limited"]),
                 "cargo_capacity_m3": clean_cargo_capacity_m3,
-                "gross_spread_per_unit": gross_spread_per_unit,
-                "net_profit_per_unit": net_profit_per_unit,
+                "average_pickup_price": depth_match["average_pickup_price"],
+                "average_destination_price": depth_match["average_destination_price"],
+                "average_net_destination_price": depth_match["average_net_destination_price"],
+                "gross_spread_per_unit": depth_match["gross_spread_per_unit"],
+                "net_profit_per_unit": depth_match["net_profit_per_unit"],
                 "net_profit": total_net_profit,
+                "pickup_cost": depth_match["pickup_cost"],
+                "gross_destination_revenue": depth_match["gross_destination_revenue"],
+                "net_destination_revenue": depth_match["net_destination_revenue"],
+                "sales_tax_total": depth_match["sales_tax_total"],
                 "margin_percent": margin_percent,
                 "sales_tax_rate": sales_tax_rate,
                 "pickup_order": sell_order,
                 "destination_order": buy_order,
                 "pickup_detour_jumps": pickup_detour_jumps,
+                "primary_pickup_detour_jumps": primary_pickup_detour_jumps,
                 "origin_to_pickup_jumps": origin_to_pickup,
                 "pickup_to_destination_jumps": pickup_to_destination,
                 "extra_route_jumps": extra_route_jumps,
+                "matched_sell_order_count": depth_match["matched_sell_order_count"],
+                "matched_buy_order_count": depth_match["matched_buy_order_count"],
+                "matched_order_pair_count": depth_match["matched_order_pair_count"],
+                "matched_pickup_system_count": depth_match["matched_pickup_system_count"],
+                "matched_pickup_systems": depth_match["matched_pickup_systems"],
+                "order_depth": depth_match["order_depth"],
+                "order_depth_truncated": depth_match["order_depth_truncated"],
             }
         )
 
@@ -4557,9 +4578,10 @@ def scan_route_hauling_opportunities(
         "sales_tax": sales_tax,
         "market_cache": market_order_cache_status(),
         "pricing_note": (
-            "This scan compares public sell orders along the route corridor with public buy orders in the destination "
-            "system. Profit is after sales tax for selling into the destination buy order. Public market orders are "
-            "cached locally for 5 minutes. The page does not place orders or verify station docking access."
+            "This scan walks public sell-order depth along the route corridor against public buy-order depth in the "
+            "destination system until the profitable depth or cargo capacity runs out. Profit is after sales tax for "
+            "selling into destination buy orders. Public market orders are cached locally for 5 minutes. The page does "
+            "not place orders or verify station docking access."
         ),
     }
 
@@ -5403,6 +5425,145 @@ def market_order_sort_key(order: dict[str, Any], *, order_type: str) -> tuple[fl
     price = float(order.get("price") or 0.0)
     price_rank = -price if order_type == "buy" else price
     return (price_rank, int(order.get("jumps") or 0), -int(order.get("volume_remain") or 0))
+
+
+def match_haul_order_depth(
+    *,
+    sell_orders: list[dict[str, Any]],
+    buy_orders: list[dict[str, Any]],
+    cargo_capacity_m3: float,
+    volume_m3: float | None,
+    sales_tax_rate: float,
+) -> dict[str, Any] | None:
+    clean_tax_rate = max(0.0, min(1.0, float(sales_tax_rate or 0.0)))
+    clean_cargo_capacity_m3 = clamp_haul_cargo_m3(cargo_capacity_m3)
+    unit_volume = clean_optional_float(volume_m3)
+    cargo_units = None
+    if unit_volume is not None and unit_volume > 0:
+        cargo_units = max(0, int((clean_cargo_capacity_m3 + 1e-9) / unit_volume))
+        if cargo_units <= 0:
+            return None
+
+    sell_depth = [
+        {**order, "_remaining": int(order.get("volume_remain") or 0)}
+        for order in sell_orders
+        if int(order.get("volume_remain") or 0) > 0 and float(order.get("price") or 0.0) > 0
+    ]
+    buy_depth = [
+        {**order, "_remaining": int(order.get("volume_remain") or 0)}
+        for order in buy_orders
+        if int(order.get("volume_remain") or 0) > 0 and float(order.get("price") or 0.0) > 0
+    ]
+    sell_index = 0
+    buy_index = 0
+    remaining_cargo_units = cargo_units
+    matched_units = 0
+    pickup_cost = 0.0
+    gross_destination_revenue = 0.0
+    net_destination_revenue = 0.0
+    matches: list[dict[str, Any]] = []
+
+    while sell_index < len(sell_depth) and buy_index < len(buy_depth):
+        sell_order = sell_depth[sell_index]
+        buy_order = buy_depth[buy_index]
+        sell_price = float(sell_order["price"])
+        buy_price = float(buy_order["price"])
+        net_buy_price = buy_price * (1.0 - clean_tax_rate)
+        if net_buy_price <= sell_price:
+            break
+
+        available_units = min(int(sell_order["_remaining"]), int(buy_order["_remaining"]))
+        if remaining_cargo_units is not None:
+            available_units = min(available_units, remaining_cargo_units)
+        if available_units <= 0:
+            break
+
+        line_pickup_cost = sell_price * available_units
+        line_gross_destination_revenue = buy_price * available_units
+        line_net_destination_revenue = net_buy_price * available_units
+        pickup_cost += line_pickup_cost
+        gross_destination_revenue += line_gross_destination_revenue
+        net_destination_revenue += line_net_destination_revenue
+        matched_units += available_units
+        matches.append(
+            {
+                "units": available_units,
+                "pickup_order": {key: value for key, value in sell_order.items() if key != "_remaining"},
+                "destination_order": {key: value for key, value in buy_order.items() if key != "_remaining"},
+                "pickup_price": sell_price,
+                "destination_price": buy_price,
+                "net_destination_price": net_buy_price,
+                "net_profit": line_net_destination_revenue - line_pickup_cost,
+            }
+        )
+
+        sell_order["_remaining"] = int(sell_order["_remaining"]) - available_units
+        buy_order["_remaining"] = int(buy_order["_remaining"]) - available_units
+        if remaining_cargo_units is not None:
+            remaining_cargo_units -= available_units
+            if remaining_cargo_units <= 0:
+                break
+        if int(sell_order["_remaining"]) <= 0:
+            sell_index += 1
+        if int(buy_order["_remaining"]) <= 0:
+            buy_index += 1
+
+    if matched_units <= 0 or pickup_cost <= 0:
+        return None
+
+    pickup_systems: dict[int, dict[str, Any]] = {}
+    pickup_system_order_ids: dict[int, set[int]] = {}
+    pickup_order_ids: set[int] = set()
+    destination_order_ids: set[int] = set()
+    for match in matches:
+        pickup_order = match["pickup_order"]
+        destination_order = match["destination_order"]
+        pickup_order_id = int(pickup_order.get("order_id") or 0)
+        pickup_order_ids.add(pickup_order_id)
+        destination_order_ids.add(int(destination_order.get("order_id") or 0))
+        system_id = int(pickup_order.get("system_id") or 0)
+        pickup_system_order_ids.setdefault(system_id, set()).add(pickup_order_id)
+        system_row = pickup_systems.setdefault(
+            system_id,
+            {
+                "system_id": system_id,
+                "system_name": pickup_order.get("system_name") or f"System {system_id}",
+                "units": 0,
+                "order_count": 0,
+                "pickup_cost": 0.0,
+            },
+        )
+        system_row["units"] = int(system_row["units"]) + int(match["units"])
+        system_row["pickup_cost"] = float(system_row["pickup_cost"]) + float(match["pickup_price"]) * int(match["units"])
+        system_row["order_count"] = len(pickup_system_order_ids[system_id])
+
+    net_profit = net_destination_revenue - pickup_cost
+    return {
+        "units": matched_units,
+        "pickup_order": matches[0]["pickup_order"],
+        "destination_order": matches[0]["destination_order"],
+        "average_pickup_price": pickup_cost / matched_units,
+        "average_destination_price": gross_destination_revenue / matched_units,
+        "average_net_destination_price": net_destination_revenue / matched_units,
+        "gross_spread_per_unit": (gross_destination_revenue - pickup_cost) / matched_units,
+        "net_profit_per_unit": net_profit / matched_units,
+        "net_profit": net_profit,
+        "pickup_cost": pickup_cost,
+        "gross_destination_revenue": gross_destination_revenue,
+        "net_destination_revenue": net_destination_revenue,
+        "sales_tax_total": gross_destination_revenue - net_destination_revenue,
+        "matched_sell_order_count": len(pickup_order_ids),
+        "matched_buy_order_count": len(destination_order_ids),
+        "matched_order_pair_count": len(matches),
+        "matched_pickup_system_count": len(pickup_systems),
+        "matched_pickup_systems": sorted(
+            pickup_systems.values(),
+            key=lambda item: (-int(item["units"]), str(item["system_name"]), int(item["system_id"])),
+        ),
+        "order_depth": matches[:12],
+        "order_depth_truncated": len(matches) > 12,
+        "cargo_limited": cargo_units is not None and matched_units >= cargo_units,
+    }
 
 
 def profit_sort_value(item: dict[str, Any]) -> float:
@@ -14410,6 +14571,19 @@ def _render_flight_attendant_dashboard() -> str:
         const pickup = item.pickup_order || {};
         const destination = item.destination_order || {};
         const extraJumps = item.extra_route_jumps == null ? "unknown" : `${formatNumber(item.extra_route_jumps)} extra`;
+        const pickupPrice = item.average_pickup_price == null ? pickup.price : item.average_pickup_price;
+        const destinationPrice = item.average_destination_price == null ? destination.price : item.average_destination_price;
+        const depthText = item.matched_order_pair_count
+          ? `${formatNumber(item.matched_sell_order_count)} sell order${Number(item.matched_sell_order_count || 0) === 1 ? "" : "s"} matched to ${formatNumber(item.matched_buy_order_count)} destination buy order${Number(item.matched_buy_order_count || 0) === 1 ? "" : "s"}`
+          : "top order match";
+        const pickupSystemsText = item.matched_pickup_system_count
+          ? `${formatNumber(item.matched_pickup_system_count)} pickup system${Number(item.matched_pickup_system_count || 0) === 1 ? "" : "s"}`
+          : "one pickup system";
+        const depthRows = (item.order_depth || []).slice(0, 4).map((row) => {
+          const rowPickup = row.pickup_order || {};
+          const rowDestination = row.destination_order || {};
+          return `${formatNumber(row.units)} from ${rowPickup.system_name || "pickup"} ${formatIsk(row.pickup_price)} -> ${rowDestination.system_name || "destination"} ${formatIsk(row.destination_price)}`;
+        }).join("; ");
         const cargoNote = item.volume_m3 == null
           ? "volume unknown"
           : `${formatVolume(item.volume_m3)} each${item.cargo_limited ? "; cargo limited" : ""}`;
@@ -14419,20 +14593,25 @@ def _render_flight_attendant_dashboard() -> str:
               <strong>${escapeHtml(item.item_name)}</strong>
               <span class="pill decision-build">${formatSignedIsk(item.net_profit)}</span>
             </div>
-            <div class="decision-lede">Buy in ${escapeHtml(pickup.system_name || "pickup")} at ${formatIsk(pickup.price)}; sell in ${escapeHtml(destination.system_name || "destination")} at ${formatIsk(destination.price)}.</div>
+            <div class="decision-lede">Buy from ${escapeHtml(pickup.system_name || "pickup")} corridor at ${formatIsk(pickupPrice)} avg; sell in ${escapeHtml(destination.system_name || "destination")} at ${formatIsk(destinationPrice)} avg.</div>
             <div class="decision-metrics">
               <div class="decision-metric"><span>Units</span><b>${formatNumber(item.units)}</b><small>${escapeHtml(cargoNote)}</small></div>
               <div class="decision-metric"><span>After-Tax Per Unit</span><b>${formatSignedIsk(item.net_profit_per_unit)}</b><small>${formatPercent(item.margin_percent)} on pickup cost.</small></div>
-              <div class="decision-metric"><span>Pickup</span><b>${escapeHtml(pickup.system_name || "unknown")}</b><small>${formatNumber(pickup.jumps)} jumps from current; ${formatNumber(item.pickup_detour_jumps)} from route.</small></div>
+              <div class="decision-metric"><span>Depth</span><b>${escapeHtml(depthText)}</b><small>${escapeHtml(pickupSystemsText)}.</small></div>
               <div class="decision-metric"><span>Route</span><b>${escapeHtml(extraJumps)}</b><small>Origin-pickup-destination compared with direct route.</small></div>
             </div>
             <details class="profit-details">
               <summary>Order details</summary>
               <div class="profit-detail-grid">
-                <div class="profit-detail-row"><span>Pickup order remaining</span><b>${formatNumber(pickup.volume_remain)}</b></div>
-                <div class="profit-detail-row"><span>Destination order remaining</span><b>${formatNumber(destination.volume_remain)}</b></div>
+                <div class="profit-detail-row"><span>Primary pickup</span><b>${escapeHtml(pickup.system_name || "unknown")} (${formatNumber(pickup.jumps)} jumps)</b></div>
+                <div class="profit-detail-row"><span>Pickup detour</span><b>${formatNumber(item.pickup_detour_jumps)} max; ${formatNumber(item.primary_pickup_detour_jumps)} primary</b></div>
+                <div class="profit-detail-row"><span>Pickup cost</span><b>${formatIsk(item.pickup_cost)}</b></div>
+                <div class="profit-detail-row"><span>Destination gross</span><b>${formatIsk(item.gross_destination_revenue)}</b></div>
+                <div class="profit-detail-row"><span>Sales tax</span><b>${formatIsk(item.sales_tax_total)} (${formatRatePercent(item.sales_tax_rate)})</b></div>
+                <div class="profit-detail-row"><span>Net destination revenue</span><b>${formatIsk(item.net_destination_revenue)}</b></div>
                 <div class="profit-detail-row"><span>Gross spread per unit</span><b>${formatSignedIsk(item.gross_spread_per_unit)}</b></div>
-                <div class="profit-detail-row"><span>Sales tax</span><b>${formatRatePercent(item.sales_tax_rate)}</b></div>
+                <div class="profit-detail-row"><span>Matched pairs</span><b>${formatNumber(item.matched_order_pair_count)}</b></div>
+                <div class="profit-detail-row"><span>Depth rows</span><b>${escapeHtml(depthRows || "not returned")}${item.order_depth_truncated ? "..." : ""}</b></div>
               </div>
             </details>
           </div>

@@ -2885,7 +2885,16 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
                     "system_id": 4,
                     "location_id": 60008494,
                     "price": 2.0,
-                    "volume_remain": 5000,
+                    "volume_remain": 600,
+                    "min_volume": 1,
+                },
+                {
+                    "order_id": 23,
+                    "is_buy_order": False,
+                    "system_id": 2,
+                    "location_id": 60008497,
+                    "price": 2.5,
+                    "volume_remain": 1000,
                     "min_volume": 1,
                 },
                 {
@@ -2920,7 +2929,16 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
                     "system_id": 3,
                     "location_id": 60003760,
                     "price": 8.0,
-                    "volume_remain": 2000,
+                    "volume_remain": 500,
+                    "min_volume": 1,
+                },
+                {
+                    "order_id": 33,
+                    "is_buy_order": True,
+                    "system_id": 3,
+                    "location_id": 60003760,
+                    "price": 7.5,
+                    "volume_remain": 1000,
                     "min_volume": 1,
                 },
                 {
@@ -3007,11 +3025,26 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert opportunity["cargo_limited"] is True
     assert opportunity["pickup_order"]["system_name"] == "Side Pickup"
     assert opportunity["destination_order"]["system_name"] == "Jita"
+    assert opportunity["matched_sell_order_count"] == 2
+    assert opportunity["matched_buy_order_count"] == 2
+    assert opportunity["matched_order_pair_count"] == 3
+    assert opportunity["matched_pickup_system_count"] == 2
+    assert opportunity["matched_pickup_systems"][0]["system_name"] == "Side Pickup"
+    assert opportunity["order_depth"][0]["units"] == 500
+    assert opportunity["order_depth"][1]["units"] == 100
+    assert opportunity["order_depth"][2]["units"] == 400
     assert opportunity["pickup_detour_jumps"] == 1
+    assert opportunity["primary_pickup_detour_jumps"] == 1
     assert opportunity["extra_route_jumps"] == 2
-    assert opportunity["gross_spread_per_unit"] == 6.0
-    assert opportunity["net_profit_per_unit"] == pytest.approx(5.73)
-    assert opportunity["net_profit"] == pytest.approx(5730.0)
+    assert opportunity["average_pickup_price"] == pytest.approx(2.2)
+    assert opportunity["average_destination_price"] == pytest.approx(7.75)
+    assert opportunity["gross_spread_per_unit"] == pytest.approx(5.55)
+    assert opportunity["net_profit_per_unit"] == pytest.approx(5.2884375)
+    assert opportunity["net_profit"] == pytest.approx(5288.4375)
+    assert opportunity["pickup_cost"] == pytest.approx(2200.0)
+    assert opportunity["gross_destination_revenue"] == pytest.approx(7750.0)
+    assert opportunity["sales_tax_total"] == pytest.approx(261.5625)
+    assert opportunity["net_destination_revenue"] == pytest.approx(7488.4375)
     event_names = [event for event, _payload in progress_events]
     assert "scan_start" in event_names
     assert "route_step" in event_names
