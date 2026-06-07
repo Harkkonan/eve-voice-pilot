@@ -4398,6 +4398,9 @@ def scan_route_hauling_opportunities(
     opportunities = []
     total_sell_order_count = 0
     total_buy_order_count = 0
+    history_regions = set()
+    trap_signal_count = 0
+    caution_signal_count = 0
     detour_margin_rejected_count = 0
     errors = []
     emit_haul_route_progress(
@@ -4500,6 +4503,55 @@ def scan_route_hauling_opportunities(
         if pickup_detour_jumps > 0 and (margin_percent is None or margin_percent < clean_min_detour_margin_percent):
             detour_margin_rejected_count += 1
             continue
+        if progress is not None:
+            progress(
+                "orders",
+                {
+                    "type_id": type_id,
+                    "item_name": target["name"],
+                    "material_index": target_index,
+                    "scanned_materials": len(scan_targets),
+                    "message": f"Checking market history for {target['name']}",
+                },
+            )
+        matched_pickup_region_ids = sorted(
+            {
+                int(system.region_id)
+                for matched_system in depth_match.get("matched_pickup_systems", [])
+                for system_id in [int(matched_system.get("system_id") or 0)]
+                for system in [systems.get(system_id)]
+                if system is not None and system.region_id is not None
+            }
+        )
+        pickup_history_rows = []
+        for region_id in matched_pickup_region_ids:
+            try:
+                pickup_history_rows.append(fetch_market_history(config, region_id=region_id, type_id=type_id))
+                history_regions.add(region_id)
+            except CorpMarketError as exc:
+                errors.append({"history": "pickup", "type_id": type_id, "region_id": region_id, "error": str(exc)})
+        try:
+            destination_history_rows = fetch_market_history(config, region_id=destination.region_id, type_id=type_id)
+            history_regions.add(destination.region_id)
+        except CorpMarketError as exc:
+            errors.append(
+                {"history": "destination", "type_id": type_id, "region_id": destination.region_id, "error": str(exc)}
+            )
+            destination_history_rows = []
+        pickup_history = market_history_stats(combine_market_history_rows(pickup_history_rows))
+        destination_history = market_history_stats(destination_history_rows)
+        history_flags = hauling_history_flags(
+            pickup_stats=pickup_history,
+            destination_stats=destination_history,
+            average_pickup_price=float(depth_match["average_pickup_price"]),
+            average_destination_price=float(depth_match["average_destination_price"]),
+            units=int(depth_match["units"]),
+        )
+        risk_level = acquisition_risk_level(history_flags)
+        if risk_level == "possible-trap":
+            trap_signal_count += 1
+        elif risk_level == "caution":
+            caution_signal_count += 1
         opportunities.append(
             {
                 "type_id": type_id,
@@ -4536,11 +4588,18 @@ def scan_route_hauling_opportunities(
                 "matched_pickup_systems": depth_match["matched_pickup_systems"],
                 "order_depth": depth_match["order_depth"],
                 "order_depth_truncated": depth_match["order_depth_truncated"],
+                "decision": hauling_decision(risk_level=risk_level, margin_percent=margin_percent),
+                "risk_level": risk_level,
+                "history_flags": history_flags,
+                "pickup_history": pickup_history,
+                "destination_history": destination_history,
+                "matched_pickup_region_ids": matched_pickup_region_ids,
             }
         )
 
     opportunities.sort(
         key=lambda item: (
+            acquisition_risk_sort_rank(str(item.get("risk_level") or "")),
             -float(item["net_profit"]),
             int(item.get("extra_route_jumps") if item.get("extra_route_jumps") is not None else 99),
             -float(item["net_profit_per_unit"]),
@@ -4571,17 +4630,23 @@ def scan_route_hauling_opportunities(
         },
         "sell_order_count": total_sell_order_count,
         "buy_order_count": total_buy_order_count,
+        "history_region_count": len(history_regions),
+        "possible_trap_count": trap_signal_count,
+        "caution_count": caution_signal_count,
         "detour_margin_rejected_count": detour_margin_rejected_count,
         "profitable_opportunities": len(opportunities),
         "opportunities": opportunities[:MAX_FLIGHT_HAUL_OPPORTUNITIES],
         "errors": errors[:12],
         "sales_tax": sales_tax,
         "market_cache": market_order_cache_status(),
+        "history_cache": market_history_cache_status(),
         "pricing_note": (
             "This scan walks public sell-order depth along the route corridor against public buy-order depth in the "
-            "destination system until the profitable depth or cargo capacity runs out. Profit is after sales tax for "
-            "selling into destination buy orders. Public market orders are cached locally for 5 minutes. The page does "
-            "not place orders or verify station docking access."
+            "destination system until the profitable depth or cargo capacity runs out. It then checks public market "
+            "history for the matched pickup and destination regions so price spikes, thin volume, and sparse order "
+            "activity are labeled before you undock. Profit is after sales tax for selling into destination buy "
+            "orders. Public market orders are cached locally for 5 minutes. The page does not place orders or verify "
+            "station docking access."
         ),
     }
 
@@ -5016,6 +5081,56 @@ def market_history_stats(history: Iterable[dict[str, Any]], *, days: int = 30) -
     }
 
 
+def combine_market_history_rows(histories: Iterable[Iterable[dict[str, Any]]]) -> list[dict[str, Any]]:
+    by_date: dict[str, dict[str, Any]] = {}
+    for history in histories:
+        for row in history:
+            if not isinstance(row, dict):
+                continue
+            date = str(row.get("date") or "").strip()
+            if not date:
+                continue
+            volume = max(0.0, clean_optional_float(row.get("volume")) or 0.0)
+            order_count = max(0.0, clean_optional_float(row.get("order_count")) or 0.0)
+            average = clean_optional_float(row.get("average"))
+            lowest = clean_optional_float(row.get("lowest"))
+            highest = clean_optional_float(row.get("highest"))
+            aggregate = by_date.setdefault(
+                date,
+                {
+                    "date": date,
+                    "volume": 0.0,
+                    "order_count": 0.0,
+                    "_average_value": 0.0,
+                    "_average_weight": 0.0,
+                    "lowest": None,
+                    "highest": None,
+                },
+            )
+            aggregate["volume"] = float(aggregate["volume"]) + volume
+            aggregate["order_count"] = float(aggregate["order_count"]) + order_count
+            if average is not None and average > 0:
+                weight = volume if volume > 0 else 1.0
+                aggregate["_average_value"] = float(aggregate["_average_value"]) + average * weight
+                aggregate["_average_weight"] = float(aggregate["_average_weight"]) + weight
+            if lowest is not None and lowest > 0:
+                current_low = clean_optional_float(aggregate.get("lowest"))
+                aggregate["lowest"] = lowest if current_low is None else min(current_low, lowest)
+            if highest is not None and highest > 0:
+                current_high = clean_optional_float(aggregate.get("highest"))
+                aggregate["highest"] = highest if current_high is None else max(current_high, highest)
+
+    combined = []
+    for aggregate in by_date.values():
+        average_weight = float(aggregate.pop("_average_weight", 0.0))
+        average_value = float(aggregate.pop("_average_value", 0.0))
+        aggregate["average"] = average_value / average_weight if average_weight > 0 else None
+        aggregate["volume"] = int(round(float(aggregate["volume"])))
+        aggregate["order_count"] = int(round(float(aggregate["order_count"])))
+        combined.append(aggregate)
+    return sorted(combined, key=lambda item: str(item.get("date") or ""))
+
+
 def median_number(values: Iterable[float]) -> float | None:
     clean_values = sorted(float(value) for value in values if value is not None and float(value) > 0)
     count = len(clean_values)
@@ -5183,6 +5298,123 @@ def acquisition_decision(*, risk_level: str, margin_percent: float | None) -> di
         "tone": "watch",
         "label": "Watch only",
         "reason": "The current spread is not strong enough after estimated fees.",
+    }
+
+
+def hauling_history_flags(
+    *,
+    pickup_stats: dict[str, Any],
+    destination_stats: dict[str, Any],
+    average_pickup_price: float,
+    average_destination_price: float,
+    units: int,
+) -> list[dict[str, str]]:
+    flags: list[dict[str, str]] = []
+    pickup_days = int(pickup_stats.get("days") or 0)
+    destination_days = int(destination_stats.get("days") or 0)
+    if pickup_days < 7:
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Limited pickup history",
+                "detail": "The matched pickup region has less than a week of public history for this item.",
+            }
+        )
+    if destination_days < 7:
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Limited destination history",
+                "detail": "The destination region has less than a week of public history, so demand is hard to trust.",
+            }
+        )
+
+    destination_daily_volume = clean_optional_float(destination_stats.get("avg_daily_volume")) or 0.0
+    if destination_daily_volume > 0 and units > max(10.0, destination_daily_volume * 3.0):
+        flags.append(
+            {
+                "severity": "trap",
+                "label": "Possible trap: demand exceeds history",
+                "detail": "The matched buy-order depth is much larger than recent destination-region daily volume.",
+            }
+        )
+    elif destination_daily_volume > 0 and units > max(5.0, destination_daily_volume):
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Thin destination volume",
+                "detail": "The haul size is larger than recent destination-region daily volume.",
+            }
+        )
+
+    destination_daily_orders = clean_optional_float(destination_stats.get("avg_daily_order_count")) or 0.0
+    if destination_days and destination_daily_orders < 1.5:
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Sparse destination orders",
+                "detail": "Recent destination history has few daily market orders, so the buy side may be fragile.",
+            }
+        )
+
+    destination_median = clean_optional_float(destination_stats.get("median_average"))
+    if destination_days >= 7 and destination_median and average_destination_price > destination_median * 1.75:
+        flags.append(
+            {
+                "severity": "trap",
+                "label": "Possible trap: price spike",
+                "detail": "The matched destination buy price is far above recent market-history average; verify the order in EVE before hauling.",
+            }
+        )
+
+    pickup_median = clean_optional_float(pickup_stats.get("median_average"))
+    if pickup_days >= 7 and pickup_median and average_pickup_price < pickup_median * 0.5:
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Unusually cheap pickup",
+                "detail": "The matched pickup price is far below recent market history; verify docking access, location, and minimum volume.",
+            }
+        )
+
+    if not flags:
+        flags.append(
+            {
+                "severity": "clear",
+                "label": "History supports a cautious haul",
+                "detail": "Recent history and current orders do not show an obvious trap signal.",
+            }
+        )
+    return flags
+
+
+def hauling_decision(*, risk_level: str, margin_percent: float | None) -> dict[str, str]:
+    if risk_level == "possible-trap":
+        return {
+            "code": "verify",
+            "tone": "price",
+            "label": "Verify in EVE first",
+            "reason": "Market history shows a possible trap signal. Treat this as a price-check candidate before hauling.",
+        }
+    if risk_level == "caution":
+        return {
+            "code": "test",
+            "tone": "watch",
+            "label": "Small manual test haul",
+            "reason": "The spread is positive, but history is thin or unusual enough to recheck before filling the hold.",
+        }
+    if margin_percent is not None and margin_percent >= 25:
+        return {
+            "code": "haul",
+            "tone": "build",
+            "label": "Manual haul candidate",
+            "reason": "The spread survives tax and recent history does not show a major warning.",
+        }
+    return {
+        "code": "watch",
+        "tone": "watch",
+        "label": "Low-margin watch",
+        "reason": "The opportunity is profitable, but the margin is modest. Verify current orders before undocking.",
     }
 
 
@@ -14512,6 +14744,7 @@ def _render_flight_attendant_dashboard() -> str:
       const destination = route.destination || {};
       const salesTax = hauling.sales_tax || {};
       const marketCache = hauling.market_cache || {};
+      const historyCache = hauling.history_cache || {};
       const itemScope = hauling.item_scope || {};
       const materialLimit = hauling.item_truncated ? ` Limited to ${formatNumber(hauling.scanned_item_types || hauling.scanned_materials)} of ${formatNumber(hauling.total_item_types || hauling.total_materials)} selected item types.` : "";
       const regionLimit = hauling.pickup_region_truncated ? ` Limited to ${formatNumber(hauling.pickup_regions_scanned)} of ${formatNumber(hauling.pickup_regions_total)} pickup regions.` : "";
@@ -14544,6 +14777,8 @@ def _render_flight_attendant_dashboard() -> str:
           <div class="profit-stat"><span>Sell Orders</span><b>${formatNumber(hauling.sell_order_count)}</b></div>
           <div class="profit-stat"><span>Buy Orders</span><b>${formatNumber(hauling.buy_order_count)}</b></div>
           <div class="profit-stat"><span>Item Types</span><b>${formatNumber(hauling.scanned_item_types || hauling.scanned_materials)}</b></div>
+          <div class="profit-stat"><span>Possible Traps</span><b>${formatNumber(hauling.possible_trap_count)}</b></div>
+          <div class="profit-stat"><span>Cautions</span><b>${formatNumber(hauling.caution_count)}</b></div>
         </div>
         <div class="meta">
           Pickup detour ${formatNumber(hauling.detour_jumps)} jumps; scanned ${formatNumber(hauling.pickup_regions_scanned)}
@@ -14553,6 +14788,7 @@ def _render_flight_attendant_dashboard() -> str:
         <div class="meta">${formatNumber(hauling.detour_margin_rejected_count)} detour candidates were below the selected profit threshold.</div>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on destination buy-order sales.</div>
         <div class="meta">Market cache: ${formatNumber(marketCache.entries)} entries, ${formatNumber(marketCache.ttl_seconds || 300)}s reuse window.</div>
+        <div class="meta">History cache: ${formatNumber(historyCache.entries)} entries; checked ${formatNumber(hauling.history_region_count)} market-history regions for matched opportunities.</div>
         <div class="meta">${escapeHtml(hauling.pricing_note || "Public market order route scan.")}</div>
       `;
       haulOpportunityTop.innerHTML = renderHaulOpportunities(hauling.opportunities || []);
@@ -14584,6 +14820,8 @@ def _render_flight_attendant_dashboard() -> str:
           const rowDestination = row.destination_order || {};
           return `${formatNumber(row.units)} from ${rowPickup.system_name || "pickup"} ${formatIsk(row.pickup_price)} -> ${rowDestination.system_name || "destination"} ${formatIsk(row.destination_price)}`;
         }).join("; ");
+        const decision = item.decision || {};
+        const riskClass = acquisitionRiskClass(item.risk_level);
         const cargoNote = item.volume_m3 == null
           ? "volume unknown"
           : `${formatVolume(item.volume_m3)} each${item.cargo_limited ? "; cargo limited" : ""}`;
@@ -14591,9 +14829,12 @@ def _render_flight_attendant_dashboard() -> str:
           <div class="decision-row">
             <div class="decision-head">
               <strong>${escapeHtml(item.item_name)}</strong>
+              <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
               <span class="pill decision-build">${formatSignedIsk(item.net_profit)}</span>
             </div>
             <div class="decision-lede">Buy from ${escapeHtml(pickup.system_name || "pickup")} corridor at ${formatIsk(pickupPrice)} avg; sell in ${escapeHtml(destination.system_name || "destination")} at ${formatIsk(destinationPrice)} avg.</div>
+            <div class="decision-lede">${escapeHtml(decision.label || "Review manually")}: ${escapeHtml(decision.reason || "Verify current orders in EVE before hauling.")}</div>
+            ${renderAcquisitionHistoryFlags(item.history_flags || [])}
             <div class="decision-metrics">
               <div class="decision-metric"><span>Units</span><b>${formatNumber(item.units)}</b><small>${escapeHtml(cargoNote)}</small></div>
               <div class="decision-metric"><span>After-Tax Per Unit</span><b>${formatSignedIsk(item.net_profit_per_unit)}</b><small>${formatPercent(item.margin_percent)} on pickup cost.</small></div>
@@ -14612,6 +14853,8 @@ def _render_flight_attendant_dashboard() -> str:
                 <div class="profit-detail-row"><span>Gross spread per unit</span><b>${formatSignedIsk(item.gross_spread_per_unit)}</b></div>
                 <div class="profit-detail-row"><span>Matched pairs</span><b>${formatNumber(item.matched_order_pair_count)}</b></div>
                 <div class="profit-detail-row"><span>Depth rows</span><b>${escapeHtml(depthRows || "not returned")}${item.order_depth_truncated ? "..." : ""}</b></div>
+                <div class="profit-detail-row"><span>Pickup history</span><b>${renderHistoryStats(item.pickup_history || {})}</b></div>
+                <div class="profit-detail-row"><span>Destination history</span><b>${renderHistoryStats(item.destination_history || {})}</b></div>
               </div>
             </details>
           </div>

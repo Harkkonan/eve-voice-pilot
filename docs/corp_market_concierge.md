@@ -259,7 +259,7 @@ Future modules should be added one calculator at a time:
 
 The `Hauler Routes` tab uses your connected ESI location as the route start. Pick a destination such as Jita, Amarr, Hek, Rens, Dodixie, or Dihra, then scan common build materials, whole market categories, or exact item types that can be bought from public sell orders on or near the route and sold into public buy orders in the destination system.
 
-The scan ranks opportunities by after-tax profit using your Accounting skill. It walks reachable public sell-order depth against destination public buy-order depth until the profitable depth or cargo capacity runs out, then shows weighted average pickup/destination prices, matched order counts, pickup systems, and sales-tax drag. It is an advisory board only: it does not buy items, sell items, create contracts, move the ship, or prove docking access at the listed structure.
+The scan ranks opportunities by after-tax profit using your Accounting skill. It walks reachable public sell-order depth against destination public buy-order depth until the profitable depth or cargo capacity runs out, then checks public market history for the matched pickup and destination regions. Results show weighted average pickup/destination prices, matched order counts, pickup systems, sales-tax drag, and plain-language history warnings such as `Possible trap` or `Caution`. It is an advisory board only: it does not buy items, sell items, create contracts, move the ship, or prove docking access at the listed structure.
 
 Cargo capacity is applied when the local recipe cache includes `volume_m3`. Run the static cache refresh again after this update if the hauler tab says volume is unknown:
 

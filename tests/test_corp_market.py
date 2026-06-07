@@ -2849,6 +2849,7 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     )
     sell_calls = []
     buy_calls = []
+    history_calls = []
 
     monkeypatch.setattr(
         corp_market,
@@ -2965,6 +2966,23 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
 
     monkeypatch.setattr(corp_market, "fetch_market_sell_orders", fake_fetch_market_sell_orders)
     monkeypatch.setattr(corp_market, "fetch_market_buy_orders", fake_fetch_market_buy_orders)
+
+    def fake_fetch_market_history(config, *, region_id, type_id):
+        history_calls.append((region_id, type_id))
+        average = 2.3 if region_id == 100 else 7.5
+        return [
+            {
+                "date": f"2026-05-{day:02d}",
+                "average": average,
+                "highest": average * 1.1,
+                "lowest": average * 0.9,
+                "order_count": 6,
+                "volume": 5000,
+            }
+            for day in range(1, 31)
+        ]
+
+    monkeypatch.setattr(corp_market, "fetch_market_history", fake_fetch_market_history)
     route_calls = []
 
     def fake_fetch_esi_route_path(
@@ -3019,8 +3037,17 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert hauling["sales_tax"]["accounting_level"] == 5
     assert hauling["min_detour_margin_percent"] == 10
     assert hauling["detour_margin_rejected_count"] == 0
+    assert hauling["history_region_count"] == 2
+    assert hauling["possible_trap_count"] == 0
+    assert hauling["caution_count"] == 0
+    assert sorted(history_calls) == [(100, 34), (200, 34)]
     opportunity = hauling["opportunities"][0]
     assert opportunity["item_name"] == "Tritanium"
+    assert opportunity["risk_level"] == "clear"
+    assert opportunity["decision"]["label"] == "Manual haul candidate"
+    assert opportunity["history_flags"][0]["label"] == "History supports a cautious haul"
+    assert opportunity["pickup_history"]["days"] == 30
+    assert opportunity["destination_history"]["days"] == 30
     assert opportunity["units"] == 1000
     assert opportunity["cargo_limited"] is True
     assert opportunity["pickup_order"]["system_name"] == "Side Pickup"
@@ -3052,6 +3079,39 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert "orders" in event_names
     assert any(payload["message"].startswith("Scanning route stop") for event, payload in progress_events if event == "route_step")
     assert any(payload["message"].startswith("Checking nearby") for event, payload in progress_events if event == "nearby_system")
+
+    def fake_spiky_market_history(config, *, region_id, type_id):
+        history_calls.append((region_id, type_id))
+        average = 2.3 if region_id == 100 else 3.0
+        return [
+            {
+                "date": f"2026-05-{day:02d}",
+                "average": average,
+                "highest": average * 1.1,
+                "lowest": average * 0.9,
+                "order_count": 6,
+                "volume": 5000,
+            }
+            for day in range(1, 31)
+        ]
+
+    monkeypatch.setattr(corp_market, "fetch_market_history", fake_spiky_market_history)
+    history_calls.clear()
+    spiky_payload = build_flight_hauling_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        destination_name="Jita",
+        detour_jumps=1,
+        cargo_capacity_m3=10,
+        min_detour_margin_percent=10,
+    )
+
+    spiky_hauling = spiky_payload["hauling"]
+    assert spiky_hauling["possible_trap_count"] == 1
+    spiky_opportunity = spiky_hauling["opportunities"][0]
+    assert spiky_opportunity["risk_level"] == "possible-trap"
+    assert spiky_opportunity["decision"]["label"] == "Verify in EVE first"
+    assert spiky_opportunity["history_flags"][0]["label"] == "Possible trap: price spike"
 
     sell_calls.clear()
     buy_calls.clear()
