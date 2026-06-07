@@ -59,6 +59,7 @@ from eve_voice_pilot.intel_pet import (
     clean_voice_target_title,
     clean_user_terms,
     combat_cheer_from_game_log_line,
+    closest_voice_phrase_suggestions,
     display_message_from_alert,
     display_message_from_alerts,
     display_message_from_cheer,
@@ -103,6 +104,7 @@ from eve_voice_pilot.intel_pet import (
     voice_model_display,
     voice_model_path,
     voice_model_status,
+    voice_phrase_analysis_lines,
     voice_command_from_fields,
     voice_command_with_added_phrase,
     voice_training_phrase_from_detail,
@@ -447,6 +449,8 @@ def test_recognition_diagnostic_report_shows_volume_and_match_context():
     assert "Capture: 48000 Hz, block 960, mic 3: Headset (48000 Hz)" in report
     assert "Matched: Warp to -> S for 0.10s" in report
     assert "Practice only. No key sent." in report
+    assert "Nearest command phrases:" in report
+    assert "Warp to: warp now -> S for 0.10s" in report
 
 
 def test_recognition_diagnostic_report_warns_when_too_quiet():
@@ -471,6 +475,48 @@ def test_recognition_diagnostic_report_warns_when_too_quiet():
     assert "very quiet" in report
     assert "selected microphone and input level" in report
     assert "start speaking after the lab says it is recording" in report
+
+
+def test_recognition_diagnostic_report_suggests_close_unmatched_phrases():
+    commands = [
+        VoiceCommand("Dock", ["dock up"], "D"),
+        VoiceCommand("Warp to", ["warp now"], "S"),
+    ]
+    diagnostic = LocalRecognitionDiagnostic(
+        transcript="doc cup",
+        partial_transcript="doc",
+        reason="auto-stop silence",
+        speech_started=True,
+        max_rms=900,
+        speech_threshold=450,
+        duration_seconds=1.25,
+        capture_rate=48000,
+        block_size=960,
+        input_device_index=3,
+        model_path="models/vosk-model-en-us-0.22-lgraph",
+        grammar_size=42,
+    )
+
+    report = recognition_diagnostic_report(diagnostic, commands, response_call_sign="Aura")
+
+    assert "No exact command matched." in report
+    assert "Nearest command phrases:" in report
+    assert "Dock: dock up -> D for 0.10s" in report
+    assert "Analysis: close to a configured phrase, but exact command matching rejected it." in report
+
+
+def test_voice_phrase_analysis_warns_when_top_matches_are_ambiguous():
+    commands = [
+        VoiceCommand("Dock", ["dock up"], "D"),
+        VoiceCommand("Undock", ["dock out"], "CTRL+D"),
+    ]
+
+    suggestions = closest_voice_phrase_suggestions("dock in", commands)
+    lines = voice_phrase_analysis_lines("dock in", commands)
+
+    assert suggestions[0].command_name == "Dock"
+    assert any("Nearest command phrases:" in line for line in lines)
+    assert any("distinct phrase" in line for line in lines)
 
 
 def test_voice_status_from_transcript_matches_command_without_sending_keys():

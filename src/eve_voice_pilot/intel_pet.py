@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 import html
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -53,6 +54,7 @@ from eve_voice_pilot.commands import (
     CommandProfile,
     VoiceCommand,
     find_exact_phrase_match,
+    normalize_phrase,
     response_call_signs,
     strip_response_call_sign,
 )
@@ -646,6 +648,91 @@ def voice_status_from_transcript(
     )
 
 
+@dataclass(frozen=True)
+class VoicePhraseSuggestion:
+    command_name: str
+    phrase: str
+    action_summary: str
+    score: float
+
+
+def closest_voice_phrase_suggestions(
+    transcript: str,
+    commands: list[VoiceCommand],
+    *,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+    limit: int = 5,
+) -> tuple[VoicePhraseSuggestion, ...]:
+    heard = normalize_response_text(transcript)
+    if not heard:
+        return ()
+    cleaned, _response_requested = strip_response_call_sign(heard, response_call_signs(response_call_sign))
+    normalized_heard = normalize_phrase(cleaned or heard)
+    if not normalized_heard:
+        return ()
+
+    suggestions: list[VoicePhraseSuggestion] = []
+    padded_heard = f" {normalized_heard} "
+    for command in commands:
+        for phrase in command.phrases:
+            normalized_phrase = normalize_phrase(phrase)
+            if not normalized_phrase:
+                continue
+            score = SequenceMatcher(None, normalized_heard, normalized_phrase).ratio()
+            if f" {normalized_phrase} " in padded_heard or f" {normalized_heard} " in f" {normalized_phrase} ":
+                score = max(score, 0.92)
+            suggestions.append(
+                VoicePhraseSuggestion(
+                    command_name=command.name,
+                    phrase=phrase,
+                    action_summary=command.action_summary,
+                    score=score,
+                )
+            )
+
+    suggestions.sort(key=lambda item: (item.score, len(normalize_phrase(item.phrase))), reverse=True)
+    deduped: list[VoicePhraseSuggestion] = []
+    seen: set[tuple[str, str]] = set()
+    for suggestion in suggestions:
+        key = (suggestion.command_name.casefold(), normalize_phrase(suggestion.phrase))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(suggestion)
+        if len(deduped) >= max(1, limit):
+            break
+    return tuple(deduped)
+
+
+def voice_phrase_analysis_lines(
+    transcript: str,
+    commands: list[VoiceCommand],
+    *,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+    exact_match: bool = False,
+) -> list[str]:
+    suggestions = closest_voice_phrase_suggestions(transcript, commands, response_call_sign=response_call_sign)
+    if not suggestions:
+        return []
+
+    lines = ["Nearest command phrases:"]
+    for suggestion in suggestions[:3]:
+        lines.append(
+            f"- {suggestion.command_name}: {suggestion.phrase} -> {suggestion.action_summary} "
+            f"({suggestion.score:.0%})"
+        )
+
+    if len(suggestions) > 1 and suggestions[0].score - suggestions[1].score < 0.08:
+        lines.append(
+            "Analysis: the top phrase is close to another command phrase. Use a more distinct phrase or remove one synonym."
+        )
+    elif not exact_match and suggestions[0].score >= 0.78:
+        lines.append("Analysis: close to a configured phrase, but exact command matching rejected it.")
+    elif not exact_match:
+        lines.append("Analysis: not close to the configured command phrases. Add the heard phrase or choose clearer wording.")
+    return lines
+
+
 def recognition_diagnostic_report(
     diagnostic: LocalRecognitionDiagnostic,
     commands: list[VoiceCommand],
@@ -677,9 +764,19 @@ def recognition_diagnostic_report(
             response_call_sign=response_call_sign,
             allow_command_sending=False,
         )
+        exact_match = bool(status and status.title == "Voice command matched")
         if status is not None:
             lines.append("")
             lines.append(status.detail)
+        analysis_lines = voice_phrase_analysis_lines(
+            transcript,
+            commands,
+            response_call_sign=response_call_sign,
+            exact_match=exact_match,
+        )
+        if analysis_lines:
+            lines.append("")
+            lines.extend(analysis_lines)
     else:
         lines.append("")
         lines.append("No transcript. Check the selected microphone and input level.")
