@@ -282,7 +282,17 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Warning: if no route can avoid recent pod kills, the scan falls back to the shortest route." in page
     assert "id=\"haul-min-margin\"" in page
     assert "id=\"haul-min-margin-value\"" in page
+    assert "id=\"haul-sort-by\"" in page
+    assert "Total profit" in page
+    assert "ISK per m3" in page
+    assert "ISK per extra jump" in page
+    assert "id=\"haul-min-profit-per-m3\"" in page
+    assert "id=\"haul-min-profit-per-extra-jump\"" in page
     assert "id=\"haul-common-materials\"" in page
+    assert "id=\"haul-item-search\"" in page
+    assert "id=\"haul-item-search-status\"" in page
+    assert "Search opens matching categories and reveals exact item checkboxes." in page
+    assert "applyMarketItemSearch" in page
     assert "id=\"haul-market-groups\"" in page
     assert "Items to search" in page
     assert "Common materials" in page
@@ -296,6 +306,16 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-route-summary\"" in page
     assert "id=\"haul-load-plan\" class=\"load-plan-output\"" in page
     assert "Manual Load Plan" in page
+    assert "renderHaulCargoLoader" in page
+    assert "cargo-loader-scene" in page
+    assert "Loading route cargo" in page
+    assert "Flatbed cargo load" in page
+    assert "--cargo-percent" in page
+    assert "Cargo capacity visualization" in page
+    assert "Route diagnostics" in page
+    assert "renderHaulRouteDiagnostics" in page
+    assert "route-diagnostic-steps" in page
+    assert "no reachable destination buy orders" in page
     assert "id=\"haul-quickbar-panel\" class=\"quickbar-copy-panel\" hidden" in page
     assert "data-copy-quickbar=\"hauling\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
@@ -325,11 +345,22 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"trade-pnl-form\"" in page
     assert "id=\"trade-pnl-window-hours\"" in page
     assert "id=\"trade-pnl-lens\"" in page
+    assert "id=\"trade-pnl-consideration-rule\"" in page
     assert "id=\"trade-pnl-exclude\"" in page
     assert "id=\"trade-pnl-show-matches\"" in page
     assert "id=\"trade-pnl-results\" class=\"decision-output\"" in page
     assert "Trade Profit And Loss" in page
+    assert "Consideration rule" in page
+    assert "Ignore materials and inputs" in page
     assert "Considered Result" in page
+    assert "Inventory Result" in page
+    assert "Plan Delta" in page
+    assert "Open Market Value" in page
+    assert "Fuzzwork" in page
+    assert "renderTradePnlBadges" in page
+    assert "renderTradePnlPlanReconciliation" in page
+    assert "Planner comparison" in page
+    assert "Open-stock valuation" in page
     assert "renderTradePnlMatches" in page
     assert "renderTradePnlItems" in page
     assert page.count("id=\"tab-trade-pnl\"") == 1
@@ -606,6 +637,23 @@ def test_trade_pnl_fifo_matches_expected_spread_and_fee_gap():
         transactions,
         journal_entries=journal_entries,
         type_names={34: "Tritanium", 35: "Pyerite", 36: "Mexallon"},
+        market_values={
+            34: {
+                "type_id": 34,
+                "source_label": "Fuzzwork Jita 4-4 aggregate",
+                "location_name": "Jita 4-4",
+                "liquidation_unit_price": 12,
+                "top_buy_unit_price": 13,
+                "sell_min_unit_price": 14,
+                "buy_volume": 5000,
+                "sell_volume": 6000,
+                "buy_order_count": 7,
+                "sell_order_count": 8,
+            }
+        },
+        market_valuation_requested=True,
+        market_valuation_source="Fuzzwork",
+        market_valuation_location="Jita 4-4",
         include_matches=True,
         now=datetime(2026, 6, 5, tzinfo=timezone.utc),
     )
@@ -617,18 +665,38 @@ def test_trade_pnl_fifo_matches_expected_spread_and_fee_gap():
     assert totals["unallocated_fee_isk"] == pytest.approx(-2)
     assert totals["wallet_fee_adjusted_profit_isk"] == pytest.approx(90)
     assert totals["open_inventory_cost_isk"] == pytest.approx(400)
+    assert totals["open_inventory_market_value_isk"] == pytest.approx(480)
+    assert totals["open_inventory_unrealized_isk"] == pytest.approx(80)
+    assert totals["inventory_result_isk"] == pytest.approx(172)
+    assert totals["considered_result_isk"] == pytest.approx(172)
+    assert totals["market_valued_open_item_count"] == 1
+    assert totals["market_unvalued_open_item_count"] == 0
     assert totals["unmatched_sell_revenue_isk"] == pytest.approx(250)
+    assert pnl["market_valuation"]["status"] == "valued"
 
     items = {item["type_id"]: item for item in pnl["items"]}
     assert items[34]["item_name"] == "Tritanium"
     assert items[34]["status"] == "profit"
     assert items[34]["actual_profit_isk"] == pytest.approx(295)
+    assert items[34]["inventory_result_isk"] == pytest.approx(375)
     assert items[34]["open_quantity"] == 40
+    assert items[34]["open_inventory_market_value_isk"] == pytest.approx(480)
+    assert items[34]["open_inventory_unrealized_isk"] == pytest.approx(80)
+    assert items[34]["open_market_unit_price"] == pytest.approx(12)
+    assert items[34]["open_market_top_buy_unit_price"] == pytest.approx(13)
+    assert items[34]["open_market_sell_min_unit_price"] == pytest.approx(14)
+    assert items[34]["source_badges"][0]["label"] == "Actual wallet"
+    assert {badge["label"] for badge in items[34]["source_badges"]} == {
+        "Actual wallet",
+        "Open stock",
+        "Market estimate",
+    }
     assert items[34]["matches"] == [
-        {
-            "buy_transaction_id": 100,
-            "buy_date": "2026-06-01T12:00:00Z",
-            "sell_transaction_id": 101,
+            {
+                "buy_transaction_id": 100,
+                "buy_date": "2026-06-01T12:00:00Z",
+                "buy_source": "wallet-window",
+                "sell_transaction_id": 101,
             "sell_date": "2026-06-02T12:00:00Z",
             "quantity": 60,
             "buy_unit_price": 10,
@@ -647,7 +715,154 @@ def test_trade_pnl_fifo_matches_expected_spread_and_fee_gap():
     assert items[36]["unmatched_sell_quantity"] == 5
 
 
-def test_trade_pnl_window_and_exclusions_adjust_considered_result():
+def test_trade_pnl_inventory_lens_keeps_missing_market_value_unknown():
+    pnl = analyze_trade_pnl_transactions(
+        [
+            {
+                "transaction_id": 150,
+                "date": "2026-06-05T00:00:00Z",
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 100,
+                "is_buy": True,
+            }
+        ],
+        type_names={34: "Tritanium"},
+        market_valuation_requested=True,
+        now=datetime(2026, 6, 5, 1, 0, tzinfo=timezone.utc),
+    )
+
+    totals = pnl["totals"]
+    item = pnl["items"][0]
+    assert totals["actual_profit_isk"] == pytest.approx(0)
+    assert totals["inventory_result_isk"] == pytest.approx(0)
+    assert totals["open_inventory_cost_isk"] == pytest.approx(1000)
+    assert totals["open_inventory_market_value_isk"] is None
+    assert totals["open_inventory_unrealized_isk"] is None
+    assert totals["market_valued_open_item_count"] == 0
+    assert totals["market_unvalued_open_item_count"] == 1
+    assert pnl["market_valuation"]["status"] == "missing"
+    assert item["market_valuation_status"] == "missing"
+    assert {badge["label"] for badge in item["source_badges"]} == {"Open stock", "No market value"}
+
+
+def test_trade_pnl_reconciles_saved_acquisition_expectation():
+    pnl = analyze_trade_pnl_transactions(
+        [
+            {
+                "transaction_id": 300,
+                "date": "2026-06-05T00:00:00Z",
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 100,
+                "is_buy": True,
+            },
+            {
+                "transaction_id": 301,
+                "date": "2026-06-05T01:00:00Z",
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 130,
+                "is_buy": False,
+            },
+        ],
+        type_names={34: "Tritanium"},
+        acquisition_expectations=[
+            {
+                "expectation_id": "expectation-1",
+                "snapshot_id": "snapshot-1",
+                "created_at": "2026-06-04T12:00:00Z",
+                "type_id": 34,
+                "item_name": "Tritanium",
+                "suggested_bid": 100,
+                "max_safe_bid": 110,
+                "planned_units": 20,
+                "expected_unit_profit_isk": 20,
+                "expected_net_sell_unit_price": 120,
+                "expected_gross_sell_unit_price": 125,
+                "expected_isk_committed": 2000,
+                "expected_broker_fee_isk": 100,
+                "expected_sales_tax_isk": 50,
+                "risk_level": "clear",
+                "origin_system": "Water",
+                "destination_system": "Jita",
+                "placement_system": "Water",
+                "target_days": 3,
+            }
+        ],
+        now=datetime(2026, 6, 5, 2, 0, tzinfo=timezone.utc),
+    )
+
+    totals = pnl["totals"]
+    item = pnl["items"][0]
+    plan = item["plan_reconciliation"]
+    assert totals["planned_item_count"] == 1
+    assert totals["planned_matched_item_count"] == 1
+    assert totals["expected_plan_profit_isk"] == pytest.approx(200)
+    assert totals["actual_vs_plan_profit_isk"] == pytest.approx(100)
+    assert plan["available"] is True
+    assert plan["status"] == "beat-plan"
+    assert plan["status_label"] == "Beat plan"
+    assert plan["expected_profit_for_matched_isk"] == pytest.approx(200)
+    assert plan["actual_vs_expected_profit_isk"] == pytest.approx(100)
+    assert plan["actual_profit_per_unit_isk"] == pytest.approx(30)
+    assert plan["buy_price_delta_per_unit"] == pytest.approx(0)
+    assert plan["net_sell_delta_per_unit"] == pytest.approx(10)
+    assert {badge["label"] for badge in item["source_badges"]} == {"Actual wallet", "Planner expectation"}
+
+
+def test_trade_pnl_uses_historical_ledger_buys_for_visible_sells():
+    pnl = analyze_trade_pnl_transactions(
+        [
+            {
+                "transaction_id": 401,
+                "date": "2026-06-05T01:00:00Z",
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 130,
+                "is_buy": False,
+            }
+        ],
+        historical_transactions=[
+            {
+                "transaction_id": 390,
+                "date": "2026-05-01T00:00:00Z",
+                "type_id": 34,
+                "quantity": 20,
+                "unit_price": 100,
+                "is_buy": True,
+            },
+            {
+                "transaction_id": 391,
+                "date": "2026-05-02T00:00:00Z",
+                "type_id": 34,
+                "quantity": 5,
+                "unit_price": 120,
+                "is_buy": False,
+            },
+        ],
+        type_names={34: "Tritanium"},
+        include_matches=True,
+        now=datetime(2026, 6, 5, 2, 0, tzinfo=timezone.utc),
+    )
+
+    totals = pnl["totals"]
+    item = pnl["items"][0]
+    assert totals["actual_profit_isk"] == pytest.approx(300)
+    assert totals["historical_matched_quantity"] == 10
+    assert totals["historical_matched_buy_cost_isk"] == pytest.approx(1000)
+    assert totals["historical_transaction_count"] == 2
+    assert totals["unmatched_sell_quantity"] == 0
+    assert item["historical_matched_quantity"] == 10
+    assert item["unmatched_sell_quantity"] == 0
+    assert item["open_quantity"] == 5
+    assert item["matches"][0]["buy_source"] == "local-ledger"
+    assert item["matches"][0]["buy_transaction_id"] == 390
+    assert {badge["label"] for badge in item["source_badges"]} >= {"Actual wallet", "Ledger buy"}
+
+
+def test_trade_pnl_window_and_material_rule_adjusts_considered_result(monkeypatch):
+    monkeypatch.setattr(corp_market, "trade_pnl_material_type_ids", lambda static_data=None: frozenset({35}))
     transactions = [
         {
             "transaction_id": 200,
@@ -698,7 +913,7 @@ def test_trade_pnl_window_and_exclusions_adjust_considered_result():
         journal_entries=journal_entries,
         type_names={34: "Tritanium", 35: "Pyerite"},
         window_hours=1,
-        excluded_tokens=("pyrite",),
+        consideration_rule="materials",
         include_matches=True,
         now=datetime(2026, 6, 5, 0, 30, tzinfo=timezone.utc),
     )
@@ -707,19 +922,59 @@ def test_trade_pnl_window_and_exclusions_adjust_considered_result():
     items = {item["type_id"]: item for item in pnl["items"]}
     assert pnl["window_hours"] == 1
     assert pnl["window_label"] == "1 hour"
+    assert pnl["consideration_rule"] == "materials"
+    assert pnl["consideration_rule_label"] == "Ignore materials and inputs"
     assert pnl["transaction_count"] == 2
     assert set(items) == {35}
     assert items[35]["status"] == "excluded-loss"
     assert items[35]["excluded"] is True
-    assert items[35]["excluded_reason"] == "Excluded by pyrite"
+    assert items[35]["excluded_reason"] == "Ignored by materials rule"
     assert items[35]["actual_profit_isk"] == pytest.approx(-202)
     assert items[35]["matches"][0]["actual_profit_isk"] == pytest.approx(-202)
+    assert {badge["label"] for badge in items[35]["source_badges"]} >= {"Actual wallet", "Ignored"}
     assert totals["actual_profit_isk"] == pytest.approx(-202)
     assert totals["considered_result_isk"] == pytest.approx(0)
     assert totals["excluded_actual_profit_isk"] == pytest.approx(-202)
     assert totals["excluded_item_count"] == 1
     assert totals["considered_item_count"] == 0
     assert totals["loss_item_count"] == 1
+
+
+def test_trade_pnl_custom_rule_supports_legacy_exclude_alias():
+    transactions = [
+        {
+            "transaction_id": 210,
+            "date": "2026-06-05T00:10:00Z",
+            "type_id": 35,
+            "quantity": 10,
+            "unit_price": 100,
+            "is_buy": True,
+        },
+        {
+            "transaction_id": 211,
+            "date": "2026-06-05T00:20:00Z",
+            "type_id": 35,
+            "quantity": 10,
+            "unit_price": 80,
+            "is_buy": False,
+        },
+    ]
+
+    pnl = analyze_trade_pnl_transactions(
+        transactions,
+        type_names={35: "Pyerite"},
+        window_hours=1,
+        excluded_tokens=("pyrite",),
+        now=datetime(2026, 6, 5, 0, 30, tzinfo=timezone.utc),
+    )
+
+    item = pnl["items"][0]
+    assert pnl["consideration_rule"] == "custom"
+    assert pnl["custom_excluded_tokens"] == ["pyrite"]
+    assert item["excluded"] is True
+    assert item["excluded_reason"] == "Ignored by custom rule: pyrite"
+    assert pnl["totals"]["actual_profit_isk"] == pytest.approx(-200)
+    assert pnl["totals"]["considered_result_isk"] == pytest.approx(0)
 
 
 def test_build_flight_trade_pnl_payload_uses_wallet_scope(monkeypatch):
@@ -794,6 +1049,239 @@ def test_build_flight_trade_pnl_payload_uses_wallet_scope(monkeypatch):
             config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
             session=missing_scope_session,
         )
+
+
+def test_build_flight_trade_pnl_payload_values_open_stock_with_fuzzwork(monkeypatch):
+    current_time = datetime.now(timezone.utc)
+    buy_date = (current_time - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    sell_date = (current_time - timedelta(hours=12)).isoformat().replace("+00:00", "Z")
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Trader Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-wallet.read_character_wallet.v1",),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+    )
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_wallet_transactions",
+        lambda config, session: [
+            {
+                "transaction_id": 100,
+                "date": buy_date,
+                "type_id": 34,
+                "quantity": 15,
+                "unit_price": 100,
+                "is_buy": True,
+            },
+            {
+                "transaction_id": 101,
+                "date": sell_date,
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 130,
+                "is_buy": False,
+            },
+        ],
+    )
+    monkeypatch.setattr(corp_market, "fetch_flight_wallet_journal", lambda config, session: [])
+    monkeypatch.setattr(corp_market, "fetch_universe_names", lambda config, type_ids: {34: "Tritanium"})
+    fuzzwork_calls = []
+
+    def fake_fetch_fuzzwork_market_aggregates(type_ids):
+        fuzzwork_calls.append(tuple(type_ids))
+        return {
+            34: {
+                "type_id": 34,
+                "source_label": "Fuzzwork Jita 4-4 aggregate",
+                "location_name": "Jita 4-4",
+                "liquidation_unit_price": 120,
+                "top_buy_unit_price": 121,
+                "sell_min_unit_price": 125,
+            }
+        }
+
+    monkeypatch.setattr(corp_market, "fetch_fuzzwork_market_aggregates", fake_fetch_fuzzwork_market_aggregates)
+
+    payload = build_flight_trade_pnl_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        window_hours=720,
+        include_matches=True,
+    )
+
+    assert fuzzwork_calls == [(34,)]
+    totals = payload["trade_pnl"]["totals"]
+    item = payload["trade_pnl"]["items"][0]
+    assert totals["actual_profit_isk"] == pytest.approx(300)
+    assert totals["inventory_result_isk"] == pytest.approx(400)
+    assert totals["open_inventory_cost_isk"] == pytest.approx(500)
+    assert totals["open_inventory_market_value_isk"] == pytest.approx(600)
+    assert totals["open_inventory_unrealized_isk"] == pytest.approx(100)
+    assert payload["trade_pnl"]["market_valuation"]["status"] == "valued"
+    assert item["actual_profit_isk"] == pytest.approx(300)
+    assert item["inventory_result_isk"] == pytest.approx(400)
+    assert item["open_market_unit_price"] == pytest.approx(120)
+
+
+def test_build_flight_trade_pnl_payload_uses_saved_acquisition_expectation(monkeypatch, tmp_path):
+    current_time = datetime.now(timezone.utc)
+    buy_date = (current_time - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    sell_date = (current_time - timedelta(hours=12)).isoformat().replace("+00:00", "Z")
+    store = MarketStore(tmp_path / "corp_market.sqlite3")
+    store.save_acquisition_expectations(
+        character_id=123456789,
+        generated_at=(current_time - timedelta(hours=18)).isoformat().replace("+00:00", "Z"),
+        acquisition={
+            "origin_system": {"name": "Water"},
+            "destination_system": {"name": "Jita"},
+            "opportunities": [
+                {
+                    "type_id": 34,
+                    "item_name": "Tritanium",
+                    "suggested_bid": 100,
+                    "max_safe_bid": 110,
+                    "recommended_units": 20,
+                    "net_profit_per_unit": 20,
+                    "net_profit": 400,
+                    "net_destination_price": 120,
+                    "estimated_isk_committed": 2100,
+                    "estimated_broker_fee": 100,
+                    "estimated_sales_tax": 50,
+                    "risk_level": "clear",
+                    "placement_system": "Water",
+                    "target_days": 3,
+                    "best_destination_buy": {"price": 125},
+                }
+            ],
+        },
+    )
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Trader Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-wallet.read_character_wallet.v1",),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+    )
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_wallet_transactions",
+        lambda config, session: [
+            {
+                "transaction_id": 100,
+                "date": buy_date,
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 100,
+                "is_buy": True,
+            },
+            {
+                "transaction_id": 101,
+                "date": sell_date,
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 130,
+                "is_buy": False,
+            },
+        ],
+    )
+    monkeypatch.setattr(corp_market, "fetch_flight_wallet_journal", lambda config, session: [])
+    monkeypatch.setattr(corp_market, "fetch_universe_names", lambda config, type_ids: {34: "Tritanium"})
+
+    payload = build_flight_trade_pnl_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        expectation_store=store,
+    )
+
+    totals = payload["trade_pnl"]["totals"]
+    plan = payload["trade_pnl"]["items"][0]["plan_reconciliation"]
+    assert totals["expected_plan_profit_isk"] == pytest.approx(200)
+    assert totals["actual_vs_plan_profit_isk"] == pytest.approx(100)
+    assert plan["status"] == "beat-plan"
+    assert plan["planned_units"] == 20
+    assert plan["matched_units"] == 10
+    assert plan["fill_percent"] == pytest.approx(50)
+    assert plan["suggested_bid"] == pytest.approx(100)
+
+
+def test_build_flight_trade_pnl_payload_uses_local_trade_ledger_for_older_buys(monkeypatch, tmp_path):
+    current_time = datetime.now(timezone.utc)
+    older_buy_date = (current_time - timedelta(days=45)).isoformat().replace("+00:00", "Z")
+    sell_date = (current_time - timedelta(hours=12)).isoformat().replace("+00:00", "Z")
+    store = MarketStore(tmp_path / "corp_market.sqlite3")
+    store.save_trade_ledger_transactions(
+        character_id=123456789,
+        transactions=[
+            {
+                "transaction_id": 500,
+                "date": older_buy_date,
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 100,
+                "is_buy": True,
+            }
+        ],
+    )
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Trader Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-wallet.read_character_wallet.v1",),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+    )
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_wallet_transactions",
+        lambda config, session: [
+            {
+                "transaction_id": 501,
+                "date": sell_date,
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 130,
+                "is_buy": False,
+            }
+        ],
+    )
+    monkeypatch.setattr(corp_market, "fetch_flight_wallet_journal", lambda config, session: [])
+    monkeypatch.setattr(corp_market, "fetch_universe_names", lambda config, type_ids: {34: "Tritanium"})
+
+    payload = build_flight_trade_pnl_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        trade_ledger_store=store,
+        include_matches=True,
+    )
+
+    trade_pnl = payload["trade_pnl"]
+    item = trade_pnl["items"][0]
+    assert trade_pnl["trade_ledger"]["saved"] == 1
+    assert trade_pnl["trade_ledger"]["historical_transaction_count"] == 1
+    assert trade_pnl["totals"]["actual_profit_isk"] == pytest.approx(300)
+    assert trade_pnl["totals"]["historical_matched_quantity"] == 10
+    assert item["status"] == "profit"
+    assert item["unmatched_sell_quantity"] == 0
+    assert item["matches"][0]["buy_source"] == "local-ledger"
+    assert item["matches"][0]["buy_transaction_id"] == 500
 
 
 def test_public_hosting_config_requires_https_sso_and_member_allowlist():
@@ -1012,6 +1500,147 @@ def test_haul_route_preference_normalizes_eve_route_terms():
     assert corp_market.normalize_haul_route_preference("shortest") == "shorter"
     assert corp_market.normalize_haul_route_preference("LessSecure") == "less_secure"
     assert corp_market.normalize_haul_route_preference("???") == "safer"
+
+
+def test_haul_efficiency_sort_and_filter_rules():
+    assert corp_market.normalize_haul_sort_by("isk per m3") == "profit_per_m3"
+    assert corp_market.normalize_haul_sort_by("extra-jump") == "profit_per_extra_jump"
+    assert corp_market.normalize_haul_sort_by("margin_percent") == "margin"
+    assert corp_market.normalize_haul_sort_by("???") == "total_profit"
+    assert corp_market.clamp_haul_efficiency_floor_isk("bad") == 0.0
+    assert corp_market.clamp_haul_efficiency_floor_isk("-1") == 0.0
+    assert corp_market.clamp_haul_efficiency_floor_isk("1000000000001") == pytest.approx(1_000_000_000_000.0)
+
+    opportunities = [
+        {
+            "item_name": "Bulky Total",
+            "risk_level": "clear",
+            "net_profit": 9000.0,
+            "net_profit_per_unit": 9.0,
+            "net_profit_per_m3": 90.0,
+            "net_profit_per_extra_jump": 1800.0,
+            "margin_percent": 20.0,
+            "extra_route_jumps": 5,
+        },
+        {
+            "item_name": "Compact Efficient",
+            "risk_level": "clear",
+            "net_profit": 3000.0,
+            "net_profit_per_unit": 30.0,
+            "net_profit_per_m3": 600.0,
+            "net_profit_per_extra_jump": 3000.0,
+            "margin_percent": 60.0,
+            "extra_route_jumps": 1,
+        },
+        {
+            "item_name": "Caution Dense",
+            "risk_level": "caution",
+            "net_profit": 5000.0,
+            "net_profit_per_unit": 50.0,
+            "net_profit_per_m3": 900.0,
+            "net_profit_per_extra_jump": 5000.0,
+            "margin_percent": 80.0,
+            "extra_route_jumps": 1,
+        },
+    ]
+
+    ranked, rejected_count = corp_market.filter_and_sort_haul_opportunities(
+        opportunities=opportunities,
+        sort_by="profit_per_m3",
+        min_profit_per_m3=100.0,
+        min_profit_per_extra_jump=2500.0,
+    )
+
+    assert rejected_count == 1
+    assert [item["item_name"] for item in ranked] == ["Compact Efficient", "Caution Dense"]
+
+    margin_ranked, margin_rejected_count = corp_market.filter_and_sort_haul_opportunities(
+        opportunities=opportunities,
+        sort_by="margin",
+        min_profit_per_m3=0.0,
+        min_profit_per_extra_jump=0.0,
+    )
+
+    assert margin_rejected_count == 0
+    assert [item["item_name"] for item in margin_ranked] == [
+        "Compact Efficient",
+        "Bulky Total",
+        "Caution Dense",
+    ]
+
+
+def test_haul_scan_skips_pickup_regions_without_destination_demand(monkeypatch, tmp_path):
+    route_cache = RouteGraphCache(
+        path=tmp_path / "route.json",
+        available=True,
+        build_number=3374020,
+        systems={
+            1: RouteSystem(solar_system_id=1, name="Start", region_id=100, security_status=0.9),
+            2: RouteSystem(solar_system_id=2, name="Jita", region_id=200, security_status=0.9),
+        },
+        adjacency={1: (2,), 2: (1,)},
+    )
+    recipe_cache = IndustryRecipeCache(
+        path=tmp_path / "recipes.json",
+        available=True,
+        build_number=3374020,
+        recipes={
+            681: IndustryRecipe(
+                blueprint_type_id=681,
+                blueprint_name="Hobgoblin I Blueprint",
+                product_type_id=165,
+                product_name="Hobgoblin I",
+                product_quantity=1,
+                materials=(IndustryMaterial(type_id=34, name="Tritanium", quantity=1000, volume_m3=0.01),),
+            )
+        },
+    )
+    buy_calls = []
+    sell_calls = []
+
+    def fake_fetch_market_buy_orders(config, *, region_id, type_id):
+        buy_calls.append((region_id, type_id))
+        return []
+
+    def fake_fetch_market_sell_orders(config, *, region_id, type_id):
+        sell_calls.append((region_id, type_id))
+        raise AssertionError("pickup sell orders should not be fetched without destination demand")
+
+    monkeypatch.setattr(corp_market, "fetch_market_buy_orders", fake_fetch_market_buy_orders)
+    monkeypatch.setattr(corp_market, "fetch_market_sell_orders", fake_fetch_market_sell_orders)
+    progress_events = []
+
+    hauling = corp_market.scan_route_hauling_opportunities(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        recipe_cache=recipe_cache,
+        route_cache=route_cache,
+        origin_solar_system_id=1,
+        destination_solar_system_id=2,
+        route_path=[1, 2],
+        detour_jumps=0,
+        cargo_capacity_m3=10,
+        purchase_budget_isk=1_000_000,
+        min_detour_margin_percent=10,
+        sales_tax={"rate": 0.0},
+        include_common_materials=True,
+        market_group_ids=(),
+        market_type_ids=(),
+        progress=lambda event, payload: progress_events.append((event, payload)),
+    )
+
+    assert buy_calls == [(200, 34)]
+    assert sell_calls == []
+    assert hauling["buy_order_count"] == 0
+    assert hauling["sell_order_count"] == 0
+    assert hauling["profitable_opportunities"] == 0
+    assert hauling["no_destination_buy_order_count"] == 1
+    assert hauling["no_pickup_sell_order_count"] == 0
+    assert hauling["destination_demand_gated_count"] == 1
+    assert any(
+        payload["message"].startswith("Skipping pickup sell scan")
+        for event, payload in progress_events
+        if event == "orders"
+    )
 
 
 def test_haul_market_group_ids_parse_and_dedupe():
@@ -1236,7 +1865,42 @@ def test_haul_route_plan_retries_to_avoid_recent_pod_kills(monkeypatch):
     assert plan["avoid_recent_pod_kills"] is True
     assert plan["avoided_pod_kill_system_ids"] == [2]
     assert plan["route_pod_kill_system_ids"] == []
+    assert plan["esi_attempt_count"] == 2
+    assert plan["pod_kill_lookup_error"] == ""
+    assert plan["route_error"] == ""
     assert route_calls == [("safer", ()), ("safer", (2,))]
+
+
+def test_haul_route_plan_diagnostics_explain_local_fallback(monkeypatch):
+    def fake_recent_pods(config):
+        return (2,)
+
+    def fake_route(config, *, origin_solar_system_id, destination_solar_system_id, route_preference, avoid_system_ids=()):
+        raise CorpMarketError("ESI route planner returned no route.")
+
+    monkeypatch.setattr(corp_market, "fetch_recent_pod_kill_system_ids", fake_recent_pods)
+    monkeypatch.setattr(corp_market, "fetch_esi_route_path", fake_route)
+
+    plan = corp_market.build_haul_route_plan(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        origin_solar_system_id=1,
+        destination_solar_system_id=3,
+        route_preference="safer",
+        avoid_recent_pod_kills=True,
+        adjacency={1: (2,), 2: (1, 3), 3: (2,)},
+    )
+    diagnostics = corp_market.build_haul_route_diagnostics(plan, route_jumps=max(0, len(plan["path"]) - 1))
+
+    assert plan["source"] == "local-shortest-fallback"
+    assert plan["path"] == [1, 2, 3]
+    assert plan["route_error"] == "ESI route planner returned no route."
+    assert plan["route_pod_kill_system_ids"] == [2]
+    assert diagnostics["fallback_used"] is True
+    assert diagnostics["source_label"] == "Local shortest fallback"
+    assert diagnostics["pod_kill_status"] == "checked"
+    assert diagnostics["route_pod_kill_system_count"] == 1
+    assert "Verify this route in EVE" in diagnostics["summary"]
+    assert "ESI route attempts: 1" in diagnostics["steps"]
 
 
 def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch, tmp_path):
@@ -3095,6 +3759,15 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert payload["route"]["route_jumps"] == 2
     assert payload["route"]["route_preference"] == "safer"
     assert payload["route"]["avoid_recent_pod_kills"] is False
+    diagnostics = payload["route"]["diagnostics"]
+    assert diagnostics["source"] == "esi-route"
+    assert diagnostics["source_label"] == "ESI route planner"
+    assert diagnostics["route_rule_label"] == "Safer"
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["esi_attempt_count"] == 1
+    assert diagnostics["pod_kill_status"] == "not-requested"
+    assert "Requested rule: Safer" in diagnostics["steps"]
+    assert "recent pod-kill avoidance was not requested" in diagnostics["summary"]
     assert route_calls[0] == (1, 3, "safer", ())
     assert sorted(sell_calls) == [(100, 34), (100, 35)]
     assert sorted(buy_calls) == [(200, 34), (200, 35)]
@@ -3102,6 +3775,15 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert hauling["profitable_opportunities"] == 1
     assert hauling["sales_tax"]["accounting_level"] == 5
     assert hauling["min_detour_margin_percent"] == 10
+    assert hauling["sort_by"] == "total_profit"
+    assert hauling["sort_label"] == "Total profit"
+    assert hauling["min_profit_per_m3"] == 0.0
+    assert hauling["min_profit_per_extra_jump"] == 0.0
+    assert hauling["total_profitable_opportunities"] == 1
+    assert hauling["efficiency_filter_rejected_count"] == 0
+    assert hauling["no_destination_buy_order_count"] == 0
+    assert hauling["no_pickup_sell_order_count"] == 0
+    assert hauling["destination_demand_gated_count"] == 0
     assert hauling["detour_margin_rejected_count"] == 0
     assert hauling["history_region_count"] == 2
     assert hauling["possible_trap_count"] == 0
@@ -3207,6 +3889,24 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert budget_opportunity["net_profit_per_m3"] == pytest.approx(545.9457236842105)
     assert budget_opportunity["net_profit_per_extra_jump"] == pytest.approx(2074.59375)
     assert budget_opportunity["order_depth"][2]["units"] == 160
+
+    efficiency_filtered = build_flight_hauling_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        destination_name="Jita",
+        detour_jumps=1,
+        cargo_capacity_m3=10,
+        min_detour_margin_percent=10,
+        sort_by="profit_per_m3",
+        min_profit_per_m3=600,
+    )
+
+    assert efficiency_filtered["hauling"]["sort_by"] == "profit_per_m3"
+    assert efficiency_filtered["hauling"]["sort_label"] == "ISK per m3"
+    assert efficiency_filtered["hauling"]["total_profitable_opportunities"] == 1
+    assert efficiency_filtered["hauling"]["profitable_opportunities"] == 0
+    assert efficiency_filtered["hauling"]["efficiency_filter_rejected_count"] == 1
+    assert efficiency_filtered["hauling"]["load_plan"]["available"] is False
 
     def fake_spiky_market_history(config, *, region_id, type_id):
         history_calls.append((region_id, type_id))

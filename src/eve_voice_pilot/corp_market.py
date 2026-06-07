@@ -15,7 +15,7 @@ import sqlite3
 import sys
 import threading
 import time
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -80,6 +80,8 @@ MAX_FLIGHT_TRADE_PNL_PAGES = 6
 MAX_FLIGHT_TRADE_JOURNAL_PAGES = 6
 MAX_FLIGHT_TRADE_PNL_TRANSACTIONS = 10_000
 MAX_FLIGHT_TRADE_PNL_ITEMS = 40
+MAX_FLIGHT_TRADE_PNL_MARKET_TYPES = 200
+MAX_FLIGHT_TRADE_PNL_EXPECTATIONS = 200
 DEFAULT_PLANETARY_HUB_SYSTEM = "Jita"
 DEFAULT_PLANETARY_OUTPUT_TIER = "P2"
 DEFAULT_PLANETARY_CHAIN_TARGET = "Microfiber Shielding"
@@ -95,6 +97,8 @@ DEFAULT_PLANETARY_BROKER_FEE_PERCENT = 0.0
 MAX_PLANETARY_TAX_PERCENT = 100.0
 STATIC_CACHE_REFRESH_COMMAND = r"python .\scripts\update_industry_recipe_cache.py"
 DEFAULT_HAUL_DESTINATION_SYSTEM = "Jita"
+DEFAULT_HAUL_COMPARE_DESTINATIONS = ("Jita", "Amarr", "Hek", "Rens", "Dodixie")
+MAX_HAUL_COMPARE_DESTINATIONS = 6
 DEFAULT_HAUL_DETOUR_JUMPS = 1
 MAX_HAUL_DETOUR_JUMPS = 5
 DEFAULT_HAUL_CARGO_M3 = 10_000.0
@@ -104,6 +108,15 @@ MAX_HAUL_PURCHASE_BUDGET_ISK = 10_000_000_000.0
 DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT = 10.0
 MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT = 500.0
 MAX_HAUL_LOAD_PLAN_LINES = 8
+DEFAULT_HAUL_SORT_BY = "total_profit"
+HAUL_SORT_OPTIONS = frozenset({"total_profit", "profit_per_m3", "profit_per_extra_jump", "margin"})
+HAUL_SORT_LABELS = {
+    "total_profit": "Total profit",
+    "profit_per_m3": "ISK per m3",
+    "profit_per_extra_jump": "ISK per extra jump",
+    "margin": "Margin percent",
+}
+MAX_HAUL_EFFICIENCY_FLOOR_ISK = 1_000_000_000_000.0
 DEFAULT_ACQUISITION_BUDGET_ISK = 50_000_000.0
 MAX_ACQUISITION_BUDGET_ISK = 10_000_000_000.0
 DEFAULT_ACQUISITION_PICKUP_JUMPS = 2
@@ -123,6 +136,8 @@ SYSTEM_KILLS_CACHE_TTL_SECONDS = 300.0
 JITA_SYSTEM_NAME = "Jita"
 JITA_SOLAR_SYSTEM_ID = 30000142
 JITA_REGION_ID = 10000002
+JITA_4_4_STATION_ID = 60003760
+FUZZWORK_MARKET_AGGREGATES_URL = "https://market.fuzzwork.co.uk/aggregates/"
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
 FLIGHT_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
@@ -169,7 +184,10 @@ TRADE_PNL_MARKET_FEE_REF_TYPES = frozenset(
     }
 )
 TRADE_PNL_LENSES = {"inventory", "realized", "cashflow"}
+TRADE_PNL_CONSIDERATION_RULES = {"all", "materials", "custom", "materials_custom"}
 TRADE_PNL_TOKEN_ALIASES = {"pyrite": "pyerite"}
+TRADE_PNL_MATERIAL_MARKET_GROUP_IDS = (533,)
+TRADE_PNL_FALLBACK_MATERIAL_TYPE_IDS = frozenset({34, 35, 36, 37, 38, 39, 40, 11399})
 FLIGHT_SESSION_COOKIE_NAME = "corp_market_flight_session"
 DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
@@ -395,6 +413,8 @@ MARKET_PRICE_CACHE_LOCK = threading.Lock()
 MARKET_PRICE_CACHE: dict[str, tuple[float, dict[int, dict[str, Any]]]] = {}
 MARKET_HISTORY_CACHE_LOCK = threading.Lock()
 MARKET_HISTORY_CACHE: dict[tuple[str, int, int], tuple[float, list[dict[str, Any]]]] = {}
+FUZZWORK_MARKET_AGGREGATE_CACHE_LOCK = threading.Lock()
+FUZZWORK_MARKET_AGGREGATE_CACHE: dict[tuple[int, int], tuple[float, dict[str, Any]]] = {}
 SYSTEM_KILLS_CACHE_LOCK = threading.Lock()
 SYSTEM_KILLS_CACHE: dict[str, tuple[float, tuple[int, ...]]] = {}
 STATIC_MARKET_DATA_LOCK = threading.Lock()
@@ -1108,6 +1128,61 @@ class MarketStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_corp_market_category ON corp_market_listings(category)"
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS flight_acquisition_expectations (
+                    expectation_id TEXT PRIMARY KEY,
+                    snapshot_id TEXT NOT NULL,
+                    character_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    type_id INTEGER NOT NULL,
+                    item_name TEXT NOT NULL,
+                    suggested_bid REAL,
+                    max_safe_bid REAL,
+                    planned_units INTEGER,
+                    expected_unit_profit_isk REAL,
+                    expected_total_profit_isk REAL,
+                    expected_net_sell_unit_price REAL,
+                    expected_gross_sell_unit_price REAL,
+                    expected_isk_committed REAL,
+                    expected_broker_fee_isk REAL,
+                    expected_sales_tax_isk REAL,
+                    risk_level TEXT NOT NULL DEFAULT '',
+                    origin_system TEXT NOT NULL DEFAULT '',
+                    destination_system TEXT NOT NULL DEFAULT '',
+                    placement_system TEXT NOT NULL DEFAULT '',
+                    target_days INTEGER,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_flight_acquisition_expectations_character_type_created
+                ON flight_acquisition_expectations(character_id, type_id, created_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS flight_trade_ledger_transactions (
+                    character_id INTEGER NOT NULL,
+                    transaction_id INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    type_id INTEGER NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    unit_price REAL NOT NULL,
+                    is_buy INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (character_id, transaction_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_flight_trade_ledger_character_type_date
+                ON flight_trade_ledger_transactions(character_id, type_id, date)
+                """
+            )
 
     def create_listing(self, payload: dict[str, Any]) -> MarketListing:
         listing_type = clean_choice(payload.get("listing_type") or payload.get("type") or "sell", LISTING_TYPES, "listing_type")
@@ -1280,6 +1355,302 @@ class MarketStore:
         if result.rowcount == 0:
             raise CorpMarketError(f"Listing {listing_id!r} was not found.")
         return self.get_listing(listing_id)
+
+    def save_acquisition_expectations(
+        self,
+        *,
+        character_id: int,
+        acquisition: dict[str, Any],
+        generated_at: str,
+    ) -> dict[str, Any]:
+        clean_character_id = int(character_id or 0)
+        if clean_character_id <= 0:
+            return {"saved": 0, "snapshot_id": ""}
+        opportunities = [item for item in acquisition.get("opportunities") or [] if isinstance(item, dict)]
+        if not opportunities:
+            return {"saved": 0, "snapshot_id": ""}
+        snapshot_id = uuid.uuid4().hex[:12]
+        created_at = str(generated_at or now_iso())
+        origin = acquisition.get("origin_system") if isinstance(acquisition.get("origin_system"), dict) else {}
+        destination = acquisition.get("destination_system") if isinstance(acquisition.get("destination_system"), dict) else {}
+        rows: list[tuple[Any, ...]] = []
+        for opportunity in opportunities[:MAX_FLIGHT_TRADE_PNL_EXPECTATIONS]:
+            expectation = acquisition_expectation_from_opportunity(
+                opportunity,
+                snapshot_id=snapshot_id,
+                character_id=clean_character_id,
+                created_at=created_at,
+                origin_system=str(origin.get("name") or ""),
+                destination_system=str(destination.get("name") or ""),
+            )
+            if expectation is None:
+                continue
+            rows.append(
+                (
+                    expectation["expectation_id"],
+                    expectation["snapshot_id"],
+                    expectation["character_id"],
+                    expectation["created_at"],
+                    expectation["type_id"],
+                    expectation["item_name"],
+                    expectation.get("suggested_bid"),
+                    expectation.get("max_safe_bid"),
+                    expectation.get("planned_units"),
+                    expectation.get("expected_unit_profit_isk"),
+                    expectation.get("expected_total_profit_isk"),
+                    expectation.get("expected_net_sell_unit_price"),
+                    expectation.get("expected_gross_sell_unit_price"),
+                    expectation.get("expected_isk_committed"),
+                    expectation.get("expected_broker_fee_isk"),
+                    expectation.get("expected_sales_tax_isk"),
+                    expectation.get("risk_level") or "",
+                    expectation.get("origin_system") or "",
+                    expectation.get("destination_system") or "",
+                    expectation.get("placement_system") or "",
+                    expectation.get("target_days"),
+                    json.dumps(expectation, sort_keys=True),
+                )
+            )
+        if not rows:
+            return {"saved": 0, "snapshot_id": snapshot_id}
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO flight_acquisition_expectations (
+                    expectation_id, snapshot_id, character_id, created_at, type_id, item_name,
+                    suggested_bid, max_safe_bid, planned_units, expected_unit_profit_isk,
+                    expected_total_profit_isk, expected_net_sell_unit_price, expected_gross_sell_unit_price,
+                    expected_isk_committed, expected_broker_fee_isk, expected_sales_tax_isk,
+                    risk_level, origin_system, destination_system, placement_system, target_days, payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        return {"saved": len(rows), "snapshot_id": snapshot_id}
+
+    def latest_acquisition_expectations(
+        self,
+        *,
+        character_id: int,
+        type_ids: Iterable[int],
+        cutoff: datetime | None = None,
+        limit: int = MAX_FLIGHT_TRADE_PNL_EXPECTATIONS,
+    ) -> list[dict[str, Any]]:
+        clean_character_id = int(character_id or 0)
+        clean_type_ids = sorted({type_id for type_id in (clean_optional_int(value) for value in type_ids) if type_id is not None})
+        if clean_character_id <= 0 or not clean_type_ids:
+            return []
+        placeholders = ",".join("?" for _ in clean_type_ids)
+        clauses = [f"character_id = ?", f"type_id IN ({placeholders})"]
+        params: list[Any] = [clean_character_id, *clean_type_ids]
+        if cutoff is not None:
+            clauses.append("created_at >= ?")
+            params.append(cutoff.isoformat().replace("+00:00", "Z"))
+        params.append(max(1, min(int(limit), MAX_FLIGHT_TRADE_PNL_EXPECTATIONS * 4)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM flight_acquisition_expectations
+                WHERE {" AND ".join(clauses)}
+                ORDER BY type_id ASC, created_at DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        latest_by_type: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            type_id = clean_optional_int(row["type_id"])
+            if type_id is None or type_id in latest_by_type:
+                continue
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            payload.update(
+                {
+                    "expectation_id": str(row["expectation_id"]),
+                    "snapshot_id": str(row["snapshot_id"]),
+                    "character_id": int(row["character_id"]),
+                    "created_at": str(row["created_at"]),
+                    "type_id": type_id,
+                    "item_name": str(row["item_name"] or payload.get("item_name") or f"Type {type_id}"),
+                    "suggested_bid": clean_optional_float(row["suggested_bid"]),
+                    "max_safe_bid": clean_optional_float(row["max_safe_bid"]),
+                    "planned_units": clean_optional_int(row["planned_units"]),
+                    "expected_unit_profit_isk": clean_optional_float(row["expected_unit_profit_isk"]),
+                    "expected_total_profit_isk": clean_optional_float(row["expected_total_profit_isk"]),
+                    "expected_net_sell_unit_price": clean_optional_float(row["expected_net_sell_unit_price"]),
+                    "expected_gross_sell_unit_price": clean_optional_float(row["expected_gross_sell_unit_price"]),
+                    "expected_isk_committed": clean_optional_float(row["expected_isk_committed"]),
+                    "expected_broker_fee_isk": clean_optional_float(row["expected_broker_fee_isk"]),
+                    "expected_sales_tax_isk": clean_optional_float(row["expected_sales_tax_isk"]),
+                    "risk_level": str(row["risk_level"] or ""),
+                    "origin_system": str(row["origin_system"] or ""),
+                    "destination_system": str(row["destination_system"] or ""),
+                    "placement_system": str(row["placement_system"] or ""),
+                    "target_days": clean_optional_int(row["target_days"]),
+                }
+            )
+            latest_by_type[type_id] = payload
+        return list(latest_by_type.values())
+
+    def save_trade_ledger_transactions(self, *, character_id: int, transactions: Iterable[dict[str, Any]]) -> dict[str, Any]:
+        clean_character_id = int(character_id or 0)
+        if clean_character_id <= 0:
+            return {"saved": 0}
+        rows: list[tuple[Any, ...]] = []
+        for transaction in transactions:
+            if not isinstance(transaction, dict):
+                continue
+            clean = trade_ledger_transaction_record(transaction, character_id=clean_character_id)
+            if clean is None:
+                continue
+            rows.append(
+                (
+                    clean["character_id"],
+                    clean["transaction_id"],
+                    clean["date"],
+                    clean["type_id"],
+                    clean["quantity"],
+                    clean["unit_price"],
+                    1 if clean["is_buy"] else 0,
+                    json.dumps(clean, sort_keys=True),
+                )
+            )
+        if not rows:
+            return {"saved": 0}
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT OR REPLACE INTO flight_trade_ledger_transactions (
+                    character_id, transaction_id, date, type_id, quantity, unit_price, is_buy, payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        return {"saved": len(rows)}
+
+    def historical_trade_ledger_transactions(
+        self,
+        *,
+        character_id: int,
+        type_ids: Iterable[int],
+        before: datetime,
+        limit: int = MAX_FLIGHT_TRADE_PNL_TRANSACTIONS,
+    ) -> list[dict[str, Any]]:
+        clean_character_id = int(character_id or 0)
+        clean_type_ids = sorted({type_id for type_id in (clean_optional_int(value) for value in type_ids) if type_id is not None})
+        if clean_character_id <= 0 or not clean_type_ids:
+            return []
+        placeholders = ",".join("?" for _ in clean_type_ids)
+        before_iso = before.isoformat().replace("+00:00", "Z")
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM flight_trade_ledger_transactions
+                WHERE character_id = ?
+                  AND type_id IN ({placeholders})
+                  AND date < ?
+                ORDER BY date ASC, transaction_id ASC
+                LIMIT ?
+                """,
+                (
+                    clean_character_id,
+                    *clean_type_ids,
+                    before_iso,
+                    max(1, min(int(limit), MAX_FLIGHT_TRADE_PNL_TRANSACTIONS)),
+                ),
+            ).fetchall()
+        transactions: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            payload.update(
+                {
+                    "transaction_id": int(row["transaction_id"]),
+                    "date": str(row["date"]),
+                    "type_id": int(row["type_id"]),
+                    "quantity": int(row["quantity"]),
+                    "unit_price": float(row["unit_price"]),
+                    "is_buy": bool(row["is_buy"]),
+                    "ledger_backfill": True,
+                }
+            )
+            transactions.append(payload)
+        return transactions
+
+
+def acquisition_expectation_from_opportunity(
+    opportunity: dict[str, Any],
+    *,
+    snapshot_id: str,
+    character_id: int,
+    created_at: str,
+    origin_system: str = "",
+    destination_system: str = "",
+) -> dict[str, Any] | None:
+    type_id = clean_optional_int(opportunity.get("type_id"))
+    if type_id is None:
+        return None
+    planned_units = clean_optional_int(opportunity.get("recommended_units"))
+    expected_unit_profit = clean_optional_float(opportunity.get("net_profit_per_unit"))
+    expected_total_profit = clean_optional_float(opportunity.get("net_profit"))
+    if expected_unit_profit is None and expected_total_profit is not None and planned_units:
+        expected_unit_profit = expected_total_profit / planned_units
+    destination_buy = opportunity.get("best_destination_buy") if isinstance(opportunity.get("best_destination_buy"), dict) else {}
+    return {
+        "expectation_id": uuid.uuid4().hex[:16],
+        "snapshot_id": snapshot_id,
+        "character_id": int(character_id),
+        "created_at": created_at,
+        "type_id": type_id,
+        "item_name": str(opportunity.get("item_name") or f"Type {type_id}"),
+        "suggested_bid": clean_optional_float(opportunity.get("suggested_bid")),
+        "max_safe_bid": clean_optional_float(opportunity.get("max_safe_bid")),
+        "planned_units": planned_units,
+        "expected_unit_profit_isk": expected_unit_profit,
+        "expected_total_profit_isk": expected_total_profit,
+        "expected_net_sell_unit_price": clean_optional_float(opportunity.get("net_destination_price")),
+        "expected_gross_sell_unit_price": clean_optional_float(destination_buy.get("price")),
+        "expected_isk_committed": clean_optional_float(opportunity.get("estimated_isk_committed")),
+        "expected_broker_fee_isk": clean_optional_float(opportunity.get("estimated_broker_fee")),
+        "expected_sales_tax_isk": clean_optional_float(opportunity.get("estimated_sales_tax")),
+        "risk_level": str(opportunity.get("risk_level") or ""),
+        "origin_system": origin_system,
+        "destination_system": destination_system,
+        "placement_system": str(opportunity.get("placement_system") or origin_system),
+        "target_days": clean_optional_int(opportunity.get("target_days")),
+        "margin_percent": clean_optional_float(opportunity.get("margin_percent")),
+    }
+
+
+def trade_ledger_transaction_record(transaction: dict[str, Any], *, character_id: int) -> dict[str, Any] | None:
+    transaction_id = clean_optional_int(transaction.get("transaction_id"))
+    type_id = clean_optional_int(transaction.get("type_id"))
+    quantity = clean_optional_int(transaction.get("quantity"))
+    unit_price = clean_optional_float(transaction.get("unit_price"))
+    date = trade_record_datetime(transaction.get("date"))
+    if transaction_id is None or type_id is None or quantity is None or unit_price is None or unit_price < 0 or date is None:
+        return None
+    return {
+        "character_id": int(character_id),
+        "transaction_id": transaction_id,
+        "date": date.isoformat().replace("+00:00", "Z"),
+        "type_id": type_id,
+        "quantity": quantity,
+        "unit_price": unit_price,
+        "is_buy": bool(transaction.get("is_buy")),
+        "client_id": clean_optional_int(transaction.get("client_id")),
+        "location_id": clean_optional_int(transaction.get("location_id")),
+    }
 
 
 def build_mail_draft(listing: MarketListing, *, actor: str = "") -> MailDraft:
@@ -1815,8 +2186,12 @@ def build_flight_trade_pnl_payload(
     days: int = DEFAULT_FLIGHT_TRADE_PNL_DAYS,
     window_hours: Any = None,
     accounting_lens: str = "inventory",
+    consideration_rule: Any = None,
     excluded_tokens: Iterable[str] = (),
     include_matches: bool = False,
+    expectation_store: MarketStore | None = None,
+    acquisition_expectations: Iterable[dict[str, Any]] = (),
+    trade_ledger_store: MarketStore | None = None,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_WALLET_SCOPE,))
     clean_window_hours = clamp_trade_pnl_window_hours(
@@ -1824,6 +2199,11 @@ def build_flight_trade_pnl_payload(
     )
     transactions = fetch_flight_wallet_transactions(config, session)
     journal_entries = fetch_flight_wallet_journal(config, session)
+    clean_lens = normalize_trade_pnl_lens(accounting_lens)
+    clean_consideration_rule = normalize_trade_pnl_consideration_rule(
+        consideration_rule,
+        excluded_tokens=excluded_tokens,
+    )
     type_ids = {
         type_id
         for transaction in transactions
@@ -1831,15 +2211,77 @@ def build_flight_trade_pnl_payload(
         if type_id is not None and type_id > 0
     }
     type_names = resolve_trade_type_names(config, type_ids)
-    trade_pnl = analyze_trade_pnl_transactions(
+    current_time = datetime.now(timezone.utc)
+    ledger_store = trade_ledger_store or expectation_store
+    historical_transactions: list[dict[str, Any]] = []
+    ledger_status = {"saved": 0, "historical_transaction_count": 0}
+    if ledger_store is not None:
+        saved = ledger_store.save_trade_ledger_transactions(character_id=session.character_id, transactions=transactions)
+        cutoff = current_time - timedelta(hours=clean_window_hours)
+        historical_transactions = ledger_store.historical_trade_ledger_transactions(
+            character_id=session.character_id,
+            type_ids=type_ids,
+            before=cutoff,
+        )
+        ledger_status = {
+            "saved": int(saved.get("saved") or 0),
+            "historical_transaction_count": len(historical_transactions),
+            "source": "local-corp-market-sqlite",
+        }
+    provisional_pnl = analyze_trade_pnl_transactions(
         transactions,
         journal_entries=journal_entries,
         type_names=type_names,
         window_hours=clean_window_hours,
-        accounting_lens=accounting_lens,
+        accounting_lens=clean_lens,
+        consideration_rule=clean_consideration_rule,
+        excluded_tokens=excluded_tokens,
+        include_matches=False,
+        item_limit=MAX_FLIGHT_TRADE_PNL_TRANSACTIONS,
+        now=current_time,
+    )
+    open_type_ids = [
+        int(item["type_id"])
+        for item in provisional_pnl.get("items") or []
+        if int(item.get("open_quantity") or 0) > 0
+    ]
+    market_values: dict[int, dict[str, Any]] = {}
+    market_valuation_error = ""
+    market_valuation_requested = clean_lens == "inventory" and bool(open_type_ids)
+    if market_valuation_requested:
+        try:
+            market_values = fetch_fuzzwork_market_aggregates(open_type_ids)
+        except CorpMarketError as exc:
+            market_valuation_error = str(exc)
+    saved_expectations = list(acquisition_expectations or [])
+    if expectation_store is not None:
+        saved_expectations.extend(
+            expectation_store.latest_acquisition_expectations(
+                character_id=session.character_id,
+                type_ids=type_ids,
+                cutoff=current_time - timedelta(hours=clean_window_hours),
+            )
+        )
+    trade_pnl = analyze_trade_pnl_transactions(
+        transactions,
+        journal_entries=journal_entries,
+        type_names=type_names,
+        market_values=market_values,
+        market_valuation_requested=market_valuation_requested,
+        market_valuation_source="Fuzzwork",
+        market_valuation_location="Jita 4-4",
+        market_valuation_error=market_valuation_error,
+        window_hours=clean_window_hours,
+        accounting_lens=clean_lens,
+        consideration_rule=clean_consideration_rule,
         excluded_tokens=excluded_tokens,
         include_matches=include_matches,
+        acquisition_expectations=saved_expectations,
+        historical_transactions=historical_transactions,
+        now=current_time,
     )
+    trade_pnl["market_valuation"]["cache"] = fuzzwork_market_aggregate_cache_status()
+    trade_pnl["trade_ledger"] = ledger_status
     return {
         "ok": True,
         "generated_at": now_iso(),
@@ -1863,9 +2305,17 @@ def analyze_trade_pnl_transactions(
     *,
     journal_entries: Iterable[dict[str, Any]] = (),
     type_names: dict[int, str] | None = None,
+    market_values: dict[int, dict[str, Any]] | None = None,
+    market_valuation_requested: bool = False,
+    market_valuation_source: str = "",
+    market_valuation_location: str = "",
+    market_valuation_error: str = "",
+    acquisition_expectations: Iterable[dict[str, Any]] = (),
+    historical_transactions: Iterable[dict[str, Any]] = (),
     days: int = DEFAULT_FLIGHT_TRADE_PNL_DAYS,
     window_hours: Any = None,
     accounting_lens: str = "inventory",
+    consideration_rule: Any = None,
     excluded_tokens: Iterable[str] = (),
     include_matches: bool = False,
     now: datetime | None = None,
@@ -1876,6 +2326,18 @@ def analyze_trade_pnl_transactions(
     )
     clean_lens = normalize_trade_pnl_lens(accounting_lens)
     clean_excluded_tokens = clean_trade_pnl_excluded_tokens(excluded_tokens)
+    clean_consideration_rule = normalize_trade_pnl_consideration_rule(
+        consideration_rule,
+        excluded_tokens=clean_excluded_tokens,
+    )
+    material_type_ids = (
+        trade_pnl_material_type_ids()
+        if clean_consideration_rule in {"materials", "materials_custom"}
+        else frozenset()
+    )
+    clean_market_values = normalize_trade_pnl_market_values(market_values or {})
+    clean_expectations = normalize_trade_pnl_acquisition_expectations(acquisition_expectations)
+    valuation_requested = bool(market_valuation_requested or clean_market_values)
     current_time = now or datetime.now(timezone.utc)
     cutoff = current_time - timedelta(hours=clean_window_hours)
     visible_transactions = [
@@ -1913,6 +2375,57 @@ def analyze_trade_pnl_transactions(
     summaries: dict[int, dict[str, Any]] = {}
     open_lots: dict[int, list[dict[str, Any]]] = {}
     ignored_transactions = 0
+    historical_transaction_count = 0
+    historical_open_lot_count = 0
+    historical_ignored_transactions = 0
+    for transaction in sorted(
+        historical_transactions or (),
+        key=lambda item: (
+            trade_record_datetime(item.get("date")) or datetime.min.replace(tzinfo=timezone.utc),
+            clean_optional_int(item.get("transaction_id")) or 0,
+        ),
+    ):
+        transaction_date = trade_record_datetime(transaction.get("date"))
+        if transaction_date is None or transaction_date >= cutoff:
+            continue
+        type_id = clean_optional_int(transaction.get("type_id"))
+        transaction_id = clean_optional_int(transaction.get("transaction_id"))
+        quantity = clean_optional_int(transaction.get("quantity"))
+        unit_price = clean_optional_float(transaction.get("unit_price"))
+        if type_id is None or transaction_id is None or quantity is None or quantity <= 0 or unit_price is None or unit_price < 0:
+            historical_ignored_transactions += 1
+            continue
+        historical_transaction_count += 1
+        lots = open_lots.setdefault(type_id, [])
+        if bool(transaction.get("is_buy")):
+            lots.append(
+                {
+                    "quantity_remaining": quantity,
+                    "unit_cost": float(unit_price),
+                    "transaction_id": transaction_id,
+                    "date": str(transaction.get("date") or ""),
+                    "historical": True,
+                }
+            )
+            continue
+        remaining_historical_sell = quantity
+        while remaining_historical_sell > 0 and lots:
+            lot = lots[0]
+            lot_quantity = int(lot.get("quantity_remaining") or 0)
+            if lot_quantity <= 0:
+                lots.pop(0)
+                continue
+            matched_quantity = min(remaining_historical_sell, lot_quantity)
+            lot["quantity_remaining"] = lot_quantity - matched_quantity
+            remaining_historical_sell -= matched_quantity
+            if int(lot.get("quantity_remaining") or 0) <= 0:
+                lots.pop(0)
+    historical_open_lot_count = sum(
+        1
+        for lots in open_lots.values()
+        for lot in lots
+        if bool(lot.get("historical")) and int(lot.get("quantity_remaining") or 0) > 0
+    )
     for transaction in sorted(
         visible_transactions,
         key=lambda item: (
@@ -1969,6 +2482,7 @@ def analyze_trade_pnl_transactions(
                     {
                         "buy_transaction_id": lot.get("transaction_id"),
                         "buy_date": lot.get("date") or "",
+                        "buy_source": "local-ledger" if bool(lot.get("historical")) else "wallet-window",
                         "sell_transaction_id": transaction_id,
                         "sell_date": transaction_date,
                         "quantity": matched_quantity,
@@ -1982,6 +2496,9 @@ def analyze_trade_pnl_transactions(
                     }
                 )
             lot["quantity_remaining"] = lot_quantity - matched_quantity
+            if bool(lot.get("historical")):
+                summary["historical_matched_quantity"] += matched_quantity
+                summary["historical_matched_buy_cost_isk"] += buy_cost
             remaining_to_match -= matched_quantity
             if int(lot.get("quantity_remaining") or 0) <= 0:
                 lots.pop(0)
@@ -2003,9 +2520,15 @@ def analyze_trade_pnl_transactions(
     items = []
     totals = trade_pnl_empty_totals()
     for summary in summaries.values():
-        excluded, excluded_reason = trade_pnl_item_excluded(summary, clean_excluded_tokens)
+        excluded, excluded_reason = trade_pnl_item_excluded(
+            summary,
+            consideration_rule=clean_consideration_rule,
+            excluded_tokens=clean_excluded_tokens,
+            material_type_ids=material_type_ids,
+        )
         summary["excluded"] = excluded
         summary["excluded_reason"] = excluded_reason
+        summary["consideration_rule"] = clean_consideration_rule
         expected_profit = summary["matched_sell_revenue_isk"] - summary["matched_buy_cost_isk"]
         actual_profit = expected_profit + summary["allocated_fee_isk"]
         summary["expected_profit_isk"] = round(expected_profit, 4)
@@ -2015,16 +2538,64 @@ def analyze_trade_pnl_transactions(
             summary["sell_total_isk"] - summary["buy_total_isk"] + summary["allocated_fee_isk"],
             4,
         )
+        trade_pnl_apply_market_valuation(
+            summary,
+            market_values=clean_market_values,
+            actual_profit=actual_profit,
+        )
+        trade_pnl_apply_acquisition_expectation(summary, clean_expectations.get(int(summary["type_id"])))
         summary["margin_percent"] = profit_margin_percent(actual_profit, summary["matched_buy_cost_isk"])
         summary["status"] = trade_pnl_item_status(summary)
+        summary["source_badges"] = trade_pnl_source_badges(summary)
         for key in totals:
-            totals[key] += float(summary.get(key) or 0.0)
+            value = summary.get(key)
+            if value is None:
+                continue
+            totals[key] += float(value or 0.0)
         items.append(summary)
 
     allocated_fee_total = sum(float(item.get("allocated_fee_isk") or 0.0) for item in items)
     unallocated_fee_total = market_fee_total - allocated_fee_total
     visible_actual_profit = totals["expected_profit_isk"] + allocated_fee_total
     wallet_fee_adjusted_profit = totals["expected_profit_isk"] + market_fee_total
+    market_valued_open_item_count = sum(
+        1 for item in items if int(item.get("open_quantity") or 0) > 0 and item.get("market_valuation_status") == "priced"
+    )
+    market_unvalued_open_item_count = sum(
+        1 for item in items if int(item.get("open_quantity") or 0) > 0 and item.get("market_valuation_status") == "missing"
+    )
+    market_valuation_status = trade_pnl_market_valuation_status(
+        valuation_requested=valuation_requested,
+        market_valued_open_item_count=market_valued_open_item_count,
+        market_unvalued_open_item_count=market_unvalued_open_item_count,
+        market_valuation_error=market_valuation_error,
+    )
+    open_inventory_market_value_total = round_optional_float(totals["open_inventory_market_value_isk"])
+    open_inventory_unrealized_total = round_optional_float(totals["open_inventory_unrealized_isk"])
+    if market_valued_open_item_count <= 0 and market_unvalued_open_item_count > 0:
+        open_inventory_market_value_total = None
+        open_inventory_unrealized_total = None
+    plan_reconciliations = [
+        item.get("plan_reconciliation")
+        for item in items
+        if isinstance(item.get("plan_reconciliation"), dict) and item["plan_reconciliation"].get("available")
+    ]
+    plan_matched_reconciliations = [
+        plan
+        for plan in plan_reconciliations
+        if clean_optional_float(plan.get("expected_profit_for_matched_isk")) is not None
+        and clean_optional_float(plan.get("actual_vs_expected_profit_isk")) is not None
+    ]
+    expected_plan_profit_total = (
+        sum(float(plan.get("expected_profit_for_matched_isk") or 0.0) for plan in plan_matched_reconciliations)
+        if plan_matched_reconciliations
+        else None
+    )
+    actual_vs_plan_profit_total = (
+        sum(float(plan.get("actual_vs_expected_profit_isk") or 0.0) for plan in plan_matched_reconciliations)
+        if plan_matched_reconciliations
+        else None
+    )
     considered = trade_pnl_considered_totals(items, lens=clean_lens, unallocated_fee_total=unallocated_fee_total)
     items.sort(key=lambda item: (-abs(float(item.get("actual_profit_isk") or item.get("expected_profit_isk") or 0.0)), str(item["item_name"])))
     limited_items = items[: max(1, int(item_limit))]
@@ -2034,7 +2605,10 @@ def analyze_trade_pnl_transactions(
         "window_label": trade_pnl_window_label(clean_window_hours),
         "accounting_lens": clean_lens,
         "accounting_lens_label": trade_pnl_lens_label(clean_lens),
+        "consideration_rule": clean_consideration_rule,
+        "consideration_rule_label": trade_pnl_consideration_rule_label(clean_consideration_rule),
         "excluded_tokens": list(clean_excluded_tokens),
+        "custom_excluded_tokens": list(clean_excluded_tokens),
         "cutoff": cutoff.isoformat().replace("+00:00", "Z"),
         "transaction_count": len(visible_transactions),
         "ignored_transaction_count": ignored_transactions,
@@ -2047,7 +2621,9 @@ def analyze_trade_pnl_transactions(
             "buy_total_isk": round(totals["buy_total_isk"], 4),
             "sell_total_isk": round(totals["sell_total_isk"], 4),
             "matched_quantity": int(totals["matched_quantity"]),
+            "historical_matched_quantity": int(totals["historical_matched_quantity"]),
             "matched_buy_cost_isk": round(totals["matched_buy_cost_isk"], 4),
+            "historical_matched_buy_cost_isk": round(totals["historical_matched_buy_cost_isk"], 4),
             "matched_sell_revenue_isk": round(totals["matched_sell_revenue_isk"], 4),
             "expected_profit_isk": round(totals["expected_profit_isk"], 4),
             "allocated_fee_isk": round(allocated_fee_total, 4),
@@ -2055,8 +2631,11 @@ def analyze_trade_pnl_transactions(
             "market_fee_isk": round(market_fee_total, 4),
             "actual_profit_isk": round(visible_actual_profit, 4),
             "wallet_fee_adjusted_profit_isk": round(wallet_fee_adjusted_profit, 4),
+            "inventory_result_isk": round(totals["inventory_result_isk"], 4),
             "net_cashflow_isk": round(totals["net_cashflow_isk"] + unallocated_fee_total, 4),
             "open_inventory_cost_isk": round(totals["open_inventory_cost_isk"], 4),
+            "open_inventory_market_value_isk": open_inventory_market_value_total,
+            "open_inventory_unrealized_isk": open_inventory_unrealized_total,
             "open_quantity": int(totals["open_quantity"]),
             "unmatched_sell_revenue_isk": round(totals["unmatched_sell_revenue_isk"], 4),
             "unmatched_sell_quantity": int(totals["unmatched_sell_quantity"]),
@@ -2067,9 +2646,27 @@ def analyze_trade_pnl_transactions(
             "excluded_item_count": int(considered["excluded_item_count"]),
             "considered_item_count": int(considered["considered_item_count"]),
             "loss_item_count": int(considered["loss_item_count"]),
+            "market_valued_open_item_count": market_valued_open_item_count,
+            "market_unvalued_open_item_count": market_unvalued_open_item_count,
+            "planned_item_count": len(plan_reconciliations),
+            "planned_matched_item_count": len(plan_matched_reconciliations),
+            "expected_plan_profit_isk": round_optional_float(expected_plan_profit_total),
+            "actual_vs_plan_profit_isk": round_optional_float(actual_vs_plan_profit_total),
+            "historical_transaction_count": historical_transaction_count,
+            "historical_open_lot_count": historical_open_lot_count,
+            "historical_ignored_transaction_count": historical_ignored_transactions,
+        },
+        "market_valuation": {
+            "requested": valuation_requested,
+            "status": market_valuation_status,
+            "source": market_valuation_source or ("Fuzzwork" if valuation_requested else ""),
+            "location": market_valuation_location or ("Jita 4-4" if valuation_requested else ""),
+            "error": market_valuation_error,
+            "valued_open_item_count": market_valued_open_item_count,
+            "unvalued_open_item_count": market_unvalued_open_item_count,
         },
         "fee_ref_counts": dict(sorted(fee_ref_counts.items())),
-        "expectation_source": "FIFO buy-vs-sell spread before wallet fees. Saved planner expectation snapshots are not stored yet.",
+        "expectation_source": "FIFO buy-vs-sell spread before wallet fees. Inventory mode adds estimated open-stock market value when available. Saved planner expectation snapshots are compared when available.",
         "limits_note": (
             "Only wallet transactions visible through recent ESI history are matched. "
             "Sells without visible buy lots are excluded from realized P&L and shown as unmatched."
@@ -2087,25 +2684,43 @@ def trade_pnl_summary_for_type(summaries: dict[int, dict[str, Any]], *, type_id:
             "buy_quantity": 0,
             "sell_quantity": 0,
             "matched_quantity": 0,
+            "historical_matched_quantity": 0,
             "unmatched_sell_quantity": 0,
             "open_quantity": 0,
             "buy_total_isk": 0.0,
             "sell_total_isk": 0.0,
             "matched_buy_cost_isk": 0.0,
+            "historical_matched_buy_cost_isk": 0.0,
             "matched_sell_revenue_isk": 0.0,
             "allocated_fee_isk": 0.0,
             "unmatched_sell_revenue_isk": 0.0,
             "open_inventory_cost_isk": 0.0,
+            "open_inventory_market_value_isk": None,
+            "open_inventory_unrealized_isk": None,
+            "inventory_result_isk": 0.0,
+            "open_market_unit_price": None,
+            "open_market_top_buy_unit_price": None,
+            "open_market_sell_min_unit_price": None,
+            "open_market_buy_volume": None,
+            "open_market_sell_volume": None,
+            "open_market_buy_order_count": None,
+            "open_market_sell_order_count": None,
+            "market_valuation_status": "not-needed",
+            "market_valuation_source": "",
+            "market_valuation_location": "",
+            "plan_reconciliation": None,
             "expected_profit_isk": 0.0,
             "actual_profit_isk": 0.0,
             "net_cashflow_isk": 0.0,
             "fee_gap_isk": 0.0,
             "margin_percent": None,
+            "inventory_margin_percent": None,
             "first_date": "",
             "last_date": "",
             "status": "no-match",
             "excluded": False,
             "excluded_reason": "",
+            "source_badges": [],
             "matches": [],
         },
     )
@@ -2116,39 +2731,353 @@ def trade_pnl_empty_totals() -> dict[str, float]:
         "buy_total_isk": 0.0,
         "sell_total_isk": 0.0,
         "matched_quantity": 0.0,
+        "historical_matched_quantity": 0.0,
         "matched_buy_cost_isk": 0.0,
+        "historical_matched_buy_cost_isk": 0.0,
         "matched_sell_revenue_isk": 0.0,
         "expected_profit_isk": 0.0,
+        "inventory_result_isk": 0.0,
         "net_cashflow_isk": 0.0,
         "open_inventory_cost_isk": 0.0,
+        "open_inventory_market_value_isk": 0.0,
+        "open_inventory_unrealized_isk": 0.0,
         "open_quantity": 0.0,
         "unmatched_sell_revenue_isk": 0.0,
         "unmatched_sell_quantity": 0.0,
     }
 
 
+def normalize_trade_pnl_market_values(market_values: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    normalized: dict[int, dict[str, Any]] = {}
+    for raw_type_id, value in (market_values or {}).items():
+        type_id = clean_optional_int(raw_type_id)
+        if type_id is None and isinstance(value, dict):
+            type_id = clean_optional_int(value.get("type_id"))
+        if type_id is None or not isinstance(value, dict):
+            continue
+        normalized[type_id] = dict(value)
+    return normalized
+
+
+def normalize_trade_pnl_acquisition_expectations(expectations: Iterable[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    latest: dict[int, dict[str, Any]] = {}
+    for expectation in expectations or ():
+        if not isinstance(expectation, dict):
+            continue
+        type_id = clean_optional_int(expectation.get("type_id"))
+        if type_id is None:
+            continue
+        clean = dict(expectation)
+        clean["type_id"] = type_id
+        existing = latest.get(type_id)
+        clean_date = trade_record_datetime(clean.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)
+        existing_date = (
+            trade_record_datetime(existing.get("created_at")) if existing is not None else None
+        ) or datetime.min.replace(tzinfo=timezone.utc)
+        if existing is None or clean_date >= existing_date:
+            latest[type_id] = clean
+    return latest
+
+
+def trade_pnl_apply_market_valuation(
+    item: dict[str, Any],
+    *,
+    market_values: dict[int, dict[str, Any]],
+    actual_profit: float,
+) -> None:
+    matched_cost = float(item.get("matched_buy_cost_isk") or 0.0)
+    open_cost = float(item.get("open_inventory_cost_isk") or 0.0)
+    item["inventory_result_isk"] = actual_profit
+    item["inventory_margin_percent"] = profit_margin_percent(actual_profit, matched_cost + open_cost)
+    open_quantity = int(item.get("open_quantity") or 0)
+    if open_quantity <= 0:
+        item["market_valuation_status"] = "not-needed"
+        return
+    market_value = market_values.get(int(item.get("type_id") or 0))
+    if not market_value:
+        item["market_valuation_status"] = "missing"
+        return
+    unit_price = clean_optional_float(market_value.get("liquidation_unit_price"))
+    if unit_price is None or unit_price <= 0:
+        item["market_valuation_status"] = "missing"
+        return
+
+    open_market_value = open_quantity * unit_price
+    open_unrealized = open_market_value - open_cost
+    inventory_result = actual_profit + open_unrealized
+    item["open_inventory_market_value_isk"] = open_market_value
+    item["open_inventory_unrealized_isk"] = open_unrealized
+    item["inventory_result_isk"] = inventory_result
+    item["open_market_unit_price"] = unit_price
+    item["open_market_top_buy_unit_price"] = clean_optional_float(market_value.get("top_buy_unit_price"))
+    item["open_market_sell_min_unit_price"] = clean_optional_float(market_value.get("sell_min_unit_price"))
+    item["open_market_buy_volume"] = clean_optional_float(market_value.get("buy_volume"))
+    item["open_market_sell_volume"] = clean_optional_float(market_value.get("sell_volume"))
+    item["open_market_buy_order_count"] = clean_optional_int(market_value.get("buy_order_count"))
+    item["open_market_sell_order_count"] = clean_optional_int(market_value.get("sell_order_count"))
+    item["market_valuation_status"] = "priced"
+    item["market_valuation_source"] = str(market_value.get("source_label") or market_value.get("source") or "Market aggregate")
+    item["market_valuation_location"] = str(market_value.get("location_name") or "")
+    item["inventory_margin_percent"] = profit_margin_percent(inventory_result, matched_cost + open_cost)
+
+
+def trade_pnl_apply_acquisition_expectation(item: dict[str, Any], expectation: dict[str, Any] | None) -> None:
+    if not expectation:
+        return
+    matched_quantity = int(item.get("matched_quantity") or 0)
+    open_quantity = int(item.get("open_quantity") or 0)
+    planned_units = clean_optional_int(expectation.get("planned_units"))
+    expected_unit_profit = clean_optional_float(expectation.get("expected_unit_profit_isk"))
+    expected_profit_for_matched = expected_unit_profit * matched_quantity if expected_unit_profit is not None and matched_quantity > 0 else None
+    actual_profit = float(item.get("actual_profit_isk") or 0.0)
+    actual_vs_expected = actual_profit - expected_profit_for_matched if expected_profit_for_matched is not None else None
+    matched_buy_cost = float(item.get("matched_buy_cost_isk") or 0.0)
+    matched_sell_revenue = float(item.get("matched_sell_revenue_isk") or 0.0)
+    allocated_fee = float(item.get("allocated_fee_isk") or 0.0)
+    average_buy_unit_price = matched_buy_cost / matched_quantity if matched_quantity > 0 else None
+    average_sell_unit_price = matched_sell_revenue / matched_quantity if matched_quantity > 0 else None
+    actual_profit_per_unit = actual_profit / matched_quantity if matched_quantity > 0 else None
+    actual_net_result_unit_price = (matched_sell_revenue + allocated_fee) / matched_quantity if matched_quantity > 0 else None
+    suggested_bid = clean_optional_float(expectation.get("suggested_bid"))
+    expected_net_sell_unit_price = clean_optional_float(expectation.get("expected_net_sell_unit_price"))
+    plan_status = trade_pnl_plan_status(
+        matched_quantity=matched_quantity,
+        open_quantity=open_quantity,
+        actual_vs_expected=actual_vs_expected,
+        expected_profit_for_matched=expected_profit_for_matched,
+        actual_profit=actual_profit,
+    )
+    item["plan_reconciliation"] = {
+        "available": True,
+        "status": plan_status,
+        "status_label": trade_pnl_plan_status_label(plan_status),
+        "expectation_id": str(expectation.get("expectation_id") or ""),
+        "snapshot_id": str(expectation.get("snapshot_id") or ""),
+        "planned_at": str(expectation.get("created_at") or ""),
+        "suggested_bid": suggested_bid,
+        "max_safe_bid": clean_optional_float(expectation.get("max_safe_bid")),
+        "planned_units": planned_units,
+        "matched_units": matched_quantity,
+        "open_units": open_quantity,
+        "fill_percent": (matched_quantity / planned_units * 100.0) if planned_units and planned_units > 0 else None,
+        "expected_unit_profit_isk": expected_unit_profit,
+        "expected_profit_for_matched_isk": expected_profit_for_matched,
+        "actual_profit_isk": actual_profit,
+        "actual_profit_per_unit_isk": actual_profit_per_unit,
+        "actual_vs_expected_profit_isk": actual_vs_expected,
+        "average_buy_unit_price": average_buy_unit_price,
+        "average_sell_unit_price": average_sell_unit_price,
+        "actual_net_result_unit_price": actual_net_result_unit_price,
+        "buy_price_delta_per_unit": average_buy_unit_price - suggested_bid
+        if average_buy_unit_price is not None and suggested_bid is not None
+        else None,
+        "net_sell_delta_per_unit": actual_net_result_unit_price - expected_net_sell_unit_price
+        if actual_net_result_unit_price is not None and expected_net_sell_unit_price is not None
+        else None,
+        "expected_net_sell_unit_price": expected_net_sell_unit_price,
+        "expected_gross_sell_unit_price": clean_optional_float(expectation.get("expected_gross_sell_unit_price")),
+        "expected_isk_committed": clean_optional_float(expectation.get("expected_isk_committed")),
+        "expected_broker_fee_isk": clean_optional_float(expectation.get("expected_broker_fee_isk")),
+        "expected_sales_tax_isk": clean_optional_float(expectation.get("expected_sales_tax_isk")),
+        "risk_level": str(expectation.get("risk_level") or ""),
+        "origin_system": str(expectation.get("origin_system") or ""),
+        "destination_system": str(expectation.get("destination_system") or ""),
+        "placement_system": str(expectation.get("placement_system") or ""),
+        "target_days": clean_optional_int(expectation.get("target_days")),
+    }
+
+
+def trade_pnl_plan_status(
+    *,
+    matched_quantity: int,
+    open_quantity: int,
+    actual_vs_expected: float | None,
+    expected_profit_for_matched: float | None,
+    actual_profit: float,
+) -> str:
+    if matched_quantity <= 0:
+        return "open-stock" if open_quantity > 0 else "waiting"
+    if actual_vs_expected is None or expected_profit_for_matched is None:
+        return "actual-only"
+    tolerance = max(1.0, abs(expected_profit_for_matched) * 0.05)
+    if actual_profit < 0 < expected_profit_for_matched:
+        return "loss-vs-plan"
+    if actual_vs_expected >= tolerance:
+        return "beat-plan"
+    if actual_vs_expected >= -tolerance:
+        return "near-plan"
+    return "below-plan"
+
+
+def trade_pnl_plan_status_label(status: str) -> str:
+    return {
+        "beat-plan": "Beat plan",
+        "near-plan": "Near plan",
+        "below-plan": "Below plan",
+        "loss-vs-plan": "Loss vs plan",
+        "open-stock": "Still open",
+        "waiting": "Waiting",
+        "actual-only": "Actual only",
+    }.get(status, "Plan check")
+
+
+def trade_pnl_source_badges(item: dict[str, Any]) -> list[dict[str, str]]:
+    badges: list[dict[str, str]] = []
+    if int(item.get("matched_quantity") or 0) > 0:
+        badges.append(
+            {
+                "label": "Actual wallet",
+                "kind": "wallet",
+                "note": "Matched ESI wallet buy and sell transactions.",
+            }
+        )
+    if int(item.get("historical_matched_quantity") or 0) > 0:
+        badges.append(
+            {
+                "label": "Ledger buy",
+                "kind": "ledger",
+                "note": "Matched a visible sell against an older buy saved in the local trade ledger.",
+            }
+        )
+    if int(item.get("open_quantity") or 0) > 0:
+        badges.append(
+            {
+                "label": "Open stock",
+                "kind": "stock",
+                "note": "Visible buys that have not been matched to a sell.",
+            }
+        )
+        if item.get("market_valuation_status") == "priced":
+            badges.append(
+                {
+                    "label": "Market estimate",
+                    "kind": "estimate",
+                    "note": "Open stock valued from Fuzzwork aggregate market data.",
+                }
+            )
+        elif item.get("market_valuation_status") == "missing":
+            badges.append(
+                {
+                    "label": "No market value",
+                    "kind": "missing",
+                    "note": "Open stock has no market estimate in this scan.",
+                }
+            )
+    if int(item.get("unmatched_sell_quantity") or 0) > 0:
+        badges.append(
+            {
+                "label": "Older buy missing",
+                "kind": "missing",
+                "note": "The sell is visible but the original buy is outside the matched wallet window.",
+            }
+        )
+    if bool(item.get("excluded")):
+        badges.append(
+            {
+                "label": "Ignored",
+                "kind": "excluded",
+                "note": "Shown here but removed from the considered result by the selected rule.",
+            }
+        )
+    plan = item.get("plan_reconciliation")
+    if isinstance(plan, dict) and plan.get("available"):
+        badges.append(
+            {
+                "label": "Planner expectation",
+                "kind": "plan",
+                "note": "Compared against the latest saved Acquisition Planner recommendation for this item.",
+            }
+        )
+    return badges
+
+
+def trade_pnl_market_valuation_status(
+    *,
+    valuation_requested: bool,
+    market_valued_open_item_count: int,
+    market_unvalued_open_item_count: int,
+    market_valuation_error: str,
+) -> str:
+    if not valuation_requested:
+        return "not-requested"
+    if market_valuation_error:
+        return "unavailable"
+    if market_valued_open_item_count > 0 and market_unvalued_open_item_count > 0:
+        return "partial"
+    if market_valued_open_item_count > 0:
+        return "valued"
+    if market_unvalued_open_item_count > 0:
+        return "missing"
+    return "no-open-stock"
+
+
 def trade_pnl_public_item(item: dict[str, Any]) -> dict[str, Any]:
     public_item = dict(item)
     public_item["matches"] = [trade_pnl_public_match(match) for match in public_item.get("matches") or []]
+    if isinstance(public_item.get("plan_reconciliation"), dict):
+        public_item["plan_reconciliation"] = trade_pnl_public_plan_reconciliation(public_item["plan_reconciliation"])
     for key in (
         "buy_total_isk",
         "sell_total_isk",
         "matched_buy_cost_isk",
+        "historical_matched_buy_cost_isk",
         "matched_sell_revenue_isk",
         "allocated_fee_isk",
         "unmatched_sell_revenue_isk",
         "open_inventory_cost_isk",
         "expected_profit_isk",
         "actual_profit_isk",
+        "inventory_result_isk",
         "net_cashflow_isk",
         "fee_gap_isk",
     ):
         public_item[key] = round(float(public_item.get(key) or 0.0), 4)
+    for key in (
+        "open_inventory_market_value_isk",
+        "open_inventory_unrealized_isk",
+        "open_market_unit_price",
+        "open_market_top_buy_unit_price",
+        "open_market_sell_min_unit_price",
+        "open_market_buy_volume",
+        "open_market_sell_volume",
+    ):
+        public_item[key] = round_optional_float(public_item.get(key))
+    for key in ("open_market_buy_order_count", "open_market_sell_order_count"):
+        public_item[key] = clean_optional_int(public_item.get(key))
     return public_item
+
+
+def trade_pnl_public_plan_reconciliation(plan: dict[str, Any]) -> dict[str, Any]:
+    public_plan = dict(plan)
+    for key in (
+        "suggested_bid",
+        "max_safe_bid",
+        "expected_unit_profit_isk",
+        "expected_profit_for_matched_isk",
+        "actual_profit_isk",
+        "actual_profit_per_unit_isk",
+        "actual_vs_expected_profit_isk",
+        "average_buy_unit_price",
+        "average_sell_unit_price",
+        "actual_net_result_unit_price",
+        "buy_price_delta_per_unit",
+        "net_sell_delta_per_unit",
+        "expected_net_sell_unit_price",
+        "expected_gross_sell_unit_price",
+        "expected_isk_committed",
+        "expected_broker_fee_isk",
+        "expected_sales_tax_isk",
+        "fill_percent",
+    ):
+        public_plan[key] = round_optional_float(public_plan.get(key))
+    for key in ("planned_units", "matched_units", "open_units", "target_days"):
+        public_plan[key] = clean_optional_nonnegative_int(public_plan.get(key))
+    return public_plan
 
 
 def trade_pnl_public_match(match: dict[str, Any]) -> dict[str, Any]:
     public_match = dict(match)
+    public_match["buy_source"] = str(public_match.get("buy_source") or "wallet-window")
     for key in (
         "buy_unit_price",
         "sell_unit_price",
@@ -2161,6 +3090,15 @@ def trade_pnl_public_match(match: dict[str, Any]) -> dict[str, Any]:
         public_match[key] = round(float(public_match.get(key) or 0.0), 4)
     public_match["quantity"] = int(public_match.get("quantity") or 0)
     return public_match
+
+
+def round_optional_float(value: Any, digits: int = 4) -> float | None:
+    if value is None:
+        return None
+    try:
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return None
 
 
 def trade_pnl_item_status(item: dict[str, Any]) -> str:
@@ -2206,6 +3144,8 @@ def trade_pnl_considered_totals(items: Iterable[dict[str, Any]], *, lens: str, u
         considered_count += 1
         if lens == "cashflow":
             considered_result += cashflow
+        elif lens == "inventory":
+            considered_result += float(item.get("inventory_result_isk") if item.get("inventory_result_isk") is not None else actual_profit)
         else:
             considered_result += actual_profit
     if lens == "cashflow":
@@ -2220,7 +3160,21 @@ def trade_pnl_considered_totals(items: Iterable[dict[str, Any]], *, lens: str, u
     }
 
 
-def trade_pnl_item_excluded(item: dict[str, Any], excluded_tokens: Iterable[str]) -> tuple[bool, str]:
+def trade_pnl_item_excluded(
+    item: dict[str, Any],
+    *,
+    consideration_rule: str,
+    excluded_tokens: Iterable[str],
+    material_type_ids: Iterable[int] = (),
+) -> tuple[bool, str]:
+    clean_rule = normalize_trade_pnl_consideration_rule(consideration_rule, excluded_tokens=excluded_tokens)
+    type_id = clean_optional_int(item.get("type_id"))
+    if clean_rule in {"materials", "materials_custom"} and type_id is not None:
+        clean_material_type_ids = {int(material_type_id) for material_type_id in material_type_ids if int(material_type_id) > 0}
+        if type_id in clean_material_type_ids:
+            return True, "Ignored by materials rule"
+    if clean_rule not in {"custom", "materials_custom"}:
+        return False, ""
     name = str(item.get("item_name") or "")
     normalized_name = normalize_trade_pnl_token(name)
     type_id_text = str(item.get("type_id") or "")
@@ -2229,8 +3183,22 @@ def trade_pnl_item_excluded(item: dict[str, Any], excluded_tokens: Iterable[str]
         if not normalized:
             continue
         if normalized == type_id_text or normalized in normalized_name:
-            return True, f"Excluded by {token}"
+            return True, f"Ignored by custom rule: {token}"
     return False, ""
+
+
+def trade_pnl_material_type_ids(static_data: StaticMarketData | None = None) -> frozenset[int]:
+    material_type_ids = set(TRADE_PNL_FALLBACK_MATERIAL_TYPE_IDS)
+    data = static_data if static_data is not None else load_static_market_data()
+    if data is None:
+        return frozenset(material_type_ids)
+    material_group_ids = market_group_descendant_ids(data, TRADE_PNL_MATERIAL_MARKET_GROUP_IDS)
+    for group_id in material_group_ids:
+        for item in data.types_by_group.get(group_id, ()):
+            type_id = clean_optional_int(item.get("type_id"))
+            if type_id is not None and type_id > 0:
+                material_type_ids.add(type_id)
+    return frozenset(material_type_ids)
 
 
 def clean_trade_pnl_excluded_tokens(tokens: Iterable[str]) -> tuple[str, ...]:
@@ -2270,6 +3238,45 @@ def trade_pnl_lens_label(lens: str) -> str:
     if lens == "realized":
         return "Realized Trading P&L"
     return "Inventory Mode"
+
+
+def normalize_trade_pnl_consideration_rule(value: Any, *, excluded_tokens: Iterable[str] = ()) -> str:
+    normalized = normalize_trade_pnl_token(value)
+    aliases = {
+        "": "custom" if clean_trade_pnl_excluded_tokens(excluded_tokens) else "all",
+        "allwallettrades": "all",
+        "countall": "all",
+        "countallitems": "all",
+        "everyitem": "all",
+        "materials": "materials",
+        "material": "materials",
+        "commonmaterials": "materials",
+        "ignorematerials": "materials",
+        "ignorecommonmaterials": "materials",
+        "materialsinputs": "materials",
+        "custom": "custom",
+        "customignore": "custom",
+        "customlist": "custom",
+        "excluded": "custom",
+        "exclude": "custom",
+        "legacyexclude": "custom",
+        "materialscustom": "materials_custom",
+        "materialspluscustom": "materials_custom",
+        "materialswithcustom": "materials_custom",
+        "ignorematerialsandcustom": "materials_custom",
+    }
+    rule = aliases.get(normalized, normalized)
+    return rule if rule in TRADE_PNL_CONSIDERATION_RULES else "all"
+
+
+def trade_pnl_consideration_rule_label(rule: Any) -> str:
+    clean_rule = normalize_trade_pnl_consideration_rule(rule)
+    return {
+        "all": "Count every item",
+        "materials": "Ignore materials and inputs",
+        "custom": "Ignore custom list",
+        "materials_custom": "Ignore materials plus custom list",
+    }.get(clean_rule, "Count every item")
 
 
 def trade_pnl_window_label(window_hours: int) -> str:
@@ -2433,6 +3440,25 @@ def clean_haul_market_type_ids(
             if len(type_ids) >= clean_limit:
                 return tuple(type_ids)
     return tuple(type_ids)
+
+
+def clean_haul_compare_destinations(raw_values: Iterable[Any]) -> tuple[str, ...]:
+    destinations: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        if raw_value is None:
+            continue
+        for part in re.split(r"[,|]+", str(raw_value)):
+            destination = " ".join(str(part or "").split())
+            if not destination:
+                continue
+            key = normalize_system_name(destination)
+            if key and key not in seen:
+                seen.add(key)
+                destinations.append(destination)
+            if len(destinations) >= MAX_HAUL_COMPARE_DESTINATIONS:
+                return tuple(destinations)
+    return tuple(destinations)
 
 
 def load_static_market_data(path: Path = DEFAULT_STATIC_DATA_ZIP_PATH) -> StaticMarketData | None:
@@ -2860,6 +3886,119 @@ def fetch_market_prices(config: EveSsoConfig) -> dict[int, dict[str, Any]]:
 def clear_market_price_cache() -> None:
     with MARKET_PRICE_CACHE_LOCK:
         MARKET_PRICE_CACHE.clear()
+
+
+def fetch_fuzzwork_market_aggregates(
+    type_ids: Iterable[int],
+    *,
+    station_id: int = JITA_4_4_STATION_ID,
+) -> dict[int, dict[str, Any]]:
+    clean_station_id = int(station_id or JITA_4_4_STATION_ID)
+    requested_type_ids: set[int] = set()
+    for type_id in type_ids:
+        clean_type_id = clean_optional_int(type_id)
+        if clean_type_id is not None:
+            requested_type_ids.add(clean_type_id)
+    clean_type_ids = tuple(sorted(requested_type_ids))[:MAX_FLIGHT_TRADE_PNL_MARKET_TYPES]
+    if not clean_type_ids:
+        return {}
+
+    now = time.monotonic()
+    results: dict[int, dict[str, Any]] = {}
+    missing_type_ids: list[int] = []
+    with FUZZWORK_MARKET_AGGREGATE_CACHE_LOCK:
+        for type_id in clean_type_ids:
+            cached = FUZZWORK_MARKET_AGGREGATE_CACHE.get((clean_station_id, type_id))
+            if cached is None:
+                missing_type_ids.append(type_id)
+                continue
+            cached_at, cached_value = cached
+            if now - cached_at < MARKET_ORDER_CACHE_TTL_SECONDS:
+                results[type_id] = dict(cached_value)
+            else:
+                FUZZWORK_MARKET_AGGREGATE_CACHE.pop((clean_station_id, type_id), None)
+                missing_type_ids.append(type_id)
+
+    for index in range(0, len(missing_type_ids), 80):
+        chunk = missing_type_ids[index : index + 80]
+        url = add_query_params(
+            FUZZWORK_MARKET_AGGREGATES_URL,
+            {"station": str(clean_station_id), "types": ",".join(str(type_id) for type_id in chunk)},
+        )
+        try:
+            payload = get_json(url, timeout_seconds=30.0, headers={"User-Agent": "EVE Voice Pilot Flight Attendant"})
+        except (CorpIntelError, ValueError) as exc:
+            raise CorpMarketError(f"Fuzzwork market aggregate lookup failed: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise CorpMarketError("Fuzzwork market aggregate endpoint returned unexpected data.")
+        now = time.monotonic()
+        with FUZZWORK_MARKET_AGGREGATE_CACHE_LOCK:
+            for type_id in chunk:
+                aggregate = normalize_fuzzwork_market_aggregate(
+                    payload.get(str(type_id)),
+                    station_id=clean_station_id,
+                    type_id=type_id,
+                )
+                if aggregate is None:
+                    continue
+                FUZZWORK_MARKET_AGGREGATE_CACHE[(clean_station_id, type_id)] = (now, dict(aggregate))
+                results[type_id] = aggregate
+
+    return results
+
+
+def normalize_fuzzwork_market_aggregate(payload: Any, *, station_id: int, type_id: int) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    buy = payload.get("buy") if isinstance(payload.get("buy"), dict) else {}
+    sell = payload.get("sell") if isinstance(payload.get("sell"), dict) else {}
+    top_buy = clean_optional_float(buy.get("max"))
+    buy_percentile = clean_optional_float(buy.get("percentile"))
+    sell_min = clean_optional_float(sell.get("min"))
+    sell_percentile = clean_optional_float(sell.get("percentile"))
+    liquidation_unit_price = buy_percentile if buy_percentile is not None and buy_percentile > 0 else top_buy
+    if liquidation_unit_price is None or liquidation_unit_price <= 0:
+        return None
+    return {
+        "type_id": int(type_id),
+        "source": "fuzzwork",
+        "source_label": "Fuzzwork Jita 4-4 aggregate",
+        "location_id": int(station_id),
+        "location_name": "Jita 4-4",
+        "liquidation_unit_price": liquidation_unit_price,
+        "top_buy_unit_price": top_buy,
+        "buy_percentile_unit_price": buy_percentile,
+        "sell_min_unit_price": sell_min,
+        "sell_percentile_unit_price": sell_percentile,
+        "buy_volume": clean_optional_float(buy.get("volume")),
+        "sell_volume": clean_optional_float(sell.get("volume")),
+        "buy_order_count": clean_optional_int(buy.get("orderCount")),
+        "sell_order_count": clean_optional_int(sell.get("orderCount")),
+    }
+
+
+def clear_fuzzwork_market_aggregate_cache() -> None:
+    with FUZZWORK_MARKET_AGGREGATE_CACHE_LOCK:
+        FUZZWORK_MARKET_AGGREGATE_CACHE.clear()
+
+
+def fuzzwork_market_aggregate_cache_status() -> dict[str, Any]:
+    now = time.monotonic()
+    with FUZZWORK_MARKET_AGGREGATE_CACHE_LOCK:
+        expired_keys = [
+            key
+            for key, (cached_at, _value) in FUZZWORK_MARKET_AGGREGATE_CACHE.items()
+            if now - cached_at >= MARKET_ORDER_CACHE_TTL_SECONDS
+        ]
+        for key in expired_keys:
+            FUZZWORK_MARKET_AGGREGATE_CACHE.pop(key, None)
+        entry_count = len(FUZZWORK_MARKET_AGGREGATE_CACHE)
+    return {
+        "ttl_seconds": int(MARKET_ORDER_CACHE_TTL_SECONDS),
+        "entries": entry_count,
+        "source": "Fuzzwork",
+        "note": "Fuzzwork open-stock valuation aggregates are cached locally for 5 minutes.",
+    }
 
 
 def market_order_cache_status() -> dict[str, Any]:
@@ -3680,6 +4819,9 @@ def build_flight_hauling_payload(
     include_common_materials: bool = True,
     market_group_ids: Iterable[int] = (),
     market_type_ids: Iterable[int] = (),
+    sort_by: str = DEFAULT_HAUL_SORT_BY,
+    min_profit_per_m3: float = 0.0,
+    min_profit_per_extra_jump: float = 0.0,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
@@ -3735,9 +4877,13 @@ def build_flight_hauling_payload(
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
         market_type_ids=market_type_ids,
+        sort_by=sort_by,
+        min_profit_per_m3=min_profit_per_m3,
+        min_profit_per_extra_jump=min_profit_per_extra_jump,
         progress=progress,
     )
     route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
+    route_jumps = max(0, len(route_path) - 1)
     return {
         "ok": True,
         "generated_at": now_iso(),
@@ -3749,7 +4895,7 @@ def build_flight_hauling_payload(
             "origin_query": clean_origin_name,
             "origin_source": origin_source,
             "destination_query": destination_name,
-            "route_jumps": max(0, len(route_path) - 1),
+            "route_jumps": route_jumps,
             "detour_jumps": clamp_haul_detour_jumps(detour_jumps),
             "cargo_capacity_m3": clamp_haul_cargo_m3(cargo_capacity_m3),
             "purchase_budget_isk": clamp_haul_purchase_budget_isk(purchase_budget_isk),
@@ -3762,9 +4908,114 @@ def build_flight_hauling_payload(
             "avoided_pod_kill_system_count": len(route_plan["avoided_pod_kill_system_ids"]),
             "route_pod_kill_system_count": len(route_plan["route_pod_kill_system_ids"]),
             "route_warning": route_plan["warning"],
+            "diagnostics": build_haul_route_diagnostics(route_plan, route_jumps=route_jumps),
             "systems": route_systems,
         },
         "hauling": opportunities,
+    }
+
+
+def summarize_haul_payload_for_comparison(destination_name: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+    hauling = payload.get("hauling") if isinstance(payload.get("hauling"), dict) else {}
+    load_plan = hauling.get("load_plan") if isinstance(hauling.get("load_plan"), dict) else {}
+    opportunities = hauling.get("opportunities") if isinstance(hauling.get("opportunities"), list) else []
+    best_opportunity = opportunities[0] if opportunities and isinstance(opportunities[0], dict) else {}
+    load_available = bool(load_plan.get("available"))
+    net_profit = float(load_plan.get("net_profit") or 0.0) if load_available else 0.0
+    return {
+        "ok": True,
+        "destination": destination_name,
+        "destination_name": (route.get("destination") or {}).get("name") or destination_name,
+        "route_jumps": int(route.get("route_jumps") or 0),
+        "route_source": route.get("route_source") or "",
+        "route_warning": route.get("route_warning") or "",
+        "profitable_opportunities": int(hauling.get("profitable_opportunities") or 0),
+        "total_profitable_opportunities": int(hauling.get("total_profitable_opportunities") or 0),
+        "efficiency_filter_rejected_count": int(hauling.get("efficiency_filter_rejected_count") or 0),
+        "possible_trap_count": int(hauling.get("possible_trap_count") or 0),
+        "load_plan_available": load_available,
+        "load_plan_net_profit": net_profit,
+        "load_plan_pickup_cost": float(load_plan.get("pickup_cost") or 0.0) if load_available else 0.0,
+        "load_plan_cargo_percent": float(load_plan.get("cargo_percent") or 0.0) if load_available else 0.0,
+        "load_plan_stop_count": int(load_plan.get("stop_count") or 0) if load_available else 0,
+        "best_item_name": best_opportunity.get("item_name") or "",
+        "best_item_net_profit": float(best_opportunity.get("net_profit") or 0.0) if best_opportunity else 0.0,
+        "best_item_margin_percent": best_opportunity.get("margin_percent"),
+    }
+
+
+def build_flight_hauling_comparison_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    origin_name: str = "",
+    destinations: Iterable[Any] = (),
+    detour_jumps: int = DEFAULT_HAUL_DETOUR_JUMPS,
+    cargo_capacity_m3: float = DEFAULT_HAUL_CARGO_M3,
+    purchase_budget_isk: float = DEFAULT_HAUL_PURCHASE_BUDGET_ISK,
+    min_detour_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT,
+    route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE,
+    avoid_recent_pod_kills: bool = DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
+    include_common_materials: bool = True,
+    market_group_ids: Iterable[int] = (),
+    market_type_ids: Iterable[int] = (),
+    sort_by: str = DEFAULT_HAUL_SORT_BY,
+    min_profit_per_m3: float = 0.0,
+    min_profit_per_extra_jump: float = 0.0,
+) -> dict[str, Any]:
+    destination_names = clean_haul_compare_destinations(destinations) or DEFAULT_HAUL_COMPARE_DESTINATIONS
+    results: list[dict[str, Any]] = []
+    for destination_name in destination_names:
+        try:
+            payload = build_flight_hauling_payload(
+                config=config,
+                session=session,
+                origin_name=origin_name,
+                destination_name=destination_name,
+                detour_jumps=detour_jumps,
+                cargo_capacity_m3=cargo_capacity_m3,
+                purchase_budget_isk=purchase_budget_isk,
+                min_detour_margin_percent=min_detour_margin_percent,
+                route_preference=route_preference,
+                avoid_recent_pod_kills=avoid_recent_pod_kills,
+                include_common_materials=include_common_materials,
+                market_group_ids=market_group_ids,
+                market_type_ids=market_type_ids,
+                sort_by=sort_by,
+                min_profit_per_m3=min_profit_per_m3,
+                min_profit_per_extra_jump=min_profit_per_extra_jump,
+            )
+        except CorpMarketError as exc:
+            results.append({"ok": False, "destination": destination_name, "destination_name": destination_name, "error": str(exc)})
+            continue
+        results.append(summarize_haul_payload_for_comparison(destination_name, payload))
+    ranked = sorted(
+        [result for result in results if result.get("ok")],
+        key=lambda result: (
+            float(result.get("load_plan_net_profit") or 0.0),
+            int(result.get("profitable_opportunities") or 0),
+            -int(result.get("route_jumps") or 0),
+        ),
+        reverse=True,
+    )
+    best = ranked[0] if ranked else {}
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "comparison": {
+            "requested_destinations": list(destination_names),
+            "destination_count": len(destination_names),
+            "successful_count": len(ranked),
+            "failed_count": len(results) - len(ranked),
+            "best": best,
+            "results": ranked + [result for result in results if not result.get("ok")],
+            "manual_note": (
+                "Compare hubs with the same item scope, cargo, budget, route rules, and detour settings. "
+                "Pilot still verifies route, docking access, and prices in EVE."
+            ),
+        },
     }
 
 
@@ -3783,6 +5034,7 @@ def build_flight_acquisition_payload(
     include_common_materials: bool = True,
     market_group_ids: Iterable[int] = (),
     market_type_ids: Iterable[int] = (),
+    expectation_store: MarketStore | None = None,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
     location = fetch_flight_location(config, session)
@@ -3837,9 +5089,21 @@ def build_flight_acquisition_payload(
     )
     route_path = route_plan["path"]
     route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
+    generated_at = now_iso()
+    expectation_snapshot = {"saved": 0, "snapshot_id": ""}
+    if expectation_store is not None:
+        expectation_snapshot = expectation_store.save_acquisition_expectations(
+            character_id=session.character_id,
+            acquisition=acquisition,
+            generated_at=generated_at,
+        )
+    acquisition["expectation_snapshot"] = {
+        **expectation_snapshot,
+        "source": "local-corp-market-sqlite",
+    }
     return {
         "ok": True,
-        "generated_at": now_iso(),
+        "generated_at": generated_at,
         "character": session.to_public_dict(),
         "location": location,
         "route": {
@@ -4342,6 +5606,9 @@ def scan_route_hauling_opportunities(
     include_common_materials: bool,
     market_group_ids: Iterable[int],
     market_type_ids: Iterable[int],
+    sort_by: str = DEFAULT_HAUL_SORT_BY,
+    min_profit_per_m3: float = 0.0,
+    min_profit_per_extra_jump: float = 0.0,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     systems = route_cache.systems or {}
@@ -4350,6 +5617,9 @@ def scan_route_hauling_opportunities(
     clean_cargo_capacity_m3 = clamp_haul_cargo_m3(cargo_capacity_m3)
     clean_purchase_budget_isk = clamp_haul_purchase_budget_isk(purchase_budget_isk)
     clean_min_detour_margin_percent = clamp_haul_min_detour_margin_percent(min_detour_margin_percent)
+    clean_sort_by = normalize_haul_sort_by(sort_by)
+    clean_min_profit_per_m3 = clamp_haul_efficiency_floor_isk(min_profit_per_m3)
+    clean_min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(min_profit_per_extra_jump)
     pickup_detours = route_corridor_systems(
         route_path=route_path,
         adjacency=adjacency,
@@ -4410,6 +5680,9 @@ def scan_route_hauling_opportunities(
     trap_signal_count = 0
     caution_signal_count = 0
     detour_margin_rejected_count = 0
+    no_destination_buy_order_count = 0
+    no_pickup_sell_order_count = 0
+    destination_demand_gated_count = 0
     errors = []
     emit_haul_route_progress(
         progress=progress,
@@ -4436,23 +5709,6 @@ def scan_route_hauling_opportunities(
                     "message": f"Pricing {target['name']}",
                 },
             )
-        sell_orders = []
-        for region_id in scan_pickup_region_ids:
-            try:
-                raw_orders = fetch_market_sell_orders(config, region_id=region_id, type_id=type_id)
-            except CorpMarketError as exc:
-                errors.append({"order_type": "sell", "type_id": type_id, "region_id": region_id, "error": str(exc)})
-                continue
-            for order in raw_orders:
-                record = build_reachable_market_order_record(
-                    order,
-                    systems=systems,
-                    jump_distances=pickup_jump_distances,
-                    region_id=region_id,
-                    order_type="sell",
-                )
-                if record is not None:
-                    sell_orders.append(record)
         try:
             raw_buy_orders = fetch_market_buy_orders(config, region_id=destination.region_id, type_id=type_id)
         except CorpMarketError as exc:
@@ -4471,11 +5727,45 @@ def scan_route_hauling_opportunities(
             )
             if record is not None:
                 buy_orders.append(record)
-        sell_orders.sort(key=lambda item: market_order_sort_key(item, order_type="sell"))
         buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
-        total_sell_order_count += len(sell_orders)
         total_buy_order_count += len(buy_orders)
-        if not sell_orders or not buy_orders:
+        if not buy_orders:
+            no_destination_buy_order_count += 1
+            destination_demand_gated_count += max(0, len(scan_pickup_region_ids))
+            if progress is not None:
+                progress(
+                    "orders",
+                    {
+                        "type_id": type_id,
+                        "item_name": target["name"],
+                        "material_index": target_index,
+                        "scanned_materials": len(scan_targets),
+                        "message": f"Skipping pickup sell scan for {target['name']}: no reachable destination buy orders",
+                    },
+                )
+            continue
+
+        sell_orders = []
+        for region_id in scan_pickup_region_ids:
+            try:
+                raw_orders = fetch_market_sell_orders(config, region_id=region_id, type_id=type_id)
+            except CorpMarketError as exc:
+                errors.append({"order_type": "sell", "type_id": type_id, "region_id": region_id, "error": str(exc)})
+                continue
+            for order in raw_orders:
+                record = build_reachable_market_order_record(
+                    order,
+                    systems=systems,
+                    jump_distances=pickup_jump_distances,
+                    region_id=region_id,
+                    order_type="sell",
+                )
+                if record is not None:
+                    sell_orders.append(record)
+        sell_orders.sort(key=lambda item: market_order_sort_key(item, order_type="sell"))
+        total_sell_order_count += len(sell_orders)
+        if not sell_orders:
+            no_pickup_sell_order_count += 1
             continue
         volume_m3 = target.get("volume_m3")
         depth_match = match_haul_order_depth(
@@ -4623,14 +5913,12 @@ def scan_route_hauling_opportunities(
             }
         )
 
-    opportunities.sort(
-        key=lambda item: (
-            acquisition_risk_sort_rank(str(item.get("risk_level") or "")),
-            -float(item["net_profit"]),
-            int(item.get("extra_route_jumps") if item.get("extra_route_jumps") is not None else 99),
-            -float(item["net_profit_per_unit"]),
-            item["item_name"],
-        )
+    total_profitable_opportunities = len(opportunities)
+    opportunities, efficiency_filter_rejected_count = filter_and_sort_haul_opportunities(
+        opportunities=opportunities,
+        sort_by=clean_sort_by,
+        min_profit_per_m3=clean_min_profit_per_m3,
+        min_profit_per_extra_jump=clean_min_profit_per_extra_jump,
     )
     load_plan = build_haul_load_plan(
         opportunities=opportunities,
@@ -4647,6 +5935,10 @@ def scan_route_hauling_opportunities(
         "cargo_capacity_m3": clean_cargo_capacity_m3,
         "purchase_budget_isk": clean_purchase_budget_isk,
         "min_detour_margin_percent": clean_min_detour_margin_percent,
+        "sort_by": clean_sort_by,
+        "sort_label": haul_sort_label(clean_sort_by),
+        "min_profit_per_m3": clean_min_profit_per_m3,
+        "min_profit_per_extra_jump": clean_min_profit_per_extra_jump,
         "pickup_system_count": len(pickup_jump_distances),
         "pickup_regions_scanned": len(scan_pickup_region_ids),
         "pickup_regions_total": len(pickup_region_ids),
@@ -4670,6 +5962,11 @@ def scan_route_hauling_opportunities(
         "possible_trap_count": trap_signal_count,
         "caution_count": caution_signal_count,
         "detour_margin_rejected_count": detour_margin_rejected_count,
+        "no_destination_buy_order_count": no_destination_buy_order_count,
+        "no_pickup_sell_order_count": no_pickup_sell_order_count,
+        "destination_demand_gated_count": destination_demand_gated_count,
+        "efficiency_filter_rejected_count": efficiency_filter_rejected_count,
+        "total_profitable_opportunities": total_profitable_opportunities,
         "profitable_opportunities": len(opportunities),
         "load_plan": load_plan,
         "opportunities": visible_opportunities,
@@ -4678,7 +5975,8 @@ def scan_route_hauling_opportunities(
         "market_cache": market_order_cache_status(),
         "history_cache": market_history_cache_status(),
         "pricing_note": (
-            "This scan walks public sell-order depth along the route corridor against public buy-order depth in the "
+            "This scan checks destination buy demand first, skips pickup regions when no reachable destination buy order exists, "
+            "then walks public sell-order depth along the route corridor against public buy-order depth in the "
             "destination system until the profitable depth, cargo capacity, or purchase budget runs out. It then checks public market "
             "history for the matched pickup and destination regions so price spikes, thin volume, and sparse order "
             "activity are labeled before you undock. Profit is after sales tax for selling into destination buy "
@@ -4686,6 +5984,63 @@ def scan_route_hauling_opportunities(
             "station docking access."
         ),
     }
+
+
+def filter_and_sort_haul_opportunities(
+    *,
+    opportunities: Iterable[dict[str, Any]],
+    sort_by: str,
+    min_profit_per_m3: float,
+    min_profit_per_extra_jump: float,
+) -> tuple[list[dict[str, Any]], int]:
+    clean_sort_by = normalize_haul_sort_by(sort_by)
+    clean_min_profit_per_m3 = clamp_haul_efficiency_floor_isk(min_profit_per_m3)
+    clean_min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(min_profit_per_extra_jump)
+    filtered = []
+    rejected_count = 0
+    for opportunity in opportunities:
+        if clean_min_profit_per_m3 > 0:
+            profit_per_m3 = clean_optional_float(opportunity.get("net_profit_per_m3"))
+            if profit_per_m3 is None or profit_per_m3 < clean_min_profit_per_m3:
+                rejected_count += 1
+                continue
+        if clean_min_profit_per_extra_jump > 0:
+            profit_per_extra_jump = clean_optional_float(opportunity.get("net_profit_per_extra_jump"))
+            if profit_per_extra_jump is None or profit_per_extra_jump < clean_min_profit_per_extra_jump:
+                rejected_count += 1
+                continue
+        filtered.append(opportunity)
+    filtered.sort(key=lambda item: haul_opportunity_sort_key(item, clean_sort_by))
+    return filtered, rejected_count
+
+
+def haul_opportunity_sort_key(item: dict[str, Any], sort_by: str) -> tuple[Any, ...]:
+    risk_rank = acquisition_risk_sort_rank(str(item.get("risk_level") or ""))
+    name = str(item.get("item_name") or "")
+    total_profit = clean_optional_float(item.get("net_profit")) or 0.0
+    per_unit = clean_optional_float(item.get("net_profit_per_unit")) or 0.0
+    margin_percent = clean_optional_float(item.get("margin_percent"))
+    profit_per_m3 = clean_optional_float(item.get("net_profit_per_m3"))
+    profit_per_extra_jump = clean_optional_float(item.get("net_profit_per_extra_jump"))
+    try:
+        extra_route_jumps = int(item.get("extra_route_jumps"))
+    except (TypeError, ValueError):
+        extra_route_jumps = None
+    if extra_route_jumps is not None and extra_route_jumps < 0:
+        extra_route_jumps = None
+    extra_jump_rank = extra_route_jumps if extra_route_jumps is not None else 99
+    direct_route_rank = 0 if extra_route_jumps == 0 else 1
+
+    def desc_optional(value: float | None) -> float:
+        return -value if value is not None else float("inf")
+
+    if normalize_haul_sort_by(sort_by) == "profit_per_m3":
+        return (risk_rank, desc_optional(profit_per_m3), -total_profit, extra_jump_rank, name)
+    if normalize_haul_sort_by(sort_by) == "profit_per_extra_jump":
+        return (risk_rank, direct_route_rank, desc_optional(profit_per_extra_jump), extra_jump_rank, -total_profit, name)
+    if normalize_haul_sort_by(sort_by) == "margin":
+        return (risk_rank, desc_optional(margin_percent), -total_profit, extra_jump_rank, name)
+    return (risk_rank, -total_profit, extra_jump_rank, desc_optional(profit_per_m3), -per_unit, name)
 
 
 def build_haul_load_plan(
@@ -6460,18 +7815,22 @@ def build_haul_route_plan(
     clean_preference = normalize_haul_route_preference(route_preference)
     recent_pod_kill_system_ids: tuple[int, ...] = ()
     warning = ""
+    pod_kill_lookup_error = ""
     if avoid_recent_pod_kills:
         try:
             recent_pod_kill_system_ids = fetch_recent_pod_kill_system_ids(config)
         except CorpMarketError as exc:
-            warning = str(exc)
+            pod_kill_lookup_error = str(exc)
+            warning = pod_kill_lookup_error
     recent_pod_kill_set = set(recent_pod_kill_system_ids)
     avoided_system_ids: set[int] = set()
     route_path: list[int] = []
     source = "esi-route"
     route_error = ""
+    esi_attempt_count = 0
     for _attempt in range(4):
         try:
+            esi_attempt_count += 1
             candidate_path = fetch_esi_route_path(
                 config,
                 origin_solar_system_id=origin_solar_system_id,
@@ -6526,7 +7885,85 @@ def build_haul_route_plan(
         "recent_pod_kill_system_count": len(recent_pod_kill_system_ids),
         "avoided_pod_kill_system_ids": sorted(avoided_system_ids),
         "route_pod_kill_system_ids": route_pod_kill_ids,
+        "esi_attempt_count": esi_attempt_count,
+        "route_error": route_error,
+        "pod_kill_lookup_error": pod_kill_lookup_error,
         "warning": warning,
+    }
+
+
+def build_haul_route_diagnostics(route_plan: Mapping[str, Any], *, route_jumps: int) -> dict[str, Any]:
+    source = str(route_plan.get("source") or "")
+    preference_label = str(route_plan.get("preference_label") or "Safer")
+    avoid_requested = bool(route_plan.get("avoid_recent_pod_kills"))
+    fallback_used = source == "local-shortest-fallback"
+    pod_kill_error = str(route_plan.get("pod_kill_lookup_error") or "")
+    route_error = str(route_plan.get("route_error") or "")
+    esi_attempt_count = clean_optional_int(route_plan.get("esi_attempt_count")) or 0
+    recent_count = clean_optional_int(route_plan.get("recent_pod_kill_system_count")) or 0
+    avoided_ids = list(route_plan.get("avoided_pod_kill_system_ids") or [])
+    route_pod_ids = list(route_plan.get("route_pod_kill_system_ids") or [])
+    avoided_count = len(avoided_ids)
+    remaining_count = len(route_pod_ids)
+    if not avoid_requested:
+        pod_status = "not-requested"
+        pod_status_label = "Not requested"
+    elif pod_kill_error:
+        pod_status = "unavailable"
+        pod_status_label = "Pod-kill lookup unavailable"
+    else:
+        pod_status = "checked"
+        pod_status_label = "Checked"
+    if fallback_used:
+        source_label = "Local shortest fallback"
+        summary = (
+            "ESI route planning did not return a path, so the scan used the local shortest-route graph. "
+            "Verify this route in EVE before undocking."
+        )
+    elif avoid_requested and remaining_count > 0:
+        source_label = "ESI route planner"
+        summary = (
+            f"ESI applied {preference_label} and attempted recent pod-kill avoidance, but "
+            f"{remaining_count} recent pod-kill system{'s' if remaining_count != 1 else ''} remained on the route."
+        )
+    elif avoid_requested:
+        source_label = "ESI route planner"
+        summary = (
+            f"ESI applied {preference_label} and recent pod-kill avoidance; no recent pod-kill systems "
+            "remain on this path."
+        )
+    else:
+        source_label = "ESI route planner"
+        summary = f"ESI applied {preference_label}; recent pod-kill avoidance was not requested."
+    steps = [
+        f"Requested rule: {preference_label}",
+        f"Route source: {source_label}",
+        f"Route length: {max(0, int(route_jumps))} jumps",
+        f"ESI route attempts: {esi_attempt_count}",
+        f"Recent pod-kill check: {pod_status_label}",
+    ]
+    if avoid_requested:
+        steps.append(f"Recent pod-kill systems known: {recent_count}")
+        steps.append(f"Avoided on route: {avoided_count}")
+        steps.append(f"Remaining on route: {remaining_count}")
+    if route_error:
+        steps.append(f"ESI route error: {route_error}")
+    return {
+        "summary": summary,
+        "source": source,
+        "source_label": source_label,
+        "fallback_used": fallback_used,
+        "route_rule_label": preference_label,
+        "route_jumps": max(0, int(route_jumps)),
+        "esi_attempt_count": esi_attempt_count,
+        "avoid_recent_pod_kills": avoid_requested,
+        "pod_kill_status": pod_status,
+        "pod_kill_status_label": pod_status_label,
+        "recent_pod_kill_system_count": recent_count,
+        "avoided_pod_kill_system_count": avoided_count,
+        "route_pod_kill_system_count": remaining_count,
+        "warning": str(route_plan.get("warning") or ""),
+        "steps": steps,
     }
 
 
@@ -6671,6 +8108,14 @@ def clamp_haul_min_detour_margin_percent(value: Any) -> float:
     return max(0.0, min(MAX_HAUL_MIN_DETOUR_MARGIN_PERCENT, margin))
 
 
+def clamp_haul_efficiency_floor_isk(value: Any) -> float:
+    try:
+        floor = float(value)
+    except (TypeError, ValueError):
+        floor = 0.0
+    return max(0.0, min(MAX_HAUL_EFFICIENCY_FLOOR_ISK, floor))
+
+
 def clamp_acquisition_budget_isk(value: Any) -> float:
     try:
         budget = float(value)
@@ -6738,6 +8183,30 @@ def normalize_haul_route_preference(value: Any) -> str:
     return normalized
 
 
+def normalize_haul_sort_by(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    aliases = {
+        "profit": "total_profit",
+        "net_profit": "total_profit",
+        "total": "total_profit",
+        "m3": "profit_per_m3",
+        "per_m3": "profit_per_m3",
+        "isk_per_m3": "profit_per_m3",
+        "extra_jump": "profit_per_extra_jump",
+        "per_extra_jump": "profit_per_extra_jump",
+        "isk_per_extra_jump": "profit_per_extra_jump",
+        "margin_percent": "margin",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in HAUL_SORT_OPTIONS:
+        return DEFAULT_HAUL_SORT_BY
+    return normalized
+
+
+def haul_sort_label(sort_by: Any) -> str:
+    return HAUL_SORT_LABELS[normalize_haul_sort_by(sort_by)]
+
+
 def query_bool(value: Any, *, default: bool = False) -> bool:
     if value is None:
         return default
@@ -6755,6 +8224,14 @@ def clean_optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return result if result > 0 else None
+
+
+def clean_optional_nonnegative_int(value: Any) -> int | None:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result >= 0 else None
 
 
 def clean_optional_float(value: Any) -> float | None:
@@ -8956,6 +10433,9 @@ def build_http_server(
             if path == "/api/flight/hauling":
                 self._handle_flight_hauling()
                 return
+            if path == "/api/flight/hauling/compare":
+                self._handle_flight_hauling_compare()
+                return
             if path == "/api/flight/hauling/progress":
                 self._handle_flight_hauling_progress()
                 return
@@ -9164,6 +10644,11 @@ def build_http_server(
             )
             market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
             market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
+            sort_by = normalize_haul_sort_by((query.get("sort_by") or [DEFAULT_HAUL_SORT_BY])[0])
+            min_profit_per_m3 = clamp_haul_efficiency_floor_isk((query.get("min_profit_per_m3") or [0])[0])
+            min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(
+                (query.get("min_profit_per_extra_jump") or [0])[0]
+            )
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
@@ -9179,6 +10664,66 @@ def build_http_server(
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
                     market_type_ids=market_type_ids,
+                    sort_by=sort_by,
+                    min_profit_per_m3=min_profit_per_m3,
+                    min_profit_per_extra_jump=min_profit_per_extra_jump,
+                )
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
+        def _handle_flight_hauling_compare(self) -> None:
+            session = self._require_flight_session("comparing hauler hubs")
+            if session is None:
+                return
+            query = parse_qs(urlparse(self.path).query)
+            origin = first_query_value(query, "origin_name") or ""
+            destinations = clean_haul_compare_destinations(query.get("destinations") or [])
+            detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
+            cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
+            purchase_budget_isk = clamp_haul_purchase_budget_isk(
+                (query.get("purchase_budget_isk") or [DEFAULT_HAUL_PURCHASE_BUDGET_ISK])[0]
+            )
+            min_detour_margin = clamp_haul_min_detour_margin_percent(
+                (query.get("min_detour_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
+            )
+            route_preference = normalize_haul_route_preference(
+                (query.get("route_preference") or [DEFAULT_HAUL_ROUTE_PREFERENCE])[0]
+            )
+            avoid_recent_pod_kills = query_bool(
+                (query.get("avoid_recent_pod_kills") or [str(int(DEFAULT_HAUL_AVOID_RECENT_POD_KILLS))])[0],
+                default=DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
+            )
+            include_common_materials = query_bool(
+                (query.get("common_materials") or ["1"])[0],
+                default=True,
+            )
+            market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
+            market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
+            sort_by = normalize_haul_sort_by((query.get("sort_by") or [DEFAULT_HAUL_SORT_BY])[0])
+            min_profit_per_m3 = clamp_haul_efficiency_floor_isk((query.get("min_profit_per_m3") or [0])[0])
+            min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(
+                (query.get("min_profit_per_extra_jump") or [0])[0]
+            )
+            try:
+                payload = build_flight_hauling_comparison_payload(
+                    config=sso_config,
+                    session=session,
+                    origin_name=origin,
+                    destinations=destinations,
+                    detour_jumps=detour_jumps,
+                    cargo_capacity_m3=cargo_m3,
+                    purchase_budget_isk=purchase_budget_isk,
+                    min_detour_margin_percent=min_detour_margin,
+                    route_preference=route_preference,
+                    avoid_recent_pod_kills=avoid_recent_pod_kills,
+                    include_common_materials=include_common_materials,
+                    market_group_ids=market_group_ids,
+                    market_type_ids=market_type_ids,
+                    sort_by=sort_by,
+                    min_profit_per_m3=min_profit_per_m3,
+                    min_profit_per_extra_jump=min_profit_per_extra_jump,
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -9226,6 +10771,11 @@ def build_http_server(
             )
             market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
             market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
+            sort_by = normalize_haul_sort_by((query.get("sort_by") or [DEFAULT_HAUL_SORT_BY])[0])
+            min_profit_per_m3 = clamp_haul_efficiency_floor_isk((query.get("min_profit_per_m3") or [0])[0])
+            min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(
+                (query.get("min_profit_per_extra_jump") or [0])[0]
+            )
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
@@ -9241,6 +10791,9 @@ def build_http_server(
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
                     market_type_ids=market_type_ids,
+                    sort_by=sort_by,
+                    min_profit_per_m3=min_profit_per_m3,
+                    min_profit_per_extra_jump=min_profit_per_extra_jump,
                     progress=emit,
                 )
             except (BrokenPipeError, ConnectionResetError):
@@ -9300,6 +10853,7 @@ def build_http_server(
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
                     market_type_ids=market_type_ids,
+                    expectation_store=store,
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -9318,6 +10872,10 @@ def build_http_server(
                 window_hours = clamp_trade_pnl_days(first_query_value(query, "days") or DEFAULT_FLIGHT_TRADE_PNL_DAYS) * 24
             lens = normalize_trade_pnl_lens(first_query_value(query, "lens") or "inventory")
             excluded_tokens = clean_trade_pnl_excluded_tokens(query.get("exclude") or [])
+            consideration_rule = normalize_trade_pnl_consideration_rule(
+                first_query_value(query, "consideration_rule"),
+                excluded_tokens=excluded_tokens,
+            )
             include_matches = query_bool(first_query_value(query, "include_matches"), default=False)
             try:
                 payload = build_flight_trade_pnl_payload(
@@ -9325,8 +10883,10 @@ def build_http_server(
                     session=session,
                     window_hours=window_hours,
                     accounting_lens=lens,
+                    consideration_rule=consideration_rule,
                     excluded_tokens=excluded_tokens,
                     include_matches=include_matches,
+                    expectation_store=store,
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -10854,6 +12414,32 @@ def _render_flight_attendant_dashboard() -> str:
       padding: 0 8px 8px;
     }
     .market-show-more { padding: 6px 8px; font-size: 12px; }
+    .market-item-search {
+      display: grid;
+      gap: 4px;
+      margin: 8px 0;
+    }
+    .market-item-search input { min-height: 38px; }
+    .market-search-status { min-height: 18px; }
+    .haul-compare-controls {
+      margin: 10px 0;
+      padding-left: 10px;
+      border-left: 3px solid rgba(224, 168, 74, .44);
+    }
+    .haul-compare-controls summary { cursor: pointer; color: var(--text); font-weight: 800; }
+    .haul-compare-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin: 8px 0;
+    }
+    .haul-compare-grid .checkline {
+      min-height: 34px;
+      padding: 6px 8px;
+      border: 1px solid rgba(63, 85, 80, .42);
+      border-radius: 6px;
+      background: rgba(5, 9, 11, .34);
+    }
     .mini-check { display: inline-flex; align-items: center; gap: 5px; color: var(--amber); font-size: 12px; font-weight: 800; }
     .mini-check input { margin: 0; }
     .scope-warning { color: var(--amber); }
@@ -12283,6 +13869,154 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .load-plan-row b { color: var(--text); text-align: right; overflow-wrap: anywhere; }
     .load-plan-row .meta { margin-top: 2px; }
+    .route-diagnostics {
+      display: grid;
+      gap: 5px;
+      margin-top: 8px;
+      padding-left: 10px;
+      border-left: 3px solid rgba(97, 199, 217, .45);
+    }
+    .route-diagnostics strong { color: var(--text); }
+    .route-diagnostic-steps { display: flex; flex-wrap: wrap; gap: 5px; }
+    .cargo-loader-scene {
+      display: grid;
+      gap: 8px;
+      margin: 10px 0;
+      padding: 11px;
+      border: 1px solid rgba(97, 199, 217, .28);
+      border-radius: 7px;
+      background:
+        radial-gradient(circle at 12% 20%, rgba(97, 199, 217, .14), transparent 24%),
+        linear-gradient(180deg, rgba(8, 13, 15, .62), rgba(5, 9, 11, .78));
+      overflow: hidden;
+    }
+    .cargo-loader-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .cargo-loader-head strong { color: var(--text); }
+    .cargo-loader-frame {
+      position: relative;
+      min-height: 98px;
+      border: 1px solid rgba(63, 85, 80, .64);
+      border-radius: 7px;
+      background:
+        linear-gradient(180deg, rgba(13, 23, 28, .88), rgba(4, 7, 9, .92)),
+        repeating-linear-gradient(90deg, rgba(97, 199, 217, .06) 0 1px, transparent 1px 34px);
+      overflow: hidden;
+    }
+    .cargo-loader-stars {
+      position: absolute;
+      inset: 0;
+      background-image:
+        radial-gradient(circle, rgba(244, 248, 240, .45) 0 1px, transparent 1px),
+        radial-gradient(circle, rgba(224, 168, 74, .38) 0 1px, transparent 1px);
+      background-position: 8px 9px, 28px 22px;
+      background-size: 58px 38px, 83px 52px;
+      opacity: .4;
+      animation: cargo-stars 8s linear infinite;
+    }
+    .cargo-loader-ship {
+      position: absolute;
+      left: 18px;
+      right: 18px;
+      bottom: 16px;
+      height: 42px;
+      filter: drop-shadow(0 10px 18px rgba(0, 0, 0, .48));
+    }
+    .cargo-loader-hull {
+      position: absolute;
+      left: 6px;
+      right: 0;
+      bottom: 0;
+      height: 22px;
+      border-radius: 4px 4px 16px 22px;
+      background: linear-gradient(90deg, rgba(62, 82, 86, .98), rgba(20, 31, 34, .98));
+      border: 1px solid rgba(127, 157, 154, .5);
+    }
+    .cargo-loader-hull::before {
+      content: "";
+      position: absolute;
+      left: -15px;
+      top: 3px;
+      width: 32px;
+      height: 16px;
+      transform: skewX(-28deg);
+      border-radius: 4px 0 0 12px;
+      background: rgba(36, 54, 58, .95);
+      border-left: 1px solid rgba(127, 157, 154, .48);
+    }
+    .cargo-loader-deck {
+      position: absolute;
+      left: 42px;
+      right: 58px;
+      bottom: 21px;
+      height: 7px;
+      border-radius: 3px;
+      background: rgba(97, 199, 217, .32);
+      box-shadow: 0 0 12px rgba(97, 199, 217, .22);
+    }
+    .cargo-loader-fill {
+      position: absolute;
+      left: 42px;
+      bottom: 30px;
+      width: calc((100% - 100px) * var(--cargo-percent, 0) / 100);
+      max-width: calc(100% - 100px);
+      min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(10, minmax(9px, 1fr));
+      gap: 3px;
+      align-items: end;
+      transition: width .45s ease;
+    }
+    .cargo-loader-crate {
+      height: 15px;
+      border: 1px solid rgba(224, 168, 74, .72);
+      border-radius: 3px;
+      background: linear-gradient(135deg, rgba(255, 211, 117, .9), rgba(161, 103, 36, .88));
+      box-shadow: inset 0 0 0 1px rgba(53, 30, 9, .24), 0 3px 8px rgba(0, 0, 0, .28);
+    }
+    .cargo-loader-scene.is-scanning .cargo-loader-crate {
+      animation: cargo-crates 1.15s ease-in-out infinite;
+      animation-delay: calc(var(--crate-index, 0) * .08s);
+    }
+    .cargo-loader-thruster {
+      position: absolute;
+      right: 4px;
+      bottom: 6px;
+      width: 22px;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(97, 199, 217, .82);
+      box-shadow: 0 0 18px rgba(97, 199, 217, .75);
+    }
+    .cargo-loader-percent {
+      position: absolute;
+      right: 12px;
+      top: 10px;
+      color: var(--amber);
+      font-weight: 900;
+      font-size: 20px;
+    }
+    .cargo-loader-bar {
+      height: 7px;
+      border-radius: 999px;
+      background: rgba(63, 85, 80, .62);
+      overflow: hidden;
+    }
+    .cargo-loader-bar span {
+      display: block;
+      width: calc(var(--cargo-percent, 0) * 1%);
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--cyan), var(--amber));
+      transition: width .45s ease;
+    }
+    @keyframes cargo-stars {
+      from { transform: translateX(0); }
+      to { transform: translateX(-58px); }
+    }
+    @keyframes cargo-crates {
+      0%, 100% { transform: translateY(0); opacity: .72; }
+      45% { transform: translateY(-5px); opacity: 1; }
+    }
     .acquisition-strategy-grid,
     .planetary-strategy-grid,
     .planetary-target-grid {
@@ -12705,7 +14439,7 @@ def _render_flight_attendant_dashboard() -> str:
     .empty, .error { color: var(--muted); padding: 18px 0; }
     .error { color: var(--red); }
     @media (prefers-reduced-motion: reduce) {
-      .progress-spinner, .progress-bar span { animation: none; }
+      .progress-spinner, .progress-bar span, .cargo-loader-stars, .cargo-loader-crate { animation: none; }
       .progress-bar span { width: 100%; opacity: .72; }
     }
     @media (max-width: 1040px) {
@@ -13127,6 +14861,24 @@ def _render_flight_attendant_dashboard() -> str:
                 <label>Pickup detour jumps
                   <input id="haul-detour-jumps" name="detour_jumps" type="number" min="0" max="5" step="1" value="1">
                 </label>
+                <label>Rank results
+                  <select id="haul-sort-by" name="sort_by">
+                    <option value="total_profit" selected>Total profit</option>
+                    <option value="profit_per_m3">ISK per m3</option>
+                    <option value="profit_per_extra_jump">ISK per extra jump</option>
+                    <option value="margin">Margin percent</option>
+                  </select>
+                </label>
+              </div>
+              <div class="row">
+                <label>Minimum ISK per m3
+                  <input id="haul-min-profit-per-m3" name="min_profit_per_m3" type="number" min="0" max="1000000000000" step="1" inputmode="decimal" value="0">
+                  <small class="input-note">Use 0 to keep every profitable known-volume result.</small>
+                </label>
+                <label>Minimum ISK per extra jump
+                  <input id="haul-min-profit-per-extra-jump" name="min_profit_per_extra_jump" type="number" min="0" max="1000000000000" step="1" inputmode="decimal" value="0">
+                  <small class="input-note">Use 0 to keep low-effort, low-profit detours visible.</small>
+                </label>
               </div>
               <div class="haul-item-filter" aria-label="Hauling item search filter">
                 <div class="haul-filter-head">
@@ -13140,6 +14892,11 @@ def _render_flight_attendant_dashboard() -> str:
                     <small>Default: the current top 80 industry materials used by blueprint profit checks.</small>
                   </span>
                 </label>
+                <label class="market-item-search">Find exact item
+                  <input id="haul-item-search" type="search" autocomplete="off" placeholder="Search bombs, ships, blueprints...">
+                  <small class="input-note">Search opens matching categories and reveals exact item checkboxes.</small>
+                </label>
+                <div id="haul-item-search-status" class="meta market-search-status">Exact item search is idle.</div>
                 <details>
                   <summary>Market categories</summary>
                   <div id="haul-market-groups" class="haul-market-groups">
@@ -13156,6 +14913,21 @@ def _render_flight_attendant_dashboard() -> str:
                 <button class="secondary" type="button" data-haul-destination="Dodixie">Dodixie</button>
                 <button class="secondary" type="button" data-haul-destination="Dihra">Dihra</button>
               </div>
+              <details class="haul-compare-controls">
+                <summary>Compare hubs</summary>
+                <div class="meta">Runs the same hauler scan settings against each checked destination. More hubs means more calculation time.</div>
+                <div id="haul-compare-hubs" class="haul-compare-grid" aria-label="Hub comparison destinations">
+                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Jita" checked><span>Jita</span></label>
+                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Amarr" checked><span>Amarr</span></label>
+                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Hek" checked><span>Hek</span></label>
+                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Rens" checked><span>Rens</span></label>
+                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Dodixie" checked><span>Dodixie</span></label>
+                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Dihra"><span>Dihra</span></label>
+                </div>
+                <button id="haul-compare" class="secondary" type="button">Compare Selected Hubs</button>
+                <div id="haul-compare-summary" class="meta">No hub comparison has run yet.</div>
+                <div id="haul-compare-results" class="decision-output"></div>
+              </details>
               <button id="haul-scan" class="ghost" type="submit">Scan Route</button>
             </form>
             <details class="output-details" open>
@@ -13339,7 +15111,7 @@ def _render_flight_attendant_dashboard() -> str:
             <div class="panel-header">
               <div>
                 <h2>Trade Profit And Loss</h2>
-                <div class="meta">Recent wallet transactions matched into visible buy lots, sell lots, and wallet fee drag.</div>
+                <div class="meta">Recent wallet transactions matched into realized results, open stock, and wallet fee drag.</div>
               </div>
               <span class="pill reserved">Wallet History</span>
             </div>
@@ -13362,13 +15134,22 @@ def _render_flight_attendant_dashboard() -> str:
                     <option value="realized">Realized trading P&amp;L</option>
                     <option value="cashflow">Wallet cashflow</option>
                   </select>
-                  <small class="input-note">Inventory mode treats buys as stock until matched to a sell.</small>
+                  <small class="input-note">Inventory mode adds estimated market value for open stock when available.</small>
                 </label>
               </div>
               <div class="row">
-                <label>Exclude from considered income
+                <label>Consideration rule
+                  <select id="trade-pnl-consideration-rule" name="consideration_rule">
+                    <option value="all" selected>Count every item</option>
+                    <option value="materials">Ignore materials and inputs</option>
+                    <option value="custom">Ignore custom list</option>
+                    <option value="materials_custom">Ignore materials plus custom list</option>
+                  </select>
+                  <small class="input-note">Changes the considered result only; real P&amp;L stays visible.</small>
+                </label>
+                <label>Custom ignore list
                   <input id="trade-pnl-exclude" name="exclude" autocomplete="off" placeholder="Pyerite, Tritanium, 35">
-                  <small class="input-note">Excluded items stay visible, but do not change the considered result.</small>
+                  <small class="input-note">Used by the custom rules; accepts item names or type IDs.</small>
                 </label>
                 <label class="checkline">
                   <input id="trade-pnl-show-matches" name="include_matches" type="checkbox">
@@ -13398,10 +15179,11 @@ def _render_flight_attendant_dashboard() -> str:
             </div>
             <ul class="charter-list">
               <li><strong>Expected:</strong> the FIFO buy-vs-sell spread before wallet fees.</li>
-              <li><strong>Actual:</strong> matched spread after wallet fees that ESI can tie to market transactions.</li>
+              <li><strong>Realized:</strong> matched spread after wallet fees that ESI can tie to visible buy and sell transactions.</li>
+              <li><strong>Inventory:</strong> realized result plus estimated Fuzzwork value change for open stock.</li>
               <li><strong>Considered:</strong> the number after your lens and exclusions are applied.</li>
               <li><strong>Unmatched:</strong> sells whose buys are outside the visible wallet-history window.</li>
-              <li><strong>Open stock:</strong> visible buys that have not been matched to a later sell yet.</li>
+              <li><strong>Open stock:</strong> visible buys that have not been matched to a later sell yet; estimates are not wallet truth.</li>
               <li><strong>Manual action:</strong> the tab never places, edits, cancels, or updates market orders.</li>
             </ul>
           </section>
@@ -13867,12 +15649,22 @@ def _render_flight_attendant_dashboard() -> str:
     const haulDetourJumps = document.querySelector("#haul-detour-jumps");
     const haulMinMargin = document.querySelector("#haul-min-margin");
     const haulMinMarginValue = document.querySelector("#haul-min-margin-value");
+    const haulSortBy = document.querySelector("#haul-sort-by");
+    const haulMinProfitPerM3 = document.querySelector("#haul-min-profit-per-m3");
+    const haulMinProfitPerExtraJump = document.querySelector("#haul-min-profit-per-extra-jump");
     const haulCommonMaterials = document.querySelector("#haul-common-materials");
+    const haulItemSearch = document.querySelector("#haul-item-search");
+    const haulItemSearchStatus = document.querySelector("#haul-item-search-status");
     const haulMarketGroups = document.querySelector("#haul-market-groups");
     const haulMarketGroupInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-group]"));
     const haulMarketTypeInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-type]"));
     const haulItemScopeSummary = document.querySelector("#haul-item-scope-summary");
     const haulHubButtons = document.querySelector("#haul-hub-buttons");
+    const haulCompareHubs = document.querySelector("#haul-compare-hubs");
+    const haulCompareInputs = Array.from(haulCompareHubs.querySelectorAll("input[data-haul-compare-destination]"));
+    const haulCompareButton = document.querySelector("#haul-compare");
+    const haulCompareSummary = document.querySelector("#haul-compare-summary");
+    const haulCompareResults = document.querySelector("#haul-compare-results");
     const haulScanButton = document.querySelector("#haul-scan");
     const haulRouteSummary = document.querySelector("#haul-route-summary");
     const haulRoutePath = document.querySelector("#haul-route-path");
@@ -13906,6 +15698,7 @@ def _render_flight_attendant_dashboard() -> str:
     const tradePnlForm = document.querySelector("#trade-pnl-form");
     const tradePnlWindowHours = document.querySelector("#trade-pnl-window-hours");
     const tradePnlLens = document.querySelector("#trade-pnl-lens");
+    const tradePnlConsiderationRule = document.querySelector("#trade-pnl-consideration-rule");
     const tradePnlExclude = document.querySelector("#trade-pnl-exclude");
     const tradePnlShowMatches = document.querySelector("#trade-pnl-show-matches");
     const tradePnlAnalyzeButton = document.querySelector("#trade-pnl-analyze");
@@ -13968,9 +15761,13 @@ def _render_flight_attendant_dashboard() -> str:
     const haulMinMarginKey = "eve-flight-haul-min-margin-v1";
     const haulRoutePreferenceKey = "eve-flight-haul-route-preference-v1";
     const haulAvoidPodKillsKey = "eve-flight-haul-avoid-pod-kills-v1";
+    const haulSortByKey = "eve-flight-haul-sort-by-v1";
+    const haulMinProfitPerM3Key = "eve-flight-haul-min-profit-per-m3-v1";
+    const haulMinProfitPerExtraJumpKey = "eve-flight-haul-min-profit-per-extra-jump-v1";
     const haulCommonMaterialsKey = "eve-flight-haul-common-materials-v1";
     const haulMarketGroupIdsKey = "eve-flight-haul-market-group-ids-v1";
     const haulMarketTypeIdsKey = "eve-flight-haul-market-type-ids-v1";
+    const haulCompareDestinationsKey = "eve-flight-haul-compare-destinations-v1";
     const acqOriginKey = "eve-flight-acq-origin-v1";
     const acqDestinationKey = "eve-flight-acq-destination-v1";
     const acqBudgetKey = "eve-flight-acq-budget-v1";
@@ -13983,6 +15780,7 @@ def _render_flight_attendant_dashboard() -> str:
     const acqMarketTypeIdsKey = "eve-flight-acq-market-type-ids-v1";
     const tradePnlWindowHoursKey = "eve-flight-trade-pnl-window-hours-v1";
     const tradePnlLensKey = "eve-flight-trade-pnl-lens-v1";
+    const tradePnlConsiderationRuleKey = "eve-flight-trade-pnl-consideration-rule-v1";
     const tradePnlExcludeKey = "eve-flight-trade-pnl-exclude-v1";
     const tradePnlShowMatchesKey = "eve-flight-trade-pnl-show-matches-v1";
     const planetaryHubKey = "eve-flight-planetary-hub-v1";
@@ -14246,6 +16044,8 @@ def _render_flight_attendant_dashboard() -> str:
       if (!itemPanel) return true;
       itemPanel.querySelectorAll("[data-market-extra-item]").forEach((item) => {
         item.hidden = false;
+        item.dataset.marketRevealed = "1";
+        delete item.dataset.marketSearchRevealed;
       });
       button.hidden = true;
       const status = itemPanel.querySelector("[data-market-showing-status]");
@@ -14254,6 +16054,55 @@ def _render_flight_attendant_dashboard() -> str:
         status.textContent = `Showing all ${formatNumber(total)} item${total === 1 ? "" : "s"}.`;
       }
       return true;
+    }
+
+    function normalizeMarketItemSearch(value) {
+      return String(value || "").trim().toLocaleLowerCase();
+    }
+
+    function applyMarketItemSearch(container, queryValue, statusEl) {
+      const query = normalizeMarketItemSearch(queryValue);
+      const rows = Array.from(container.querySelectorAll(".market-group-item-list li"));
+      let matchCount = 0;
+      rows.forEach((row) => {
+        const match = !query || normalizeMarketItemSearch(row.textContent).includes(query);
+        const isPreviewExtra = row.hasAttribute("data-market-extra-item");
+        const isRevealed = row.dataset.marketRevealed === "1";
+        if (query) {
+          row.hidden = !match;
+          if (match) {
+            row.dataset.marketSearchRevealed = "1";
+            matchCount += 1;
+          } else {
+            delete row.dataset.marketSearchRevealed;
+          }
+        } else {
+          delete row.dataset.marketSearchRevealed;
+          row.hidden = isPreviewExtra && !isRevealed;
+        }
+      });
+      Array.from(container.querySelectorAll("[data-market-group-items]")).forEach((details) => {
+        const visibleRows = Array.from(details.querySelectorAll(".market-group-item-list li")).filter((row) => !row.hidden);
+        if (query && visibleRows.length) {
+          details.open = true;
+          const subgroup = details.closest("details.market-subgroup");
+          const rootGroup = details.closest("details.haul-market-group");
+          if (subgroup) subgroup.open = true;
+          if (rootGroup) rootGroup.open = true;
+        }
+        const status = details.querySelector("[data-market-showing-status]");
+        if (status && query) {
+          status.textContent = `${formatNumber(visibleRows.length)} search match${visibleRows.length === 1 ? "" : "es"} visible.`;
+        } else if (status) {
+          const totalRows = details.querySelectorAll(".market-group-item-list li").length;
+          status.textContent = `Showing ${formatNumber(visibleRows.length)} of ${formatNumber(totalRows)} item${totalRows === 1 ? "" : "s"}.`;
+        }
+      });
+      if (statusEl) {
+        statusEl.textContent = query
+          ? `${formatNumber(matchCount)} exact item match${matchCount === 1 ? "" : "es"} for "${queryValue}".`
+          : "Exact item search is idle.";
+      }
     }
 
     function showTab(tabName) {
@@ -14372,8 +16221,18 @@ def _render_flight_attendant_dashboard() -> str:
       return Number(value || 0).toLocaleString();
     }
 
+    function formatOptionalNumber(value) {
+      if (value == null) return "unknown";
+      return Number(value || 0).toLocaleString();
+    }
+
     function formatIsk(value) {
       return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2})} ISK`;
+    }
+
+    function formatOptionalIsk(value) {
+      if (value == null) return "unknown";
+      return formatIsk(value);
     }
 
     function formatSignedIsk(value) {
@@ -14495,6 +16354,12 @@ def _render_flight_attendant_dashboard() -> str:
       return Math.max(0, Math.min(500, margin));
     }
 
+    function clampHaulEfficiencyFloor(value) {
+      const floor = Number(value);
+      if (!Number.isFinite(floor)) return 0;
+      return Math.max(0, Math.min(1000000000000, floor));
+    }
+
     function normalizeHaulRoutePreference(value) {
       const preference = String(value || "").trim();
       if (["shorter", "safer", "less_secure"].includes(preference)) return preference;
@@ -14502,6 +16367,29 @@ def _render_flight_attendant_dashboard() -> str:
       if (preference === "secure") return "safer";
       if (preference === "insecure" || preference === "lesssecure") return "less_secure";
       return "safer";
+    }
+
+    function normalizeHaulSortBy(value) {
+      const sortBy = String(value || "").trim();
+      if (["total_profit", "profit_per_m3", "profit_per_extra_jump", "margin"].includes(sortBy)) return sortBy;
+      if (sortBy === "m3" || sortBy === "isk_per_m3") return "profit_per_m3";
+      if (sortBy === "extra_jump" || sortBy === "isk_per_extra_jump") return "profit_per_extra_jump";
+      return "total_profit";
+    }
+
+    function haulSortLabel(value) {
+      const sortBy = normalizeHaulSortBy(value);
+      if (sortBy === "profit_per_m3") return "ISK per m3";
+      if (sortBy === "profit_per_extra_jump") return "ISK per extra jump";
+      if (sortBy === "margin") return "margin percent";
+      return "total profit";
+    }
+
+    function haulEfficiencyFilterLabel(settings) {
+      const parts = [];
+      if (Number(settings.minProfitPerM3 || 0) > 0) parts.push(`${formatIsk(settings.minProfitPerM3)} per m3`);
+      if (Number(settings.minProfitPerExtraJump || 0) > 0) parts.push(`${formatIsk(settings.minProfitPerExtraJump)} per extra jump`);
+      return parts.length ? parts.join("; ") : "no efficiency floor";
     }
 
     function readStoredHaulMarketGroupIds() {
@@ -14536,6 +16424,37 @@ def _render_flight_attendant_dashboard() -> str:
         .filter((input) => input.checked)
         .map((input) => Number(input.dataset.haulMarketType))
         .filter((value) => Number.isFinite(value) && value > 0);
+    }
+
+    function readStoredHaulCompareDestinations() {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(haulCompareDestinationsKey) || "null");
+        if (!Array.isArray(parsed)) return null;
+        return parsed.map((value) => String(value || "").trim()).filter(Boolean);
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function readHaulCompareDestinationsFromInputs() {
+      return haulCompareInputs
+        .filter((input) => input.checked)
+        .map((input) => String(input.dataset.haulCompareDestination || "").trim())
+        .filter(Boolean);
+    }
+
+    function applyHaulCompareDestinations(destinations) {
+      if (!Array.isArray(destinations)) return;
+      const selected = new Set(destinations.map((value) => String(value || "").trim().toLocaleLowerCase()).filter(Boolean));
+      haulCompareInputs.forEach((input) => {
+        input.checked = selected.has(String(input.dataset.haulCompareDestination || "").trim().toLocaleLowerCase());
+      });
+    }
+
+    function writeHaulCompareDestinations(destinations = null) {
+      const cleanDestinations = Array.isArray(destinations) ? destinations : readHaulCompareDestinationsFromInputs();
+      window.localStorage.setItem(haulCompareDestinationsKey, JSON.stringify(cleanDestinations));
+      return cleanDestinations;
     }
 
     function applyHaulMarketGroupIds(groupIds) {
@@ -14588,6 +16507,9 @@ def _render_flight_attendant_dashboard() -> str:
       const detour = Number(window.localStorage.getItem(haulDetourKey) || haulDetourJumps.value || 1);
       const minMargin = Number(window.localStorage.getItem(haulMinMarginKey) || haulMinMargin.value || 10);
       const routePreference = normalizeHaulRoutePreference(window.localStorage.getItem(haulRoutePreferenceKey) || haulRoutePreference.value || "safer");
+      const sortBy = normalizeHaulSortBy(window.localStorage.getItem(haulSortByKey) || haulSortBy.value || "total_profit");
+      const minProfitPerM3 = Number(window.localStorage.getItem(haulMinProfitPerM3Key) || haulMinProfitPerM3.value || 0);
+      const minProfitPerExtraJump = Number(window.localStorage.getItem(haulMinProfitPerExtraJumpKey) || haulMinProfitPerExtraJump.value || 0);
       const avoidStored = window.localStorage.getItem(haulAvoidPodKillsKey);
       const commonStored = window.localStorage.getItem(haulCommonMaterialsKey);
       return {
@@ -14598,6 +16520,9 @@ def _render_flight_attendant_dashboard() -> str:
         detourJumps: Math.max(0, Math.min(5, Math.round(Number.isFinite(detour) ? detour : 1))),
         minDetourMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
         routePreference,
+        sortBy,
+        minProfitPerM3: clampHaulEfficiencyFloor(Number.isFinite(minProfitPerM3) ? minProfitPerM3 : 0),
+        minProfitPerExtraJump: clampHaulEfficiencyFloor(Number.isFinite(minProfitPerExtraJump) ? minProfitPerExtraJump : 0),
         avoidRecentPodKills: avoidStored == null ? haulAvoidPodKills.checked : avoidStored !== "0",
         includeCommonMaterials: commonStored == null ? haulCommonMaterials.checked : commonStored !== "0",
         marketGroupIds: readStoredHaulMarketGroupIds(),
@@ -14613,6 +16538,9 @@ def _render_flight_attendant_dashboard() -> str:
       const detourJumps = Math.max(0, Math.min(5, Math.round(Number(settings.detourJumps) || 0)));
       const minDetourMarginPercent = clampHaulMinMargin(settings.minDetourMarginPercent);
       const routePreference = normalizeHaulRoutePreference(settings.routePreference || haulRoutePreference.value || "safer");
+      const sortBy = normalizeHaulSortBy(settings.sortBy || haulSortBy.value || "total_profit");
+      const minProfitPerM3 = clampHaulEfficiencyFloor(settings.minProfitPerM3 == null ? haulMinProfitPerM3.value : settings.minProfitPerM3);
+      const minProfitPerExtraJump = clampHaulEfficiencyFloor(settings.minProfitPerExtraJump == null ? haulMinProfitPerExtraJump.value : settings.minProfitPerExtraJump);
       const avoidRecentPodKills = settings.avoidRecentPodKills == null ? haulAvoidPodKills.checked : Boolean(settings.avoidRecentPodKills);
       const includeCommonMaterials = settings.includeCommonMaterials == null ? haulCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
       const marketGroupIds = Array.isArray(settings.marketGroupIds) ? settings.marketGroupIds : readHaulMarketGroupIdsFromInputs();
@@ -14624,6 +16552,9 @@ def _render_flight_attendant_dashboard() -> str:
       haulDetourJumps.value = String(detourJumps);
       haulMinMargin.value = String(minDetourMarginPercent);
       haulRoutePreference.value = routePreference;
+      haulSortBy.value = sortBy;
+      haulMinProfitPerM3.value = String(minProfitPerM3);
+      haulMinProfitPerExtraJump.value = String(minProfitPerExtraJump);
       haulAvoidPodKills.checked = avoidRecentPodKills;
       haulCommonMaterials.checked = includeCommonMaterials;
       applyHaulMarketGroupIds(marketGroupIds);
@@ -14637,11 +16568,14 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(haulDetourKey, String(detourJumps));
       window.localStorage.setItem(haulMinMarginKey, String(minDetourMarginPercent));
       window.localStorage.setItem(haulRoutePreferenceKey, routePreference);
+      window.localStorage.setItem(haulSortByKey, sortBy);
+      window.localStorage.setItem(haulMinProfitPerM3Key, String(minProfitPerM3));
+      window.localStorage.setItem(haulMinProfitPerExtraJumpKey, String(minProfitPerExtraJump));
       window.localStorage.setItem(haulAvoidPodKillsKey, avoidRecentPodKills ? "1" : "0");
       window.localStorage.setItem(haulCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
       window.localStorage.setItem(haulMarketGroupIdsKey, JSON.stringify(marketGroupIds));
       window.localStorage.setItem(haulMarketTypeIdsKey, JSON.stringify(marketTypeIds));
-      return {originName, destination, cargoM3, purchaseBudgetIsk, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds};
+      return {originName, destination, cargoM3, purchaseBudgetIsk, detourJumps, minDetourMarginPercent, routePreference, sortBy, minProfitPerM3, minProfitPerExtraJump, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds};
     }
 
     function clampAcquisitionBudget(value) {
@@ -15415,12 +17349,13 @@ def _render_flight_attendant_dashboard() -> str:
     function renderHaulProgressSummary(settings, routeRule, podRule) {
       const elapsed = formatElapsedDuration(currentHaulElapsedSeconds());
       const itemScope = haulItemScopeLabel(settings);
+      const efficiencyFilter = haulEfficiencyFilterLabel(settings);
       haulOpportunitySummary.innerHTML = `
         <div class="progress-status" aria-live="polite">
           <span class="progress-spinner" aria-hidden="true"></span>
           <div class="progress-copy">
             <strong>Comparing corridor sell orders and destination buy orders</strong>
-            <span><strong>Elapsed ${escapeHtml(elapsed)}</strong> &middot; ${escapeHtml(itemScope)}; route ${escapeHtml(haulRouteLabel(settings))}; cargo ${formatVolume(settings.cargoM3)}; budget ${formatIsk(settings.purchaseBudgetIsk)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
+            <span><strong>Elapsed ${escapeHtml(elapsed)}</strong> &middot; ${escapeHtml(itemScope)}; route ${escapeHtml(haulRouteLabel(settings))}; cargo ${formatVolume(settings.cargoM3)}; budget ${formatIsk(settings.purchaseBudgetIsk)}; ${escapeHtml(routeRule)}; ${escapeHtml(podRule)}; ranked by ${escapeHtml(haulSortLabel(settings.sortBy))}; ${escapeHtml(efficiencyFilter)}; detour margin ${formatNumber(settings.minDetourMarginPercent)}%.</span>
           </div>
         </div>
         <div class="progress-bar" aria-hidden="true"><span></span></div>
@@ -15446,6 +17381,9 @@ def _render_flight_attendant_dashboard() -> str:
         avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
         minDetourMarginPercent: haulMinMargin.value,
+        sortBy: haulSortBy.value,
+        minProfitPerM3: haulMinProfitPerM3.value,
+        minProfitPerExtraJump: haulMinProfitPerExtraJump.value,
         includeCommonMaterials: haulCommonMaterials.checked,
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
@@ -15457,13 +17395,14 @@ def _render_flight_attendant_dashboard() -> str:
       const routeRule = settings.routePreference === "shorter" ? "Prefer shorter" : settings.routePreference === "less_secure" ? "Prefer less secure" : "Prefer safer";
       const podRule = settings.avoidRecentPodKills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
       const itemScope = haulItemScopeLabel(settings);
-      haulRouteSummary.textContent = `Scanning ${routeRule.toLowerCase()} route from ${haulStartLabel(settings)} to ${settings.destination}, ${podRule}, with ${formatNumber(settings.detourJumps)} detour jumps and ${itemScope}...`;
+      const efficiencyFilter = haulEfficiencyFilterLabel(settings);
+      haulRouteSummary.textContent = `Scanning ${routeRule.toLowerCase()} route from ${haulStartLabel(settings)} to ${settings.destination}, ${podRule}, ranked by ${haulSortLabel(settings.sortBy)}, ${efficiencyFilter}, with ${formatNumber(settings.detourJumps)} detour jumps and ${itemScope}...`;
       haulRoutePath.textContent = "";
       haulProgressLog.hidden = false;
       haulProgressLog.innerHTML = "";
       resetQuickbarList(haulQuickbarPanel, haulQuickbarStatus, "hauling");
       startHaulProgressTimer(settings, routeRule, podRule);
-      haulLoadPlan.textContent = "";
+      haulLoadPlan.innerHTML = renderHaulCargoLoader({cargo_capacity_m3: settings.cargoM3}, {scanning: true, cargoM3: settings.cargoM3});
       haulOpportunityTop.innerHTML = `<div class="decision-empty">Route opportunities will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
         origin_name: settings.originName,
@@ -15475,6 +17414,9 @@ def _render_flight_attendant_dashboard() -> str:
         common_materials: settings.includeCommonMaterials ? "1" : "0",
         market_group_ids: settings.marketGroupIds.join(","),
         market_type_ids: settings.marketTypeIds.join(","),
+        sort_by: settings.sortBy,
+        min_profit_per_m3: String(settings.minProfitPerM3),
+        min_profit_per_extra_jump: String(settings.minProfitPerExtraJump),
         detour_jumps: String(settings.detourJumps),
         min_detour_margin_percent: String(settings.minDetourMarginPercent),
       });
@@ -15566,11 +17508,17 @@ def _render_flight_attendant_dashboard() -> str:
       const selectedTypes = (itemScope.selected_market_types || []).map((item) => item.name).filter(Boolean);
       const typeText = selectedTypes.length ? ` Exact items: ${selectedTypes.slice(0, 4).map((name) => escapeHtml(name)).join(", ")}${selectedTypes.length > 4 ? `, +${formatNumber(selectedTypes.length - 4)} more` : ""}.` : "";
       const commonText = itemScope.include_common_materials ? "Common materials included." : "Common materials not included.";
+      const sortLabel = hauling.sort_label || haulSortLabel(hauling.sort_by || "total_profit");
+      const efficiencyFilters = [];
+      if (Number(hauling.min_profit_per_m3 || 0) > 0) efficiencyFilters.push(`${formatIsk(hauling.min_profit_per_m3)} per m3`);
+      if (Number(hauling.min_profit_per_extra_jump || 0) > 0) efficiencyFilters.push(`${formatIsk(hauling.min_profit_per_extra_jump)} per extra jump`);
+      const efficiencyText = efficiencyFilters.length ? ` Filters: ${efficiencyFilters.join("; ")}.` : " No efficiency floors.";
       const routeLabel = route.route_preference_label || "Safer";
       const avoidLabel = route.avoid_recent_pod_kills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
       const sourceLabel = route.route_source === "local-shortest-fallback" ? "local fallback" : "ESI route planner";
       const originSourceLabel = route.origin_source === "manual" ? "manual start override" : "live ESI start";
       const routeWarning = route.route_warning ? `<div class="meta">${escapeHtml(route.route_warning)}</div>` : "";
+      const routeDiagnostics = renderHaulRouteDiagnostics(route.diagnostics || {});
       const scanDuration = elapsedSeconds == null ? "" : `<div class="meta">Scan duration: ${escapeHtml(formatElapsedDuration(elapsedSeconds))}.</div>`;
       haulRouteSummary.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> to
@@ -15580,6 +17528,7 @@ def _render_flight_attendant_dashboard() -> str:
         <div class="meta">Start: ${escapeHtml(originSourceLabel)}. ${escapeHtml(routeLabel)} route from ${escapeHtml(sourceLabel)}; ${escapeHtml(avoidLabel)}. Avoided ${formatNumber(route.avoided_pod_kill_system_count)} recent pod-kill systems; ${formatNumber(route.route_pod_kill_system_count)} remain on this path.</div>
         ${scanDuration}
         ${routeWarning}
+        ${routeDiagnostics}
       `;
       haulRoutePath.innerHTML = renderHaulRoutePath(route.systems || []);
       haulLoadPlan.innerHTML = renderHaulLoadPlan(hauling.load_plan || {});
@@ -15599,6 +17548,8 @@ def _render_flight_attendant_dashboard() -> str:
           pickup regions; detour threshold ${formatNumber(hauling.min_detour_margin_percent)}%.${escapeHtml(materialLimit + regionLimit)}
         </div>
         <div class="meta">${escapeHtml(commonText)}${groupText}${typeText}</div>
+        <div class="meta">Ranked by ${escapeHtml(sortLabel)}.${escapeHtml(efficiencyText)} ${formatNumber(hauling.efficiency_filter_rejected_count)} profitable candidate${Number(hauling.efficiency_filter_rejected_count || 0) === 1 ? "" : "s"} were hidden by efficiency filters.</div>
+        <div class="meta">${formatNumber(hauling.no_destination_buy_order_count)} item type${Number(hauling.no_destination_buy_order_count || 0) === 1 ? "" : "s"} had no reachable destination buy orders; skipped ${formatNumber(hauling.destination_demand_gated_count)} pickup region sell-order lookup${Number(hauling.destination_demand_gated_count || 0) === 1 ? "" : "s"}.</div>
         <div class="meta">Purchase budget ${formatIsk(hauling.purchase_budget_isk)} caps pickup cost before cargo and history checks.</div>
         <div class="meta">${formatNumber(hauling.detour_margin_rejected_count)} detour candidates were below the selected profit threshold.</div>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on destination buy-order sales.</div>
@@ -15614,6 +17565,58 @@ def _render_flight_attendant_dashboard() -> str:
       const visible = systems.slice(0, 18).map((system) => escapeHtml(system.name)).join(" &rarr; ");
       const hiddenCount = Math.max(0, systems.length - 18);
       return hiddenCount ? `${visible} &rarr; ${formatNumber(hiddenCount)} more` : visible;
+    }
+
+    function renderHaulRouteDiagnostics(diagnostics) {
+      if (!diagnostics || !diagnostics.summary) return "";
+      const steps = (diagnostics.steps || [])
+        .slice(0, 10)
+        .map((step) => `<span class="pill reserved">${escapeHtml(step)}</span>`)
+        .join("");
+      return `
+        <div class="route-diagnostics">
+          <strong>Route diagnostics</strong>
+          <div class="meta">${escapeHtml(diagnostics.summary)}</div>
+          <div class="route-diagnostic-steps">${steps}</div>
+        </div>
+      `;
+    }
+
+    function renderHaulCargoLoader(plan = {}, options = {}) {
+      const scanning = Boolean(options.scanning);
+      const rawPercent = scanning ? 38 : Number(plan.cargo_percent || 0);
+      const cargoPercent = Math.max(0, Math.min(100, Number.isFinite(rawPercent) ? rawPercent : 0));
+      const capacity = plan.cargo_capacity_m3 == null ? options.cargoM3 : plan.cargo_capacity_m3;
+      const usedCargo = scanning ? 0 : plan.used_cargo_m3;
+      const crateCount = scanning ? 8 : Math.max(0, Math.min(10, Math.ceil(cargoPercent / 10)));
+      const crates = Array.from({length: crateCount}, (_item, index) => (
+        `<span class="cargo-loader-crate" style="--crate-index: ${index}"></span>`
+      )).join("");
+      const label = scanning ? "Loading route cargo" : "Flatbed cargo load";
+      const percentLabel = scanning ? "Scanning" : formatPercent(cargoPercent);
+      const detail = scanning
+        ? `Capacity target ${formatVolume(capacity)}. Final fill updates after order depth is matched.`
+        : `${formatVolume(usedCargo)} loaded of ${formatVolume(capacity)} capacity.`;
+      return `
+        <div class="cargo-loader-scene${scanning ? " is-scanning" : ""}" style="--cargo-percent: ${cargoPercent}">
+          <div class="cargo-loader-head">
+            <strong>${escapeHtml(label)}</strong>
+            <span class="pill reserved">${escapeHtml(percentLabel)}</span>
+          </div>
+          <div class="cargo-loader-frame" aria-label="Cargo capacity visualization">
+            <div class="cargo-loader-stars" aria-hidden="true"></div>
+            <div class="cargo-loader-percent">${escapeHtml(percentLabel)}</div>
+            <div class="cargo-loader-ship" aria-hidden="true">
+              <div class="cargo-loader-fill">${crates}</div>
+              <div class="cargo-loader-deck"></div>
+              <div class="cargo-loader-hull"></div>
+              <div class="cargo-loader-thruster"></div>
+            </div>
+          </div>
+          <div class="cargo-loader-bar" aria-hidden="true"><span></span></div>
+          <div class="meta">${escapeHtml(detail)}</div>
+        </div>
+      `;
     }
 
     function renderHaulLoadPlan(plan) {
@@ -15662,6 +17665,7 @@ def _render_flight_attendant_dashboard() -> str:
             </div>
             <span class="pill decision-build">${formatSignedIsk(plan.net_profit)}</span>
           </div>
+          ${renderHaulCargoLoader(plan)}
           <div class="profit-stats">
             <div class="profit-stat"><span>Cargo Used</span><b>${formatVolume(plan.used_cargo_m3)}</b></div>
             <div class="profit-stat"><span>Cargo Fill</span><b>${formatPercent(plan.cargo_percent)}</b></div>
@@ -15971,6 +17975,12 @@ def _render_flight_attendant_dashboard() -> str:
       return ["inventory", "realized", "cashflow"].includes(lens) ? lens : "inventory";
     }
 
+    function normalizeTradePnlConsiderationRule(value, fallbackExclude = "") {
+      const rule = String(value || "").trim();
+      if (["all", "materials", "custom", "materials_custom"].includes(rule)) return rule;
+      return String(fallbackExclude || "").trim() ? "custom" : "all";
+    }
+
     function tradePnlWindowLabel(hours) {
       const cleanHours = clampTradePnlWindowHours(hours);
       if (cleanHours < 24) return cleanHours === 1 ? "1 hour" : `${formatNumber(cleanHours)} hours`;
@@ -15980,10 +17990,15 @@ def _render_flight_attendant_dashboard() -> str:
 
     function readTradePnlSettings() {
       const showStored = window.localStorage.getItem(tradePnlShowMatchesKey);
+      const storedExclude = String(window.localStorage.getItem(tradePnlExcludeKey) || tradePnlExclude.value || "").trim();
       return {
         windowHours: clampTradePnlWindowHours(window.localStorage.getItem(tradePnlWindowHoursKey) || tradePnlWindowHours.value || 720),
         lens: normalizeTradePnlLens(window.localStorage.getItem(tradePnlLensKey) || tradePnlLens.value || "inventory"),
-        exclude: String(window.localStorage.getItem(tradePnlExcludeKey) || tradePnlExclude.value || "").trim(),
+        considerationRule: normalizeTradePnlConsiderationRule(
+          window.localStorage.getItem(tradePnlConsiderationRuleKey) || tradePnlConsiderationRule.value,
+          storedExclude,
+        ),
+        exclude: storedExclude,
         showMatches: showStored == null ? tradePnlShowMatches.checked : showStored !== "0",
       };
     }
@@ -15992,16 +18007,19 @@ def _render_flight_attendant_dashboard() -> str:
       const windowHours = clampTradePnlWindowHours(settings.windowHours);
       const lens = normalizeTradePnlLens(settings.lens);
       const exclude = String(settings.exclude || "").trim();
+      const considerationRule = normalizeTradePnlConsiderationRule(settings.considerationRule, exclude);
       const showMatches = Boolean(settings.showMatches);
       tradePnlWindowHours.value = String(windowHours);
       tradePnlLens.value = lens;
+      tradePnlConsiderationRule.value = considerationRule;
       tradePnlExclude.value = exclude;
       tradePnlShowMatches.checked = showMatches;
       window.localStorage.setItem(tradePnlWindowHoursKey, String(windowHours));
       window.localStorage.setItem(tradePnlLensKey, lens);
+      window.localStorage.setItem(tradePnlConsiderationRuleKey, considerationRule);
       window.localStorage.setItem(tradePnlExcludeKey, exclude);
       window.localStorage.setItem(tradePnlShowMatchesKey, showMatches ? "1" : "0");
-      return {windowHours, lens, exclude, showMatches};
+      return {windowHours, lens, considerationRule, exclude, showMatches};
     }
 
     function resetTradePnl(message) {
@@ -16015,6 +18033,7 @@ def _render_flight_attendant_dashboard() -> str:
       const settings = writeTradePnlSettings({
         windowHours: tradePnlWindowHours.value,
         lens: tradePnlLens.value,
+        considerationRule: tradePnlConsiderationRule.value,
         exclude: tradePnlExclude.value,
         showMatches: tradePnlShowMatches.checked,
       });
@@ -16025,6 +18044,7 @@ def _render_flight_attendant_dashboard() -> str:
       const params = new URLSearchParams({
         window_hours: String(settings.windowHours),
         lens: settings.lens,
+        consideration_rule: settings.considerationRule,
         exclude: settings.exclude,
         include_matches: settings.showMatches ? "1" : "0",
       });
@@ -16045,18 +18065,23 @@ def _render_flight_attendant_dashboard() -> str:
     function renderTradePnl(data) {
       const pnl = data.trade_pnl || {};
       const totals = pnl.totals || {};
+      const valuation = pnl.market_valuation || {};
       const itemLimit = pnl.items_truncated ? ` Showing largest ${formatNumber(pnl.item_limit)} of ${formatNumber(pnl.item_count)} item types.` : "";
       const excludedText = totals.excluded_item_count
-        ? ` Excluded ${formatNumber(totals.excluded_item_count)} item types; raw excluded actual ${formatSignedIsk(totals.excluded_actual_profit_isk)}.`
+        ? ` Ignored ${formatNumber(totals.excluded_item_count)} item types for considered result; ignored actual ${formatSignedIsk(totals.excluded_actual_profit_isk)}.`
         : "";
       tradePnlSummary.innerHTML = `
         <div class="profit-stats">
           <div class="profit-stat"><span>Considered Result</span><b>${formatSignedIsk(totals.considered_result_isk)}</b></div>
-          <div class="profit-stat"><span>All Actual P&L</span><b>${formatSignedIsk(totals.actual_profit_isk)}</b></div>
+          <div class="profit-stat"><span>Realized P&L</span><b>${formatSignedIsk(totals.actual_profit_isk)}</b></div>
+          <div class="profit-stat"><span>Inventory Result</span><b>${formatSignedIsk(totals.inventory_result_isk)}</b></div>
+          <div class="profit-stat"><span>Plan Delta</span><b>${formatSignedIsk(totals.actual_vs_plan_profit_isk)}</b></div>
           <div class="profit-stat"><span>Fee Gap</span><b>${formatSignedIsk(totals.market_fee_isk)}</b></div>
           <div class="profit-stat"><span>Open Stock Cost</span><b>${formatIsk(totals.open_inventory_cost_isk)}</b></div>
+          <div class="profit-stat"><span>Open Market Value</span><b>${formatOptionalIsk(totals.open_inventory_market_value_isk)}</b></div>
+          <div class="profit-stat"><span>Open Unrealized</span><b>${formatSignedIsk(totals.open_inventory_unrealized_isk)}</b></div>
         </div>
-        <div class="meta">${escapeHtml(pnl.accounting_lens_label || "Inventory Mode")} across ${escapeHtml(pnl.window_label || `${formatNumber(pnl.days)} days`)}. ${formatNumber(pnl.transaction_count)} market transactions and ${formatNumber(pnl.journal_entry_count)} wallet journal rows.${escapeHtml(itemLimit + excludedText)}</div>
+        <div class="meta">${escapeHtml(pnl.accounting_lens_label || "Inventory Mode")} with ${escapeHtml(pnl.consideration_rule_label || "Count every item")} across ${escapeHtml(pnl.window_label || `${formatNumber(pnl.days)} days`)}. ${formatNumber(pnl.transaction_count)} market transactions and ${formatNumber(pnl.journal_entry_count)} wallet journal rows.${escapeHtml(itemLimit + excludedText)}</div>
         <div class="meta">${escapeHtml(pnl.expectation_source || "Expected spread is before wallet fees.")}</div>
         <div class="meta">${escapeHtml(pnl.limits_note || "Unmatched sells can mean the buy happened before the visible ESI history window.")}</div>
       `;
@@ -16064,10 +18089,32 @@ def _render_flight_attendant_dashboard() -> str:
         Wallet-level net cashflow ${formatSignedIsk(totals.net_cashflow_isk)}.
         Unmatched sell revenue ${formatIsk(totals.unmatched_sell_revenue_isk)} across ${formatNumber(totals.unmatched_sell_quantity)} units.
         Allocated fees ${formatSignedIsk(totals.allocated_fee_isk)}; unallocated fees ${formatSignedIsk(totals.unallocated_fee_isk)}.
-        Loss-making matched item types ${formatNumber(totals.loss_item_count)}.
+        Loss-making matched item types ${formatNumber(totals.loss_item_count)}. Older ledger buys matched ${formatNumber(totals.historical_matched_quantity)} units from ${formatNumber(totals.historical_transaction_count)} replayed local rows.
+        ${renderTradePnlValuationNote(valuation, totals)}
+        ${renderTradePnlPlanNote(totals)}
         ${renderTradeFeeRefs(pnl.fee_ref_counts || {})}
       `;
       tradePnlResults.innerHTML = renderTradePnlItems(pnl.items || []);
+    }
+
+    function renderTradePnlValuationNote(valuation, totals) {
+      const status = valuation.status || "not-requested";
+      if (status === "not-requested") return "Market valuation was not requested for this lens.";
+      if (status === "no-open-stock") return "No open stock needed market valuation.";
+      if (status === "unavailable") return `Market valuation unavailable: ${escapeHtml(valuation.error || "Fuzzwork did not return usable data.")}`;
+      const location = valuation.location || "Jita 4-4";
+      const valued = formatNumber(valuation.valued_open_item_count || totals.market_valued_open_item_count || 0);
+      const missing = formatNumber(valuation.unvalued_open_item_count || totals.market_unvalued_open_item_count || 0);
+      if (status === "partial") return `Market valuation ${escapeHtml(location)}: ${valued} open item types valued, ${missing} missing.`;
+      if (status === "missing") return `Market valuation ${escapeHtml(location)}: no open item types had usable Fuzzwork pricing.`;
+      return `Market valuation ${escapeHtml(location)}: ${valued} open item types valued from Fuzzwork aggregates.`;
+    }
+
+    function renderTradePnlPlanNote(totals) {
+      if (Number(totals.planned_item_count || 0) <= 0) {
+        return "No saved Acquisition Planner expectations matched these item types.";
+      }
+      return `Planner comparison: ${formatNumber(totals.planned_item_count)} planned item types, ${formatNumber(totals.planned_matched_item_count)} matched to sells; actual versus plan ${formatSignedIsk(totals.actual_vs_plan_profit_isk)}.`;
     }
 
     function renderTradeFeeRefs(counts) {
@@ -16106,19 +18153,24 @@ def _render_flight_attendant_dashboard() -> str:
         const statusClass = tradePnlStatusClass(status);
         const excludedNote = item.excluded ? `<div class="meta">${escapeHtml(item.excluded_reason || "Excluded from considered result.")}</div>` : "";
         const matches = item.matches || [];
+        const badges = renderTradePnlBadges(item.source_badges || []);
+        const valuationDetail = renderTradePnlItemValuationDetail(item);
+        const plan = item.plan_reconciliation || {};
+        const planLede = plan.available ? `; plan ${escapeHtml(plan.status_label || "Plan check")} ${formatSignedIsk(plan.actual_vs_expected_profit_isk)}` : "";
         return `
           <div class="decision-row">
             <div class="decision-head">
               <strong>${escapeHtml(item.item_name)}</strong>
               <span class="pill ${statusClass}">${escapeHtml(tradePnlStatusLabel(status))}</span>
             </div>
+            ${badges}
             ${excludedNote}
-            <div class="decision-lede">Actual ${formatSignedIsk(item.actual_profit_isk)} vs expected ${formatSignedIsk(item.expected_profit_isk)}; fee gap ${formatSignedIsk(item.fee_gap_isk)}.</div>
+            <div class="decision-lede">Realized ${formatSignedIsk(item.actual_profit_isk)} vs expected ${formatSignedIsk(item.expected_profit_isk)}; inventory result ${formatSignedIsk(item.inventory_result_isk)}${planLede}.</div>
             <div class="decision-metrics">
               <div class="decision-metric"><span>Matched Units</span><b>${formatNumber(item.matched_quantity)}</b><small>Bought ${formatNumber(item.buy_quantity)}; sold ${formatNumber(item.sell_quantity)}.</small></div>
               <div class="decision-metric"><span>Buy Cost</span><b>${formatIsk(item.matched_buy_cost_isk)}</b><small>Total buys ${formatIsk(item.buy_total_isk)}.</small></div>
               <div class="decision-metric"><span>Sell Revenue</span><b>${formatIsk(item.matched_sell_revenue_isk)}</b><small>Total sells ${formatIsk(item.sell_total_isk)}.</small></div>
-              <div class="decision-metric"><span>Open / Unmatched</span><b>${formatNumber(item.open_quantity)} / ${formatNumber(item.unmatched_sell_quantity)}</b><small>Open cost ${formatIsk(item.open_inventory_cost_isk)}.</small></div>
+              <div class="decision-metric"><span>Open / Unmatched</span><b>${formatNumber(item.open_quantity)} / ${formatNumber(item.unmatched_sell_quantity)}</b><small>Open value ${formatOptionalIsk(item.open_inventory_market_value_isk)}.</small></div>
             </div>
             <details class="profit-details">
               <summary>Accounting details</summary>
@@ -16126,14 +18178,78 @@ def _render_flight_attendant_dashboard() -> str:
                 <div class="profit-detail-row"><span>Net wallet cashflow</span><b>${formatSignedIsk(item.net_cashflow_isk)}</b></div>
                 <div class="profit-detail-row"><span>Allocated wallet fees</span><b>${formatSignedIsk(item.allocated_fee_isk)}</b></div>
                 <div class="profit-detail-row"><span>Margin on matched cost</span><b>${formatPercent(item.margin_percent)}</b></div>
+                <div class="profit-detail-row"><span>Inventory margin on visible cost</span><b>${formatPercent(item.inventory_margin_percent)}</b></div>
+                <div class="profit-detail-row"><span>Ledger matched units</span><b>${formatNumber(item.historical_matched_quantity)}</b></div>
+                <div class="profit-detail-row"><span>Ledger matched cost</span><b>${formatIsk(item.historical_matched_buy_cost_isk)}</b></div>
+                <div class="profit-detail-row"><span>Open stock cost</span><b>${formatIsk(item.open_inventory_cost_isk)}</b></div>
+                <div class="profit-detail-row"><span>Open unrealized</span><b>${formatSignedIsk(item.open_inventory_unrealized_isk)}</b></div>
                 <div class="profit-detail-row"><span>Unmatched sell revenue</span><b>${formatIsk(item.unmatched_sell_revenue_isk)}</b></div>
                 <div class="profit-detail-row"><span>Visible dates</span><b>${escapeHtml(item.first_date || "unknown")} to ${escapeHtml(item.last_date || "unknown")}</b></div>
               </div>
+              ${valuationDetail}
+              ${renderTradePnlPlanReconciliation(plan)}
               ${renderTradePnlMatches(matches)}
             </details>
           </div>
         `;
       }).join("")}</div>`;
+    }
+
+    function tradePnlBadgeClass(kind) {
+      if (kind === "wallet") return "decision-build";
+      if (kind === "estimate") return "decision-source";
+      if (kind === "stock") return "decision-stock";
+      if (kind === "plan") return "decision-source";
+      if (kind === "ledger") return "decision-source";
+      if (kind === "missing") return "decision-price";
+      if (kind === "excluded") return "decision-price";
+      return "decision-watch";
+    }
+
+    function renderTradePnlBadges(badges) {
+      if (!badges.length) return "";
+      return `<div class="meta">${badges.map((badge) => `<span class="pill ${tradePnlBadgeClass(badge.kind)}" title="${escapeHtml(badge.note || "")}">${escapeHtml(badge.label || "Source")}</span>`).join(" ")}</div>`;
+    }
+
+    function renderTradePnlItemValuationDetail(item) {
+      if (!item || Number(item.open_quantity || 0) <= 0) return "";
+      const source = item.market_valuation_source || "Market aggregate";
+      const location = item.market_valuation_location ? ` in ${item.market_valuation_location}` : "";
+      return `
+        <div class="meta">Open-stock valuation ${escapeHtml(source + location)}. Estimates are not realized wallet income.</div>
+        <div class="profit-detail-grid">
+          <div class="profit-detail-row"><span>Liquidation unit estimate</span><b>${formatOptionalIsk(item.open_market_unit_price)}</b></div>
+          <div class="profit-detail-row"><span>Top buy / sell min</span><b>${formatOptionalIsk(item.open_market_top_buy_unit_price)} / ${formatOptionalIsk(item.open_market_sell_min_unit_price)}</b></div>
+          <div class="profit-detail-row"><span>Buy orders / sell orders</span><b>${formatOptionalNumber(item.open_market_buy_order_count)} / ${formatOptionalNumber(item.open_market_sell_order_count)}</b></div>
+          <div class="profit-detail-row"><span>Buy volume / sell volume</span><b>${formatOptionalNumber(item.open_market_buy_volume)} / ${formatOptionalNumber(item.open_market_sell_volume)}</b></div>
+        </div>
+      `;
+    }
+
+    function tradePnlPlanClass(status) {
+      if (status === "beat-plan" || status === "near-plan") return "decision-build";
+      if (status === "loss-vs-plan" || status === "below-plan") return "decision-skip";
+      if (status === "open-stock" || status === "waiting") return "decision-stock";
+      return "decision-price";
+    }
+
+    function renderTradePnlPlanReconciliation(plan) {
+      if (!plan || !plan.available) return "";
+      return `
+        <div class="meta">Acquisition Planner reconciliation <span class="pill ${tradePnlPlanClass(plan.status)}">${escapeHtml(plan.status_label || "Plan check")}</span></div>
+        <div class="profit-detail-grid">
+          <div class="profit-detail-row"><span>Planned at</span><b>${escapeHtml(plan.planned_at || "unknown")}</b></div>
+          <div class="profit-detail-row"><span>Suggested bid</span><b>${formatOptionalIsk(plan.suggested_bid)}</b></div>
+          <div class="profit-detail-row"><span>Planned / matched units</span><b>${formatOptionalNumber(plan.planned_units)} / ${formatOptionalNumber(plan.matched_units)}</b></div>
+          <div class="profit-detail-row"><span>Expected matched profit</span><b>${formatSignedIsk(plan.expected_profit_for_matched_isk)}</b></div>
+          <div class="profit-detail-row"><span>Actual vs plan</span><b>${formatSignedIsk(plan.actual_vs_expected_profit_isk)}</b></div>
+          <div class="profit-detail-row"><span>Actual profit per unit</span><b>${formatSignedIsk(plan.actual_profit_per_unit_isk)}</b></div>
+          <div class="profit-detail-row"><span>Buy delta per unit</span><b>${formatSignedIsk(plan.buy_price_delta_per_unit)}</b></div>
+          <div class="profit-detail-row"><span>Net sell delta per unit</span><b>${formatSignedIsk(plan.net_sell_delta_per_unit)}</b></div>
+          <div class="profit-detail-row"><span>Expected net sell unit</span><b>${formatOptionalIsk(plan.expected_net_sell_unit_price)}</b></div>
+          <div class="profit-detail-row"><span>Plan route</span><b>${escapeHtml(plan.placement_system || plan.origin_system || "unknown")} to ${escapeHtml(plan.destination_system || "unknown")}</b></div>
+        </div>
+      `;
     }
 
     function renderTradePnlMatches(matches) {
@@ -16143,7 +18259,7 @@ def _render_flight_attendant_dashboard() -> str:
         <div class="profit-detail-grid">
           ${matches.map((match) => `
             <div class="profit-detail-row">
-              <span>Buy #${escapeHtml(match.buy_transaction_id)} -> Sell #${escapeHtml(match.sell_transaction_id)}<br><small>${escapeHtml(match.buy_date || "unknown")} to ${escapeHtml(match.sell_date || "unknown")}; ${formatNumber(match.quantity)} units @ ${formatIsk(match.buy_unit_price)} -> ${formatIsk(match.sell_unit_price)}</small></span>
+              <span>Buy #${escapeHtml(match.buy_transaction_id)} -> Sell #${escapeHtml(match.sell_transaction_id)}<br><small>${escapeHtml(match.buy_source === "local-ledger" ? "local ledger" : "wallet window")}; ${escapeHtml(match.buy_date || "unknown")} to ${escapeHtml(match.sell_date || "unknown")}; ${formatNumber(match.quantity)} units @ ${formatIsk(match.buy_unit_price)} -> ${formatIsk(match.sell_unit_price)}</small></span>
               <b>${formatSignedIsk(match.actual_profit_isk)}</b>
             </div>
           `).join("")}
@@ -18630,6 +20746,9 @@ def _render_flight_attendant_dashboard() -> str:
         avoidRecentPodKills: haulAvoidPodKills.checked,
         detourJumps: haulDetourJumps.value,
         minDetourMarginPercent: haulMinMargin.value,
+        sortBy: haulSortBy.value,
+        minProfitPerM3: haulMinProfitPerM3.value,
+        minProfitPerExtraJump: haulMinProfitPerExtraJump.value,
         includeCommonMaterials: haulCommonMaterials.checked,
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
@@ -18641,7 +20760,13 @@ def _render_flight_attendant_dashboard() -> str:
     haulOrigin.addEventListener("change", updateHaulScopeAndReset);
     haulDestination.addEventListener("change", updateHaulScopeAndReset);
     haulPurchaseBudget.addEventListener("change", updateHaulScopeAndReset);
+    haulSortBy.addEventListener("change", updateHaulScopeAndReset);
+    haulMinProfitPerM3.addEventListener("change", updateHaulScopeAndReset);
+    haulMinProfitPerExtraJump.addEventListener("change", updateHaulScopeAndReset);
     haulCommonMaterials.addEventListener("change", updateHaulScopeAndReset);
+    haulItemSearch.addEventListener("input", () => {
+      applyMarketItemSearch(haulMarketGroups, haulItemSearch.value, haulItemSearchStatus);
+    });
     haulMarketGroups.addEventListener("click", (event) => {
       if (handleMarketGroupShowMore(haulMarketGroups, event)) return;
       if (event.target.closest("input[data-haul-market-group], input[data-haul-market-type], .mini-check, .market-item-check")) {
@@ -18706,6 +20831,7 @@ def _render_flight_attendant_dashboard() -> str:
       const settings = writeTradePnlSettings({
         windowHours: tradePnlWindowHours.value,
         lens: tradePnlLens.value,
+        considerationRule: tradePnlConsiderationRule.value,
         exclude: tradePnlExclude.value,
         showMatches: tradePnlShowMatches.checked,
       });
@@ -18718,6 +20844,7 @@ def _render_flight_attendant_dashboard() -> str:
     });
     tradePnlWindowHours.addEventListener("change", updateTradePnlAndReset);
     tradePnlLens.addEventListener("change", updateTradePnlAndReset);
+    tradePnlConsiderationRule.addEventListener("change", updateTradePnlAndReset);
     tradePnlExclude.addEventListener("change", updateTradePnlAndReset);
     tradePnlShowMatches.addEventListener("change", updateTradePnlAndReset);
 
@@ -18883,6 +21010,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     writeMaxJumps(readMaxJumps());
     writeHaulSettings(readHaulSettings());
+    applyMarketItemSearch(haulMarketGroups, haulItemSearch.value, haulItemSearchStatus);
     writeAcquisitionSettings(readAcquisitionSettings());
     writeTradePnlSettings(readTradePnlSettings());
     writePlanetarySettings(readPlanetarySettings());
