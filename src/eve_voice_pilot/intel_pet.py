@@ -2191,25 +2191,53 @@ def run_overlay(
     def open_options() -> None:
         editor = tk.Toplevel(root)
         editor.title("Intel Pet Options")
-        editor.geometry("720x760+80+80")
-        editor.minsize(620, 640)
+        editor.geometry("980x820+80+80")
+        editor.minsize(780, 620)
+        editor.resizable(True, True)
         editor.transient(root)
         editor.attributes("-topmost", True)
+
+        def scrollable_tab(parent: ttk.Notebook) -> tuple[ttk.Frame, ttk.Frame]:
+            tab_frame = ttk.Frame(parent)
+            tab_frame.columnconfigure(0, weight=1)
+            tab_frame.rowconfigure(0, weight=1)
+            canvas = tk.Canvas(tab_frame, borderwidth=0, highlightthickness=0)
+            scrollbar = ttk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview)
+            content = ttk.Frame(canvas, padding=12)
+            content_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+            def update_scrollregion(_event: Any | None = None) -> None:
+                canvas.configure(scrollregion=canvas.bbox("all"))
+
+            def resize_content(event: Any) -> None:
+                canvas.itemconfigure(content_id, width=event.width)
+
+            def scroll_mousewheel(event: Any) -> None:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+            content.bind("<Configure>", update_scrollregion)
+            canvas.bind("<Configure>", resize_content)
+            canvas.bind("<MouseWheel>", scroll_mousewheel)
+            content.bind("<MouseWheel>", scroll_mousewheel)
+            canvas.configure(yscrollcommand=scrollbar.set)
+            canvas.grid(row=0, column=0, sticky="nsew")
+            scrollbar.grid(row=0, column=1, sticky="ns")
+            return tab_frame, content
 
         editor_frame = ttk.Frame(editor, padding=12)
         editor_frame.pack(fill="both", expand=True)
         notebook = ttk.Notebook(editor_frame)
         notebook.pack(fill="both", expand=True)
-        settings_frame = ttk.Frame(notebook, padding=12)
-        behavior_frame = ttk.Frame(notebook, padding=12)
-        voice_frame = ttk.Frame(notebook, padding=12)
-        voice_lab_frame = ttk.Frame(notebook, padding=12)
-        history_frame = ttk.Frame(notebook, padding=12)
-        notebook.add(settings_frame, text="Alerts")
-        notebook.add(behavior_frame, text="Behaviors")
-        notebook.add(voice_frame, text="Voice")
-        notebook.add(voice_lab_frame, text="Voice Lab")
-        notebook.add(history_frame, text="History")
+        settings_tab, settings_frame = scrollable_tab(notebook)
+        behavior_tab, behavior_frame = scrollable_tab(notebook)
+        voice_tab, voice_frame = scrollable_tab(notebook)
+        voice_lab_tab, voice_lab_frame = scrollable_tab(notebook)
+        history_tab, history_frame = scrollable_tab(notebook)
+        notebook.add(settings_tab, text="Alerts")
+        notebook.add(behavior_tab, text="Behaviors")
+        notebook.add(voice_tab, text="Voice")
+        notebook.add(voice_lab_tab, text="Voice Lab")
+        notebook.add(history_tab, text="History")
 
         editor_status_var = tk.StringVar(value="Saved locally only.")
 
@@ -2816,7 +2844,7 @@ def run_overlay(
         voice_command_tree.heading("key", text="Keybind")
         voice_command_tree.column("#0", width=150, minwidth=110, stretch=True)
         voice_command_tree.column("phrases", width=230, minwidth=160, stretch=True)
-        voice_command_tree.column("key", width=90, minwidth=70, stretch=False)
+        voice_command_tree.column("key", width=130, minwidth=110, stretch=False)
         voice_command_scroll = ttk.Scrollbar(voice_command_list_frame, orient="vertical", command=voice_command_tree.yview)
         voice_command_tree.configure(yscrollcommand=voice_command_scroll.set)
         voice_command_tree.grid(row=0, column=0, sticky="nsew")
