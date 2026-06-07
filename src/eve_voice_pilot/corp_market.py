@@ -117,6 +117,7 @@ HAUL_SORT_LABELS = {
     "margin": "Margin percent",
 }
 MAX_HAUL_EFFICIENCY_FLOOR_ISK = 1_000_000_000_000.0
+PLAYER_STRUCTURE_LOCATION_ID_MIN = 1_000_000_000_000
 DEFAULT_ACQUISITION_BUDGET_ISK = 50_000_000.0
 MAX_ACQUISITION_BUDGET_ISK = 10_000_000_000.0
 DEFAULT_ACQUISITION_PICKUP_JUMPS = 2
@@ -7604,6 +7605,34 @@ def build_buyer_order_record(
     }
 
 
+def market_order_location_guardrail(location_id: Any) -> dict[str, Any]:
+    clean_location_id = clean_optional_int(location_id) or 0
+    if clean_location_id >= PLAYER_STRUCTURE_LOCATION_ID_MIN:
+        return {
+            "location_kind": "player-structure",
+            "location_kind_label": "Player structure",
+            "docking_access_verified": False,
+            "location_access_note": (
+                "Player-structure market order; verify docking, market access, and service state in EVE before buying or hauling."
+            ),
+        }
+    if clean_location_id > 0:
+        return {
+            "location_kind": "npc-station",
+            "location_kind_label": "NPC station",
+            "docking_access_verified": False,
+            "location_access_note": (
+                "NPC station market order; docking is usually public, but this app has not verified your in-game access."
+            ),
+        }
+    return {
+        "location_kind": "unknown",
+        "location_kind_label": "Unknown location",
+        "docking_access_verified": False,
+        "location_access_note": "Market order location was not identified; verify docking and market access in EVE.",
+    }
+
+
 def build_reachable_market_order_record(
     order: dict[str, Any],
     *,
@@ -7627,13 +7656,15 @@ def build_reachable_market_order_record(
     system = systems.get(system_id)
     if system is None:
         return None
+    location_id = clean_optional_int(order.get("location_id")) or 0
     return {
         "order_id": clean_optional_int(order.get("order_id")) or 0,
         "region_id": region_id,
         "system_id": system_id,
         "system_name": system.name,
         "jumps": jump_distances[system_id],
-        "location_id": clean_optional_int(order.get("location_id")) or 0,
+        "location_id": location_id,
+        **market_order_location_guardrail(location_id),
         "price": price,
         "volume_remain": volume_remain,
         "min_volume": clean_optional_int(order.get("min_volume")) or 1,
@@ -17371,6 +17402,60 @@ def _render_flight_attendant_dashboard() -> str:
       }, 1000);
     }
 
+    async function loadHaulHubComparison() {
+      const destinations = writeHaulCompareDestinations();
+      if (!destinations.length) {
+        haulCompareSummary.textContent = "Choose at least one hub to compare.";
+        haulCompareResults.textContent = "";
+        return;
+      }
+      const settings = writeHaulSettings({
+        originName: haulOrigin.value,
+        destination: haulDestination.value,
+        cargoM3: haulCargoM3.value,
+        purchaseBudgetIsk: haulPurchaseBudget.value,
+        routePreference: haulRoutePreference.value,
+        avoidRecentPodKills: haulAvoidPodKills.checked,
+        detourJumps: haulDetourJumps.value,
+        minDetourMarginPercent: haulMinMargin.value,
+        sortBy: haulSortBy.value,
+        minProfitPerM3: haulMinProfitPerM3.value,
+        minProfitPerExtraJump: haulMinProfitPerExtraJump.value,
+        includeCommonMaterials: haulCommonMaterials.checked,
+        marketGroupIds: readHaulMarketGroupIdsFromInputs(),
+        marketTypeIds: readHaulMarketTypeIdsFromInputs(),
+      });
+      haulCompareButton.disabled = true;
+      haulCompareSummary.textContent = `Comparing ${formatNumber(destinations.length)} hub${destinations.length === 1 ? "" : "s"} with ${haulItemScopeLabel(settings)}...`;
+      haulCompareResults.innerHTML = `<div class="decision-empty">Hub comparison is running. Large item scopes can take longer.</div>`;
+      const params = new URLSearchParams({
+        origin_name: settings.originName,
+        destinations: destinations.join(","),
+        cargo_m3: String(settings.cargoM3),
+        purchase_budget_isk: String(settings.purchaseBudgetIsk),
+        route_preference: settings.routePreference,
+        avoid_recent_pod_kills: settings.avoidRecentPodKills ? "1" : "0",
+        common_materials: settings.includeCommonMaterials ? "1" : "0",
+        market_group_ids: settings.marketGroupIds.join(","),
+        market_type_ids: settings.marketTypeIds.join(","),
+        sort_by: settings.sortBy,
+        min_profit_per_m3: String(settings.minProfitPerM3),
+        min_profit_per_extra_jump: String(settings.minProfitPerExtraJump),
+        detour_jumps: String(settings.detourJumps),
+        min_detour_margin_percent: String(settings.minDetourMarginPercent),
+      });
+      try {
+        const response = await fetch(`/api/flight/hauling/compare?${params}`);
+        const data = await readJsonApiResponse(response, "Could not compare hauler hubs");
+        renderHaulHubComparison(data);
+      } catch (error) {
+        haulCompareSummary.textContent = error.message || "Hub comparison failed.";
+        haulCompareResults.textContent = "";
+      } finally {
+        haulCompareButton.disabled = false;
+      }
+    }
+
     async function loadFlightHauling() {
       const settings = writeHaulSettings({
         originName: haulOrigin.value,
@@ -17560,6 +17645,74 @@ def _render_flight_attendant_dashboard() -> str:
       haulOpportunityTop.innerHTML = renderHaulOpportunities(hauling.opportunities || []);
     }
 
+    function renderHaulHubComparison(data) {
+      const comparison = data.comparison || {};
+      const results = Array.isArray(comparison.results) ? comparison.results : [];
+      const best = comparison.best || {};
+      const bestText = best.destination_name
+        ? ` Best hub: ${escapeHtml(best.destination_name)} at ${formatSignedIsk(best.load_plan_net_profit)}.`
+        : " No successful hub produced a load plan.";
+      haulCompareSummary.innerHTML = `
+        Compared ${formatNumber(comparison.destination_count)} hub${Number(comparison.destination_count || 0) === 1 ? "" : "s"}:
+        ${formatNumber(comparison.successful_count)} successful, ${formatNumber(comparison.failed_count)} failed.${bestText}
+        <div class="meta">${escapeHtml(comparison.manual_note || "Verify route and prices in EVE.")}</div>
+      `;
+      haulCompareResults.innerHTML = renderHaulHubComparisonResults(results);
+    }
+
+    function renderHaulHubComparisonResults(results) {
+      if (!results.length) return `<div class="decision-empty">No hub comparison rows returned.</div>`;
+      return `<div class="decision-list">${results.map((result) => {
+        if (!result.ok) {
+          return `
+            <article class="decision-card">
+              <div>
+                <h3>${escapeHtml(result.destination_name || result.destination || "Hub")}</h3>
+                <div class="meta">${escapeHtml(result.error || "Comparison failed for this hub.")}</div>
+              </div>
+              <span class="pill decision-skip">Failed</span>
+            </article>
+          `;
+        }
+        const loadText = result.load_plan_available
+          ? `${formatSignedIsk(result.load_plan_net_profit)} load-plan profit; ${formatPercent(result.load_plan_cargo_percent)} cargo fill`
+          : "No load plan from filtered opportunities";
+        const itemText = result.best_item_name
+          ? `Best item: ${escapeHtml(result.best_item_name)} at ${formatSignedIsk(result.best_item_net_profit)}.`
+          : "No best item returned.";
+        const routeWarning = result.route_warning ? `<div class="meta">${escapeHtml(result.route_warning)}</div>` : "";
+        return `
+          <article class="decision-card">
+            <div>
+              <h3>${escapeHtml(result.destination_name || result.destination || "Hub")}</h3>
+              <div class="meta">${formatNumber(result.route_jumps)} jumps; ${formatNumber(result.profitable_opportunities)} visible profitable opportunities; ${formatNumber(result.possible_trap_count)} possible traps.</div>
+              <div class="meta">${escapeHtml(loadText)}; ${formatNumber(result.load_plan_stop_count)} pickup stop${Number(result.load_plan_stop_count || 0) === 1 ? "" : "s"}.</div>
+              <div class="meta">${itemText}</div>
+              ${routeWarning}
+            </div>
+            <span class="pill decision-build">${result.load_plan_available ? formatSignedIsk(result.load_plan_net_profit) : "No plan"}</span>
+          </article>
+        `;
+      }).join("")}</div>`;
+    }
+
+    function renderHaulAccessGuardrails(item) {
+      const pickup = item.pickup_order || {};
+      const destination = item.destination_order || {};
+      const pickupKind = pickup.location_kind_label || "Unknown pickup location";
+      const destinationKind = destination.location_kind_label || "Unknown destination location";
+      const notes = [];
+      if (pickup.location_access_note) notes.push(`Pickup: ${pickup.location_access_note}`);
+      if (destination.location_access_note) notes.push(`Destination: ${destination.location_access_note}`);
+      return `
+        <div class="meta">
+          <span class="pill decision-watch">Access check</span>
+          Pickup ${escapeHtml(pickupKind)}; destination ${escapeHtml(destinationKind)}.
+          ${escapeHtml(notes.join(" "))}
+        </div>
+      `;
+    }
+
     function renderHaulRoutePath(systems) {
       if (!systems.length) return "No route path returned yet.";
       const visible = systems.slice(0, 18).map((system) => escapeHtml(system.name)).join(" &rarr; ");
@@ -17732,6 +17885,7 @@ def _render_flight_attendant_dashboard() -> str:
             <div class="decision-lede">Buy from ${escapeHtml(pickup.system_name || "pickup")} corridor at ${formatIsk(pickupPrice)} avg; sell in ${escapeHtml(destination.system_name || "destination")} at ${formatIsk(destinationPrice)} avg.</div>
             <div class="decision-lede">${escapeHtml(decision.label || "Review manually")}: ${escapeHtml(decision.reason || "Verify current orders in EVE before hauling.")}</div>
             ${renderAcquisitionHistoryFlags(item.history_flags || [])}
+            ${renderHaulAccessGuardrails(item)}
             <div class="decision-metrics">
               <div class="decision-metric"><span>Units</span><b>${formatNumber(item.units)}</b><small>${escapeHtml(cargoNote)}</small></div>
               <div class="decision-metric"><span>After-Tax Per Unit</span><b>${formatSignedIsk(item.net_profit_per_unit)}</b><small>${formatPercent(item.margin_percent)} on pickup cost.</small></div>
@@ -17743,6 +17897,8 @@ def _render_flight_attendant_dashboard() -> str:
               <summary>Order details</summary>
               <div class="profit-detail-grid">
                 <div class="profit-detail-row"><span>Primary pickup</span><b>${escapeHtml(pickup.system_name || "unknown")} (${formatNumber(pickup.jumps)} jumps)</b></div>
+                <div class="profit-detail-row"><span>Pickup access</span><b>${escapeHtml(pickup.location_kind_label || "Unknown location")}</b><small>${escapeHtml(pickup.location_access_note || "Verify in EVE.")}</small></div>
+                <div class="profit-detail-row"><span>Destination access</span><b>${escapeHtml(destination.location_kind_label || "Unknown location")}</b><small>${escapeHtml(destination.location_access_note || "Verify in EVE.")}</small></div>
                 <div class="profit-detail-row"><span>Pickup detour</span><b>${formatNumber(item.pickup_detour_jumps)} max; ${formatNumber(item.primary_pickup_detour_jumps)} primary</b></div>
                 <div class="profit-detail-row"><span>Purchase budget</span><b>${formatIsk(item.purchase_budget_isk)}</b></div>
                 <div class="profit-detail-row"><span>Budget remaining</span><b>${formatIsk(item.budget_remaining_isk)}</b></div>
@@ -20755,6 +20911,11 @@ def _render_flight_attendant_dashboard() -> str:
       });
       const settings = readHaulSettings();
       resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(settings)} to ${settings.destination}.`);
+      const destinations = readHaulCompareDestinationsFromInputs();
+      haulCompareSummary.textContent = destinations.length
+        ? `Ready to compare ${formatNumber(destinations.length)} hub${destinations.length === 1 ? "" : "s"} with the current settings.`
+        : "Choose at least one hub to compare.";
+      haulCompareResults.textContent = "";
     }
 
     haulOrigin.addEventListener("change", updateHaulScopeAndReset);
@@ -20777,6 +20938,15 @@ def _render_flight_attendant_dashboard() -> str:
       if (!event.target.closest("input[data-haul-market-group], input[data-haul-market-type]")) return;
       updateHaulScopeAndReset();
     });
+    haulCompareHubs.addEventListener("change", (event) => {
+      if (!event.target.closest("input[data-haul-compare-destination]")) return;
+      const destinations = writeHaulCompareDestinations();
+      haulCompareSummary.textContent = destinations.length
+        ? `Ready to compare ${formatNumber(destinations.length)} hub${destinations.length === 1 ? "" : "s"}.`
+        : "Choose at least one hub to compare.";
+      haulCompareResults.textContent = "";
+    });
+    haulCompareButton.addEventListener("click", loadHaulHubComparison);
 
     function updateAcquisitionScopeAndReset() {
       writeAcquisitionSettings({
@@ -21009,6 +21179,9 @@ def _render_flight_attendant_dashboard() -> str:
     }
 
     writeMaxJumps(readMaxJumps());
+    const storedHaulCompareDestinations = readStoredHaulCompareDestinations();
+    if (storedHaulCompareDestinations) applyHaulCompareDestinations(storedHaulCompareDestinations);
+    writeHaulCompareDestinations();
     writeHaulSettings(readHaulSettings());
     applyMarketItemSearch(haulMarketGroups, haulItemSearch.value, haulItemSearchStatus);
     writeAcquisitionSettings(readAcquisitionSettings());

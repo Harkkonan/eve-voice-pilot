@@ -32,6 +32,7 @@ from eve_voice_pilot.corp_market import (
     build_flight_reprocessing_payload,
     build_flight_buyers_payload,
     build_flight_acquisition_payload,
+    build_flight_hauling_comparison_payload,
     build_flight_hauling_payload,
     build_flight_industry_payload,
     build_flight_profitability_payload,
@@ -297,6 +298,13 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Items to search" in page
     assert "Common materials" in page
     assert "Market categories" in page
+    assert "id=\"haul-compare-hubs\"" in page
+    assert "id=\"haul-compare\" class=\"secondary\" type=\"button\"" in page
+    assert "Compare Selected Hubs" in page
+    assert "id=\"haul-compare-summary\"" in page
+    assert "id=\"haul-compare-results\" class=\"decision-output\"" in page
+    assert "loadHaulHubComparison" in page
+    assert "renderHaulHubComparison" in page
     assert "Ships" in page
     assert "Blueprints &amp; Reactions" in page
     assert "Ammunition &amp; Charges" in page
@@ -315,6 +323,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Route diagnostics" in page
     assert "renderHaulRouteDiagnostics" in page
     assert "route-diagnostic-steps" in page
+    assert "renderHaulAccessGuardrails" in page
+    assert "Access check" in page
+    assert "Pickup access" in page
+    assert "Destination access" in page
     assert "no reachable destination buy orders" in page
     assert "id=\"haul-quickbar-panel\" class=\"quickbar-copy-panel\" hidden" in page
     assert "data-copy-quickbar=\"hauling\"" in page
@@ -1654,6 +1666,29 @@ def test_haul_market_type_ids_parse_dedupe_and_limit():
     )
 
 
+def test_haul_compare_destinations_parse_dedupe_and_limit():
+    assert corp_market.clean_haul_compare_destinations(["Jita, Hek", "jita|Dodixie", "", "  Rens  "]) == (
+        "Jita",
+        "Hek",
+        "Dodixie",
+        "Rens",
+    )
+    assert corp_market.clean_haul_compare_destinations(["A,B,C,D,E,F,G"]) == ("A", "B", "C", "D", "E", "F")
+
+
+def test_market_order_location_guardrail_labels_station_structure_and_unknown():
+    station = corp_market.market_order_location_guardrail(60008494)
+    structure = corp_market.market_order_location_guardrail(1_030_000_000_000)
+    unknown = corp_market.market_order_location_guardrail(None)
+
+    assert station["location_kind"] == "npc-station"
+    assert station["docking_access_verified"] is False
+    assert "usually public" in station["location_access_note"]
+    assert structure["location_kind"] == "player-structure"
+    assert "verify docking" in structure["location_access_note"]
+    assert unknown["location_kind"] == "unknown"
+
+
 def test_market_group_picker_renders_sde_counts_items_and_show_more(tmp_path):
     static_data = corp_market.StaticMarketData(
         path=tmp_path / "sde.zip",
@@ -1901,6 +1936,79 @@ def test_haul_route_plan_diagnostics_explain_local_fallback(monkeypatch):
     assert diagnostics["route_pod_kill_system_count"] == 1
     assert "Verify this route in EVE" in diagnostics["summary"]
     assert "ESI route attempts: 1" in diagnostics["steps"]
+
+
+def test_hauling_comparison_payload_ranks_hubs_and_keeps_failed_rows(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Hauler Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1", "esi-skills.read_skills.v1"),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+    calls = []
+
+    def fake_hauling_payload(**kwargs):
+        destination_name = kwargs["destination_name"]
+        calls.append(destination_name)
+        if destination_name == "Bad Hub":
+            raise CorpMarketError("Destination system 'Bad Hub' was not found.")
+        profit = 5000.0 if destination_name == "Hek" else 1000.0
+        return {
+            "route": {
+                "destination": {"name": destination_name},
+                "route_jumps": 6 if destination_name == "Hek" else 9,
+                "route_source": "esi-route",
+                "route_warning": "",
+            },
+            "hauling": {
+                "profitable_opportunities": 3 if destination_name == "Hek" else 1,
+                "total_profitable_opportunities": 3,
+                "efficiency_filter_rejected_count": 0,
+                "possible_trap_count": 1 if destination_name == "Jita" else 0,
+                "load_plan": {
+                    "available": True,
+                    "net_profit": profit,
+                    "pickup_cost": 2500.0,
+                    "cargo_percent": 42.0,
+                    "stop_count": 2,
+                },
+                "opportunities": [
+                    {
+                        "item_name": "Tritanium",
+                        "net_profit": profit,
+                        "margin_percent": 20.0,
+                    }
+                ],
+            },
+        }
+
+    monkeypatch.setattr(corp_market, "build_flight_hauling_payload", fake_hauling_payload)
+
+    payload = build_flight_hauling_comparison_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        origin_name="Amarr",
+        destinations=("Jita,Hek,Bad Hub,Jita",),
+        cargo_capacity_m3=11000,
+        include_common_materials=True,
+    )
+
+    assert calls == ["Jita", "Hek", "Bad Hub"]
+    comparison = payload["comparison"]
+    assert comparison["destination_count"] == 3
+    assert comparison["successful_count"] == 2
+    assert comparison["failed_count"] == 1
+    assert comparison["best"]["destination_name"] == "Hek"
+    assert [row["destination_name"] for row in comparison["results"]] == ["Hek", "Jita", "Bad Hub"]
+    assert comparison["results"][0]["load_plan_net_profit"] == pytest.approx(5000.0)
+    assert comparison["results"][2]["ok"] is False
+    assert "not found" in comparison["results"][2]["error"]
 
 
 def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch, tmp_path):
@@ -3812,6 +3920,10 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert "load_plan_depth" not in opportunity
     assert opportunity["item_name"] == "Tritanium"
     assert opportunity["risk_level"] == "clear"
+    assert opportunity["pickup_order"]["location_kind"] == "npc-station"
+    assert opportunity["pickup_order"]["docking_access_verified"] is False
+    assert "docking is usually public" in opportunity["pickup_order"]["location_access_note"]
+    assert opportunity["destination_order"]["location_kind"] == "npc-station"
     assert opportunity["decision"]["label"] == "Manual haul candidate"
     assert opportunity["history_flags"][0]["label"] == "History supports a cautious haul"
     assert opportunity["pickup_history"]["days"] == 30
