@@ -23,6 +23,7 @@ RECIPE_SCHEMA = "eve_voice_pilot.industry_recipes.v1"
 ROUTE_SCHEMA = "eve_voice_pilot.route_graph.v1"
 REPROCESSING_SCHEMA = "eve_voice_pilot.reprocessing.v1"
 PLANETARY_SCHEMA = "eve_voice_pilot.planetary_industry.v1"
+REPROCESSING_SKILL_ATTRIBUTE_ID = 790
 
 PLANETARY_TAX_BASE_VALUES = {
     "P0": 5.0,
@@ -47,6 +48,7 @@ REPROCESSING_SKILL_TYPES = {
     "Uncommon Moon Ore Processing": 46154,
     "Variegated Ore Processing": 60379,
 }
+REPROCESSING_SKILL_NAMES_BY_TYPE_ID = {type_id: name for name, type_id in REPROCESSING_SKILL_TYPES.items()}
 
 ORE_GROUP_PROCESSING_SKILLS = {
     450: "Complex Ore Processing",  # Arkonor
@@ -333,8 +335,30 @@ def read_type_metadata(archive: ZipFile) -> dict[int, dict[str, Any]]:
             "market_group_id": clean_int(record.get("marketGroupID")) or None,
             "portion_size": clean_int(record.get("portionSize")),
             "published": bool(record.get("published")),
+            "reprocessing_skill_type_id": clean_int(dogma_attribute_value(record, REPROCESSING_SKILL_ATTRIBUTE_ID)) or None,
         }
     return metadata
+
+
+def dogma_attribute_value(record: dict[str, Any], attribute_id: int) -> Any:
+    dogma_attributes = record.get("dogmaAttributes")
+    if dogma_attributes is None:
+        dogma_attributes = record.get("dogma_attributes")
+    clean_attribute_id = int(attribute_id)
+    if isinstance(dogma_attributes, dict):
+        candidate = dogma_attributes.get(str(clean_attribute_id))
+        if candidate is None:
+            candidate = dogma_attributes.get(clean_attribute_id)
+        if isinstance(candidate, dict):
+            return candidate.get("value")
+        return candidate
+    if isinstance(dogma_attributes, list):
+        for item in dogma_attributes:
+            if not isinstance(item, dict):
+                continue
+            if clean_int(item.get("attributeID") or item.get("attribute_id")) == clean_attribute_id:
+                return item.get("value")
+    return None
 
 
 def read_market_group_metadata(archive: ZipFile) -> dict[int, dict[str, Any]]:
@@ -506,8 +530,14 @@ def read_reprocessing_ores(
         type_id = clean_int(record.get("typeID") or record.get("_key"))
         metadata = type_metadata.get(type_id) or {}
         group_id = clean_int(metadata.get("group_id"))
-        skill_name = ORE_GROUP_PROCESSING_SKILLS.get(group_id)
-        if type_id <= 0 or not skill_name or not metadata.get("published"):
+        fallback_skill_name = ORE_GROUP_PROCESSING_SKILLS.get(group_id)
+        skill_type_id = clean_int(metadata.get("reprocessing_skill_type_id"))
+        if skill_type_id <= 0 and fallback_skill_name:
+            skill_type_id = REPROCESSING_SKILL_TYPES[fallback_skill_name]
+        skill_name = REPROCESSING_SKILL_NAMES_BY_TYPE_ID.get(skill_type_id)
+        if not skill_name and skill_type_id > 0:
+            skill_name = type_name(type_metadata, skill_type_id, fallback_prefix="Skill")
+        if type_id <= 0 or skill_type_id <= 0 or not skill_name or not metadata.get("published"):
             continue
         material_records = list(clean_records(record.get("materials")))
         materials = []
@@ -537,7 +567,7 @@ def read_reprocessing_ores(
             "market_group_id": metadata.get("market_group_id"),
             "portion_size": portion_size,
             "volume_m3": type_volume(type_metadata, type_id),
-            "specialization_skill_type_id": REPROCESSING_SKILL_TYPES[skill_name],
+            "specialization_skill_type_id": skill_type_id,
             "specialization_skill_name": skill_name,
             "materials": materials,
         }
