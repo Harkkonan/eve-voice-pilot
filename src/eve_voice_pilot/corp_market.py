@@ -69,6 +69,7 @@ MAX_FLIGHT_HAUL_SCAN_TYPES = 240
 MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES = 30
 MAX_FLIGHT_ACQUISITION_SCAN_TYPES = 50
 MAX_HAUL_MARKET_GROUP_IDS = 32
+MAX_HAUL_MARKET_TYPE_IDS = MAX_FLIGHT_HAUL_SCAN_TYPES
 MAX_FLIGHT_HAUL_OPPORTUNITIES = 20
 MAX_FLIGHT_ACQUISITION_OPPORTUNITIES = 20
 DEFAULT_FLIGHT_TRADE_PNL_DAYS = 30
@@ -2405,6 +2406,32 @@ def clean_haul_market_group_ids(raw_values: Iterable[Any]) -> tuple[int, ...]:
     return tuple(group_ids)
 
 
+def clean_haul_market_type_ids(
+    raw_values: Iterable[Any],
+    *,
+    limit: int = MAX_HAUL_MARKET_TYPE_IDS,
+) -> tuple[int, ...]:
+    type_ids: list[int] = []
+    clean_limit = max(0, int(limit))
+    if clean_limit <= 0:
+        return ()
+    for raw_value in raw_values:
+        if raw_value is None:
+            continue
+        for part in re.split(r"[,|\s]+", str(raw_value)):
+            if not part:
+                continue
+            try:
+                type_id = int(part)
+            except (TypeError, ValueError):
+                continue
+            if type_id > 0 and type_id not in type_ids:
+                type_ids.append(type_id)
+            if len(type_ids) >= clean_limit:
+                return tuple(type_ids)
+    return tuple(type_ids)
+
+
 def load_static_market_data(path: Path = DEFAULT_STATIC_DATA_ZIP_PATH) -> StaticMarketData | None:
     if not path.exists():
         return None
@@ -2643,6 +2670,115 @@ def build_market_group_targets(config: EveSsoConfig, group_ids: Iterable[int]) -
     if static_result is not None:
         return static_result
     return build_market_group_targets_from_esi(config, group_ids, detail_limit=MAX_FLIGHT_HAUL_SCAN_TYPES)
+
+
+def build_market_type_targets_from_static(type_ids: Iterable[int]) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    static_data = load_static_market_data()
+    if static_data is None:
+        return None
+    clean_type_ids = clean_haul_market_type_ids(type_ids)
+    type_infos_by_id: dict[int, dict[str, Any]] = {}
+    for group_id, type_infos in static_data.types_by_group.items():
+        group_name = market_group_display_name(static_data, group_id)
+        for type_info in type_infos:
+            try:
+                type_id = int(type_info.get("type_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if type_id <= 0 or type_id in type_infos_by_id:
+                continue
+            type_infos_by_id[type_id] = {
+                **type_info,
+                "market_group_id": group_id,
+                "market_group_name": group_name,
+            }
+
+    targets = []
+    selected_types = []
+    for type_id in clean_type_ids:
+        type_info = type_infos_by_id.get(type_id)
+        target = {
+            "type_id": type_id,
+            "name": str((type_info.get("name") if type_info else None) or f"Type {type_id}"),
+            "recipe_count": 0,
+            "volume_m3": type_info.get("volume_m3") if type_info else None,
+            "source": "market_type",
+            "source_label": "Selected items",
+            "market_group_id": type_info.get("market_group_id") if type_info else None,
+            "market_group_name": type_info.get("market_group_name") if type_info else "",
+        }
+        targets.append(target)
+        selected_types.append(
+            {
+                "type_id": type_id,
+                "name": target["name"],
+                "market_group_id": target.get("market_group_id"),
+                "market_group_name": target.get("market_group_name") or "",
+            }
+        )
+    return (
+        sorted(targets, key=lambda item: (str(item["name"]), int(item["type_id"]))),
+        {
+            "source": "static-sde",
+            "selected_market_type_ids": list(clean_type_ids),
+            "selected_market_types": selected_types,
+            "selected_market_type_count": len(clean_type_ids),
+            "market_type_item_types": len(targets),
+        },
+    )
+
+
+def build_market_type_targets_from_esi(
+    config: EveSsoConfig,
+    type_ids: Iterable[int],
+    *,
+    detail_limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    clean_type_ids = clean_haul_market_type_ids(type_ids, limit=detail_limit)
+    targets = []
+    selected_types = []
+    for type_id in clean_type_ids:
+        detail = fetch_universe_type_detail(config, type_id)
+        volume_m3 = clean_optional_float(detail.get("volume"))
+        if volume_m3 is not None and volume_m3 <= 0:
+            volume_m3 = None
+        market_group_id = clean_optional_int(detail.get("market_group_id") or detail.get("marketGroupID"))
+        target = {
+            "type_id": type_id,
+            "name": str(detail.get("name") or f"Type {type_id}"),
+            "recipe_count": 0,
+            "volume_m3": volume_m3,
+            "source": "market_type",
+            "source_label": "Selected items",
+            "market_group_id": market_group_id,
+            "market_group_name": "",
+        }
+        targets.append(target)
+        selected_types.append(
+            {
+                "type_id": type_id,
+                "name": target["name"],
+                "market_group_id": market_group_id,
+                "market_group_name": "",
+            }
+        )
+    return (
+        sorted(targets, key=lambda item: (str(item["name"]), int(item["type_id"]))),
+        {
+            "source": "esi-types",
+            "selected_market_type_ids": list(clean_type_ids),
+            "selected_market_types": selected_types,
+            "selected_market_type_count": len(clean_type_ids),
+            "market_type_item_types": len(targets),
+        },
+    )
+
+
+def build_market_type_targets(config: EveSsoConfig, type_ids: Iterable[int]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    static_result = build_market_type_targets_from_static(type_ids)
+    if static_result is not None:
+        return static_result
+    return build_market_type_targets_from_esi(config, type_ids, detail_limit=MAX_HAUL_MARKET_TYPE_IDS)
 
 
 def fetch_market_orders(
@@ -3539,6 +3675,7 @@ def build_flight_hauling_payload(
     avoid_recent_pod_kills: bool = DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
     include_common_materials: bool = True,
     market_group_ids: Iterable[int] = (),
+    market_type_ids: Iterable[int] = (),
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
@@ -3592,6 +3729,7 @@ def build_flight_hauling_payload(
         sales_tax=sales_tax,
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
+        market_type_ids=market_type_ids,
         progress=progress,
     )
     route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
@@ -3638,6 +3776,7 @@ def build_flight_acquisition_payload(
     route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE,
     include_common_materials: bool = True,
     market_group_ids: Iterable[int] = (),
+    market_type_ids: Iterable[int] = (),
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
     location = fetch_flight_location(config, session)
@@ -3688,6 +3827,7 @@ def build_flight_acquisition_payload(
         sales_tax=sales_tax,
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
+        market_type_ids=market_type_ids,
     )
     route_path = route_plan["path"]
     route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
@@ -4194,6 +4334,7 @@ def scan_route_hauling_opportunities(
     sales_tax: dict[str, Any],
     include_common_materials: bool,
     market_group_ids: Iterable[int],
+    market_type_ids: Iterable[int],
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     systems = route_cache.systems or {}
@@ -4246,11 +4387,12 @@ def scan_route_hauling_opportunities(
         recipe_cache=recipe_cache,
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
+        market_type_ids=market_type_ids,
     )
     item_truncated = len(item_targets) > MAX_FLIGHT_HAUL_SCAN_TYPES
     scan_targets = item_targets[:MAX_FLIGHT_HAUL_SCAN_TYPES]
     if not scan_targets:
-        raise CorpMarketError("Choose Common materials or at least one market category before scanning hauler routes.")
+        raise CorpMarketError("Choose Common materials, a market category, or at least one exact item before scanning hauler routes.")
     sales_tax_rate = clean_optional_float(sales_tax.get("rate")) or 0.0
 
     opportunities = []
@@ -4437,6 +4579,7 @@ def scan_market_acquisition_opportunities(
     sales_tax: dict[str, Any],
     include_common_materials: bool,
     market_group_ids: Iterable[int],
+    market_type_ids: Iterable[int],
 ) -> dict[str, Any]:
     systems = route_cache.systems or {}
     adjacency = route_cache.adjacency or {}
@@ -4475,13 +4618,14 @@ def scan_market_acquisition_opportunities(
         recipe_cache=recipe_cache,
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
+        market_type_ids=market_type_ids,
         common_material_limit=MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES,
         scan_type_limit=MAX_FLIGHT_ACQUISITION_SCAN_TYPES,
     )
     item_truncated = len(item_targets) > MAX_FLIGHT_ACQUISITION_SCAN_TYPES
     scan_targets = item_targets[:MAX_FLIGHT_ACQUISITION_SCAN_TYPES]
     if not scan_targets:
-        raise CorpMarketError("Choose Common materials or at least one market category before planning acquisitions.")
+        raise CorpMarketError("Choose Common materials, a market category, or at least one exact item before planning acquisitions.")
 
     opportunities = []
     total_source_buy_order_count = 0
@@ -5539,10 +5683,12 @@ def build_haul_item_targets(
     recipe_cache: IndustryRecipeCache,
     include_common_materials: bool,
     market_group_ids: Iterable[int],
+    market_type_ids: Iterable[int] = (),
     common_material_limit: int = MAX_FLIGHT_HAUL_MATERIAL_TYPES,
     scan_type_limit: int = MAX_FLIGHT_HAUL_SCAN_TYPES,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     selected_market_group_ids = clean_haul_market_group_ids(market_group_ids)
+    selected_market_type_ids = clean_haul_market_type_ids(market_type_ids)
     common_targets = []
     common_candidate_count = 0
     clean_common_material_limit = max(0, int(common_material_limit))
@@ -5564,6 +5710,16 @@ def build_haul_item_targets(
     }
     if selected_market_group_ids:
         market_group_targets, market_group_meta = build_market_group_targets(config, selected_market_group_ids)
+    market_type_targets: list[dict[str, Any]] = []
+    market_type_meta: dict[str, Any] = {
+        "source": "",
+        "selected_market_types": [],
+        "selected_market_type_ids": list(selected_market_type_ids),
+        "selected_market_type_count": len(selected_market_type_ids),
+        "market_type_item_types": 0,
+    }
+    if selected_market_type_ids:
+        market_type_targets, market_type_meta = build_market_type_targets(config, selected_market_type_ids)
 
     targets_by_type_id: dict[int, dict[str, Any]] = {}
     for target in common_targets:
@@ -5574,7 +5730,7 @@ def build_haul_item_targets(
             "source_rank": 0,
             "source_labels": ["Common materials"],
         }
-    for target in market_group_targets:
+    for target in market_type_targets:
         type_id = int(target["type_id"])
         existing = targets_by_type_id.get(type_id)
         if existing is None:
@@ -5582,6 +5738,23 @@ def build_haul_item_targets(
                 **target,
                 "recipe_count": int(target.get("recipe_count") or 0),
                 "source_rank": 1,
+                "source_labels": ["Selected items"],
+            }
+            continue
+        if "Selected items" not in existing["source_labels"]:
+            existing["source_labels"].append("Selected items")
+        if not existing.get("volume_m3") and target.get("volume_m3"):
+            existing["volume_m3"] = target.get("volume_m3")
+        existing["market_group_id"] = target.get("market_group_id")
+        existing["market_group_name"] = target.get("market_group_name")
+    for target in market_group_targets:
+        type_id = int(target["type_id"])
+        existing = targets_by_type_id.get(type_id)
+        if existing is None:
+            targets_by_type_id[type_id] = {
+                **target,
+                "recipe_count": int(target.get("recipe_count") or 0),
+                "source_rank": 2,
                 "source_labels": [str(target.get("source_label") or "Market category")],
             }
             continue
@@ -5611,6 +5784,11 @@ def build_haul_item_targets(
         "selected_market_group_count": int(market_group_meta.get("selected_market_group_count") or 0),
         "market_group_source": market_group_meta.get("source") or "",
         "market_group_item_types": int(market_group_meta.get("market_group_item_types") or 0),
+        "selected_market_type_ids": market_type_meta.get("selected_market_type_ids", list(selected_market_type_ids)),
+        "selected_market_types": market_type_meta.get("selected_market_types", []),
+        "selected_market_type_count": int(market_type_meta.get("selected_market_type_count") or 0),
+        "market_type_source": market_type_meta.get("source") or "",
+        "market_type_item_types": int(market_type_meta.get("market_type_item_types") or 0),
         "total_item_types": len(targets),
         "scan_type_limit": clean_scan_type_limit,
     }
@@ -8249,6 +8427,7 @@ def build_http_server(
                 default=True,
             )
             market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
+            market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
@@ -8262,6 +8441,7 @@ def build_http_server(
                     avoid_recent_pod_kills=avoid_recent_pod_kills,
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
+                    market_type_ids=market_type_ids,
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -8305,6 +8485,7 @@ def build_http_server(
                 default=True,
             )
             market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
+            market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
@@ -8318,6 +8499,7 @@ def build_http_server(
                     avoid_recent_pod_kills=avoid_recent_pod_kills,
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
+                    market_type_ids=market_type_ids,
                     progress=emit,
                 )
             except (BrokenPipeError, ConnectionResetError):
@@ -8361,6 +8543,7 @@ def build_http_server(
                 default=True,
             )
             market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
+            market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
             try:
                 payload = build_flight_acquisition_payload(
                     config=sso_config,
@@ -8375,6 +8558,7 @@ def build_http_server(
                     route_preference=route_preference,
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
+                    market_type_ids=market_type_ids,
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -9261,12 +9445,20 @@ def render_market_group_item_list(
     item_rows = []
     for index, item in enumerate(item_list):
         hidden_attr = ' hidden data-market-extra-item="1"' if index >= preview_limit else ""
+        type_id = int(item.get("type_id") or 0)
         item_name = html.escape(str(item.get("name") or f"Type {item.get('type_id', '')}"))
         group_name = str(item.get("market_group_name") or "")
         source_html = ""
         if group_name and group_name != context_name:
             source_html = f' <span class="market-group-item-source">{html.escape(group_name)}</span>'
-        item_rows.append(f"                          <li{hidden_attr}>{item_name}{source_html}</li>")
+        item_rows.append(
+            f"""                          <li{hidden_attr}>
+                            <label class="market-item-check" title="Scan this exact item type">
+                              <input type="checkbox" data-haul-market-type="{type_id}" data-haul-market-type-name="{item_name}">
+                              <span><span class="market-group-item-name">{item_name}</span>{source_html}</span>
+                            </label>
+                          </li>"""
+        )
     hidden_count = total_count - visible_count
     show_more = ""
     if hidden_count > 0:
@@ -9885,10 +10077,26 @@ def _render_flight_attendant_dashboard() -> str:
       max-height: 230px;
       overflow: auto;
       margin: 0;
-      padding: 0 8px 8px 24px;
+      padding: 0 8px 8px;
       color: var(--text);
       font-size: 12px;
+      list-style: none;
     }
+    .market-item-check {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 7px;
+      align-items: start;
+      min-height: 34px;
+      padding: 6px 7px;
+      border: 1px solid rgba(63, 85, 80, .36);
+      border-radius: 6px;
+      background: rgba(5, 9, 11, .36);
+      color: var(--text);
+      line-height: 1.25;
+    }
+    .market-item-check input { margin: 1px 0 0; }
+    .market-group-item-name { display: inline; overflow-wrap: anywhere; }
     .market-group-item-source { color: var(--muted); }
     .market-group-item-actions {
       display: flex;
@@ -12506,6 +12714,7 @@ def _render_flight_attendant_dashboard() -> str:
     const haulCommonMaterials = document.querySelector("#haul-common-materials");
     const haulMarketGroups = document.querySelector("#haul-market-groups");
     const haulMarketGroupInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-group]"));
+    const haulMarketTypeInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-type]"));
     const haulItemScopeSummary = document.querySelector("#haul-item-scope-summary");
     const haulHubButtons = document.querySelector("#haul-hub-buttons");
     const haulScanButton = document.querySelector("#haul-scan");
@@ -12528,6 +12737,7 @@ def _render_flight_attendant_dashboard() -> str:
     const acqCommonMaterials = document.querySelector("#acq-common-materials");
     const acqMarketGroups = document.querySelector("#acq-market-groups");
     const acqMarketGroupInputs = Array.from(acqMarketGroups.querySelectorAll("input[data-haul-market-group]"));
+    const acqMarketTypeInputs = Array.from(acqMarketGroups.querySelectorAll("input[data-haul-market-type]"));
     const acqItemScopeSummary = document.querySelector("#acq-item-scope-summary");
     const acqScanButton = document.querySelector("#acq-scan");
     const acqSummary = document.querySelector("#acq-summary");
@@ -12594,6 +12804,7 @@ def _render_flight_attendant_dashboard() -> str:
     const haulAvoidPodKillsKey = "eve-flight-haul-avoid-pod-kills-v1";
     const haulCommonMaterialsKey = "eve-flight-haul-common-materials-v1";
     const haulMarketGroupIdsKey = "eve-flight-haul-market-group-ids-v1";
+    const haulMarketTypeIdsKey = "eve-flight-haul-market-type-ids-v1";
     const acqOriginKey = "eve-flight-acq-origin-v1";
     const acqDestinationKey = "eve-flight-acq-destination-v1";
     const acqBudgetKey = "eve-flight-acq-budget-v1";
@@ -12603,6 +12814,7 @@ def _render_flight_attendant_dashboard() -> str:
     const acqMinMarginKey = "eve-flight-acq-min-margin-v1";
     const acqCommonMaterialsKey = "eve-flight-acq-common-materials-v1";
     const acqMarketGroupIdsKey = "eve-flight-acq-market-group-ids-v1";
+    const acqMarketTypeIdsKey = "eve-flight-acq-market-type-ids-v1";
     const tradePnlWindowHoursKey = "eve-flight-trade-pnl-window-hours-v1";
     const tradePnlLensKey = "eve-flight-trade-pnl-lens-v1";
     const tradePnlExcludeKey = "eve-flight-trade-pnl-exclude-v1";
@@ -13114,10 +13326,34 @@ def _render_flight_attendant_dashboard() -> str:
         .filter((value) => Number.isFinite(value) && value > 0);
     }
 
+    function readStoredHaulMarketTypeIds() {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(haulMarketTypeIdsKey) || "[]");
+        if (!Array.isArray(parsed)) return [];
+        return parsed.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    function readHaulMarketTypeIdsFromInputs() {
+      return haulMarketTypeInputs
+        .filter((input) => input.checked)
+        .map((input) => Number(input.dataset.haulMarketType))
+        .filter((value) => Number.isFinite(value) && value > 0);
+    }
+
     function applyHaulMarketGroupIds(groupIds) {
       const selected = new Set((groupIds || []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0));
       haulMarketGroupInputs.forEach((input) => {
         input.checked = selected.has(Number(input.dataset.haulMarketGroup));
+      });
+    }
+
+    function applyHaulMarketTypeIds(typeIds) {
+      const selected = new Set((typeIds || []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0));
+      haulMarketTypeInputs.forEach((input) => {
+        input.checked = selected.has(Number(input.dataset.haulMarketType));
       });
     }
 
@@ -13126,6 +13362,8 @@ def _render_flight_attendant_dashboard() -> str:
       if (settings.includeCommonMaterials) parts.push("common materials");
       const groupCount = (settings.marketGroupIds || []).length;
       if (groupCount) parts.push(`${formatNumber(groupCount)} market categor${groupCount === 1 ? "y" : "ies"}`);
+      const typeCount = (settings.marketTypeIds || []).length;
+      if (typeCount) parts.push(`${formatNumber(typeCount)} exact item${typeCount === 1 ? "" : "s"}`);
       return parts.length ? parts.join(" + ") : "no item scope selected";
     }
 
@@ -13141,6 +13379,7 @@ def _render_flight_attendant_dashboard() -> str:
       const activeSettings = settings || {
         includeCommonMaterials: haulCommonMaterials.checked,
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
+        marketTypeIds: readHaulMarketTypeIdsFromInputs(),
       };
       const scopeLabel = haulItemScopeLabel(activeSettings);
       haulItemScopeSummary.textContent = `${scopeLabel}. More item types means a longer route calculation.`;
@@ -13165,6 +13404,7 @@ def _render_flight_attendant_dashboard() -> str:
         avoidRecentPodKills: avoidStored == null ? haulAvoidPodKills.checked : avoidStored !== "0",
         includeCommonMaterials: commonStored == null ? haulCommonMaterials.checked : commonStored !== "0",
         marketGroupIds: readStoredHaulMarketGroupIds(),
+        marketTypeIds: readStoredHaulMarketTypeIds(),
       };
     }
 
@@ -13178,6 +13418,7 @@ def _render_flight_attendant_dashboard() -> str:
       const avoidRecentPodKills = settings.avoidRecentPodKills == null ? haulAvoidPodKills.checked : Boolean(settings.avoidRecentPodKills);
       const includeCommonMaterials = settings.includeCommonMaterials == null ? haulCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
       const marketGroupIds = Array.isArray(settings.marketGroupIds) ? settings.marketGroupIds : readHaulMarketGroupIdsFromInputs();
+      const marketTypeIds = Array.isArray(settings.marketTypeIds) ? settings.marketTypeIds : readHaulMarketTypeIdsFromInputs();
       haulOrigin.value = originName;
       haulDestination.value = destination;
       haulCargoM3.value = String(cargoM3);
@@ -13187,8 +13428,9 @@ def _render_flight_attendant_dashboard() -> str:
       haulAvoidPodKills.checked = avoidRecentPodKills;
       haulCommonMaterials.checked = includeCommonMaterials;
       applyHaulMarketGroupIds(marketGroupIds);
+      applyHaulMarketTypeIds(marketTypeIds);
       haulMinMarginValue.textContent = `${formatNumber(minDetourMarginPercent)}%`;
-      updateHaulItemScopeSummary({includeCommonMaterials, marketGroupIds});
+      updateHaulItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds});
       window.localStorage.setItem(haulOriginKey, originName);
       window.localStorage.setItem(haulDestinationKey, destination);
       window.localStorage.setItem(haulCargoKey, String(cargoM3));
@@ -13198,7 +13440,8 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(haulAvoidPodKillsKey, avoidRecentPodKills ? "1" : "0");
       window.localStorage.setItem(haulCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
       window.localStorage.setItem(haulMarketGroupIdsKey, JSON.stringify(marketGroupIds));
-      return {originName, destination, cargoM3, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills, includeCommonMaterials, marketGroupIds};
+      window.localStorage.setItem(haulMarketTypeIdsKey, JSON.stringify(marketTypeIds));
+      return {originName, destination, cargoM3, detourJumps, minDetourMarginPercent, routePreference, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds};
     }
 
     function clampAcquisitionBudget(value) {
@@ -13232,9 +13475,26 @@ def _render_flight_attendant_dashboard() -> str:
         .filter((value) => Number.isFinite(value) && value > 0);
     }
 
+    function readAcqMarketTypeIdsFromInputs() {
+      return acqMarketTypeInputs
+        .filter((input) => input.checked)
+        .map((input) => Number(input.dataset.haulMarketType))
+        .filter((value) => Number.isFinite(value) && value > 0);
+    }
+
     function readStoredAcqMarketGroupIds() {
       try {
         const parsed = JSON.parse(window.localStorage.getItem(acqMarketGroupIdsKey) || "[]");
+        if (!Array.isArray(parsed)) return [];
+        return parsed.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    function readStoredAcqMarketTypeIds() {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(acqMarketTypeIdsKey) || "[]");
         if (!Array.isArray(parsed)) return [];
         return parsed.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
       } catch (_error) {
@@ -13249,11 +13509,20 @@ def _render_flight_attendant_dashboard() -> str:
       });
     }
 
+    function applyAcqMarketTypeIds(typeIds) {
+      const selected = new Set((typeIds || []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0));
+      acqMarketTypeInputs.forEach((input) => {
+        input.checked = selected.has(Number(input.dataset.haulMarketType));
+      });
+    }
+
     function acquisitionItemScopeLabel(settings) {
       const parts = [];
       if (settings.includeCommonMaterials) parts.push("common materials");
       const groupCount = (settings.marketGroupIds || []).length;
       if (groupCount) parts.push(`${formatNumber(groupCount)} market categor${groupCount === 1 ? "y" : "ies"}`);
+      const typeCount = (settings.marketTypeIds || []).length;
+      if (typeCount) parts.push(`${formatNumber(typeCount)} exact item${typeCount === 1 ? "" : "s"}`);
       return parts.length ? parts.join(" + ") : "no item scope selected";
     }
 
@@ -13261,6 +13530,7 @@ def _render_flight_attendant_dashboard() -> str:
       const activeSettings = settings || {
         includeCommonMaterials: acqCommonMaterials.checked,
         marketGroupIds: readAcqMarketGroupIdsFromInputs(),
+        marketTypeIds: readAcqMarketTypeIdsFromInputs(),
       };
       acqItemScopeSummary.textContent = `${acquisitionItemScopeLabel(activeSettings)}. Market history is checked for every scanned item type.`;
     }
@@ -13288,6 +13558,7 @@ def _render_flight_attendant_dashboard() -> str:
         minMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
         includeCommonMaterials: commonStored == null ? acqCommonMaterials.checked : commonStored !== "0",
         marketGroupIds: readStoredAcqMarketGroupIds(),
+        marketTypeIds: readStoredAcqMarketTypeIds(),
       };
     }
 
@@ -13301,6 +13572,7 @@ def _render_flight_attendant_dashboard() -> str:
       const minMarginPercent = clampHaulMinMargin(settings.minMarginPercent);
       const includeCommonMaterials = settings.includeCommonMaterials == null ? acqCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
       const marketGroupIds = Array.isArray(settings.marketGroupIds) ? settings.marketGroupIds : readAcqMarketGroupIdsFromInputs();
+      const marketTypeIds = Array.isArray(settings.marketTypeIds) ? settings.marketTypeIds : readAcqMarketTypeIdsFromInputs();
       acqOrigin.value = originName;
       acqDestination.value = destination;
       acqBudget.value = String(budgetIsk);
@@ -13310,8 +13582,9 @@ def _render_flight_attendant_dashboard() -> str:
       acqMinMargin.value = String(minMarginPercent);
       acqCommonMaterials.checked = includeCommonMaterials;
       applyAcqMarketGroupIds(marketGroupIds);
+      applyAcqMarketTypeIds(marketTypeIds);
       acqMinMarginValue.textContent = `${formatNumber(minMarginPercent)}%`;
-      updateAcquisitionItemScopeSummary({includeCommonMaterials, marketGroupIds});
+      updateAcquisitionItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds});
       window.localStorage.setItem(acqOriginKey, originName);
       window.localStorage.setItem(acqDestinationKey, destination);
       window.localStorage.setItem(acqBudgetKey, String(budgetIsk));
@@ -13321,7 +13594,8 @@ def _render_flight_attendant_dashboard() -> str:
       window.localStorage.setItem(acqMinMarginKey, String(minMarginPercent));
       window.localStorage.setItem(acqCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
       window.localStorage.setItem(acqMarketGroupIdsKey, JSON.stringify(marketGroupIds));
-      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, targetDays, minMarginPercent, includeCommonMaterials, marketGroupIds};
+      window.localStorage.setItem(acqMarketTypeIdsKey, JSON.stringify(marketTypeIds));
+      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, targetDays, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds};
     }
 
     async function loadFlightStatus() {
@@ -13972,6 +14246,7 @@ def _render_flight_attendant_dashboard() -> str:
         minDetourMarginPercent: haulMinMargin.value,
         includeCommonMaterials: haulCommonMaterials.checked,
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
+        marketTypeIds: readHaulMarketTypeIdsFromInputs(),
       });
       closeHaulEventSource();
       stopHaulProgressTimer();
@@ -13995,6 +14270,7 @@ def _render_flight_attendant_dashboard() -> str:
         avoid_recent_pod_kills: settings.avoidRecentPodKills ? "1" : "0",
         common_materials: settings.includeCommonMaterials ? "1" : "0",
         market_group_ids: settings.marketGroupIds.join(","),
+        market_type_ids: settings.marketTypeIds.join(","),
         detour_jumps: String(settings.detourJumps),
         min_detour_margin_percent: String(settings.minDetourMarginPercent),
       });
@@ -14080,6 +14356,8 @@ def _render_flight_attendant_dashboard() -> str:
       const regionLimit = hauling.pickup_region_truncated ? ` Limited to ${formatNumber(hauling.pickup_regions_scanned)} of ${formatNumber(hauling.pickup_regions_total)} pickup regions.` : "";
       const selectedGroups = (itemScope.selected_market_groups || []).map((group) => group.name).filter(Boolean);
       const groupText = selectedGroups.length ? ` Market categories: ${selectedGroups.slice(0, 4).map((name) => escapeHtml(name)).join(", ")}${selectedGroups.length > 4 ? `, +${formatNumber(selectedGroups.length - 4)} more` : ""}.` : "";
+      const selectedTypes = (itemScope.selected_market_types || []).map((item) => item.name).filter(Boolean);
+      const typeText = selectedTypes.length ? ` Exact items: ${selectedTypes.slice(0, 4).map((name) => escapeHtml(name)).join(", ")}${selectedTypes.length > 4 ? `, +${formatNumber(selectedTypes.length - 4)} more` : ""}.` : "";
       const commonText = itemScope.include_common_materials ? "Common materials included." : "Common materials not included.";
       const routeLabel = route.route_preference_label || "Safer";
       const avoidLabel = route.avoid_recent_pod_kills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
@@ -14110,7 +14388,7 @@ def _render_flight_attendant_dashboard() -> str:
           Pickup detour ${formatNumber(hauling.detour_jumps)} jumps; scanned ${formatNumber(hauling.pickup_regions_scanned)}
           pickup regions; detour threshold ${formatNumber(hauling.min_detour_margin_percent)}%.${escapeHtml(materialLimit + regionLimit)}
         </div>
-        <div class="meta">${escapeHtml(commonText)}${groupText}</div>
+        <div class="meta">${escapeHtml(commonText)}${groupText}${typeText}</div>
         <div class="meta">${formatNumber(hauling.detour_margin_rejected_count)} detour candidates were below the selected profit threshold.</div>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on destination buy-order sales.</div>
         <div class="meta">Market cache: ${formatNumber(marketCache.entries)} entries, ${formatNumber(marketCache.ttl_seconds || 300)}s reuse window.</div>
@@ -14182,6 +14460,7 @@ def _render_flight_attendant_dashboard() -> str:
         minMarginPercent: acqMinMargin.value,
         includeCommonMaterials: acqCommonMaterials.checked,
         marketGroupIds: readAcqMarketGroupIdsFromInputs(),
+        marketTypeIds: readAcqMarketTypeIdsFromInputs(),
       });
       acqScanButton.disabled = true;
       acqSummary.textContent = `Checking public orders and market history for ${acquisitionItemScopeLabel(settings)}...`;
@@ -14199,6 +14478,7 @@ def _render_flight_attendant_dashboard() -> str:
         min_margin_percent: String(settings.minMarginPercent),
         common_materials: settings.includeCommonMaterials ? "1" : "0",
         market_group_ids: settings.marketGroupIds.join(","),
+        market_type_ids: settings.marketTypeIds.join(","),
       });
       try {
         const response = await fetch(`/api/flight/acquisition?${params}`);
@@ -14225,6 +14505,8 @@ def _render_flight_attendant_dashboard() -> str:
       const itemScope = acquisition.item_scope || {};
       const selectedGroups = (itemScope.selected_market_groups || []).map((group) => group.name).filter(Boolean);
       const groupText = selectedGroups.length ? ` Market categories: ${selectedGroups.slice(0, 4).map((name) => escapeHtml(name)).join(", ")}${selectedGroups.length > 4 ? `, +${formatNumber(selectedGroups.length - 4)} more` : ""}.` : "";
+      const selectedTypes = (itemScope.selected_market_types || []).map((item) => item.name).filter(Boolean);
+      const typeText = selectedTypes.length ? ` Exact items: ${selectedTypes.slice(0, 4).map((name) => escapeHtml(name)).join(", ")}${selectedTypes.length > 4 ? `, +${formatNumber(selectedTypes.length - 4)} more` : ""}.` : "";
       const commonText = itemScope.include_common_materials ? "Common materials included." : "Common materials not included.";
       const itemLimit = acquisition.item_truncated ? ` Limited to ${formatNumber(acquisition.scanned_item_types)} of ${formatNumber(acquisition.total_item_types)} selected item types.` : "";
       const regionLimit = acquisition.pickup_region_truncated ? ` Limited to ${formatNumber(acquisition.pickup_regions_scanned)} of ${formatNumber(acquisition.pickup_regions_total)} pickup regions.` : "";
@@ -14243,7 +14525,7 @@ def _render_flight_attendant_dashboard() -> str:
           <div class="profit-stat"><span>History Regions</span><b>${formatNumber(acquisition.history_region_count)}</b></div>
         </div>
         <div class="meta">Scanned ${formatNumber(acquisition.scanned_item_types)} item types across ${formatNumber(acquisition.pickup_regions_scanned)} pickup regions.${escapeHtml(itemLimit + regionLimit)}</div>
-        <div class="meta">${escapeHtml(commonText)}${groupText}</div>
+        <div class="meta">${escapeHtml(commonText)}${groupText}${typeText}</div>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on downstream buy-order sales.</div>
         <div class="meta">Order cache: ${formatNumber(marketCache.entries)} entries. History cache: ${formatNumber(historyCache.entries)} entries.</div>
         <div class="meta">${escapeHtml(acquisition.pricing_note || "Planner is advisory only; verify in EVE before posting buy orders.")}</div>
@@ -16049,6 +16331,7 @@ def _render_flight_attendant_dashboard() -> str:
         minDetourMarginPercent: haulMinMargin.value,
         includeCommonMaterials: haulCommonMaterials.checked,
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
+        marketTypeIds: readHaulMarketTypeIdsFromInputs(),
       });
       const settings = readHaulSettings();
       resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(settings)} to ${settings.destination}.`);
@@ -16059,12 +16342,12 @@ def _render_flight_attendant_dashboard() -> str:
     haulCommonMaterials.addEventListener("change", updateHaulScopeAndReset);
     haulMarketGroups.addEventListener("click", (event) => {
       if (handleMarketGroupShowMore(haulMarketGroups, event)) return;
-      if (event.target.closest("input[data-haul-market-group], .mini-check")) {
+      if (event.target.closest("input[data-haul-market-group], input[data-haul-market-type], .mini-check, .market-item-check")) {
         event.stopPropagation();
       }
     });
     haulMarketGroups.addEventListener("change", (event) => {
-      if (!event.target.closest("input[data-haul-market-group]")) return;
+      if (!event.target.closest("input[data-haul-market-group], input[data-haul-market-type]")) return;
       updateHaulScopeAndReset();
     });
 
@@ -16079,6 +16362,7 @@ def _render_flight_attendant_dashboard() -> str:
         minMarginPercent: acqMinMargin.value,
         includeCommonMaterials: acqCommonMaterials.checked,
         marketGroupIds: readAcqMarketGroupIdsFromInputs(),
+        marketTypeIds: readAcqMarketTypeIdsFromInputs(),
       });
       const settings = readAcquisitionSettings();
       resetMarketAcquisition(`Ready to plan buy orders from ${acquisitionStartLabel(settings)} toward ${settings.destination}.`);
@@ -16101,12 +16385,12 @@ def _render_flight_attendant_dashboard() -> str:
     acqCommonMaterials.addEventListener("change", updateAcquisitionScopeAndReset);
     acqMarketGroups.addEventListener("click", (event) => {
       if (handleMarketGroupShowMore(acqMarketGroups, event)) return;
-      if (event.target.closest("input[data-haul-market-group], .mini-check")) {
+      if (event.target.closest("input[data-haul-market-group], input[data-haul-market-type], .mini-check, .market-item-check")) {
         event.stopPropagation();
       }
     });
     acqMarketGroups.addEventListener("change", (event) => {
-      if (!event.target.closest("input[data-haul-market-group]")) return;
+      if (!event.target.closest("input[data-haul-market-group], input[data-haul-market-type]")) return;
       updateAcquisitionScopeAndReset();
     });
 

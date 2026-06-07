@@ -975,6 +975,13 @@ def test_haul_market_group_ids_parse_and_dedupe():
     assert corp_market.clean_haul_market_group_ids(["4,11", "4", "bad", " 19 "]) == (4, 11, 19)
 
 
+def test_haul_market_type_ids_parse_dedupe_and_limit():
+    assert corp_market.clean_haul_market_type_ids(["27912,27913", "27912", "bad", " 27914 "], limit=2) == (
+        27912,
+        27913,
+    )
+
+
 def test_market_group_picker_renders_sde_counts_items_and_show_more(tmp_path):
     static_data = corp_market.StaticMarketData(
         path=tmp_path / "sde.zip",
@@ -1003,6 +1010,8 @@ def test_market_group_picker_renders_sde_counts_items_and_show_more(tmp_path):
     assert "Includes 1 nested market group." in html_options
     assert "Broken Broadcast Node" in html_options
     assert "Orbital Data Fragment" in html_options
+    assert "data-haul-market-type=\"1\"" in html_options
+    assert "class=\"market-item-check\"" in html_options
     assert "data-market-extra-item" in html_options
     assert "Show 1 more item" in html_options
     assert "data-haul-market-group=\"100\"" in html_options
@@ -1101,6 +1110,58 @@ def test_haul_item_targets_combine_common_materials_and_market_groups(monkeypatc
     assert scope["include_common_materials"] is True
     assert scope["selected_market_group_ids"] == [4]
     assert scope["market_group_item_types"] == 2
+    assert scope["total_item_types"] == 2
+
+
+def test_haul_item_targets_include_exact_market_types(monkeypatch, tmp_path):
+    recipe_cache = IndustryRecipeCache(path=tmp_path / "recipes.json", available=True, recipes={})
+
+    def fake_market_type_targets(config, type_ids):
+        assert tuple(type_ids) == (27912, 27913)
+        return (
+            [
+                {
+                    "type_id": 27912,
+                    "name": "Concussion Bomb",
+                    "recipe_count": 0,
+                    "volume_m3": 75.0,
+                    "source_label": "Selected items",
+                },
+                {
+                    "type_id": 27913,
+                    "name": "Scorch Bomb",
+                    "recipe_count": 0,
+                    "volume_m3": 75.0,
+                    "source_label": "Selected items",
+                },
+            ],
+            {
+                "source": "test-market-types",
+                "selected_market_type_ids": [27912, 27913],
+                "selected_market_types": [
+                    {"type_id": 27912, "name": "Concussion Bomb"},
+                    {"type_id": 27913, "name": "Scorch Bomb"},
+                ],
+                "selected_market_type_count": 2,
+                "market_type_item_types": 2,
+            },
+        )
+
+    monkeypatch.setattr(corp_market, "build_market_type_targets", fake_market_type_targets)
+
+    targets, scope = corp_market.build_haul_item_targets(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        recipe_cache=recipe_cache,
+        include_common_materials=False,
+        market_group_ids=(),
+        market_type_ids=("27912,27913",),
+    )
+
+    assert [target["type_id"] for target in targets] == [27912, 27913]
+    assert targets[0]["source_labels"] == ["Selected items"]
+    assert scope["selected_market_type_ids"] == [27912, 27913]
+    assert scope["selected_market_type_count"] == 2
+    assert scope["market_type_item_types"] == 2
     assert scope["total_item_types"] == 2
 
 
