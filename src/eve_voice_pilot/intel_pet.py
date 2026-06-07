@@ -101,6 +101,11 @@ DEFAULT_INPUT_DEVICE_LABEL = "System default"
 DEFAULT_VOICE_TARGET_TITLE = "EVE"
 DEFAULT_VOICE_MODEL_LABEL = f"Default small ({DEFAULT_MODEL_NAME})"
 RECOMMENDED_VOICE_MODEL_LABEL = f"Recommended lgraph ({RECOMMENDED_MODEL_NAME})"
+DEFAULT_DISCORD_NOTE_SETTINGS_PATH = ROOT / "profiles" / "intel_pet_discord_notes.json"
+DEFAULT_DISCORD_NOTE_SENDER = "IntelPet Notes"
+DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES = ("take a note", "take note", "note", "remember this")
+DEFAULT_DISCORD_NOTE_CANCEL_PHRASES = ("cancel note", "never mind", "forget note")
+MAX_DISCORD_NOTE_TEXT_LENGTH = 1500
 COMMAND_PHRASE_SPLIT_RE = re.compile(r"[\n,]+")
 PET_VOICE_STYLE_PRESETS = (
     (
@@ -427,6 +432,58 @@ def clean_voice_target_title(value: Any) -> str:
     return title or DEFAULT_VOICE_TARGET_TITLE
 
 
+def clean_discord_note_text(value: Any) -> str:
+    text = normalize_response_text(str(value or "").replace("\n", " "))
+    return text[:MAX_DISCORD_NOTE_TEXT_LENGTH].strip()
+
+
+def clean_discord_note_sender(value: Any) -> str:
+    sender = " ".join(str(value or "").strip().split())
+    return sender[:80] or DEFAULT_DISCORD_NOTE_SENDER
+
+
+def clean_discord_note_phrases(value: Any, *, default: Iterable[str]) -> tuple[str, ...]:
+    phrases = clean_voice_command_phrases(value if value is not None else default)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for phrase in phrases:
+        clean_phrase = normalize_phrase(phrase)
+        if clean_phrase and clean_phrase not in seen:
+            normalized.append(clean_phrase)
+            seen.add(clean_phrase)
+    return tuple(normalized) or tuple(normalize_phrase(item) for item in default)
+
+
+def validate_discord_note_webhook_url(webhook_url: str) -> None:
+    from eve_voice_pilot.corp_market import validate_discord_webhook_url
+
+    validate_discord_webhook_url(webhook_url)
+
+
+def clean_discord_note_webhook_url(value: Any, *, allow_blank: bool = True) -> str:
+    webhook_url = str(value or "").strip()
+    if not webhook_url:
+        if allow_blank:
+            return ""
+        raise CorpIntelError("Discord note webhook URL is required.")
+    try:
+        validate_discord_note_webhook_url(webhook_url)
+    except Exception as exc:
+        raise CorpIntelError(str(exc)) from exc
+    return webhook_url
+
+
+def post_discord_note_webhook(
+    webhook_url: str,
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: float = 10.0,
+) -> Any:
+    from eve_voice_pilot.corp_market import post_discord_webhook
+
+    return post_discord_webhook(webhook_url, payload, timeout_seconds=timeout_seconds)
+
+
 def pet_openai_api_key() -> str:
     for name in ("INTEL_PET_OPENAI_API_KEY", "OPENAI_API_KEY", "EVE_VOICE_OPENAI_API_KEY"):
         value = os.environ.get(name, "").strip()
@@ -698,6 +755,183 @@ def voice_status_from_transcript(
         severity="info",
         recorded_at=now_iso(),
     )
+
+
+def discord_note_intent_from_transcript(
+    transcript: str,
+    settings: IntelPetDiscordNoteSettings,
+    *,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+) -> IntelPetDiscordNoteIntent | None:
+    heard = normalize_response_text(transcript)
+    if not heard:
+        return None
+    cleaned, _response_requested = strip_response_call_sign(heard, response_call_signs(response_call_sign))
+    if not cleaned:
+        return None
+
+    cancel_phrases = clean_discord_note_phrases(
+        settings.cancel_phrases,
+        default=DEFAULT_DISCORD_NOTE_CANCEL_PHRASES,
+    )
+    for phrase in cancel_phrases:
+        if cleaned == phrase:
+            return IntelPetDiscordNoteIntent(action="cancel")
+
+    trigger_phrases = clean_discord_note_phrases(
+        settings.trigger_phrases,
+        default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+    )
+    for phrase in trigger_phrases:
+        if cleaned == phrase:
+            return IntelPetDiscordNoteIntent(action="arm")
+        prefix = f"{phrase} "
+        if cleaned.startswith(prefix):
+            note_text = clean_discord_note_text(cleaned[len(prefix) :])
+            if note_text:
+                return IntelPetDiscordNoteIntent(action="send", note_text=note_text)
+            return IntelPetDiscordNoteIntent(action="arm")
+    return None
+
+
+def build_discord_note_payload(
+    note_text: str,
+    settings: IntelPetDiscordNoteSettings,
+    *,
+    pilot_name: str = "",
+    recorded_at: str | None = None,
+) -> dict[str, Any]:
+    note = clean_discord_note_text(note_text)
+    if not note:
+        raise CorpIntelError("Discord note text is empty.")
+    timestamp = recorded_at or now_iso()
+    lines = [
+        "**Intel Pet Note**",
+        note,
+        "",
+        f"Recorded: {timestamp}",
+    ]
+    clean_pilot = " ".join(str(pilot_name or "").split())
+    if clean_pilot:
+        lines.append(f"Pilot: {clean_pilot[:120]}")
+    return {
+        "username": clean_discord_note_sender(settings.sender_name),
+        "content": "\n".join(lines)[:2000],
+        "allowed_mentions": {"parse": []},
+    }
+
+
+def send_discord_note(
+    note_text: str,
+    settings: IntelPetDiscordNoteSettings,
+    *,
+    pilot_name: str = "",
+    poster: Callable[..., Any] = post_discord_note_webhook,
+) -> IntelPetVoiceStatus:
+    recorded_at = now_iso()
+    note = clean_discord_note_text(note_text)
+    if not note:
+        return IntelPetVoiceStatus(
+            title="Discord note skipped",
+            detail="No note text heard.",
+            severity="info",
+            recorded_at=recorded_at,
+        )
+    if not settings.enabled:
+        return IntelPetVoiceStatus(
+            title="Discord notes disabled",
+            detail="Discord notes are off. Enable them in Options > Notes before sending voice notes.",
+            severity="high",
+            recorded_at=recorded_at,
+        )
+    if not settings.webhook_url:
+        return IntelPetVoiceStatus(
+            title="Discord note blocked",
+            detail="No Discord note webhook is configured.",
+            severity="high",
+            recorded_at=recorded_at,
+        )
+    try:
+        payload = build_discord_note_payload(note, settings, pilot_name=pilot_name, recorded_at=recorded_at)
+        poster(settings.webhook_url, payload, timeout_seconds=10.0)
+    except Exception as exc:
+        return IntelPetVoiceStatus(
+            title="Discord note failed",
+            detail=f"Could not send note: {exc}",
+            severity="high",
+            recorded_at=recorded_at,
+        )
+    return IntelPetVoiceStatus(
+        title="Discord note sent",
+        detail=f"Note sent to Discord notes: {note}",
+        severity="info",
+        recorded_at=recorded_at,
+    )
+
+
+def discord_note_status_from_transcript(
+    transcript: str,
+    settings: IntelPetDiscordNoteSettings,
+    *,
+    pending_capture: bool,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+    pilot_name: str = "",
+    poster: Callable[..., Any] = post_discord_note_webhook,
+) -> tuple[IntelPetVoiceStatus | None, bool]:
+    heard = normalize_response_text(transcript)
+    cleaned, _response_requested = strip_response_call_sign(heard, response_call_signs(response_call_sign))
+    intent = discord_note_intent_from_transcript(
+        transcript,
+        settings,
+        response_call_sign=response_call_sign,
+    )
+    if pending_capture:
+        if intent and intent.action == "cancel":
+            return (
+                IntelPetVoiceStatus(
+                    title="Discord note canceled",
+                    detail="Note capture canceled.",
+                    severity="info",
+                    recorded_at=now_iso(),
+                ),
+                False,
+            )
+        note_text = clean_discord_note_text(cleaned)
+        if not note_text:
+            return (
+                IntelPetVoiceStatus(
+                    title="Discord note waiting",
+                    detail="Still waiting for note text.",
+                    severity="info",
+                    recorded_at=now_iso(),
+                ),
+                True,
+            )
+        return send_discord_note(note_text, settings, pilot_name=pilot_name, poster=poster), False
+
+    if intent is None:
+        return None, False
+    if intent.action == "cancel":
+        return (
+            IntelPetVoiceStatus(
+                title="Discord note canceled",
+                detail="No note capture was active.",
+                severity="info",
+                recorded_at=now_iso(),
+            ),
+            False,
+        )
+    if intent.action == "arm":
+        return (
+            IntelPetVoiceStatus(
+                title="Discord note ready",
+                detail="Note capture armed. Speak the note next, or say cancel note.",
+                severity="info",
+                recorded_at=now_iso(),
+            ),
+            True,
+        )
+    return send_discord_note(intent.note_text, settings, pilot_name=pilot_name, poster=poster), False
 
 
 @dataclass(frozen=True)
@@ -1022,6 +1256,59 @@ INTEL_PET_SETTINGS_EXPORT_KIND = "eve-voice-pilot.intel-pet-settings.v1"
 
 
 @dataclass(frozen=True)
+class IntelPetDiscordNoteSettings:
+    enabled: bool = False
+    webhook_url: str = ""
+    sender_name: str = DEFAULT_DISCORD_NOTE_SENDER
+    trigger_phrases: tuple[str, ...] = DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES
+    cancel_phrases: tuple[str, ...] = DEFAULT_DISCORD_NOTE_CANCEL_PHRASES
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "IntelPetDiscordNoteSettings":
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            webhook_url=clean_discord_note_webhook_url(payload.get("webhook_url")),
+            sender_name=clean_discord_note_sender(payload.get("sender_name")),
+            trigger_phrases=clean_discord_note_phrases(
+                payload.get("trigger_phrases"),
+                default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+            ),
+            cancel_phrases=clean_discord_note_phrases(
+                payload.get("cancel_phrases"),
+                default=DEFAULT_DISCORD_NOTE_CANCEL_PHRASES,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "webhook_url": self.webhook_url,
+            "sender_name": clean_discord_note_sender(self.sender_name),
+            "trigger_phrases": list(
+                clean_discord_note_phrases(self.trigger_phrases, default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES)
+            ),
+            "cancel_phrases": list(
+                clean_discord_note_phrases(self.cancel_phrases, default=DEFAULT_DISCORD_NOTE_CANCEL_PHRASES)
+            ),
+        }
+
+    def safe_summary(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "webhook_configured": bool(self.webhook_url),
+            "sender_name": clean_discord_note_sender(self.sender_name),
+            "trigger_phrases": list(self.trigger_phrases),
+            "cancel_phrases": list(self.cancel_phrases),
+        }
+
+
+@dataclass(frozen=True)
+class IntelPetDiscordNoteIntent:
+    action: str
+    note_text: str = ""
+
+
+@dataclass(frozen=True)
 class IntelPetAlert:
     title: str
     severity: str
@@ -1267,6 +1554,41 @@ def load_settings(path: Path | None, *, overrides: argparse.Namespace | None = N
 
 
 def save_settings(path: Path, settings: IntelPetSettings) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = json.dumps(settings.to_dict(), indent=2) + "\n"
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(body, encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def load_discord_note_settings(
+    path: Path | None,
+    *,
+    overrides: argparse.Namespace | None = None,
+) -> IntelPetDiscordNoteSettings:
+    payload: dict[str, Any] = {}
+    if path and path.expanduser().exists():
+        try:
+            loaded = json.loads(path.expanduser().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CorpIntelError(f"Could not read Intel Pet Discord note settings {path}: {exc}") from exc
+        if isinstance(loaded, dict):
+            payload = loaded
+    settings = IntelPetDiscordNoteSettings.from_dict(payload)
+    if overrides is None:
+        return settings
+    if getattr(overrides, "discord_note_webhook_url", ""):
+        settings = replace(
+            settings,
+            webhook_url=clean_discord_note_webhook_url(overrides.discord_note_webhook_url),
+        )
+    if getattr(overrides, "enable_discord_notes", None) is not None:
+        settings = replace(settings, enabled=bool(overrides.enable_discord_notes))
+    return settings
+
+
+def save_discord_note_settings(path: Path, settings: IntelPetDiscordNoteSettings) -> None:
     path = path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(settings.to_dict(), indent=2) + "\n"
@@ -2171,6 +2493,9 @@ def run_overlay(
     channel_filter = channel_filter_from_args(args)
     listener_filter = listener_filter_from_args(args, location_session=location_session)
     settings_path = args.settings_path.expanduser()
+    discord_note_settings_path = args.discord_note_settings_path.expanduser()
+    discord_note_settings_lock = threading.Lock()
+    discord_note_settings = load_discord_note_settings(discord_note_settings_path, overrides=args)
     happy_systems = clean_user_terms(args.happy_system or DEFAULT_HAPPY_SYSTEMS)
     location_poll_seconds = max(5.0, safe_float(args.location_poll_seconds, DEFAULT_LOCATION_POLL_SECONDS))
     current_system_lock = threading.Lock()
@@ -2196,6 +2521,16 @@ def run_overlay(
         nonlocal current_system_name
         with current_system_lock:
             current_system_name = system_name
+
+    def current_discord_note_settings() -> IntelPetDiscordNoteSettings:
+        with discord_note_settings_lock:
+            return discord_note_settings
+
+    def update_discord_note_settings(settings: IntelPetDiscordNoteSettings) -> IntelPetDiscordNoteSettings:
+        nonlocal discord_note_settings
+        with discord_note_settings_lock:
+            discord_note_settings = settings
+        return settings
 
     def on_message(message: ChatMessage) -> None:
         alert = engine.analyze(message)
@@ -2280,6 +2615,7 @@ def run_overlay(
     def voice_practice_watcher() -> None:
         transcriber: LocalVoskTranscriber | RealtimeTranscriber | None = None
         transcriber_signature: tuple[Any, ...] | None = None
+        pending_note_capture = False
         ready_announced = False
         last_error = ""
         while not stop_event.is_set():
@@ -2347,6 +2683,17 @@ def run_overlay(
                     )
 
                 transcript = transcriber.record_until_stopped(stop_event, on_ready=on_ready)
+                note_status, pending_note_capture = discord_note_status_from_transcript(
+                    transcript,
+                    current_discord_note_settings(),
+                    pending_capture=pending_note_capture,
+                    response_call_sign=call_sign,
+                    pilot_name=location_session.character_name if location_session is not None else "",
+                )
+                if note_status:
+                    alert_queue.put(note_status)
+                    last_error = ""
+                    continue
                 status = voice_status_from_transcript(
                     transcript,
                     commands,
@@ -2657,12 +3004,14 @@ def run_overlay(
         settings_tab, settings_frame = scrollable_tab(notebook)
         behavior_tab, behavior_frame = scrollable_tab(notebook)
         voice_tab, voice_frame = scrollable_tab(notebook)
+        notes_tab, notes_frame = scrollable_tab(notebook)
         voice_lab_tab, voice_lab_frame = scrollable_tab(notebook)
         diagnostics_tab, diagnostics_frame = scrollable_tab(notebook)
         history_tab, history_frame = scrollable_tab(notebook)
         notebook.add(settings_tab, text="Alerts")
         notebook.add(behavior_tab, text="Behaviors")
         notebook.add(voice_tab, text="Voice")
+        notebook.add(notes_tab, text="Notes")
         notebook.add(voice_lab_tab, text="Voice Lab")
         notebook.add(diagnostics_tab, text="Diagnostics")
         notebook.add(history_tab, text="History")
@@ -3275,6 +3624,123 @@ def run_overlay(
                 pet_speech.play_text(clean_voice_preview_text(voice_preview_text_var.get()), label="pet voice test"),
             ),
         ).pack(side="left", padx=(6, 0))
+
+        ttk.Label(notes_frame, text="Discord voice notes", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(
+            notes_frame,
+            text=(
+                "Send deliberate voice notes to a Discord notes channel. The webhook is stored only in a separate "
+                "ignored local notes file and is not included in Intel Pet settings export."
+            ),
+            wraplength=620,
+        ).pack(anchor="w", pady=(2, 10))
+
+        discord_note_form = ttk.Frame(notes_frame)
+        discord_note_form.pack(fill="x")
+        discord_note_form.columnconfigure(1, weight=1)
+
+        note_settings = current_discord_note_settings()
+        note_enabled_var = tk.BooleanVar(value=note_settings.enabled)
+        note_webhook_var = tk.StringVar(value=note_settings.webhook_url)
+        note_sender_var = tk.StringVar(value=clean_discord_note_sender(note_settings.sender_name))
+        note_trigger_var = tk.StringVar(value=", ".join(note_settings.trigger_phrases))
+        note_cancel_var = tk.StringVar(value=", ".join(note_settings.cancel_phrases))
+        note_test_var = tk.StringVar(value="gate camp near the Amarr undock")
+        note_status_var = tk.StringVar(value=f"Notes settings file: {discord_note_settings_path}")
+
+        def refresh_discord_note_fields(settings: IntelPetDiscordNoteSettings) -> None:
+            note_enabled_var.set(settings.enabled)
+            note_webhook_var.set(settings.webhook_url)
+            note_sender_var.set(clean_discord_note_sender(settings.sender_name))
+            note_trigger_var.set(", ".join(settings.trigger_phrases))
+            note_cancel_var.set(", ".join(settings.cancel_phrases))
+
+        def discord_note_settings_from_form() -> IntelPetDiscordNoteSettings:
+            return IntelPetDiscordNoteSettings(
+                enabled=note_enabled_var.get(),
+                webhook_url=clean_discord_note_webhook_url(note_webhook_var.get()),
+                sender_name=clean_discord_note_sender(note_sender_var.get()),
+                trigger_phrases=clean_discord_note_phrases(
+                    note_trigger_var.get(),
+                    default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+                ),
+                cancel_phrases=clean_discord_note_phrases(
+                    note_cancel_var.get(),
+                    default=DEFAULT_DISCORD_NOTE_CANCEL_PHRASES,
+                ),
+            )
+
+        def persist_discord_note_settings(action: str = "Discord note settings saved") -> IntelPetDiscordNoteSettings | None:
+            try:
+                settings = discord_note_settings_from_form()
+                save_discord_note_settings(discord_note_settings_path, settings)
+                update_discord_note_settings(settings)
+                refresh_discord_note_fields(settings)
+            except Exception as exc:
+                note_status_var.set(f"Save failed: {exc}")
+                editor_status_var.set(f"Discord note save failed: {exc}")
+                return None
+            configured = "configured" if settings.webhook_url else "missing"
+            enabled = "on" if settings.enabled else "off"
+            note_status_var.set(f"{action}. Notes are {enabled}; webhook is {configured}.")
+            editor_status_var.set(note_status_var.get())
+            return settings
+
+        def send_test_discord_note() -> None:
+            settings = persist_discord_note_settings("Discord note test settings saved")
+            if settings is None:
+                return
+            status = send_discord_note(
+                note_test_var.get(),
+                settings,
+                pilot_name=location_session.character_name if location_session is not None else "",
+            )
+            alert_queue.put(status)
+            note_status_var.set(status.detail)
+            editor_status_var.set(status.title)
+
+        ttk.Checkbutton(
+            discord_note_form,
+            text="Enable Discord voice notes",
+            variable=note_enabled_var,
+            command=lambda: persist_discord_note_settings("Discord note toggle saved"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        ttk.Label(discord_note_form, text="Note webhook URL").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Entry(discord_note_form, textvariable=note_webhook_var).grid(row=1, column=1, sticky="ew", pady=5)
+        ttk.Label(
+            discord_note_form,
+            text="Use a webhook from the dedicated Discord notes channel. This local file is ignored by git.",
+            wraplength=560,
+        ).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+
+        ttk.Label(discord_note_form, text="Sender name").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Entry(discord_note_form, textvariable=note_sender_var).grid(row=3, column=1, sticky="ew", pady=5)
+
+        ttk.Label(discord_note_form, text="Trigger phrases").grid(row=4, column=0, sticky="w", pady=5)
+        ttk.Entry(discord_note_form, textvariable=note_trigger_var).grid(row=4, column=1, sticky="ew", pady=5)
+        ttk.Label(
+            discord_note_form,
+            text="Examples: Aura take a note gate camp in Dihra, or Aura take a note then speak the note next.",
+            wraplength=560,
+        ).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+
+        ttk.Label(discord_note_form, text="Cancel phrases").grid(row=6, column=0, sticky="w", pady=5)
+        ttk.Entry(discord_note_form, textvariable=note_cancel_var).grid(row=6, column=1, sticky="ew", pady=5)
+
+        test_frame = ttk.LabelFrame(notes_frame, text="Manual test", padding=8)
+        test_frame.pack(fill="x", pady=(12, 0))
+        test_frame.columnconfigure(1, weight=1)
+        ttk.Label(test_frame, text="Test note").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Entry(test_frame, textvariable=note_test_var).grid(row=0, column=1, sticky="ew", pady=5)
+        note_buttons = ttk.Frame(test_frame)
+        note_buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(note_buttons, text="Save Notes", command=persist_discord_note_settings).pack(side="left")
+        ttk.Button(note_buttons, text="Send Test Note", command=send_test_discord_note).pack(side="left", padx=(6, 0))
+
+        note_status_frame = ttk.LabelFrame(notes_frame, text="Status", padding=8)
+        note_status_frame.pack(fill="x", pady=(12, 0))
+        ttk.Label(note_status_frame, textvariable=note_status_var, wraplength=620).pack(anchor="w", fill="x")
 
         ttk.Label(voice_lab_frame, text="Voice Lab", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(
@@ -4418,6 +4884,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Watch matching channels for every local EVE character log. With location cheer, the default is the SSO character only.",
     )
     parser.add_argument("--settings-path", type=Path, default=DEFAULT_SETTINGS_PATH, help="Local intel pet settings JSON.")
+    parser.add_argument(
+        "--discord-note-settings-path",
+        type=Path,
+        default=DEFAULT_DISCORD_NOTE_SETTINGS_PATH,
+        help="Local JSON file for Discord voice note settings.",
+    )
+    parser.add_argument(
+        "--discord-note-webhook-url",
+        default=os.environ.get("INTEL_PET_DISCORD_NOTE_WEBHOOK_URL", ""),
+        help="Discord channel webhook URL for voice notes. Stored only if saved from Options.",
+    )
+    parser.add_argument(
+        "--enable-discord-notes",
+        action="store_true",
+        default=None,
+        help="Enable voice notes to the configured Discord note channel.",
+    )
+    parser.add_argument(
+        "--no-discord-notes",
+        action="store_false",
+        dest="enable_discord_notes",
+        help="Disable Discord voice notes even if saved settings enable them.",
+    )
     parser.add_argument("--pilot-name", action="append", default=(), help="Your character name for mention alerts.")
     parser.add_argument("--keyword", action="append", default=(), help="Extra keyword to alert on.")
     parser.add_argument("--help-phrase", action="append", default=(), help="Extra help phrase to treat as critical.")

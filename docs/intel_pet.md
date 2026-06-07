@@ -68,7 +68,34 @@ You can add extra keywords or help phrases from the command line:
   --help-phrase "need evac"
 ```
 
-The current version has no Discord push. That keeps the trust boundary simple while we prove the overlay is useful. The future opt-in plan is in `docs/intel_pet_discord_plan.md`.
+The current version still does not automatically forward chat alerts to Discord. Deliberate voice notes can be sent to a dedicated Discord notes channel when you opt in and configure a notes webhook.
+
+## Optional Discord Voice Notes
+
+Discord voice notes let you say a phrase such as:
+
+```text
+Aura take a note gate camp near the Amarr undock
+```
+
+You can also say `Aura take a note` by itself. The pet will arm note capture, then send the next spoken phrase as the note. Say `cancel note` to cancel an armed note.
+
+Set this up from `Options` > `Notes`, or start the pet with a notes webhook:
+
+```powershell
+.\scripts\run_intel_pet.ps1 `
+  --enable-voice-listener `
+  --enable-discord-notes `
+  --discord-note-webhook-url "https://discord.com/api/webhooks/..."
+```
+
+The notes webhook is saved only if you save it from `Options` > `Notes`, and it goes to:
+
+```text
+profiles/intel_pet_discord_notes.json
+```
+
+That file is ignored by git. It is separate from normal Intel Pet settings, and it is not included in Intel Pet settings export/import. Discord note messages disable Discord mentions with `allowed_mentions: {"parse": []}`.
 
 ## Local Combat Kill Cheer
 

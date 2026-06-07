@@ -26,6 +26,16 @@ The board stores listings in ignored local SQLite data:
 profiles/corp_market.sqlite3
 ```
 
+## Shared Fittings Tab
+
+The `Shared Fittings` tab is a corp fitting library for user-pasted EVE fitting clipboard blocks.
+
+- Pilots paste the standard fitting text copied from EVE's fitting tab, starting with a header like `[Hawk, Abyss fit]`.
+- The concierge parses the header to label the hull and fit name, then stores the full copy/paste block in the ignored `profiles/corp_market.sqlite3` database.
+- Entries can include optional tags, a submitter name, and a website fitting link such as an EVE Workbench, forum, or doctrine page.
+- Members copy the saved fitting block back out and import or simulate it manually in EVE.
+- The tab does not use ESI, read the EVE client, scrape files, send keys, click buttons, create contracts, or place market orders.
+
 ## Flight Attendant Tab
 
 The local board now includes a `Flight Attendant` tab beside the market board.
@@ -34,12 +44,13 @@ The first version is a safe briefing surface:
 
 - It stores captain's notes in the browser only.
 - It can use read-only ESI location, assets, and blueprints to show the connected pilot's current system, owned blueprint summary, and material stacks.
+- It includes a separate `Industry Library` tab for owned blueprints, owned materials, recipe cache status, ME/TE, required skills, max production limit, base job time, and TE-adjusted timing assumptions.
 - It can compare owned blueprint type IDs with a local static recipe cache before market pricing is added.
 - It can use a local SDE route graph to show systems within the selected jump range of the current ESI location.
 - It can scan public ESI buy orders for products made by owned blueprints and filter those buyer orders to the selected jump range.
 - It includes a `Hauler Routes` tab that compares cheap public material sell orders on or near a selected route with higher public buy orders in the destination system, then lets the pilot rank and filter results by total profit, ISK per m3, ISK per extra jump, or margin.
-- It includes a `Market Acquisition Planner` tab that compares public buy/sell orders with public market history before suggesting public buy-order ceilings, first-order size, and collection range.
-- It includes a `Trade P&L` tab that reads recent wallet transactions and wallet journal fee rows to match visible buys and sells into item-level profit, loss, open stock, unmatched sells, and optional matched transaction rows. The tab can narrow history from 1 hour to 30 days and can apply consideration rules to the considered income total: count every item, ignore SDE-labeled materials and inputs, ignore a custom list, or combine materials with a custom list. Ignored items stay visible with their real result. Inventory mode can add a Fuzzwork Jita 4-4 aggregate estimate for open stock; realized P&L remains based on matched wallet transactions. Acquisition Planner recommendations are saved as local expected bid/profit snapshots so P&L can show actual-vs-plan deltas later. Seen wallet transactions are also saved locally so older buys can be replayed as opening inventory for later sells.
+- It includes a `Market Investment Portfolio` tab that compares public buy/sell orders with public market history before suggesting a diversified spread of public buy-order candidates across item families, total ISK budget, and total planning-jump budget.
+- It includes a `Trade P&L` tab that reads recent wallet transactions and wallet journal fee rows to match visible buys and sells into item-level profit, loss, open stock, unmatched sells, and optional matched transaction rows. The tab can narrow history from 1 hour to 30 days and can apply consideration rules to the considered income total: count every item, ignore SDE-labeled materials and inputs, ignore a custom list, or combine materials with a custom list. Ignored items stay visible with their real result. Inventory mode can add a Fuzzwork Jita 4-4 aggregate estimate for open stock; realized P&L remains based on matched wallet transactions. Investment Portfolio recommendations are saved as local expected bid/profit snapshots so P&L can show actual-vs-plan deltas later. Seen wallet transactions are also saved locally so older buys can be replayed as opening inventory for later sells.
 - It includes an `Ore Reprocessing` tab that uses ESI location, skills, standings, and implants plus local SDE ore data to estimate mineral output from a typed ore amount.
 - It includes a `Planetary Industry` planner for comparing PI schematics, material chains, market prices, planet availability, and customs transfer costs before a pilot moves goods manually.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
@@ -214,31 +225,34 @@ The Flight Attendant buyer scanner uses your connected ESI location and blueprin
 
 Public ESI market orders are cached in the local server process for 5 minutes. This keeps repeated buyer, profitability, and hauling scans from hammering the same market-order endpoint and lines up with CCP's market-order cache/rate-limit direction.
 
-### Market Acquisition Planner
+### Market Investment Portfolio
 
-The `Market Acquisition Planner` tab is for strategic public buy-order placement. It uses the connected pilot's current system, a chosen downstream demand system, public regional market orders, public regional market history, the route graph, and a user-entered broker-fee estimate.
+The `Market Investment Portfolio` tab is for strategic public buy-order placement with diversification. It uses the connected pilot's current system, a chosen downstream demand system, public regional market orders, public regional market history, the route graph, a total investment budget, a total planning-jump budget, and a user-entered broker-fee estimate.
 
 It recommends:
 
 - a safe bid ceiling after estimated broker fees and downstream sales tax;
-- a small suggested starting bid;
-- a first-order unit count capped by budget, destination buy-order depth, and recent market-history volume;
+- a diversified portfolio line from each viable item family where the budget and jump cap allow it;
+- a scaled first-order unit count capped by total investment, destination buy-order depth, and recent market-history volume;
 - a narrow or wider buy-order range;
+- invested ISK, estimated net profit, category weights, and planning jumps used;
 - visible history warnings.
 
-The item scope picker is shared with `Hauler Routes`. When the local SDE market data is available, each top-level market category and subcategory is labeled from that cache, shows the published item count, and includes collapsed item checkboxes with a show-more control. Use a whole category when you want broad coverage, or expand a subcategory such as Bombs and select exact item types when you want a narrow scan. The planner defaults to a 50,000,000 ISK budget and accepts manual budgets from 1 ISK through 10,000,000,000 ISK. Common materials uses a smaller top-industry-input scan in the hosted planner so broad scans are less likely to time out; use market categories or exact items for a more targeted family of items.
+The portfolio model follows the useful Goonmetrics-style trading idea: do not judge only the single highest markup row. It also looks at recent volume, visible demand, category spread, and how much work the spread creates. The total planning-jump budget is an effort cap, not a guaranteed route optimizer, because future buy-order fills may land in different stations or systems than current orders show.
+
+The item scope picker is shared with `Hauler Routes`. When the local SDE market data is available, each top-level market category and subcategory is labeled from that cache, shows the published item count, and includes collapsed item checkboxes with a show-more control. Use a whole category when you want broad coverage, or expand a subcategory such as Bombs and select exact item types when you want a narrow scan. The portfolio defaults to a 50,000,000 ISK budget and a 50-jump planning budget, and accepts manual budgets from 1 ISK through 10,000,000,000 ISK. Common materials uses a smaller top-industry-input scan in the hosted planner so broad scans are less likely to time out; use market categories or exact items for a more targeted family of items.
 
 History warnings are intentionally plain-language. A `Possible trap` signal means the top-of-book spread is not supported by recent market history, the competing buy side is already above the safe ceiling, or another market-history/current-order mismatch needs manual checking. It is not proof of bad intent by another player. Treat it as a reason to verify the item in EVE before posting a buy order.
 
-Acquisition recommendations, hauler route opportunities, and Planetary Industry input/output lists include Quickbar copy buttons. Those buttons copy plain market item names, one per line, for EVE's Market Quickbar import flow. They do not copy quantities, place orders, write EVE settings files, or touch the EVE client; the pilot still opens the market window, uses `Quickbar > Import Quickbar`, chooses the add/import option, and verifies the item list manually in EVE.
+Portfolio recommendations, hauler route opportunities, and Planetary Industry input/output lists include Quickbar copy buttons. Those buttons copy plain market item names, one per line, for EVE's Market Quickbar import flow. They do not copy quantities, place orders, write EVE settings files, or touch the EVE client; the pilot still opens the market window, uses `Quickbar > Import Quickbar`, chooses the add/import option, and verifies the item list manually in EVE.
 
 This tab does not place, update, or cancel market orders. The pilot still creates every buy order manually in EVE.
 
-### Blueprint Profitability
+### Industry Library And Blueprint Profitability
 
 Version 1 is intentionally focused on manufacturing recipes. It does not yet rank reactions, invention, copying, or research jobs.
 
-The profitability board uses:
+The `Industry Library` tab is the source-of-truth view for what the app knows from ESI and the local SDE cache. The profitability board uses:
 
 - owned character blueprints from ESI, including BPO/BPC, runs, ME, and TE;
 - owned materials from ESI assets;
@@ -248,7 +262,18 @@ The profitability board uses:
 - public Jita buy orders for the raw resource value if the required materials were liquidated instead of built;
 - Accounting skill for sales-tax estimates.
 
-Profit cards show after-tax true profit first, then wallet gain, TE-adjusted one-run job time, and estimated profit per hour. Math details keep the before-tax values and the underlying blueprint, material, skill, and job-time assumptions visible.
+Profit cards show the clearer decision lenses first:
+
+- `True Build Profit`: product net sale value minus all ME-adjusted material value. Owned materials are not treated as free.
+- `Cash Needed Lens`: cash-flow view that subtracts only missing material purchases. This is useful for affordability, but it is not the real profit number.
+- `Jita Liquidation Alternative`: the Jita buy-order value of the required materials if the pilot sold the inputs instead of building.
+- `True Profit / Hour`: true build profit divided by TE-adjusted one-run job time.
+
+The default sale mode assumes selling into a nearby existing public buy order. That means Accounting-based sales tax is included, and broker fee is not included because the pilot is not creating a new non-immediate order in this default lens. A later sell-order mode must include broker fee, order-change fees, Broker Relations, and unmodified NPC corporation/faction standings where applicable. Upwell market broker fees are structure settings and should remain explicit assumptions unless the app can verify them.
+
+Profit cards include confidence labels. High confidence means buyer revenue and all ME-adjusted material prices are known. Medium confidence means the app can still guide the pilot but some replacement-price coverage is partial. Estimate-only means a buyer, recipe, material price, or other core assumption is missing.
+
+Build-location costs are not included in the default profit lens yet. Facility tax, SCC cost, rigs, system cost index, alpha-clone cost where applicable, and exact build facility should be modeled only after a selected build location is available. The ESI current system is a reasonable default, but it must stay changeable because characters move often.
 
 Future modules should be added one calculator at a time:
 
@@ -275,7 +300,7 @@ python .\scripts\update_industry_recipe_cache.py
 
 ## Discord Alert Router
 
-The first dashboard tab is being changed from a market-offer board into a Discord alert-router settings page.
+The first dashboard tab is now a Discord alert-router settings page.
 
 The new target is not "sign in to Discord" inside the site. It is a local settings surface for deciding which local events are allowed to become Discord messages:
 
@@ -284,13 +309,31 @@ The new target is not "sign in to Discord" inside the site. It is a local settin
 - route rules such as `Alliance alert channel`, `Corp logistics`, or `Director DMs`;
 - payload rules such as summary-only by default, with matched text disabled unless explicitly enabled for that route.
 
-Current first-slice behavior is planning-only in the browser. It shows the router shape, example rule draft, and privacy posture. Automatic Discord alert sending is not enabled yet.
+Current behavior:
+
+- settings are saved in ignored local JSON at `profiles/corp_discord_alert_settings.json`;
+- the actual webhook URL still comes from the existing `--discord-webhook-url` argument or `CORP_MARKET_DISCORD_WEBHOOK_URL` environment variable;
+- the default sender name is `IntelPet`, using Discord webhook username override behavior;
+- the page can preview the exact Discord payload and send an explicit manual test message;
+- dry-run mode is on by default, and automatic Intel Pet forwarding is not wired yet.
+
+Start with the existing Discord webhook option:
+
+```powershell
+.\scripts\run_corp_market.ps1 serve --discord-webhook-url "https://discord.com/api/webhooks/..."
+```
+
+You can use a different ignored settings path for local tests:
+
+```powershell
+.\scripts\run_corp_market.ps1 serve --discord-alert-settings-path ".\profiles\corp_discord_alert_settings_test.json"
+```
 
 Safe implementation rules for later slices:
 
 - Discord delivery must be off by default.
 - Channel alerts can use Discord webhooks.
-- DMs require a Discord bot and explicit recipient opt-in; webhooks cannot send DMs.
+- DMs and "send as the user" require a Discord bot/user-consent design; webhooks cannot send DMs, and normal Discord user accounts should not be used as self-bots.
 - Raw chat logs, full alert history, tokens, webhook URLs, and profile paths must never be forwarded.
 - User-controlled text must disable Discord mentions and use `allowed_mentions: {"parse": []}`.
 - Every route should have a dry-run preview before live sending is enabled.

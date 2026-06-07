@@ -23,6 +23,8 @@ from eve_voice_pilot.intel_pet import (
     DEFAULT_ALERT_SECONDS,
     DEFAULT_ALERT_BEHAVIORS,
     DEFAULT_INPUT_DEVICE_LABEL,
+    DEFAULT_DISCORD_NOTE_SENDER,
+    DEFAULT_DISCORD_NOTE_SETTINGS_PATH,
     DEFAULT_PET_SPEECH_ENGINE,
     DEFAULT_VOICE_PROFILE,
     DEFAULT_VOICE_ENGINE,
@@ -40,6 +42,7 @@ from eve_voice_pilot.intel_pet import (
     SHIP_FRAME_COUNT,
     GameLogState,
     IntelPetCombatCheer,
+    IntelPetDiscordNoteSettings,
     IntelPetHistoryItem,
     IntelPetLocationCheer,
     IntelPetLocationSession,
@@ -54,6 +57,7 @@ from eve_voice_pilot.intel_pet import (
     behavior_label,
     clean_alert_behaviors,
     clean_spoken_alert_kinds,
+    build_discord_note_payload,
     clean_voice_command_phrases,
     clean_voice_engine,
     clean_voice_input_device,
@@ -63,6 +67,8 @@ from eve_voice_pilot.intel_pet import (
     clean_voice_target_title,
     clean_user_terms,
     combat_cheer_from_game_log_line,
+    discord_note_intent_from_transcript,
+    discord_note_status_from_transcript,
     closest_voice_phrase_suggestions,
     display_message_from_alert,
     display_message_from_alerts,
@@ -93,6 +99,7 @@ from eve_voice_pilot.intel_pet import (
     mission_cheer_from_game_log_line,
     import_settings,
     load_settings,
+    load_discord_note_settings,
     pet_voice_preset_for_style,
     pet_voice_preset_names,
     pet_voice_preview_for_preset,
@@ -108,6 +115,8 @@ from eve_voice_pilot.intel_pet import (
     replace_spoken_alert_kinds,
     replace_voice_settings,
     save_settings,
+    save_discord_note_settings,
+    send_discord_note,
     settings_from_import_payload,
     ship_sprite_frame_paths,
     should_speak_alert_kind,
@@ -297,6 +306,28 @@ def test_exported_settings_import_round_trips_clean_payload(tmp_path):
     imported = import_settings(export_path)
 
     assert imported == settings
+
+
+def test_discord_note_settings_round_trip_and_stay_out_of_export(tmp_path):
+    settings_path = tmp_path / "intel_pet_discord_notes.json"
+    settings = IntelPetDiscordNoteSettings(
+        enabled=True,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
+        sender_name="Aura Notes",
+        trigger_phrases=("take a note", "remember"),
+        cancel_phrases=("cancel note",),
+    )
+
+    save_discord_note_settings(settings_path, settings)
+    loaded = load_discord_note_settings(settings_path)
+    exported = export_settings_payload(IntelPetSettings())
+
+    assert loaded.enabled is True
+    assert loaded.webhook_url.endswith("/token-value")
+    assert loaded.sender_name == "Aura Notes"
+    assert loaded.trigger_phrases == ("take a note", "remember")
+    assert "webhook" not in json.dumps(exported).casefold()
+    assert DEFAULT_DISCORD_NOTE_SETTINGS_PATH.name == "intel_pet_discord_notes.json"
 
 
 def test_import_settings_accepts_raw_profile_json_and_rejects_unrelated_json(tmp_path):
@@ -731,6 +762,100 @@ def test_voice_status_from_transcript_reports_unmatched_phrase():
     assert status is not None
     assert status.title == "Voice heard"
     assert "No exact command matched." in status.detail
+
+
+def test_discord_note_intent_detects_inline_and_armed_notes():
+    settings = IntelPetDiscordNoteSettings(trigger_phrases=("take a note", "remember this"))
+
+    inline = discord_note_intent_from_transcript(
+        "Aura take a note gate camp near amarr",
+        settings,
+        response_call_sign="Aura",
+    )
+    armed = discord_note_intent_from_transcript("Aura take a note", settings, response_call_sign="Aura")
+
+    assert inline is not None
+    assert inline.action == "send"
+    assert inline.note_text == "gate camp near amarr"
+    assert armed is not None
+    assert armed.action == "arm"
+
+
+def test_discord_note_payload_uses_sender_and_disables_mentions():
+    settings = IntelPetDiscordNoteSettings(sender_name="Aura Notes")
+
+    payload = build_discord_note_payload(
+        "@everyone check hostile order",
+        settings,
+        pilot_name="Dandin Ridderston",
+        recorded_at="2026-06-07T12:00:00Z",
+    )
+
+    assert payload["username"] == "Aura Notes"
+    assert payload["allowed_mentions"] == {"parse": []}
+    assert "@everyone check hostile order" in payload["content"]
+    assert "Dandin Ridderston" in payload["content"]
+
+
+def test_send_discord_note_posts_to_configured_webhook_without_network():
+    settings = IntelPetDiscordNoteSettings(
+        enabled=True,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
+        sender_name=DEFAULT_DISCORD_NOTE_SENDER,
+    )
+    sent: list[tuple[str, dict, float]] = []
+
+    status = send_discord_note(
+        "buy tritanium later",
+        settings,
+        poster=lambda url, payload, timeout_seconds: sent.append((url, payload, timeout_seconds)),
+    )
+
+    assert status.title == "Discord note sent"
+    assert sent[0][0] == settings.webhook_url
+    assert sent[0][1]["username"] == DEFAULT_DISCORD_NOTE_SENDER
+    assert "buy tritanium later" in sent[0][1]["content"]
+    assert sent[0][2] == 10.0
+
+
+def test_discord_note_status_can_arm_next_phrase_and_cancel():
+    settings = IntelPetDiscordNoteSettings(
+        enabled=True,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
+    )
+    sent: list[dict] = []
+
+    ready, pending = discord_note_status_from_transcript(
+        "Aura take a note",
+        settings,
+        pending_capture=False,
+        response_call_sign="Aura",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+    )
+    sent_status, pending = discord_note_status_from_transcript(
+        "Fuel block prices look low in Jita",
+        settings,
+        pending_capture=pending,
+        response_call_sign="Aura",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+    )
+    cancel_status, pending_after_cancel = discord_note_status_from_transcript(
+        "Aura cancel note",
+        settings,
+        pending_capture=True,
+        response_call_sign="Aura",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+    )
+
+    assert ready is not None
+    assert ready.title == "Discord note ready"
+    assert sent_status is not None
+    assert sent_status.title == "Discord note sent"
+    assert pending is False
+    assert "fuel block prices look low in jita" in sent[0]["content"]
+    assert cancel_status is not None
+    assert cancel_status.title == "Discord note canceled"
+    assert pending_after_cancel is False
 
 
 def test_history_item_from_voice_status_records_practice_listener_context():

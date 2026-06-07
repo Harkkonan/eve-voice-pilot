@@ -117,6 +117,39 @@ def test_parse_fit_note_reads_eft_clipboard_format():
     assert fit_note.cargo_lines[-1] == "Tranquil Firestorm Filament x3"
 
 
+def test_market_store_creates_and_archives_shared_fitting(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+
+    fitting = store.create_shared_fitting(
+        {
+            "fitting_text": HAWK_FIT,
+            "website_url": "https://www.eveworkbench.com/fitting/hawk/example",
+            "tags": "Abyss T0",
+            "submitted_by": "Fitting Pilot",
+        }
+    )
+
+    assert fitting.status == "active"
+    assert fitting.hull == "Hawk"
+    assert fitting.fit_name == "Hawkaw T0 blitz dark abyss"
+    assert fitting.website_url == "https://www.eveworkbench.com/fitting/hawk/example"
+    assert fitting.tags == "Abyss T0"
+    assert store.list_shared_fittings()[0].fitting_id == fitting.fitting_id
+
+    archived = store.set_shared_fitting_status(fitting.fitting_id, "archived")
+
+    assert archived.status == "archived"
+    assert store.list_shared_fittings() == []
+    assert store.list_shared_fittings(include_archived=True)[0].status == "archived"
+
+
+def test_market_store_rejects_non_eve_fitting_text(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+
+    with pytest.raises(ValueError, match="standard EVE fitting clipboard format"):
+        store.create_shared_fitting({"fitting_text": "Hawk\nBallistic Control System II"})
+
+
 def test_market_store_creates_and_lists_offer(tmp_path):
     store = MarketStore(tmp_path / "market.sqlite3")
 
@@ -234,6 +267,25 @@ def test_dashboard_keeps_market_offer_workflow_controls():
     assert "Mail draft" in page
 
 
+def test_dashboard_includes_shared_fittings_tab():
+    page = render_dashboard()
+
+    assert "data-tab-target=\"fittings\"" in page
+    assert "id=\"tab-fittings\"" in page
+    assert "Shared Fittings" in page
+    assert "id=\"fitting-form\"" in page
+    assert "name=\"fitting_text\"" in page
+    assert "name=\"website_url\"" in page
+    assert "id=\"fittings-list\"" in page
+    assert "id=\"fitting-search\"" in page
+    assert "/api/fittings" in page
+    assert "loadFittings" in page
+    assert "data-copy-fitting" in page
+    assert "data-fitting-status-id" in page
+    assert "standard EVE fitting format" in page
+    assert "does not read the EVE client" in page
+
+
 def test_dashboard_includes_flight_esi_hooks():
     page = render_dashboard()
 
@@ -250,6 +302,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/flight/login" in page
     assert "id=\"flight-system-name\"" in page
     assert "id=\"flight-login-link\"" in page
+    assert "data-tab-target=\"industry\"" in page
+    assert "Industry Library" in page
+    assert "Decision Lenses" in page
+    assert "id=\"industry-build-system\"" in page
+    assert "id=\"industry-sale-mode\"" in page
     assert "id=\"flight-blueprint-summary\"" in page
     assert "id=\"flight-asset-summary\"" in page
     assert "id=\"flight-recipe-summary\"" in page
@@ -274,9 +331,13 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-tab-target=\"acquisition\"" in page
     assert "id=\"haul-route-form\"" in page
     assert "id=\"haul-origin\"" in page
+    assert "id=\"haul-origin-suggestions\"" in page
     assert "Start system" in page
     assert "Leave blank to start from your live ESI system." in page
     assert "id=\"haul-destination\"" in page
+    assert "id=\"haul-destination-suggestions\"" in page
+    assert "/api/flight/systems" in page
+    assert "setupSystemAutocomplete" in page
     assert "id=\"haul-cargo-m3\" name=\"cargo_m3\" type=\"number\" min=\"1\" max=\"10000000\" step=\"any\"" in page
     assert (
         "id=\"haul-purchase-budget\" name=\"purchase_budget_isk\" type=\"number\" min=\"1\" "
@@ -347,16 +408,20 @@ def test_dashboard_includes_flight_esi_hooks():
         "step=\"1\" inputmode=\"decimal\" value=\"50000000\""
     ) in page
     assert "id=\"acq-broker-fee\"" in page
+    assert "id=\"acq-portfolio-jumps\" name=\"portfolio_jumps\" type=\"number\" min=\"1\" max=\"500\" step=\"1\" value=\"50\"" in page
+    assert "Total investment ISK" in page
+    assert "Total portfolio jumps" in page
     assert f"top {corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES} industry inputs" in page
     assert "id=\"acq-strategy\" class=\"acquisition-strategy-grid\"" in page
     assert "id=\"acq-quickbar-panel\" class=\"quickbar-copy-panel\" hidden" in page
     assert "data-copy-quickbar=\"acquisition\"" in page
     assert "id=\"acq-results\" class=\"decision-output\"" in page
-    assert "Market Acquisition Planner" in page
+    assert "Market Investment Portfolio" in page
     assert "Possible trap" in page
     assert "Market history can reveal" in page
     assert "readJsonApiResponse" in page
     assert "renderAcquisitionStrategy" in page
+    assert "renderAcquisitionPortfolio" in page
     assert "writeAcquisitionSettings" in page
     assert "renderAcquisitionOpportunities" in page
     assert "data-tab-target=\"trade-pnl\"" in page
@@ -397,6 +462,12 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Customs Code Expertise" in page
     assert "Can ESI auto-fill these from location?" in page
     assert "Corp-owned customs office rates are a later Director-only corporation mode" in page
+    assert "Customs Fee Field Test" in page
+    assert "id=\"planetary-test-tier\"" in page
+    assert "id=\"planetary-test-transfer\"" in page
+    assert "id=\"planetary-test-total-isk\"" in page
+    assert "id=\"planetary-test-output\"" in page
+    assert "No owner-tax line expected." in page
     assert "Common Planetary Industry answers" in page
     assert page.count("class=\"planetary-answer-item\"") == 20
     assert "How do I open PI from a station?" in page
@@ -415,6 +486,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "renderPlanetaryChain" in page
     assert "planetaryExtractedResourcesForQuickbar" in page
     assert "planetaryProducedResourcesForQuickbar" in page
+    assert "planetaryCustomsFieldEstimate" in page
+    assert "renderPlanetaryCustomsFieldTest" in page
+    assert "copyPlanetaryCustomsChecklist" in page
     assert "renderPlanetaryPlanList" in page
     assert "renderPlanetaryOpportunities" in page
     assert "quickbarImportText" in page
@@ -485,19 +559,65 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "progress-spinner" in page
     assert "flight-progress" in page
     assert "startFlightProfitProgress" in page
-    assert "True Profit" in page
-    assert "Wallet Gain" in page
+    assert "True Build Profit" in page
+    assert "Cash Needed Lens" in page
     assert "True Profit / Hour" in page
+    assert "Jita Liquidation Alternative" in page
+    assert "High confidence" in page
     assert "TE-adjusted job time" in page
     assert "max copy runs" in page
     assert "skills not in cache yet" in page
     assert "Market cache" in page
     assert "Math details" in page
-    assert "Expected after tax and fees" in page
+    assert "True build profit after sales tax" in page
     assert "ME-adjusted all materials value" in page
     assert "Jita raw materials value" in page
     assert "Jita raw value coverage" in page
+    assert "Sell-order mode" in page
+    assert "Build-location costs" in page
     assert "ME-adjusted one-run materials covered" in page
+
+
+def test_dashboard_renders_flight_scope_disclosures_by_tab():
+    page = render_dashboard()
+
+    for tab_key in corp_market.FLIGHT_TAB_SCOPE_DISCLOSURES:
+        assert f'data-scope-tab="{tab_key}"' in page
+
+    for scope in corp_market.DEFAULT_FLIGHT_ESI_SCOPES:
+        assert scope in page
+
+    assert "Current location" in page
+    assert "Character wallet" in page
+    assert "Reads recent wallet transactions and market fee journal rows" in page
+    assert "No character ESI scope is used by this tab today" in page
+    assert "No character ESI scopes are used by this tab" in page
+    assert "It is read-only and cannot create, edit, or cancel orders" in page
+    assert "does not expose wallet transactions unless we request a separate transaction scope" not in page
+
+
+def test_route_system_suggestions_rank_prefixes_and_aliases(tmp_path):
+    route_cache = RouteGraphCache(
+        path=tmp_path / "route.json",
+        available=True,
+        build_number=3374020,
+        systems={
+            1: RouteSystem(solar_system_id=1, name="Amah", region_id=100, security_status=0.8),
+            2: RouteSystem(solar_system_id=2, name="Amarr", region_id=100, security_status=1.0),
+            3: RouteSystem(solar_system_id=3, name="Kamela", region_id=100, security_status=0.4),
+            4: RouteSystem(solar_system_id=4, name="Dihra", region_id=100, security_status=0.8),
+        },
+        adjacency={},
+    )
+
+    assert corp_market.search_route_system_names("am", route_cache=route_cache) == []
+
+    payload = corp_market.build_route_system_suggestions_payload("ama", route_cache=route_cache, limit=2)
+    assert payload["min_query_length"] == 3
+    assert [system["name"] for system in payload["systems"]] == ["Amarr", "Amah"]
+
+    alias_payload = corp_market.build_route_system_suggestions_payload("dhi", route_cache=route_cache)
+    assert [system["name"] for system in alias_payload["systems"]] == ["Dihra"]
 
 
 def test_static_asset_resolver_serves_only_tracked_static_files():
@@ -1517,6 +1637,86 @@ def test_acquisition_budget_clamps_to_approved_range():
     assert corp_market.clamp_acquisition_budget_isk("bad") == pytest.approx(50_000_000.0)
     assert corp_market.clamp_acquisition_budget_isk("0") == pytest.approx(1.0)
     assert corp_market.clamp_acquisition_budget_isk("10000000001") == pytest.approx(10_000_000_000.0)
+
+
+def test_acquisition_portfolio_jumps_clamps_to_approved_range():
+    assert corp_market.clamp_acquisition_portfolio_jumps("bad") == 50
+    assert corp_market.clamp_acquisition_portfolio_jumps("0") == 1
+    assert corp_market.clamp_acquisition_portfolio_jumps("999") == 500
+
+
+def test_acquisition_investment_portfolio_diversifies_budget_and_excludes_traps():
+    opportunities = [
+        {
+            "type_id": 34,
+            "item_name": "Tritanium",
+            "source_labels": ["Common materials"],
+            "risk_level": "clear",
+            "decision": {"label": "Place a small order"},
+            "range_recommendation": {"range": "solar system", "reason": "easy collection"},
+            "recommended_units": 100,
+            "suggested_bid": 800_000.0,
+            "max_safe_bid": 900_000.0,
+            "estimated_bid_total": 77_600_000.0,
+            "estimated_broker_fee": 2_400_000.0,
+            "estimated_isk_committed": 80_000_000.0,
+            "gross_destination_revenue": 94_000_000.0,
+            "estimated_sales_tax": 6_000_000.0,
+            "estimated_net_revenue": 88_000_000.0,
+            "net_profit": 8_000_000.0,
+            "net_profit_per_unit": 80_000.0,
+            "margin_percent": 10.0,
+            "history_flags": [{"severity": "clear", "label": "History supports a cautious order"}],
+        },
+        {
+            "type_id": 526,
+            "item_name": "Stasis Webifier I",
+            "source_labels": ["Modules"],
+            "market_group_name": "Modules",
+            "risk_level": "caution",
+            "decision": {"label": "Test with low volume"},
+            "range_recommendation": {"range": "solar system", "reason": "easy collection"},
+            "recommended_units": 20,
+            "suggested_bid": 4_000_000.0,
+            "max_safe_bid": 4_500_000.0,
+            "estimated_bid_total": 77_600_000.0,
+            "estimated_broker_fee": 2_400_000.0,
+            "estimated_isk_committed": 80_000_000.0,
+            "gross_destination_revenue": 100_000_000.0,
+            "estimated_sales_tax": 4_000_000.0,
+            "estimated_net_revenue": 96_000_000.0,
+            "net_profit": 16_000_000.0,
+            "net_profit_per_unit": 800_000.0,
+            "margin_percent": 20.0,
+            "history_flags": [{"severity": "caution", "label": "Thin volume"}],
+        },
+        {
+            "type_id": 999,
+            "item_name": "Too Good To Trust",
+            "source_labels": ["Speculation"],
+            "risk_level": "possible-trap",
+            "range_recommendation": {"range": "station", "reason": "verify first"},
+            "recommended_units": 10,
+            "estimated_isk_committed": 30_000_000.0,
+            "net_profit": 20_000_000.0,
+            "margin_percent": 60.0,
+        },
+    ]
+
+    portfolio = corp_market.build_acquisition_investment_portfolio(
+        opportunities=opportunities,
+        budget_isk=100_000_000.0,
+        max_portfolio_jumps=2,
+        pickup_jumps=2,
+    )
+
+    assert portfolio["available"] is True
+    assert portfolio["invested_isk"] <= 100_000_000.0
+    assert portfolio["used_jumps"] <= 2
+    assert portfolio["possible_trap_excluded_count"] == 1
+    assert {line["category"] for line in portfolio["lines"]} == {"Common materials", "Modules"}
+    assert all(line["risk_level"] != "possible-trap" for line in portfolio["lines"])
+    assert any(line["recommended_units"] < line["original_recommended_units"] for line in portfolio["lines"])
 
 
 def test_haul_route_preference_normalizes_eve_route_terms():
@@ -3638,9 +3838,11 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
     assert opportunity["estimated_net_revenue"] == pytest.approx(4831.25)
     assert opportunity["history_flags"][0]["label"] == "Possible trap: price spike"
     assert acquisition["strategy"]["best"]["item_name"] == "Tritanium"
-    assert "manual public buy order" in acquisition["strategy"]["plain_language"]
+    assert "manual public buy-order budget" in acquisition["strategy"]["plain_language"]
     assert "Safe ceiling" in acquisition["strategy"]["math_note"]
     assert "possible trap" in acquisition["pricing_note"]
+    assert acquisition["portfolio"]["available"] is False
+    assert acquisition["portfolio"]["possible_trap_excluded_count"] == 1
 
 
 def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeypatch, tmp_path):
@@ -4526,6 +4728,7 @@ def test_discord_alert_payload_is_summary_only_by_default():
     embed = payload["embeds"][0]
     field_names = [field["name"] for field in embed["fields"]]
 
+    assert payload["username"] == "IntelPet"
     assert payload["allowed_mentions"] == {"parse": []}
     assert "@everyone" not in payload["content"]
     assert "Matched Text" not in field_names
@@ -4557,6 +4760,86 @@ def test_discord_alert_payload_can_include_matched_text_when_explicit():
 
     assert matched["value"] == "@ here need help on undock"
     assert payload["allowed_mentions"] == {"parse": []}
+
+
+def test_discord_alert_settings_round_trip_without_webhook_secret(tmp_path):
+    settings_path = tmp_path / "corp_discord_alert_settings.json"
+    raw_settings = {
+        "enabled": True,
+        "dry_run": False,
+        "default_sender_name": "IntelPet",
+        "routes": [
+            {
+                "name": "Alliance alert channel",
+                "destination": "#alliance-alerts",
+                "webhook_env_var": "CORP_MARKET_DISCORD_WEBHOOK_URL",
+                "webhook_url": "https://discord.com/api/webhooks/123/secret-token",
+                "enabled": True,
+                "route_type": "webhook",
+                "sender_name": "IntelPet",
+            }
+        ],
+        "rules": [
+            {
+                "name": "War target report",
+                "event_type": "intel",
+                "severity": "high",
+                "phrases": ["war target", "gate camp", "war target"],
+                "route_name": "Alliance alert channel",
+                "include_matched_text": False,
+                "enabled": True,
+            }
+        ],
+    }
+
+    settings = corp_market.clean_discord_alert_settings_payload(raw_settings)
+    saved = corp_market.save_discord_alert_settings(settings, settings_path)
+    loaded = corp_market.load_discord_alert_settings(settings_path)
+    saved_text = settings_path.read_text(encoding="utf-8")
+
+    assert loaded.enabled is True
+    assert loaded.dry_run is False
+    assert loaded.routes[0].sender_name == "IntelPet"
+    assert loaded.rules[0].phrases == ("war target", "gate camp")
+    assert saved.updated_at
+    assert "secret-token" not in saved_text
+    assert "webhook_url" not in saved_text
+
+
+def test_discord_alert_settings_response_exposes_preview_and_safety(tmp_path):
+    settings = corp_market.default_discord_alert_settings()
+
+    payload = corp_market.build_discord_alert_settings_response(
+        settings,
+        settings_path=tmp_path / "corp_discord_alert_settings.json",
+        webhook_configured=True,
+    )
+
+    assert payload["ok"] is True
+    assert payload["webhook_configured"] is True
+    assert payload["default_sender"] == "IntelPet"
+    assert payload["settings_file"] == "corp_discord_alert_settings.json"
+    assert "settings_path" not in payload
+    assert payload["preview_payload"]["username"] == "IntelPet"
+    assert payload["preview_payload"]["allowed_mentions"] == {"parse": []}
+    assert payload["safety"]["webhook_url_stored"] is False
+    assert payload["safety"]["automatic_forwarding"] is False
+    assert payload["safety"]["manual_test_sends"] is True
+    assert payload["sender_modes"][1]["available"] is False
+
+
+def test_dashboard_includes_discord_alert_settings_controls():
+    page = render_dashboard()
+
+    assert "id=\"discord-alert-form\"" in page
+    assert "id=\"discord-alert-rule-form\"" in page
+    assert "id=\"discord-alert-send-test\"" in page
+    assert "/api/discord-alerts/settings" in page
+    assert "/api/discord-alerts/test" in page
+    assert "IntelPet webhook" in page
+    assert "User-owned sender - future" in page
+    assert "The webhook URL is not saved in this settings file." in page
+    assert "Manual tests live" in page
 
 
 def test_discord_payload_marks_reserved_listing_status(tmp_path):

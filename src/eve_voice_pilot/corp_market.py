@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +50,7 @@ from eve_voice_pilot.planetary_industry import (
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
+DEFAULT_DISCORD_ALERT_SETTINGS_PATH = ROOT / "profiles" / "corp_discord_alert_settings.json"
 DEFAULT_INDUSTRY_RECIPE_CACHE_PATH = ROOT / "cache" / "eve_industry_recipes.json"
 DEFAULT_ROUTE_GRAPH_CACHE_PATH = ROOT / "cache" / "eve_route_graph.json"
 DEFAULT_REPROCESSING_CACHE_PATH = ROOT / "cache" / "eve_reprocessing.json"
@@ -58,7 +59,19 @@ DEFAULT_STATIC_DATA_ZIP_PATH = ROOT / "cache" / "eve-online-static-data-3374020-
 STATIC_ASSET_ROOT = ROOT / "src" / "eve_voice_pilot" / "static"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 5000
+DEFAULT_MAX_FITTING_TEXT_LENGTH = 12000
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
+DEFAULT_DISCORD_ALERT_SENDER_NAME = "IntelPet"
+DEFAULT_DISCORD_ALERT_ROUTE_NAME = "IntelPet server webhook"
+DEFAULT_DISCORD_ALERT_DESTINATION = "Configured Discord alert channel"
+DEFAULT_DISCORD_ALERT_WEBHOOK_ENV_VAR = "CORP_MARKET_DISCORD_WEBHOOK_URL"
+DISCORD_ALERT_ROUTE_TYPES = frozenset({"webhook", "user_oauth_future"})
+DISCORD_ALERT_EVENT_TYPES = frozenset({"intel", "help", "market", "location", "combat", "custom"})
+DISCORD_ALERT_SEVERITIES = frozenset({"critical", "high", "medium", "info"})
+MAX_DISCORD_ALERT_ROUTES = 6
+MAX_DISCORD_ALERT_RULES = 24
+MAX_DISCORD_ALERT_PHRASES = 24
+MAX_DISCORD_ALERT_EVENT_TEXT = 700
 DEFAULT_FLIGHT_MAX_JUMPS = 5
 MAX_FLIGHT_MAX_JUMPS = 25
 MAX_FLIGHT_BUYER_SCAN_PRODUCTS = 40
@@ -99,6 +112,8 @@ STATIC_CACHE_REFRESH_COMMAND = r"python .\scripts\update_industry_recipe_cache.p
 DEFAULT_HAUL_DESTINATION_SYSTEM = "Jita"
 DEFAULT_HAUL_COMPARE_DESTINATIONS = ("Jita", "Amarr", "Hek", "Rens", "Dodixie")
 MAX_HAUL_COMPARE_DESTINATIONS = 6
+MIN_ROUTE_SYSTEM_SUGGESTION_CHARS = 3
+MAX_ROUTE_SYSTEM_SUGGESTIONS = 15
 DEFAULT_HAUL_DETOUR_JUMPS = 1
 MAX_HAUL_DETOUR_JUMPS = 5
 DEFAULT_HAUL_CARGO_M3 = 10_000.0
@@ -122,6 +137,9 @@ DEFAULT_ACQUISITION_BUDGET_ISK = 50_000_000.0
 MAX_ACQUISITION_BUDGET_ISK = 10_000_000_000.0
 DEFAULT_ACQUISITION_PICKUP_JUMPS = 2
 MAX_ACQUISITION_PICKUP_JUMPS = 10
+DEFAULT_ACQUISITION_PORTFOLIO_JUMPS = 50
+MAX_ACQUISITION_PORTFOLIO_JUMPS = 500
+MAX_ACQUISITION_PORTFOLIO_LINES = 12
 DEFAULT_ACQUISITION_BROKER_FEE_PERCENT = 3.0
 MAX_ACQUISITION_BROKER_FEE_PERCENT = 20.0
 DEFAULT_ACQUISITION_TARGET_DAYS = 3
@@ -132,6 +150,22 @@ HAUL_ROUTE_PREFERENCES = {"shorter", "safer", "less_secure"}
 HAUL_ROUTE_ESI_PREFERENCES = {"shorter": "Shorter", "safer": "Safer", "less_secure": "LessSecure"}
 DEFAULT_HAUL_AVOID_RECENT_POD_KILLS = False
 MAX_HAUL_ROUTE_AVOID_SYSTEMS = 100
+ROUTE_SYSTEM_ALIASES = {
+    "dhira": "dihra",
+    "amarrhomeworld": "amarr",
+    "amarrhome": "amarr",
+}
+ROUTE_SYSTEM_SUGGEST_ALIAS_PREFIXES = {
+    "dhi": "dihra",
+}
+ROUTE_SYSTEM_HUB_PRIORITY = {
+    "jita": 0,
+    "amarr": 1,
+    "hek": 2,
+    "rens": 3,
+    "dodixie": 4,
+    "dihra": 5,
+}
 MARKET_ORDER_CACHE_TTL_SECONDS = 300.0
 SYSTEM_KILLS_CACHE_TTL_SECONDS = 300.0
 JITA_SYSTEM_NAME = "Jita"
@@ -157,6 +191,83 @@ DEFAULT_FLIGHT_ESI_SCOPES = (
     FLIGHT_STRUCTURES_SCOPE,
     FLIGHT_WALLET_SCOPE,
 )
+FLIGHT_ESI_SCOPE_DISCLOSURES: dict[str, dict[str, str]] = {
+    FLIGHT_LOCATION_SCOPE: {
+        "label": "Current location",
+        "detail": "Reads the signed-in pilot's current solar system so route, hauling, acquisition, and reprocessing advice can start from the right place.",
+    },
+    FLIGHT_ASSETS_SCOPE: {
+        "label": "Character assets",
+        "detail": "Reads owned item stacks so blueprint and industry recommendations can account for materials already in stock.",
+    },
+    FLIGHT_BLUEPRINTS_SCOPE: {
+        "label": "Character blueprints",
+        "detail": "Reads owned blueprint records so the Flight Attendant can rank production options the pilot can actually build.",
+    },
+    FLIGHT_SKILLS_SCOPE: {
+        "label": "Character skills",
+        "detail": "Reads trained skills for tax, production, hauling, acquisition, planetary, and reprocessing math where skills change the estimate.",
+    },
+    FLIGHT_STANDINGS_SCOPE: {
+        "label": "Character standings",
+        "detail": "Reads NPC standings for reprocessing station fee estimates and station ranking.",
+    },
+    FLIGHT_IMPLANTS_SCOPE: {
+        "label": "Character implants",
+        "detail": "Reads implants when available so reprocessing can detect known RX reprocessing implants instead of requiring a manual override.",
+    },
+    FLIGHT_STRUCTURES_SCOPE: {
+        "label": "Structure names",
+        "detail": "Resolves private Upwell structure names when ESI returns a structure ID for the pilot's current location.",
+    },
+    FLIGHT_WALLET_SCOPE: {
+        "label": "Character wallet",
+        "detail": "Reads recent wallet transactions and market fee journal rows for Trade P&L. It is read-only and cannot create, edit, or cancel orders.",
+    },
+}
+FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
+    "market": {
+        "label": "Discord Alerts",
+        "summary": "No character ESI scopes are used by this tab. Market board writes stay manual and gated by local/public-hosting access rules.",
+        "scopes": (),
+    },
+    "flight": {
+        "label": "Flight Attendant",
+        "summary": "Uses the full consented Flight Attendant scope set for status, owned blueprints, owned assets, buyer scans, profitability, cache checks, and manual decision support.",
+        "scopes": DEFAULT_FLIGHT_ESI_SCOPES,
+    },
+    "hauling": {
+        "label": "Hauler Routes",
+        "summary": "Uses live location when no start system is typed, plus skills for after-tax destination buy-order estimates. Orders and routes remain manual.",
+        "scopes": (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE),
+    },
+    "acquisition": {
+        "label": "Investment Portfolio",
+        "summary": "Uses live location when no buy-order system is typed, plus skills for tax-aware advisory math. Total investment, portfolio jumps, and broker fee remain manual inputs.",
+        "scopes": (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE),
+    },
+    "trade-pnl": {
+        "label": "Trade P&L",
+        "summary": "Uses wallet transactions and wallet journal fee rows to compare expected spread against actual realized trading results.",
+        "scopes": (FLIGHT_WALLET_SCOPE,),
+    },
+    "planetary": {
+        "label": "Planetary Industry",
+        "summary": "No character ESI scope is used by this tab today. It uses public market data, local SDE planetary data, and manual tax settings.",
+        "scopes": (),
+    },
+    "reprocessing": {
+        "label": "Reprocessing",
+        "summary": "Uses location, skills, standings, implants when present, and structure-name resolution when present to estimate reprocessing output and station choice.",
+        "scopes": (
+            FLIGHT_LOCATION_SCOPE,
+            FLIGHT_SKILLS_SCOPE,
+            FLIGHT_STANDINGS_SCOPE,
+            FLIGHT_IMPLANTS_SCOPE,
+            FLIGHT_STRUCTURES_SCOPE,
+        ),
+    },
+}
 ACCOUNTING_SKILL_TYPE_ID = 16622
 REPROCESSING_SKILL_TYPE_ID = 3385
 REPROCESSING_EFFICIENCY_SKILL_TYPE_ID = 3389
@@ -193,6 +304,7 @@ FLIGHT_SESSION_COOKIE_NAME = "corp_market_flight_session"
 DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
 LISTING_STATUSES = {"open", "reserved", "sold", "cancelled"}
+SHARED_FITTING_STATUSES = {"active", "archived"}
 LISTING_CATEGORIES = {
     "general": "General",
     "ships": "Ships",
@@ -460,6 +572,9 @@ class DiscordPostResult:
     channel_id: str = ""
     thread_id: str = ""
 
+    def to_dict(self) -> dict[str, str]:
+        return {"message_id": self.message_id, "channel_id": self.channel_id, "thread_id": self.thread_id}
+
 
 @dataclass(frozen=True)
 class DiscordAlertRoute:
@@ -467,6 +582,8 @@ class DiscordAlertRoute:
     destination: str
     webhook_env_var: str
     enabled: bool = False
+    route_type: str = "webhook"
+    sender_name: str = DEFAULT_DISCORD_ALERT_SENDER_NAME
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -474,6 +591,9 @@ class DiscordAlertRoute:
             "destination": self.destination,
             "webhook_env_var": self.webhook_env_var,
             "enabled": self.enabled,
+            "route_type": self.route_type,
+            "sender_name": self.sender_name,
+            "sender_mode": "IntelPet webhook" if self.route_type == "webhook" else "User-owned sender (future)",
         }
 
 
@@ -486,6 +606,7 @@ class DiscordAlertRule:
     route_name: str
     include_matched_text: bool = False
     enabled: bool = False
+    source: str = "intel_pet"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -496,6 +617,7 @@ class DiscordAlertRule:
             "route_name": self.route_name,
             "include_matched_text": self.include_matched_text,
             "enabled": self.enabled,
+            "source": self.source,
         }
 
 
@@ -509,6 +631,26 @@ class DiscordAlertEvent:
     system_name: str = ""
     matched_text: str = ""
     observed_at: str = ""
+
+
+@dataclass(frozen=True)
+class DiscordAlertSettings:
+    enabled: bool = False
+    dry_run: bool = True
+    default_sender_name: str = DEFAULT_DISCORD_ALERT_SENDER_NAME
+    routes: tuple[DiscordAlertRoute, ...] = field(default_factory=tuple)
+    rules: tuple[DiscordAlertRule, ...] = field(default_factory=tuple)
+    updated_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "dry_run": self.dry_run,
+            "default_sender_name": self.default_sender_name,
+            "routes": [route.to_dict() for route in self.routes],
+            "rules": [rule.to_dict() for rule in self.rules],
+            "updated_at": self.updated_at,
+        }
 
 
 @dataclass(frozen=True)
@@ -1108,6 +1250,61 @@ class MarketListing:
         return payload
 
 
+@dataclass(frozen=True)
+class SharedFitting:
+    fitting_id: str
+    status: str
+    hull: str
+    fit_name: str
+    fitting_text: str
+    website_url: str = ""
+    tags: str = ""
+    submitted_by: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    @property
+    def display_name(self) -> str:
+        return f"{self.hull} - {self.fit_name}"
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "SharedFitting":
+        return cls(
+            fitting_id=str(row["fitting_id"]),
+            status=str(row["status"]),
+            hull=str(row["hull"] or ""),
+            fit_name=str(row["fit_name"] or ""),
+            fitting_text=str(row["fitting_text"] or ""),
+            website_url=str(row["website_url"] or ""),
+            tags=str(row["tags"] or ""),
+            submitted_by=str(row["submitted_by"] or ""),
+            created_at=str(row["created_at"] or ""),
+            updated_at=str(row["updated_at"] or ""),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        fit_note = parse_fit_note(self.fitting_text)
+        fitted_lines = len(fit_note.fitted_lines) if fit_note else 0
+        cargo_lines = len(fit_note.cargo_lines) if fit_note else 0
+        empty_slots = fit_note.empty_slots if fit_note else 0
+        return {
+            "id": self.fitting_id,
+            "status": self.status,
+            "hull": self.hull,
+            "fit_name": self.fit_name,
+            "display_name": self.display_name,
+            "fitting_text": self.fitting_text,
+            "website_url": self.website_url,
+            "tags": self.tags,
+            "submitted_by": self.submitted_by,
+            "fitted_line_count": fitted_lines,
+            "cargo_line_count": cargo_lines,
+            "empty_slot_count": empty_slots,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
 class MarketStore:
     def __init__(self, path: Path = DEFAULT_MARKET_DB_PATH):
         self.path = path
@@ -1179,6 +1376,24 @@ class MarketStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_corp_market_category ON corp_market_listings(category)"
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shared_fittings (
+                    fitting_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    hull TEXT NOT NULL,
+                    fit_name TEXT NOT NULL,
+                    fitting_text TEXT NOT NULL,
+                    website_url TEXT NOT NULL DEFAULT '',
+                    tags TEXT NOT NULL DEFAULT '',
+                    submitted_by TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_shared_fittings_status ON shared_fittings(status)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_shared_fittings_hull ON shared_fittings(hull)")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS flight_acquisition_expectations (
@@ -1406,6 +1621,126 @@ class MarketStore:
         if result.rowcount == 0:
             raise CorpMarketError(f"Listing {listing_id!r} was not found.")
         return self.get_listing(listing_id)
+
+    def create_shared_fitting(self, payload: dict[str, Any]) -> SharedFitting:
+        fitting_text = clean_fitting_text(
+            payload.get("fitting_text") or payload.get("fit") or payload.get("fit_block")
+        )
+        fit_note = parse_fit_note(fitting_text)
+        if fit_note is None:
+            raise ValueError("fitting_text must start with an EVE fitting header like [Hawk, Abyss fit].")
+        website_url = clean_optional_url(
+            payload.get("website_url") or payload.get("fitting_url") or payload.get("link"),
+            "website_url",
+        )
+        tags = clean_text(payload.get("tags"), "tags", max_length=160)
+        submitted_by = clean_text(
+            payload.get("submitted_by") or payload.get("pilot") or payload.get("owner"),
+            "submitted_by",
+            max_length=80,
+        )
+        timestamp = now_iso()
+        fitting = SharedFitting(
+            fitting_id=str(payload.get("id") or uuid.uuid4().hex[:12]),
+            status="active",
+            hull=fit_note.hull,
+            fit_name=fit_note.fit_name,
+            fitting_text=fitting_text,
+            website_url=website_url,
+            tags=tags,
+            submitted_by=submitted_by,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO shared_fittings (
+                    fitting_id, status, hull, fit_name, fitting_text, website_url,
+                    tags, submitted_by, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fitting.fitting_id,
+                    fitting.status,
+                    fitting.hull,
+                    fitting.fit_name,
+                    fitting.fitting_text,
+                    fitting.website_url,
+                    fitting.tags,
+                    fitting.submitted_by,
+                    fitting.created_at,
+                    fitting.updated_at,
+                ),
+            )
+        return fitting
+
+    def list_shared_fittings(
+        self,
+        *,
+        status: str | None = None,
+        include_archived: bool = False,
+        query: str = "",
+        limit: int = 100,
+    ) -> list[SharedFitting]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(clean_choice(status, SHARED_FITTING_STATUSES, "status"))
+        elif not include_archived:
+            clauses.append("status = 'active'")
+        clean_query = clean_text(query, "query", max_length=120)
+        if clean_query:
+            clauses.append("(hull LIKE ? OR fit_name LIKE ? OR tags LIKE ? OR submitted_by LIKE ?)")
+            like_query = f"%{clean_query}%"
+            params.extend([like_query, like_query, like_query, like_query])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        try:
+            clean_limit = int(limit)
+        except (TypeError, ValueError):
+            clean_limit = 100
+        params.append(max(1, min(clean_limit, 500)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM shared_fittings
+                {where}
+                ORDER BY
+                    CASE status WHEN 'active' THEN 0 ELSE 1 END,
+                    updated_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [SharedFitting.from_row(row) for row in rows]
+
+    def get_shared_fitting(self, fitting_id: str) -> SharedFitting:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM shared_fittings WHERE fitting_id = ?",
+                (clean_listing_id(fitting_id),),
+            ).fetchone()
+        if row is None:
+            raise CorpMarketError(f"Shared fitting {fitting_id!r} was not found.")
+        return SharedFitting.from_row(row)
+
+    def set_shared_fitting_status(self, fitting_id: str, status: str) -> SharedFitting:
+        clean_status = clean_choice(status, SHARED_FITTING_STATUSES, "status")
+        timestamp = now_iso()
+        with self._connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE shared_fittings
+                SET status = ?, updated_at = ?
+                WHERE fitting_id = ?
+                """,
+                (clean_status, timestamp, clean_listing_id(fitting_id)),
+            )
+        if result.rowcount == 0:
+            raise CorpMarketError(f"Shared fitting {fitting_id!r} was not found.")
+        return self.get_shared_fitting(fitting_id)
 
     def save_acquisition_expectations(
         self,
@@ -1831,6 +2166,319 @@ def sanitize_discord_alert_text(value: Any, *, max_length: int = 500) -> str:
     return shorten(text, max_length)
 
 
+def normalize_discord_alert_key(value: Any, *, default: str, allowed: frozenset[str]) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    return normalized if normalized in allowed else default
+
+
+def clean_discord_alert_sender_name(value: Any) -> str:
+    return clean_text(value or DEFAULT_DISCORD_ALERT_SENDER_NAME, "Discord alert sender name", max_length=80) or DEFAULT_DISCORD_ALERT_SENDER_NAME
+
+
+def clean_discord_alert_route(value: Mapping[str, Any], *, default_sender_name: str) -> DiscordAlertRoute:
+    name = clean_text(value.get("name") or DEFAULT_DISCORD_ALERT_ROUTE_NAME, "Discord alert route name", max_length=100) or DEFAULT_DISCORD_ALERT_ROUTE_NAME
+    destination = (
+        clean_text(value.get("destination") or DEFAULT_DISCORD_ALERT_DESTINATION, "Discord alert route destination", max_length=140)
+        or DEFAULT_DISCORD_ALERT_DESTINATION
+    )
+    webhook_env_var = (
+        clean_text(value.get("webhook_env_var") or DEFAULT_DISCORD_ALERT_WEBHOOK_ENV_VAR, "Discord alert webhook env var", max_length=100)
+        or DEFAULT_DISCORD_ALERT_WEBHOOK_ENV_VAR
+    )
+    route_type = normalize_discord_alert_key(
+        value.get("route_type"),
+        default="webhook",
+        allowed=DISCORD_ALERT_ROUTE_TYPES,
+    )
+    return DiscordAlertRoute(
+        name=name,
+        destination=destination,
+        webhook_env_var=webhook_env_var,
+        enabled=query_bool(value.get("enabled"), default=False),
+        route_type=route_type,
+        sender_name=clean_discord_alert_sender_name(value.get("sender_name") or default_sender_name),
+    )
+
+
+def clean_discord_alert_phrases(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raw_values = re.split(r"[\n,]+", value)
+    elif isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, dict)):
+        raw_values = value
+    else:
+        raw_values = ()
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for raw_phrase in raw_values:
+        phrase = clean_text(raw_phrase, "Discord alert phrase", max_length=90)
+        if not phrase:
+            continue
+        normalized = phrase.casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        phrases.append(phrase)
+        if len(phrases) >= MAX_DISCORD_ALERT_PHRASES:
+            break
+    return tuple(phrases)
+
+
+def clean_discord_alert_rule(value: Mapping[str, Any], *, fallback_route_name: str) -> DiscordAlertRule:
+    name = clean_text(value.get("name") or "Corp intel alert", "Discord alert rule name", max_length=100) or "Corp intel alert"
+    event_type = normalize_discord_alert_key(
+        value.get("event_type"),
+        default="intel",
+        allowed=DISCORD_ALERT_EVENT_TYPES,
+    )
+    severity = normalize_discord_alert_key(
+        value.get("severity"),
+        default="high",
+        allowed=DISCORD_ALERT_SEVERITIES,
+    )
+    phrases = clean_discord_alert_phrases(value.get("phrases"))
+    route_name = clean_text(value.get("route_name") or fallback_route_name, "Discord alert route name", max_length=100) or fallback_route_name
+    source = clean_text(value.get("source") or "intel_pet", "Discord alert source", max_length=80) or "intel_pet"
+    return DiscordAlertRule(
+        name=name,
+        event_type=event_type,
+        severity=severity,
+        phrases=phrases,
+        route_name=route_name,
+        include_matched_text=query_bool(value.get("include_matched_text"), default=False),
+        enabled=query_bool(value.get("enabled"), default=False),
+        source=source,
+    )
+
+
+def default_discord_alert_settings() -> DiscordAlertSettings:
+    route = DiscordAlertRoute(
+        name=DEFAULT_DISCORD_ALERT_ROUTE_NAME,
+        destination=DEFAULT_DISCORD_ALERT_DESTINATION,
+        webhook_env_var=DEFAULT_DISCORD_ALERT_WEBHOOK_ENV_VAR,
+        enabled=False,
+        sender_name=DEFAULT_DISCORD_ALERT_SENDER_NAME,
+    )
+    rule = DiscordAlertRule(
+        name="Corp help or hostile alert",
+        event_type="intel",
+        severity="high",
+        phrases=("war target", "enemy vessels", "gate camp", "help"),
+        route_name=route.name,
+        include_matched_text=False,
+        enabled=False,
+        source="intel_pet",
+    )
+    return DiscordAlertSettings(
+        enabled=False,
+        dry_run=True,
+        default_sender_name=DEFAULT_DISCORD_ALERT_SENDER_NAME,
+        routes=(route,),
+        rules=(rule,),
+    )
+
+
+def clean_discord_alert_settings_payload(payload: Mapping[str, Any]) -> DiscordAlertSettings:
+    default_settings = default_discord_alert_settings()
+    default_sender = clean_discord_alert_sender_name(
+        payload.get("default_sender_name") or default_settings.default_sender_name
+    )
+    raw_routes = payload.get("routes")
+    if not isinstance(raw_routes, list):
+        raw_routes = []
+    routes = tuple(
+        clean_discord_alert_route(route, default_sender_name=default_sender)
+        for route in raw_routes[:MAX_DISCORD_ALERT_ROUTES]
+        if isinstance(route, Mapping)
+    )
+    if not routes:
+        routes = tuple(
+            DiscordAlertRoute(
+                name=route.name,
+                destination=route.destination,
+                webhook_env_var=route.webhook_env_var,
+                enabled=route.enabled,
+                route_type=route.route_type,
+                sender_name=default_sender,
+            )
+            for route in default_settings.routes
+        )
+    route_names = {route.name for route in routes}
+    fallback_route_name = routes[0].name
+    raw_rules = payload.get("rules")
+    if not isinstance(raw_rules, list):
+        raw_rules = []
+    rules = tuple(
+        clean_discord_alert_rule(rule, fallback_route_name=fallback_route_name)
+        for rule in raw_rules[:MAX_DISCORD_ALERT_RULES]
+        if isinstance(rule, Mapping)
+    )
+    if not rules:
+        rules = tuple(default_settings.rules)
+    normalized_rules = tuple(
+        rule if rule.route_name in route_names else DiscordAlertRule(
+            name=rule.name,
+            event_type=rule.event_type,
+            severity=rule.severity,
+            phrases=rule.phrases,
+            route_name=fallback_route_name,
+            include_matched_text=rule.include_matched_text,
+            enabled=rule.enabled,
+            source=rule.source,
+        )
+        for rule in rules
+    )
+    return DiscordAlertSettings(
+        enabled=query_bool(payload.get("enabled"), default=default_settings.enabled),
+        dry_run=query_bool(payload.get("dry_run"), default=default_settings.dry_run),
+        default_sender_name=default_sender,
+        routes=routes,
+        rules=normalized_rules,
+        updated_at=clean_text(payload.get("updated_at") or "", "Discord alert updated_at", max_length=60),
+    )
+
+
+def load_discord_alert_settings(path: Path = DEFAULT_DISCORD_ALERT_SETTINGS_PATH) -> DiscordAlertSettings:
+    if not path.exists():
+        return default_discord_alert_settings()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CorpMarketError(f"Could not read Discord alert settings: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise CorpMarketError("Discord alert settings file must contain a JSON object.")
+    return clean_discord_alert_settings_payload(payload)
+
+
+def save_discord_alert_settings(
+    settings: DiscordAlertSettings,
+    path: Path = DEFAULT_DISCORD_ALERT_SETTINGS_PATH,
+) -> DiscordAlertSettings:
+    saved = DiscordAlertSettings(
+        enabled=settings.enabled,
+        dry_run=settings.dry_run,
+        default_sender_name=settings.default_sender_name,
+        routes=settings.routes,
+        rules=settings.rules,
+        updated_at=now_iso(),
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f"{path.name}.tmp")
+    temporary_path.write_text(json.dumps(saved.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    temporary_path.replace(path)
+    return saved
+
+
+def select_discord_alert_route(
+    settings: DiscordAlertSettings,
+    route_name: str = "",
+) -> DiscordAlertRoute:
+    if route_name:
+        for route in settings.routes:
+            if route.name == route_name:
+                return route
+    enabled_routes = [route for route in settings.routes if route.enabled and route.route_type == "webhook"]
+    return (enabled_routes or list(settings.routes) or list(default_discord_alert_settings().routes))[0]
+
+
+def select_discord_alert_rule(
+    settings: DiscordAlertSettings,
+    rule_name: str = "",
+) -> DiscordAlertRule:
+    if rule_name:
+        for rule in settings.rules:
+            if rule.name == rule_name:
+                return rule
+    enabled_rules = [rule for rule in settings.rules if rule.enabled]
+    return (enabled_rules or list(settings.rules) or list(default_discord_alert_settings().rules))[0]
+
+
+def discord_alert_sample_event(rule: DiscordAlertRule, event_payload: Mapping[str, Any] | None = None) -> DiscordAlertEvent:
+    event_payload = event_payload or {}
+    first_phrase = rule.phrases[0] if rule.phrases else rule.name
+    summary = clean_text(
+        event_payload.get("summary") or f"{rule.severity.title()} {rule.event_type} alert: {first_phrase}",
+        "Discord alert test summary",
+        max_length=180,
+    )
+    source = clean_text(
+        event_payload.get("source") or "local Intel Pet",
+        "Discord alert test source",
+        max_length=120,
+    )
+    channel = clean_text(event_payload.get("channel") or "Local", "Discord alert test channel", max_length=80)
+    system_name = clean_text(event_payload.get("system_name") or "Dihra", "Discord alert test system", max_length=80)
+    matched_text = clean_multiline(
+        event_payload.get("matched_text") or f"Sample matched line containing {first_phrase}.",
+        "Discord alert test matched text",
+        max_length=MAX_DISCORD_ALERT_EVENT_TEXT,
+    )
+    return DiscordAlertEvent(
+        event_type=rule.event_type,
+        severity=rule.severity,
+        summary=summary,
+        source=source,
+        channel=channel,
+        system_name=system_name,
+        matched_text=matched_text,
+        observed_at=now_iso(),
+    )
+
+
+def build_discord_alert_preview_payload(
+    settings: DiscordAlertSettings,
+    *,
+    route_name: str = "",
+    rule_name: str = "",
+    event_payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    route = select_discord_alert_route(settings, route_name)
+    rule = select_discord_alert_rule(settings, rule_name)
+    event = discord_alert_sample_event(rule, event_payload)
+    return build_discord_alert_webhook_payload(event, rule, route)
+
+
+def build_discord_alert_settings_response(
+    settings: DiscordAlertSettings,
+    *,
+    settings_path: Path,
+    webhook_configured: bool,
+) -> dict[str, Any]:
+    route = select_discord_alert_route(settings)
+    rule = select_discord_alert_rule(settings)
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "settings_file": settings_path.name,
+        "webhook_configured": bool(webhook_configured),
+        "default_sender": route.sender_name or settings.default_sender_name or DEFAULT_DISCORD_ALERT_SENDER_NAME,
+        "settings": settings.to_dict(),
+        "active_route": route.to_dict(),
+        "active_rule": rule.to_dict(),
+        "preview_payload": build_discord_alert_preview_payload(settings),
+        "safety": {
+            "webhook_url_stored": False,
+            "allowed_mentions": "disabled",
+            "matched_text_default": "hidden",
+            "automatic_forwarding": False,
+            "manual_test_sends": True,
+        },
+        "sender_modes": [
+            {
+                "key": "webhook",
+                "label": "IntelPet webhook",
+                "available": bool(webhook_configured),
+                "detail": "Default sender. Uses the configured server webhook and displays as IntelPet.",
+            },
+            {
+                "key": "user_oauth_future",
+                "label": "User-owned sender",
+                "available": False,
+                "detail": "Future route. Needs a Discord bot/user-consent design, not a normal account password.",
+            },
+        ],
+    }
+
+
 def build_discord_alert_webhook_payload(
     event: DiscordAlertEvent,
     rule: DiscordAlertRule,
@@ -1872,6 +2520,7 @@ def build_discord_alert_webhook_payload(
         "timestamp": event.observed_at or now_iso(),
     }
     return {
+        "username": sanitize_discord_alert_text(route.sender_name or DEFAULT_DISCORD_ALERT_SENDER_NAME, max_length=80),
         "content": sanitize_discord_alert_text(f"[{severity.upper()}] {event.summary or rule.name}", max_length=240),
         "embeds": [embed],
         "allowed_mentions": {"parse": []},
@@ -3097,7 +3746,7 @@ def trade_pnl_source_badges(item: dict[str, Any]) -> list[dict[str, str]]:
             {
                 "label": "Planner expectation",
                 "kind": "plan",
-                "note": "Compared against the latest saved Acquisition Planner recommendation for this item.",
+                "note": "Compared against the latest saved Investment Portfolio recommendation for this item.",
             }
         )
     return badges
@@ -5139,6 +5788,7 @@ def build_flight_acquisition_payload(
     destination_name: str = DEFAULT_HAUL_DESTINATION_SYSTEM,
     budget_isk: float = DEFAULT_ACQUISITION_BUDGET_ISK,
     pickup_jumps: int = DEFAULT_ACQUISITION_PICKUP_JUMPS,
+    portfolio_jumps: int = DEFAULT_ACQUISITION_PORTFOLIO_JUMPS,
     min_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT,
     broker_fee_percent: float = DEFAULT_ACQUISITION_BROKER_FEE_PERCENT,
     target_days: int = DEFAULT_ACQUISITION_TARGET_DAYS,
@@ -5191,6 +5841,7 @@ def build_flight_acquisition_payload(
         destination=destination,
         budget_isk=budget_isk,
         pickup_jumps=pickup_jumps,
+        portfolio_jumps=portfolio_jumps,
         min_margin_percent=min_margin_percent,
         broker_fee_percent=broker_fee_percent,
         target_days=target_days,
@@ -6352,6 +7003,7 @@ def scan_market_acquisition_opportunities(
     destination: RouteSystem,
     budget_isk: float,
     pickup_jumps: int,
+    portfolio_jumps: int,
     min_margin_percent: float,
     broker_fee_percent: float,
     target_days: int,
@@ -6364,6 +7016,7 @@ def scan_market_acquisition_opportunities(
     adjacency = route_cache.adjacency or {}
     clean_budget = clamp_acquisition_budget_isk(budget_isk)
     clean_pickup_jumps = clamp_acquisition_pickup_jumps(pickup_jumps)
+    clean_portfolio_jumps = clamp_acquisition_portfolio_jumps(portfolio_jumps)
     clean_min_margin_percent = clamp_haul_min_detour_margin_percent(min_margin_percent)
     clean_broker_fee_percent = clamp_acquisition_broker_fee_percent(broker_fee_percent)
     clean_target_days = clamp_acquisition_target_days(target_days)
@@ -6562,6 +7215,8 @@ def scan_market_acquisition_opportunities(
             "item_name": target["name"],
             "recipe_count": int(target.get("recipe_count") or 0),
             "source_labels": target.get("source_labels", []),
+            "market_group_id": target.get("market_group_id"),
+            "market_group_name": target.get("market_group_name") or "",
             "volume_m3": target.get("volume_m3"),
             "decision": acquisition_decision(risk_level=risk_level, margin_percent=margin_percent),
             "risk_level": risk_level,
@@ -6601,11 +7256,18 @@ def scan_market_acquisition_opportunities(
             item["item_name"],
         )
     )
+    portfolio = build_acquisition_investment_portfolio(
+        opportunities=opportunities,
+        budget_isk=clean_budget,
+        max_portfolio_jumps=clean_portfolio_jumps,
+        pickup_jumps=clean_pickup_jumps,
+    )
     return {
         "origin_system": origin.to_dict(jumps=0),
         "destination_system": destination.to_dict(jumps=0),
         "budget_isk": clean_budget,
         "pickup_jumps": clean_pickup_jumps,
+        "portfolio_jumps": clean_portfolio_jumps,
         "min_margin_percent": clean_min_margin_percent,
         "broker_fee_percent": clean_broker_fee_percent,
         "target_days": clean_target_days,
@@ -6644,15 +7306,17 @@ def scan_market_acquisition_opportunities(
             total_item_types=len(item_targets),
             pickup_regions_scanned=len(scan_pickup_region_ids),
             item_truncated=item_truncated,
+            portfolio=portfolio,
         ),
+        "portfolio": portfolio,
         "opportunities": opportunities[:MAX_FLIGHT_ACQUISITION_OPPORTUNITIES],
         "errors": errors[:12],
         "sales_tax": sales_tax,
         "market_cache": market_order_cache_status(),
         "history_cache": market_history_cache_status(),
         "pricing_note": (
-            "This planner assumes a manual public buy order near the source, a later haul, and a manual sale into "
-            "the current destination buy order. Suggested bid ceilings back out sales tax, estimated broker fee, "
+            "This portfolio assumes manual public buy orders near the source, later hauling, and manual sales into "
+            "the current destination buy orders. Suggested bid ceilings back out sales tax, estimated broker fee, "
             "and the target margin. A possible trap flag means recent history does not support the apparent spread "
             "or fill volume; verify the item in EVE before posting an order. The page does not place orders."
         ),
@@ -6674,14 +7338,28 @@ def build_acquisition_strategy_summary(
     total_item_types: int,
     pickup_regions_scanned: int,
     item_truncated: bool,
+    portfolio: dict[str, Any],
 ) -> dict[str, Any]:
     ranked = list(opportunities)
     best = ranked[0] if ranked else None
+    portfolio_lines = list(portfolio.get("lines") or []) if isinstance(portfolio, dict) else []
+    portfolio_category_count = int(portfolio.get("category_count") or 0) if isinstance(portfolio, dict) else 0
+    portfolio_category_word = "category" if portfolio_category_count == 1 else "categories"
     common_materials = bool(item_scope.get("include_common_materials"))
     common_limit = int(item_scope.get("common_material_scan_limit") or 0)
     common_available = int(item_scope.get("common_material_available_item_types") or common_limit)
     selected_group_count = int(item_scope.get("selected_market_group_count") or 0)
-    if best:
+    if portfolio_lines:
+        headline = (
+            f"Diversified portfolio uses {format_isk(float(portfolio.get('invested_isk') or 0.0))} across "
+            f"{int(portfolio.get('line_count') or 0):,} item line(s) and "
+            f"{portfolio_category_count:,} {portfolio_category_word}."
+        )
+        next_step = (
+            "Copy the portfolio items to Quickbar, verify the warnings in EVE, then place small manual buy orders "
+            "inside the portfolio budget."
+        )
+    elif best:
         headline = (
             f"Best shown buy-order plan is {best['item_name']} at {format_isk(best['suggested_bid'])} "
             f"or less, with {format_isk(best['net_profit'])} estimated after-fee profit."
@@ -6718,20 +7396,30 @@ def build_acquisition_strategy_summary(
     return {
         "headline": headline,
         "plain_language": (
-            f"This assumes you place a manual public buy order around {origin.name} inside {pickup_jumps:g} jump(s), "
-            "let it fill, haul the stock, "
-            f"and sell into current {destination.name} buy demand. It is an income planning view, not an order placer."
+            f"This spreads a manual public buy-order budget around {origin.name} across item families, then assumes "
+            f"you haul filled stock and sell into current {destination.name} buy demand. It is an income planning view, "
+            "not an order placer."
         ),
         "math_note": (
             f"Safe ceiling starts with the destination buy price after sales tax, then backs out the "
             f"{broker_fee_percent:g}% broker-fee estimate and {min_margin_percent:g}% target margin. "
             f"Units are capped by the {format_isk(budget_isk)} budget, visible destination demand, and "
-            f"{target_days:g} day(s) of recent source-region volume."
+            f"{target_days:g} day(s) of recent source-region volume. Portfolio rows are then scaled to the total "
+            f"investment and jump budget."
         ),
         "scope_note": scope_note,
         "timeout_note": timeout_note,
         "next_step": next_step,
         "best": acquisition_strategy_best_dict(best),
+        "portfolio": {
+            "line_count": portfolio.get("line_count") if isinstance(portfolio, dict) else 0,
+            "category_count": portfolio.get("category_count") if isinstance(portfolio, dict) else 0,
+            "invested_isk": portfolio.get("invested_isk") if isinstance(portfolio, dict) else 0.0,
+            "budget_remaining_isk": portfolio.get("budget_remaining_isk") if isinstance(portfolio, dict) else budget_isk,
+            "estimated_net_profit": portfolio.get("estimated_net_profit") if isinstance(portfolio, dict) else 0.0,
+            "used_jumps": portfolio.get("used_jumps") if isinstance(portfolio, dict) else 0,
+            "max_portfolio_jumps": portfolio.get("max_portfolio_jumps") if isinstance(portfolio, dict) else 0,
+        },
     }
 
 
@@ -6747,6 +7435,274 @@ def acquisition_strategy_best_dict(opportunity: dict[str, Any] | None) -> dict[s
         "estimated_isk_committed": opportunity.get("estimated_isk_committed"),
         "net_profit": opportunity.get("net_profit"),
         "margin_percent": opportunity.get("margin_percent"),
+    }
+
+
+def acquisition_portfolio_category(opportunity: Mapping[str, Any]) -> str:
+    labels = [
+        str(label or "").strip()
+        for label in opportunity.get("source_labels") or []
+        if str(label or "").strip()
+    ]
+    market_group_name = str(opportunity.get("market_group_name") or "").strip()
+    for label in labels:
+        if label and label != "Selected items":
+            return label
+    if market_group_name:
+        return market_group_name
+    if labels:
+        return labels[0]
+    return "Selected scope"
+
+
+def acquisition_portfolio_jump_cost(opportunity: Mapping[str, Any], *, fallback_pickup_jumps: int) -> int:
+    recommendation = opportunity.get("range_recommendation") if isinstance(opportunity.get("range_recommendation"), dict) else {}
+    range_text = str(recommendation.get("range") or "").strip().lower()
+    match = re.search(r"(\d+)\s*jumps?", range_text)
+    if match:
+        return max(1, min(MAX_ACQUISITION_PORTFOLIO_JUMPS, int(match.group(1))))
+    if range_text in {"station", "solar system", "system"}:
+        return 1
+    return max(1, min(MAX_ACQUISITION_PORTFOLIO_JUMPS, int(fallback_pickup_jumps or 1)))
+
+
+def acquisition_portfolio_line(
+    opportunity: Mapping[str, Any],
+    *,
+    units: int,
+    category: str,
+    estimated_collection_jumps: int,
+    total_budget_isk: float,
+) -> dict[str, Any]:
+    original_units = max(1, int(opportunity.get("recommended_units") or 1))
+    clean_units = max(1, min(int(units), original_units))
+    scale = clean_units / original_units
+
+    def scaled_value(key: str) -> float:
+        return float(opportunity.get(key) or 0.0) * scale
+
+    estimated_isk_committed = scaled_value("estimated_isk_committed")
+    return {
+        "type_id": opportunity.get("type_id"),
+        "item_name": opportunity.get("item_name"),
+        "category": category,
+        "source_labels": list(opportunity.get("source_labels") or []),
+        "market_group_id": opportunity.get("market_group_id"),
+        "market_group_name": opportunity.get("market_group_name") or "",
+        "risk_level": opportunity.get("risk_level"),
+        "decision": opportunity.get("decision"),
+        "range_recommendation": opportunity.get("range_recommendation"),
+        "estimated_collection_jumps": estimated_collection_jumps,
+        "recommended_units": clean_units,
+        "original_recommended_units": original_units,
+        "suggested_bid": opportunity.get("suggested_bid"),
+        "max_safe_bid": opportunity.get("max_safe_bid"),
+        "estimated_bid_total": scaled_value("estimated_bid_total"),
+        "estimated_broker_fee": scaled_value("estimated_broker_fee"),
+        "estimated_isk_committed": estimated_isk_committed,
+        "gross_destination_revenue": scaled_value("gross_destination_revenue"),
+        "estimated_sales_tax": scaled_value("estimated_sales_tax"),
+        "estimated_net_revenue": scaled_value("estimated_net_revenue"),
+        "net_profit": scaled_value("net_profit"),
+        "net_profit_per_unit": opportunity.get("net_profit_per_unit"),
+        "margin_percent": opportunity.get("margin_percent"),
+        "portfolio_weight_percent": (estimated_isk_committed / total_budget_isk * 100.0) if total_budget_isk > 0 else 0.0,
+        "best_source_buy": opportunity.get("best_source_buy"),
+        "best_source_sell": opportunity.get("best_source_sell"),
+        "best_destination_buy": opportunity.get("best_destination_buy"),
+        "source_history": opportunity.get("source_history"),
+        "destination_history": opportunity.get("destination_history"),
+        "history_flags": opportunity.get("history_flags"),
+    }
+
+
+def build_acquisition_investment_portfolio(
+    *,
+    opportunities: Iterable[dict[str, Any]],
+    budget_isk: float,
+    max_portfolio_jumps: int,
+    pickup_jumps: int,
+) -> dict[str, Any]:
+    clean_budget = clamp_acquisition_budget_isk(budget_isk)
+    clean_max_jumps = clamp_acquisition_portfolio_jumps(max_portfolio_jumps)
+    ranked_opportunities = list(opportunities)
+    possible_trap_excluded_count = sum(
+        1 for opportunity in ranked_opportunities if str(opportunity.get("risk_level") or "") == "possible-trap"
+    )
+    candidates = []
+    for index, opportunity in enumerate(ranked_opportunities):
+        risk_level = str(opportunity.get("risk_level") or "")
+        if risk_level == "possible-trap":
+            continue
+        recommended_units = clean_optional_int(opportunity.get("recommended_units")) or 0
+        estimated_isk_committed = clean_optional_float(opportunity.get("estimated_isk_committed")) or 0.0
+        net_profit = clean_optional_float(opportunity.get("net_profit")) or 0.0
+        if recommended_units <= 0 or estimated_isk_committed <= 0 or net_profit <= 0:
+            continue
+        unit_commitment = estimated_isk_committed / recommended_units
+        if unit_commitment <= 0 or unit_commitment > clean_budget:
+            continue
+        category = acquisition_portfolio_category(opportunity)
+        jump_cost = acquisition_portfolio_jump_cost(opportunity, fallback_pickup_jumps=pickup_jumps)
+        if jump_cost > clean_max_jumps:
+            continue
+        candidates.append(
+            {
+                "index": index,
+                "opportunity": opportunity,
+                "category": category,
+                "jump_cost": jump_cost,
+                "unit_commitment": unit_commitment,
+                "recommended_units": recommended_units,
+            }
+        )
+
+    if not candidates:
+        return {
+            "available": False,
+            "strategy": "Diversified investment portfolio",
+            "investment_budget_isk": clean_budget,
+            "max_portfolio_jumps": clean_max_jumps,
+            "invested_isk": 0.0,
+            "budget_remaining_isk": clean_budget,
+            "estimated_net_profit": 0.0,
+            "margin_percent": None,
+            "line_count": 0,
+            "category_count": 0,
+            "used_jumps": 0,
+            "jumps_remaining": clean_max_jumps,
+            "possible_trap_excluded_count": possible_trap_excluded_count,
+            "caution_line_count": 0,
+            "category_allocations": [],
+            "lines": [],
+            "manual_note": (
+                "No clear or caution opportunities fit the portfolio budget and jump budget. Possible trap rows are "
+                "left out of funded plans until manually verified."
+            ),
+        }
+
+    candidates.sort(
+        key=lambda item: (
+            acquisition_risk_sort_rank(str(item["opportunity"].get("risk_level") or "")),
+            -float(item["opportunity"].get("net_profit") or 0.0),
+            -float(item["opportunity"].get("margin_percent") or 0.0),
+            str(item["opportunity"].get("item_name") or ""),
+        )
+    )
+    candidates_by_category: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        candidates_by_category.setdefault(str(candidate["category"]), []).append(candidate)
+    category_names = sorted(
+        candidates_by_category,
+        key=lambda category: (
+            acquisition_risk_sort_rank(str(candidates_by_category[category][0]["opportunity"].get("risk_level") or "")),
+            -float(candidates_by_category[category][0]["opportunity"].get("net_profit") or 0.0),
+            category,
+        ),
+    )
+    target_category_count = max(1, min(len(category_names), MAX_ACQUISITION_PORTFOLIO_LINES))
+    category_budget_target = clean_budget / target_category_count
+    category_budget_cap = clean_budget if target_category_count == 1 else max(category_budget_target * 1.5, clean_budget * 0.35)
+
+    selected_indexes: set[int] = set()
+    category_spend: dict[str, float] = {category: 0.0 for category in category_names}
+    lines: list[dict[str, Any]] = []
+    remaining_budget = clean_budget
+    used_jumps = 0
+
+    def try_add_candidate(candidate: dict[str, Any], *, line_budget: float) -> bool:
+        nonlocal remaining_budget, used_jumps
+        if len(lines) >= MAX_ACQUISITION_PORTFOLIO_LINES or int(candidate["index"]) in selected_indexes:
+            return False
+        jump_cost = int(candidate["jump_cost"])
+        if used_jumps + jump_cost > clean_max_jumps:
+            return False
+        allowed_budget = min(float(line_budget), remaining_budget)
+        if allowed_budget <= 0:
+            return False
+        unit_commitment = float(candidate["unit_commitment"])
+        units = min(int(candidate["recommended_units"]), int(allowed_budget // unit_commitment))
+        if units <= 0:
+            return False
+        line = acquisition_portfolio_line(
+            candidate["opportunity"],
+            units=units,
+            category=str(candidate["category"]),
+            estimated_collection_jumps=jump_cost,
+            total_budget_isk=clean_budget,
+        )
+        line_commitment = float(line["estimated_isk_committed"])
+        if line_commitment <= 0 or line_commitment > remaining_budget + 0.01:
+            return False
+        selected_indexes.add(int(candidate["index"]))
+        lines.append(line)
+        remaining_budget -= line_commitment
+        used_jumps += jump_cost
+        category_spend[str(candidate["category"])] = category_spend.get(str(candidate["category"]), 0.0) + line_commitment
+        return True
+
+    for category in category_names:
+        if len(lines) >= MAX_ACQUISITION_PORTFOLIO_LINES:
+            break
+        candidate = candidates_by_category[category][0]
+        try_add_candidate(candidate, line_budget=category_budget_target)
+
+    added = True
+    while added and len(lines) < MAX_ACQUISITION_PORTFOLIO_LINES:
+        added = False
+        for candidate in candidates:
+            category = str(candidate["category"])
+            if target_category_count > 1 and category_spend.get(category, 0.0) >= category_budget_cap:
+                continue
+            line_budget = category_budget_cap - category_spend.get(category, 0.0)
+            if target_category_count == 1:
+                line_budget = remaining_budget
+            if try_add_candidate(candidate, line_budget=line_budget):
+                added = True
+            if len(lines) >= MAX_ACQUISITION_PORTFOLIO_LINES:
+                break
+
+    invested_isk = sum(float(line["estimated_isk_committed"]) for line in lines)
+    estimated_net_profit = sum(float(line["net_profit"]) for line in lines)
+    category_allocations = []
+    for category in sorted({str(line["category"]) for line in lines}):
+        category_lines = [line for line in lines if str(line["category"]) == category]
+        category_invested = sum(float(line["estimated_isk_committed"]) for line in category_lines)
+        category_profit = sum(float(line["net_profit"]) for line in category_lines)
+        category_jumps = sum(int(line["estimated_collection_jumps"]) for line in category_lines)
+        category_allocations.append(
+            {
+                "category": category,
+                "line_count": len(category_lines),
+                "invested_isk": category_invested,
+                "estimated_net_profit": category_profit,
+                "used_jumps": category_jumps,
+                "weight_percent": (category_invested / invested_isk * 100.0) if invested_isk > 0 else 0.0,
+            }
+        )
+    category_allocations.sort(key=lambda item: (-float(item["invested_isk"]), str(item["category"])))
+    return {
+        "available": bool(lines),
+        "strategy": "Diversified investment portfolio",
+        "investment_budget_isk": clean_budget,
+        "max_portfolio_jumps": clean_max_jumps,
+        "invested_isk": invested_isk,
+        "budget_remaining_isk": max(0.0, clean_budget - invested_isk),
+        "estimated_net_profit": estimated_net_profit,
+        "margin_percent": profit_margin_percent(estimated_net_profit, invested_isk) if invested_isk > 0 else None,
+        "line_count": len(lines),
+        "category_count": len(category_allocations),
+        "used_jumps": used_jumps,
+        "jumps_remaining": max(0, clean_max_jumps - used_jumps),
+        "possible_trap_excluded_count": possible_trap_excluded_count,
+        "caution_line_count": sum(1 for line in lines if str(line.get("risk_level") or "") == "caution"),
+        "category_allocations": category_allocations,
+        "lines": lines,
+        "manual_note": (
+            "Portfolio lines spread the total ISK budget across item families and exclude Possible trap rows from "
+            "funded recommendations. The jump budget is a planning cap for collection effort; actual pickup routes "
+            "depend on where future buy-order fills land."
+        ),
     }
 
 
@@ -7929,12 +8885,7 @@ def resolve_route_system(route_cache: RouteGraphCache, name: str) -> RouteSystem
     normalized = normalize_system_name(name)
     if not normalized:
         normalized = normalize_system_name(DEFAULT_HAUL_DESTINATION_SYSTEM)
-    aliases = {
-        "dhira": "dihra",
-        "amarrhomeworld": "amarr",
-        "amarrhome": "amarr",
-    }
-    normalized = aliases.get(normalized, normalized)
+    normalized = ROUTE_SYSTEM_ALIASES.get(normalized, normalized)
     for system in systems.values():
         if normalize_system_name(system.name) == normalized:
             return system
@@ -7943,6 +8894,95 @@ def resolve_route_system(route_cache: RouteGraphCache, name: str) -> RouteSystem
 
 def normalize_system_name(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def route_system_aliases_by_canonical() -> dict[str, tuple[str, ...]]:
+    aliases: dict[str, list[str]] = {}
+    for alias, canonical in {**ROUTE_SYSTEM_ALIASES, **ROUTE_SYSTEM_SUGGEST_ALIAS_PREFIXES}.items():
+        aliases.setdefault(canonical, []).append(alias)
+    return {canonical: tuple(sorted(set(values))) for canonical, values in aliases.items()}
+
+
+def route_system_suggestion_score(
+    system: RouteSystem,
+    normalized_query: str,
+    aliases_by_canonical: Mapping[str, tuple[str, ...]],
+) -> tuple[int, int, int, str] | None:
+    normalized_name = normalize_system_name(system.name)
+    aliases = aliases_by_canonical.get(normalized_name, ())
+    name_parts = tuple(
+        normalize_system_name(part)
+        for part in re.split(r"[^a-z0-9]+", system.name.lower())
+        if normalize_system_name(part)
+    )
+    if normalized_name == normalized_query:
+        match_rank = 0
+    elif normalized_name.startswith(normalized_query):
+        match_rank = 1
+    elif any(alias.startswith(normalized_query) for alias in aliases):
+        match_rank = 1
+    elif any(part.startswith(normalized_query) for part in name_parts):
+        match_rank = 2
+    elif normalized_query in normalized_name or any(normalized_query in alias for alias in aliases):
+        match_rank = 3
+    else:
+        return None
+    hub_rank = ROUTE_SYSTEM_HUB_PRIORITY.get(normalized_name, 99)
+    return (match_rank, hub_rank, len(normalized_name), system.name.lower())
+
+
+def clamp_route_system_suggestion_limit(value: Any) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = MAX_ROUTE_SYSTEM_SUGGESTIONS
+    return max(1, min(MAX_ROUTE_SYSTEM_SUGGESTIONS, limit))
+
+
+def search_route_system_names(
+    query: str,
+    *,
+    route_cache: RouteGraphCache | None = None,
+    limit: int = MAX_ROUTE_SYSTEM_SUGGESTIONS,
+) -> list[dict[str, Any]]:
+    normalized_query = normalize_system_name(query)
+    if len(normalized_query) < MIN_ROUTE_SYSTEM_SUGGESTION_CHARS:
+        return []
+    normalized_query = ROUTE_SYSTEM_SUGGEST_ALIAS_PREFIXES.get(
+        normalized_query,
+        ROUTE_SYSTEM_ALIASES.get(normalized_query, normalized_query),
+    )
+    cache = route_cache or load_route_graph_cache()
+    if not cache.available:
+        return []
+    aliases_by_canonical = route_system_aliases_by_canonical()
+    ranked: list[tuple[tuple[int, int, int, str], RouteSystem]] = []
+    for system in (cache.systems or {}).values():
+        score = route_system_suggestion_score(system, normalized_query, aliases_by_canonical)
+        if score is not None:
+            ranked.append((score, system))
+    clean_limit = clamp_route_system_suggestion_limit(limit)
+    return [system.to_dict() for _score, system in sorted(ranked, key=lambda item: item[0])[:clean_limit]]
+
+
+def build_route_system_suggestions_payload(
+    query: str,
+    *,
+    route_cache: RouteGraphCache | None = None,
+    limit: int = MAX_ROUTE_SYSTEM_SUGGESTIONS,
+) -> dict[str, Any]:
+    cache = route_cache or load_route_graph_cache()
+    systems = search_route_system_names(query, route_cache=cache, limit=limit)
+    return {
+        "ok": True,
+        "available": cache.available,
+        "error": cache.error,
+        "query": str(query or ""),
+        "min_query_length": MIN_ROUTE_SYSTEM_SUGGESTION_CHARS,
+        "limit": clamp_route_system_suggestion_limit(limit),
+        "system_count": cache.system_count,
+        "systems": systems,
+    }
 
 
 def build_haul_route_plan(
@@ -8272,6 +9312,14 @@ def clamp_acquisition_pickup_jumps(value: Any) -> int:
     except (TypeError, ValueError):
         jumps = DEFAULT_ACQUISITION_PICKUP_JUMPS
     return max(0, min(MAX_ACQUISITION_PICKUP_JUMPS, jumps))
+
+
+def clamp_acquisition_portfolio_jumps(value: Any) -> int:
+    try:
+        jumps = int(value)
+    except (TypeError, ValueError):
+        jumps = DEFAULT_ACQUISITION_PORTFOLIO_JUMPS
+    return max(1, min(MAX_ACQUISITION_PORTFOLIO_JUMPS, jumps))
 
 
 def clamp_acquisition_broker_fee_percent(value: Any) -> float:
@@ -10524,6 +11572,7 @@ def build_http_server(
     *,
     public_base_url: str,
     discord_webhook_url: str = "",
+    discord_alert_settings_path: Path = DEFAULT_DISCORD_ALERT_SETTINGS_PATH,
     discord_timeout_seconds: float = DEFAULT_WEBHOOK_TIMEOUT_SECONDS,
     discord_forum_posts: bool = False,
     discord_forum_tag_ids: Iterable[str] = (),
@@ -10554,11 +11603,20 @@ def build_http_server(
             if path == "/api/offers":
                 self._handle_offer_list()
                 return
+            if path == "/api/discord-alerts/settings":
+                self._handle_discord_alert_settings()
+                return
+            if path == "/api/fittings":
+                self._handle_fitting_list()
+                return
             if path == "/api/flight/status":
                 self._handle_flight_status()
                 return
             if path == "/api/flight/diagnostics":
                 self._handle_flight_diagnostics()
+                return
+            if path == "/api/flight/systems":
+                self._handle_flight_systems()
                 return
             if path == "/api/flight/industry":
                 self._handle_flight_industry()
@@ -10611,6 +11669,9 @@ def build_http_server(
             if path.startswith("/api/offers/"):
                 self._handle_offer_api(path)
                 return
+            if path.startswith("/api/fittings/"):
+                self._handle_fitting_api(path)
+                return
             if path.startswith("/offers/"):
                 self._handle_offer_page(path)
                 return
@@ -10626,6 +11687,21 @@ def build_http_server(
                     return
                 self._handle_offer_create()
                 return
+            if path == "/api/fittings":
+                if not self._require_write_access():
+                    return
+                self._handle_fitting_create()
+                return
+            if path == "/api/discord-alerts/settings":
+                if not self._require_write_access():
+                    return
+                self._handle_discord_alert_settings_save()
+                return
+            if path == "/api/discord-alerts/test":
+                if not self._require_write_access():
+                    return
+                self._handle_discord_alert_test()
+                return
             if path.startswith("/api/offers/") and path.endswith("/reserve"):
                 if not self._require_write_access():
                     return
@@ -10635,6 +11711,11 @@ def build_http_server(
                 if not self._require_write_access():
                     return
                 self._handle_offer_status(path)
+                return
+            if path.startswith("/api/fittings/") and path.endswith("/status"):
+                if not self._require_write_access():
+                    return
+                self._handle_fitting_status(path)
                 return
             if path == "/flight/logout":
                 self._handle_flight_logout()
@@ -10656,6 +11737,121 @@ def build_http_server(
                     "ok": True,
                     "generated_at": now_iso(),
                     "offers": [listing.to_dict(public_base_url=public_base_url) for listing in listings],
+                }
+            )
+
+        def _handle_discord_alert_settings(self) -> None:
+            try:
+                settings = load_discord_alert_settings(discord_alert_settings_path)
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=500)
+                return
+            self._send_json(
+                build_discord_alert_settings_response(
+                    settings,
+                    settings_path=discord_alert_settings_path,
+                    webhook_configured=bool(discord_webhook_url),
+                )
+            )
+
+        def _handle_discord_alert_settings_save(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, Mapping):
+                self._send_json({"ok": False, "error": "Discord alert settings payload must be a JSON object."}, status=400)
+                return
+            raw_settings = payload.get("settings", payload)
+            if not isinstance(raw_settings, Mapping):
+                self._send_json({"ok": False, "error": "Discord alert settings must be a JSON object."}, status=400)
+                return
+            try:
+                settings = save_discord_alert_settings(
+                    clean_discord_alert_settings_payload(raw_settings),
+                    discord_alert_settings_path,
+                )
+            except (ValueError, CorpMarketError, OSError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(
+                build_discord_alert_settings_response(
+                    settings,
+                    settings_path=discord_alert_settings_path,
+                    webhook_configured=bool(discord_webhook_url),
+                )
+            )
+
+        def _handle_discord_alert_test(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, Mapping):
+                self._send_json({"ok": False, "error": "Discord alert test payload must be a JSON object."}, status=400)
+                return
+            try:
+                raw_settings = payload.get("settings")
+                settings = (
+                    clean_discord_alert_settings_payload(raw_settings)
+                    if isinstance(raw_settings, Mapping)
+                    else load_discord_alert_settings(discord_alert_settings_path)
+                )
+                raw_event = payload.get("event")
+                event_payload = raw_event if isinstance(raw_event, Mapping) else {}
+                route_name = clean_text(payload.get("route_name") or "", "Discord alert route name", max_length=100)
+                rule_name = clean_text(payload.get("rule_name") or "", "Discord alert rule name", max_length=100)
+                preview_payload = build_discord_alert_preview_payload(
+                    settings,
+                    route_name=route_name,
+                    rule_name=rule_name,
+                    event_payload=event_payload,
+                )
+                send = query_bool(payload.get("send"), default=False)
+                result = None
+                if send:
+                    if not discord_webhook_url:
+                        raise CorpMarketError("Discord webhook is not configured for this server.")
+                    result = post_discord_webhook(
+                        discord_webhook_url,
+                        preview_payload,
+                        timeout_seconds=discord_timeout_seconds,
+                    )
+            except (ValueError, CorpMarketError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(
+                {
+                    "ok": True,
+                    "generated_at": now_iso(),
+                    "webhook_configured": bool(discord_webhook_url),
+                    "sent_to_discord": bool(result),
+                    "discord_message": result.to_dict() if result else None,
+                    "preview_payload": preview_payload,
+                }
+            )
+
+        def _handle_fitting_list(self) -> None:
+            params = parse_qs(urlparse(self.path).query)
+            status = first_query_value(params, "status") or None
+            include_archived = first_query_value(params, "include_archived").lower() in {"1", "true", "yes"}
+            query = first_query_value(params, "q") or first_query_value(params, "query")
+            try:
+                fittings = store.list_shared_fittings(
+                    status=status,
+                    include_archived=include_archived,
+                    query=query,
+                )
+            except (ValueError, CorpMarketError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(
+                {
+                    "ok": True,
+                    "generated_at": now_iso(),
+                    "fittings": [fitting.to_dict() for fitting in fittings],
                 }
             )
 
@@ -10683,6 +11879,14 @@ def build_http_server(
                     secure_cookies=secure_flight_cookies,
                 )
             )
+
+        def _handle_flight_systems(self) -> None:
+            query = parse_qs(urlparse(self.path).query)
+            term = first_query_value(query, "q") or first_query_value(query, "query")
+            limit = clamp_route_system_suggestion_limit(
+                first_query_value(query, "limit") or MAX_ROUTE_SYSTEM_SUGGESTIONS
+            )
+            self._send_json(build_route_system_suggestions_payload(term, limit=limit))
 
         def _handle_flight_industry(self) -> None:
             session = self._require_flight_session("loading industry analysis")
@@ -10950,7 +12154,7 @@ def build_http_server(
                 return
 
         def _handle_flight_acquisition(self) -> None:
-            session = self._require_flight_session("planning market acquisitions")
+            session = self._require_flight_session("building a market investment portfolio")
             if session is None:
                 return
             query = parse_qs(urlparse(self.path).query)
@@ -10961,6 +12165,9 @@ def build_http_server(
             )
             pickup_jumps = clamp_acquisition_pickup_jumps(
                 (query.get("pickup_jumps") or [DEFAULT_ACQUISITION_PICKUP_JUMPS])[0]
+            )
+            portfolio_jumps = clamp_acquisition_portfolio_jumps(
+                (query.get("portfolio_jumps") or [DEFAULT_ACQUISITION_PORTFOLIO_JUMPS])[0]
             )
             min_margin = clamp_haul_min_detour_margin_percent(
                 (query.get("min_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
@@ -10988,6 +12195,7 @@ def build_http_server(
                     destination_name=destination,
                     budget_isk=budget_isk,
                     pickup_jumps=pickup_jumps,
+                    portfolio_jumps=portfolio_jumps,
                     min_margin_percent=min_margin,
                     broker_fee_percent=broker_fee,
                     target_days=target_days,
@@ -11272,6 +12480,15 @@ def build_http_server(
             draft = build_mail_draft(listing, actor=actor)
             self._send_json({"ok": True, "offer": listing.to_dict(public_base_url=public_base_url), "mail": draft.to_dict()})
 
+        def _handle_fitting_api(self, path: str) -> None:
+            fitting_id = path.removeprefix("/api/fittings/").split("/", 1)[0]
+            try:
+                fitting = store.get_shared_fitting(fitting_id)
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=404)
+                return
+            self._send_json({"ok": True, "fitting": fitting.to_dict()})
+
         def _handle_offer_page(self, path: str) -> None:
             listing_id = path.removeprefix("/offers/").split("/", 1)[0]
             params = parse_qs(urlparse(self.path).query)
@@ -11329,6 +12546,22 @@ def build_http_server(
                 },
                 status=201,
             )
+
+        def _handle_fitting_create(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, dict):
+                self._send_json({"ok": False, "error": "Fitting payload must be a JSON object."}, status=400)
+                return
+            try:
+                fitting = store.create_shared_fitting(payload)
+            except (ValueError, CorpMarketError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json({"ok": True, "fitting": fitting.to_dict()}, status=201)
 
         def _handle_offer_reserve(self, path: str) -> None:
             listing_id = path.removeprefix("/api/offers/").removesuffix("/reserve")
@@ -11392,6 +12625,23 @@ def build_http_server(
                     "offer": listing.to_dict(public_base_url=public_base_url),
                 }
             )
+
+        def _handle_fitting_status(self, path: str) -> None:
+            fitting_id = path.removeprefix("/api/fittings/").removesuffix("/status")
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, dict):
+                self._send_json({"ok": False, "error": "Status payload must be a JSON object."}, status=400)
+                return
+            try:
+                fitting = store.set_shared_fitting_status(fitting_id, str(payload.get("status") or ""))
+            except (ValueError, CorpMarketError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json({"ok": True, "fitting": fitting.to_dict()})
 
         def _read_json_body(self) -> Any:
             body = self.rfile.read(int(self.headers.get("Content-Length") or "0"))
@@ -11672,6 +12922,35 @@ def _render_legacy_market_dashboard() -> str:
     const offersEl = document.querySelector("#offers");
     const statusEl = document.querySelector("#status");
     const errorEl = document.querySelector("#form-error");
+    const discordAlertForm = document.querySelector("#discord-alert-form");
+    const discordAlertRuleForm = document.querySelector("#discord-alert-rule-form");
+    const discordAlertEnabled = document.querySelector("#discord-alert-enabled");
+    const discordAlertDryRun = document.querySelector("#discord-alert-dry-run");
+    const discordAlertSender = document.querySelector("#discord-alert-sender");
+    const discordAlertRouteEnabled = document.querySelector("#discord-alert-route-enabled");
+    const discordAlertRouteName = document.querySelector("#discord-alert-route-name");
+    const discordAlertDestination = document.querySelector("#discord-alert-destination");
+    const discordAlertRouteType = document.querySelector("#discord-alert-route-type");
+    const discordAlertRuleEnabled = document.querySelector("#discord-alert-rule-enabled");
+    const discordAlertRuleName = document.querySelector("#discord-alert-rule-name");
+    const discordAlertEventType = document.querySelector("#discord-alert-event-type");
+    const discordAlertSeverity = document.querySelector("#discord-alert-severity");
+    const discordAlertPhrases = document.querySelector("#discord-alert-phrases");
+    const discordAlertIncludeText = document.querySelector("#discord-alert-include-text");
+    const discordAlertTestSummary = document.querySelector("#discord-alert-test-summary");
+    const discordAlertTestSource = document.querySelector("#discord-alert-test-source");
+    const discordAlertTestSystem = document.querySelector("#discord-alert-test-system");
+    const discordAlertTestChannel = document.querySelector("#discord-alert-test-channel");
+    const discordAlertTestMessage = document.querySelector("#discord-alert-test-message");
+    const discordAlertPreview = document.querySelector("#discord-alert-preview");
+    const discordAlertSave = document.querySelector("#discord-alert-save");
+    const discordAlertPreviewButton = document.querySelector("#discord-alert-preview-button");
+    const discordAlertSendTest = document.querySelector("#discord-alert-send-test");
+    const discordAlertMessage = document.querySelector("#discord-alert-message");
+    const discordAlertWebhookStatus = document.querySelector("#discord-alert-webhook-status");
+    const discordAlertSenderStatus = document.querySelector("#discord-alert-sender-status");
+    const discordAlertForwardingStatus = document.querySelector("#discord-alert-forwarding-status");
+    const discordAlertTextStatus = document.querySelector("#discord-alert-text-status");
     let filterType = "";
     let includeClosed = false;
 
@@ -12062,6 +13341,55 @@ def render_market_group_picker_options(
     )
 
 
+def render_scope_chip_list(scopes: Iterable[str]) -> str:
+    clean_scopes = [str(scope) for scope in scopes if str(scope or "").strip()]
+    if not clean_scopes:
+        return '<span class="scope-chip no-scope">No character ESI scope</span>'
+    return "".join(
+        f'<code class="scope-chip">{html.escape(scope)}</code>'
+        for scope in clean_scopes
+    )
+
+
+def render_flight_scope_summary(tab_key: str) -> str:
+    disclosure = FLIGHT_TAB_SCOPE_DISCLOSURES[tab_key]
+    label = str(disclosure["label"])
+    summary = str(disclosure["summary"])
+    scopes = tuple(disclosure.get("scopes") or ())
+    return f"""
+              <aside class="scope-panel" data-scope-tab="{html.escape(tab_key, quote=True)}" aria-label="{html.escape(label, quote=True)} ESI scope use">
+                <div>
+                  <strong>{html.escape(label)} scopes</strong>
+                  <p>{html.escape(summary)}</p>
+                </div>
+                <div class="scope-chip-row" aria-label="ESI scopes used by this tab">
+                  {render_scope_chip_list(scopes)}
+                </div>
+              </aside>"""
+
+
+def render_flight_scope_justification() -> str:
+    scope_rows = []
+    for scope in DEFAULT_FLIGHT_ESI_SCOPES:
+        disclosure = FLIGHT_ESI_SCOPE_DISCLOSURES[scope]
+        scope_rows.append(
+            f"""                    <div>
+                      <dt><code>{html.escape(scope)}</code> <span>{html.escape(disclosure["label"])}</span></dt>
+                      <dd>{html.escape(disclosure["detail"])}</dd>
+                    </div>"""
+        )
+    return f"""
+                <details class="sso-scope-justification" open>
+                  <summary>Why This App Requests ESI Scopes</summary>
+                  <p>Corp Market Concierge uses EVE Online SSO so pilots can choose exactly what character data they share. The app only requests <strong>read-only</strong> ESI scopes. It cannot buy, sell, contract, move assets, send mail, place market orders, control your ship, or perform any in-game action for you.</p>
+                  <p>These are the current Flight Attendant scopes and why each one is requested:</p>
+                  <dl class="sso-scope-list">
+{chr(10).join(scope_rows)}
+                  </dl>
+                  <p>Public market prices and public market orders come from public ESI data. The app does not need market order write access, contract write access, mail access, or gameplay-control permissions. Users can revoke access any time from EVE Online's authorized applications page.</p>
+                </details>"""
+
+
 def _render_flight_attendant_dashboard() -> str:
     category_options = "\n".join(
         f'                    <option value="{html.escape(key)}">{html.escape(label)}</option>'
@@ -12218,6 +13546,11 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .tab-panel[hidden] { display: none; }
     .market-grid { display: grid; grid-template-columns: minmax(0, 382px) minmax(0, 1fr); gap: 16px; min-width: 0; }
+    #tab-market > .market-grid { grid-template-columns: minmax(380px, .8fr) minmax(540px, 1.4fr); }
+    #tab-market .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #tab-market .scope-panel { grid-template-columns: 1fr; }
+    #tab-market .scope-chip-row { justify-content: flex-start; }
+    .fitting-grid { display: grid; grid-template-columns: minmax(320px, 420px) minmax(0, 1fr); gap: 16px; min-width: 0; }
     .flight-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; min-width: 0; }
     .reprocess-page {
       display: grid;
@@ -12429,6 +13762,7 @@ def _render_flight_attendant_dashboard() -> str:
     .panel-header .meta { max-width: 620px; }
     form { display: grid; gap: 12px; }
     label { display: grid; gap: 5px; color: var(--muted); font-size: 13px; }
+    .field { display: grid; gap: 5px; color: var(--muted); font-size: 13px; min-width: 0; }
     input, select, textarea, button { font: inherit; border-radius: 7px; }
     input, select, textarea {
       width: 100%;
@@ -12447,6 +13781,48 @@ def _render_flight_attendant_dashboard() -> str:
     .checkline span { color: var(--muted); }
     .checkline small { display: block; color: var(--amber); font-size: 12px; line-height: 1.35; margin-top: 3px; }
     .input-note { color: var(--amber); font-size: 12px; line-height: 1.35; }
+    .system-suggest-list {
+      display: grid;
+      gap: 4px;
+      max-height: 184px;
+      overflow: auto;
+      padding: 5px;
+      border: 1px solid rgba(97, 199, 217, .34);
+      border-radius: 7px;
+      background: rgba(5, 9, 11, .94);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, .28);
+    }
+    .system-suggest-list[hidden] { display: none; }
+    .system-suggest-option {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      width: 100%;
+      min-height: 34px;
+      padding: 7px 9px;
+      text-align: left;
+      border: 1px solid rgba(63, 85, 80, .62);
+      background: rgba(17, 24, 25, .82);
+      color: var(--text);
+    }
+    .system-suggest-option:hover,
+    .system-suggest-option:focus,
+    .system-suggest-option.active {
+      color: #061113;
+      border-color: rgba(97, 199, 217, .82);
+      background: linear-gradient(180deg, #75d6e2, #4baebe);
+    }
+    .system-suggest-option small {
+      color: inherit;
+      opacity: .78;
+      white-space: nowrap;
+    }
+    .system-suggest-empty {
+      padding: 7px 9px;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .checkline.compact { min-height: 28px; font-size: 13px; }
     .haul-item-filter {
       border: 1px solid rgba(63, 85, 80, .68);
@@ -12615,6 +13991,56 @@ def _render_flight_attendant_dashboard() -> str:
       border: 1px solid rgba(97, 199, 217, .45);
     }
     .button-link[hidden] { display: none; }
+    .scope-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(220px, .72fr);
+      gap: 10px;
+      align-items: start;
+      margin: 10px 0 12px;
+      padding: 10px;
+      border: 1px solid rgba(97, 199, 217, .25);
+      border-radius: 7px;
+      background: rgba(5, 9, 11, .38);
+    }
+    .scope-panel strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--cyan);
+      font-size: 13px;
+    }
+    .scope-panel p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .scope-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      justify-content: flex-end;
+    }
+    .scope-chip {
+      display: inline-flex;
+      max-width: 100%;
+      padding: 4px 6px;
+      border: 1px solid rgba(224, 168, 74, .36);
+      border-radius: 999px;
+      color: var(--amber);
+      background: rgba(224, 168, 74, .08);
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .scope-chip.no-scope {
+      border-color: rgba(97, 199, 217, .24);
+      color: var(--muted);
+      background: rgba(97, 199, 217, .06);
+      font-family: inherit;
+      font-weight: 700;
+    }
     .sso-scope-justification {
       margin-top: 12px;
       border: 1px solid rgba(97, 199, 217, .28);
@@ -12644,6 +14070,13 @@ def _render_flight_attendant_dashboard() -> str:
       font-size: 12px;
       font-weight: 800;
       overflow-wrap: anywhere;
+    }
+    .sso-scope-list dt code { color: inherit; font-family: inherit; }
+    .sso-scope-list dt span {
+      margin-left: 5px;
+      color: var(--cyan);
+      font-family: Segoe UI, system-ui, sans-serif;
+      font-size: 12px;
     }
     .sso-scope-list dd {
       margin: 2px 0 0;
@@ -12699,7 +14132,61 @@ def _render_flight_attendant_dashboard() -> str:
       font-weight: 800;
     }
     .actions button { color: var(--ink); background: var(--amber); border-color: var(--amber); }
+    .fitting-toolbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+    .fitting-list { display: grid; gap: 10px; }
+    .fitting-card {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      background: linear-gradient(180deg, rgba(28, 40, 40, .92), rgba(18, 26, 27, .92));
+      border: 1px solid var(--line);
+      border-radius: 7px;
+    }
+    .fitting-card.archived { opacity: .72; }
+    .fitting-card-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+    }
+    .fitting-card h3 { margin: 0 0 4px; font-size: 17px; letter-spacing: 0; overflow-wrap: anywhere; }
+    .fitting-meta-row { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+    .fitting-link-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .fitting-link-row a { color: var(--cyan); font-weight: 800; text-decoration: none; }
+    .fitting-link-row a:hover { text-decoration: underline; }
+    .fitting-block-preview {
+      border: 1px solid rgba(63, 85, 80, .76);
+      border-radius: 7px;
+      background: rgba(5, 9, 11, .38);
+      overflow: hidden;
+    }
+    .fitting-block-preview summary {
+      cursor: pointer;
+      padding: 9px 10px;
+      color: var(--cyan);
+      font-weight: 800;
+    }
+    .fitting-block-preview textarea {
+      min-height: 220px;
+      border: 0;
+      border-top: 1px solid rgba(63, 85, 80, .76);
+      border-radius: 0;
+      background: rgba(5, 9, 11, .76);
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre;
+      overflow: auto;
+    }
+    .fitting-copy-status { min-height: 18px; }
     .ops-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-bottom: 12px; }
+    #tab-market .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .ops-tile {
       border: 1px solid var(--line);
       background: rgba(8, 13, 15, .44);
@@ -12761,6 +14248,7 @@ def _render_flight_attendant_dashboard() -> str:
       margin-top: 0;
       padding-right: 2px;
     }
+    .industry-library-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr); gap: 16px; }
     .blueprint-list { display: grid; gap: 8px; margin-top: 6px; }
     .blueprint-item {
       display: grid;
@@ -12926,6 +14414,11 @@ def _render_flight_attendant_dashboard() -> str:
     .decision-metric span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
     .decision-metric b { display: block; color: var(--text); font-size: 13px; overflow-wrap: anywhere; margin-top: 2px; }
     .decision-metric small { display: block; color: var(--muted); margin-top: 3px; line-height: 1.25; }
+    .decision-lede { color: var(--text); font-weight: 700; margin-top: 8px; }
+    .confidence-strip { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+    .confidence-pill { border: 1px solid rgba(86, 199, 112, .45); background: rgba(38, 111, 57, .36); color: #89f1a0; }
+    .confidence-pill.medium { border-color: rgba(89, 203, 224, .45); background: rgba(33, 94, 105, .38); color: var(--accent); }
+    .confidence-pill.low { border-color: rgba(242, 178, 63, .45); background: rgba(112, 78, 27, .42); color: var(--warning); }
     body[data-active-tab="reprocessing"] #tab-reprocessing .profit-panel {
       position: relative;
       overflow: hidden;
@@ -14259,6 +15752,79 @@ def _render_flight_attendant_dashboard() -> str:
       color: var(--cyan);
       font-weight: 800;
     }
+    .planetary-customs-tester {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+      border: 1px solid rgba(97, 199, 217, .34);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(97, 199, 217, .09), rgba(100, 196, 125, .08) 54%, rgba(8, 13, 15, .72)),
+        rgba(8, 13, 15, .66);
+      padding: 10px;
+    }
+    .planetary-customs-tester-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid rgba(97, 199, 217, .22);
+      padding-bottom: 8px;
+    }
+    .planetary-customs-tester-head strong {
+      color: var(--text);
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+    .planetary-customs-tester-head span {
+      color: var(--cyan);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .planetary-customs-test-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .planetary-customs-test-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .planetary-customs-test-output {
+      display: grid;
+      gap: 8px;
+      border: 1px solid rgba(85, 111, 103, .5);
+      border-radius: 7px;
+      background: rgba(8, 13, 15, .48);
+      padding: 9px;
+      min-height: 48px;
+    }
+    .planetary-customs-test-output strong {
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
+    .planetary-customs-test-output .planetary-test-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .planetary-customs-test-output .decision-metric {
+      background: rgba(17, 24, 25, .56);
+      min-height: 58px;
+    }
+    .planetary-test-verdict {
+      border-left: 3px solid var(--cyan);
+      padding-left: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .planetary-test-verdict.is-match { border-color: var(--green); color: #d6ead1; }
+    .planetary-test-verdict.is-warn { border-color: var(--amber); color: #f0d5a2; }
+    .planetary-test-verdict.is-mismatch { border-color: var(--red); color: #f0b7b7; }
     .planetary-answer-book {
       display: grid;
       gap: 7px;
@@ -14570,6 +16136,51 @@ def _render_flight_attendant_dashboard() -> str:
       font-size: 12px;
       padding: 2px 7px;
     }
+    .discord-alert-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 12px;
+    }
+    .discord-alert-form {
+      display: grid;
+      gap: 12px;
+    }
+    .discord-alert-section {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid rgba(63, 85, 80, .62);
+      border-radius: 7px;
+      background: rgba(8, 13, 15, .38);
+    }
+    .discord-alert-section h3 {
+      margin: 0;
+      color: var(--text);
+      font-size: 15px;
+    }
+    .discord-alert-section .row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .discord-alert-preview {
+      min-height: 248px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      white-space: pre;
+    }
+    .discord-alert-status-line {
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .discord-alert-status-line.ok { color: var(--green); }
+    .discord-alert-status-line.error { color: var(--red); padding: 0; }
+    .future-option {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
     .signal { color: var(--cyan); }
     .warning { color: var(--amber); }
     .danger { color: var(--red); }
@@ -14607,7 +16218,7 @@ def _render_flight_attendant_dashboard() -> str:
       .progress-bar span { width: 100%; opacity: .72; }
     }
     @media (max-width: 1040px) {
-      .market-grid, .flight-grid, .briefing { grid-template-columns: 1fr; }
+      .market-grid, .fitting-grid, .flight-grid, .briefing, .industry-library-grid { grid-template-columns: 1fr; }
       .reprocess-page {
         grid-template-columns: 1fr;
         grid-template-areas:
@@ -14644,7 +16255,10 @@ def _render_flight_attendant_dashboard() -> str:
       .panel-header .pill { margin-top: 8px; }
       .panel-header .meta { max-width: 100%; }
       h1 { font-size: 24px; }
+      .scope-panel { grid-template-columns: 1fr; }
+      .scope-chip-row { justify-content: flex-start; }
       .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
+      .fitting-toolbar, .fitting-card-head { grid-template-columns: 1fr; }
       .planetary-tax-guide-head { align-items: start; flex-direction: column; }
       .planetary-tax-guide-head span { white-space: normal; }
       .offer, .note-card { grid-template-columns: 1fr; }
@@ -14680,9 +16294,11 @@ def _render_flight_attendant_dashboard() -> str:
 
     <nav class="tabbar" aria-label="Dashboard tabs">
       <button type="button" data-tab-target="market" aria-selected="true">Discord Alerts</button>
+      <button type="button" data-tab-target="fittings" aria-selected="false">Shared Fittings</button>
       <button type="button" data-tab-target="flight" aria-selected="false">Flight Attendant</button>
+      <button type="button" data-tab-target="industry" aria-selected="false">Industry Library</button>
       <button type="button" data-tab-target="hauling" aria-selected="false">Hauler Routes</button>
-      <button type="button" data-tab-target="acquisition" aria-selected="false">Acquisition Planner</button>
+      <button type="button" data-tab-target="acquisition" aria-selected="false">Investment Portfolio</button>
       <button type="button" data-tab-target="trade-pnl" aria-selected="false">Trade P&amp;L</button>
       <button type="button" data-tab-target="planetary" aria-selected="false">Planetary Industry</button>
       <button type="button" data-tab-target="reprocessing" aria-selected="false">Reprocessing</button>
@@ -14695,49 +16311,144 @@ def _render_flight_attendant_dashboard() -> str:
             <div class="panel-header">
               <div>
                 <h2>Discord Alert Router</h2>
-                <div class="meta">Configure which local intel phrases and events should become Discord alert summaries.</div>
+                <div class="meta">Choose which Intel Pet phrases and events can become Discord alert summaries.</div>
               </div>
-              <span class="pill warning">Planning</span>
+              <span class="pill reserved">Settings</span>
             </div>
             <div class="ops-strip">
-              <div class="ops-tile"><span>Default</span><strong>Off</strong></div>
-              <div class="ops-tile"><span>Text</span><strong>Summary First</strong></div>
-              <div class="ops-tile"><span>Routes</span><strong>Webhook Later</strong></div>
-              <div class="ops-tile"><span>Safety</span><strong>No Raw Logs</strong></div>
+              <div class="ops-tile"><span>Discord</span><strong id="discord-alert-webhook-status">Checking</strong></div>
+              <div class="ops-tile"><span>Sender</span><strong id="discord-alert-sender-status">IntelPet</strong></div>
+              <div class="ops-tile"><span>Forwarding</span><strong id="discord-alert-forwarding-status">Dry run</strong></div>
+              <div class="ops-tile"><span>Text</span><strong id="discord-alert-text-status">Summary only</strong></div>
             </div>
-            <p class="meta">This page is becoming the control room for Discord messaging. The first safe version stores alert-routing intent: phrases, event types, severity, and destination labels. Actual Discord sending should stay disabled until each route has an explicit webhook or bot configuration.</p>
-            <div class="offer-grid">
-              <div class="readout"><span class="meta">Example phrase rule</span><b>war target, gate camp, enemy vessels</b></div>
-              <div class="readout"><span class="meta">Example event rule</span><b>structure alarm or help call</b></div>
-              <div class="readout"><span class="meta">Example route</span><b>Alliance alert channel</b></div>
-              <div class="readout"><span class="meta">Matched text</span><b>Off by default</b></div>
-            </div>
+@@TAB_SCOPE_MARKET@@
+            <form id="discord-alert-form" class="discord-alert-form">
+              <div class="discord-alert-section">
+                <h3>Global Behavior</h3>
+                <label class="checkline">
+                  <input id="discord-alert-enabled" type="checkbox">
+                  <span>Allow matching alerts to use Discord routes</span>
+                  <small>Future automatic forwarding checks this first. Manual test sends still require the button below.</small>
+                </label>
+                <label class="checkline">
+                  <input id="discord-alert-dry-run" type="checkbox" checked>
+                  <span>Dry run mode</span>
+                  <small>Keep automatic alert forwarding in preview mode until rules are trusted.</small>
+                </label>
+                <label>Default sender name
+                  <input id="discord-alert-sender" autocomplete="off" value="IntelPet" maxlength="80">
+                </label>
+              </div>
+
+              <div class="discord-alert-section">
+                <h3>Route</h3>
+                <label class="checkline">
+                  <input id="discord-alert-route-enabled" type="checkbox">
+                  <span>Enable this Discord route</span>
+                  <small>The route uses the server's configured webhook. The webhook URL is not saved in this settings file.</small>
+                </label>
+                <div class="row">
+                  <label>Route name
+                    <input id="discord-alert-route-name" autocomplete="off" value="IntelPet server webhook" maxlength="100">
+                  </label>
+                  <label>Destination label
+                    <input id="discord-alert-destination" autocomplete="off" value="Configured Discord alert channel" maxlength="140">
+                  </label>
+                </div>
+                <label>Sender mode
+                  <select id="discord-alert-route-type">
+                    <option value="webhook">IntelPet webhook</option>
+                    <option value="user_oauth_future" disabled>User-owned sender - future</option>
+                  </select>
+                </label>
+                <div class="future-option">The default route posts as IntelPet through your configured Discord webhook. Sending from a user's own Discord identity needs a later bot/user-consent design.</div>
+              </div>
+
+              <div id="discord-alert-message" class="discord-alert-status-line" aria-live="polite"></div>
+            </form>
           </section>
 
           <section class="panel">
             <div class="panel-header">
               <div>
-                <h2>Rule Draft</h2>
-                <div class="meta">Shape the message before any Discord route is enabled.</div>
+                <h2>Rule And Preview</h2>
+                <div class="meta">Edit one starter rule, inspect the exact Discord payload, then send a manual test.</div>
               </div>
             </div>
-            <label>Route name
-              <input autocomplete="off" value="Alliance alert channel" disabled>
-            </label>
-            <label>Trigger phrases
-              <textarea disabled>war target
+            <form id="discord-alert-rule-form" class="discord-alert-form">
+              <div class="discord-alert-section">
+                <h3>Trigger Rule</h3>
+                <label class="checkline">
+                  <input id="discord-alert-rule-enabled" type="checkbox">
+                  <span>Enable this rule</span>
+                  <small>Disabled rules stay saved but should not forward automatically in a later Intel Pet integration.</small>
+                </label>
+                <label>Rule name
+                  <input id="discord-alert-rule-name" autocomplete="off" value="Corp help or hostile alert" maxlength="100">
+                </label>
+                <div class="row">
+                  <label>Event type
+                    <select id="discord-alert-event-type">
+                      <option value="intel">Intel</option>
+                      <option value="help">Help</option>
+                      <option value="market">Market</option>
+                      <option value="location">Location</option>
+                      <option value="combat">Combat</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                  </label>
+                  <label>Severity
+                    <select id="discord-alert-severity">
+                      <option value="critical">Critical</option>
+                      <option value="high" selected>High</option>
+                      <option value="medium">Medium</option>
+                      <option value="info">Info</option>
+                    </select>
+                  </label>
+                </div>
+                <label>Trigger phrases
+                  <textarea id="discord-alert-phrases">war target
 enemy vessels
 gate camp
-structure under attack</textarea>
-            </label>
-            <label>Discord preview
-              <textarea disabled>[HIGH] Structure alert near Dihra
-Source: local opt-in alert router
-Matched rule: war target, enemy vessels, gate camp
-Matched text: hidden unless explicitly enabled</textarea>
-            </label>
-            <button type="button" disabled>Save Rule Later</button>
-            <p class="meta">Next implementation step: persist rules locally, then add a dry-run preview and explicit webhook test button.</p>
+help</textarea>
+                </label>
+                <label class="checkline">
+                  <input id="discord-alert-include-text" type="checkbox">
+                  <span>Include matched chat text</span>
+                  <small>Leave off unless everyone involved understands the privacy risk.</small>
+                </label>
+              </div>
+
+              <div class="discord-alert-section">
+                <h3>Sample Event</h3>
+                <label>Summary
+                  <input id="discord-alert-test-summary" autocomplete="off" value="Hostile vessels reported near Dihra" maxlength="180">
+                </label>
+                <div class="row">
+                  <label>Source
+                    <input id="discord-alert-test-source" autocomplete="off" value="local Intel Pet" maxlength="120">
+                  </label>
+                  <label>System
+                    <input id="discord-alert-test-system" autocomplete="off" value="Dihra" maxlength="80">
+                  </label>
+                </div>
+                <label>Channel
+                  <input id="discord-alert-test-channel" autocomplete="off" value="Local" maxlength="80">
+                </label>
+                <label>Matched text sample
+                  <textarea id="discord-alert-test-message">war target and gate camp reported on the structure route</textarea>
+                </label>
+              </div>
+
+              <label>Discord payload preview
+                <textarea id="discord-alert-preview" class="discord-alert-preview" readonly>Loading Discord alert settings...</textarea>
+              </label>
+              <div class="discord-alert-toolbar">
+                <button id="discord-alert-save" type="button">Save Settings</button>
+                <button id="discord-alert-preview-button" class="ghost" type="button">Refresh Preview</button>
+                <button id="discord-alert-send-test" class="secondary" type="button">Send Test To Discord</button>
+              </div>
+            </form>
           </section>
         </div>
 
@@ -14825,6 +16536,57 @@ Matched text: hidden unless explicitly enabled</textarea>
         </details>
       </section>
 
+      <section id="tab-fittings" class="tab-panel" data-tab-panel="fittings" hidden>
+        <div class="fitting-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Share Fitting</h2>
+                <div class="meta">Paste a fitting copied from EVE's fitting tab clipboard format.</div>
+              </div>
+              <span class="pill reserved">Manual Paste</span>
+            </div>
+            <form id="fitting-form">
+              <label>Submitted by
+                <input name="submitted_by" autocomplete="off" placeholder="EVE character or doctrine owner">
+              </label>
+              <label>Tags or doctrine
+                <input name="tags" autocomplete="off" placeholder="Abyss, mining, PvP, doctrine name">
+              </label>
+              <label>Website fitting link
+                <input name="website_url" autocomplete="off" placeholder="Optional zKill, EVE Workbench, forum, or doctrine link">
+              </label>
+              <label>Fitting block
+                <textarea name="fitting_text" spellcheck="false" placeholder="[Hawk, Hawkaw T0 blitz dark abyss]&#10;Ballistic Control System II&#10;..."></textarea>
+              </label>
+              <button type="submit">Share Fit</button>
+              <div id="fitting-form-error" class="error" hidden></div>
+            </form>
+            <p class="meta">The server validates the first line as standard EVE fitting format, stores the pasted text locally, and does not read the EVE client.</p>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Shared Fittings</h2>
+                <div class="meta">Copy fits back into EVE or open the tagged website link for extra context.</div>
+              </div>
+              <span id="fittings-status" class="pill reserved">Loading</span>
+            </div>
+            <div class="fitting-toolbar">
+              <label>Search
+                <input id="fitting-search" autocomplete="off" placeholder="Hull, fit name, tag, or submitter">
+              </label>
+              <div id="fitting-filters" class="filters" aria-label="Fitting filters">
+                <button class="secondary active" type="button" data-fitting-active="1">Active</button>
+                <button class="secondary" type="button" data-fitting-archived="1">All</button>
+              </div>
+            </div>
+            <div id="fittings-list" class="fitting-list"></div>
+          </section>
+        </div>
+      </section>
+
       <section id="tab-flight" class="tab-panel" data-tab-panel="flight" hidden>
         <div class="flight-grid">
           <section class="panel flight-console-panel">
@@ -14860,6 +16622,7 @@ Matched text: hidden unless explicitly enabled</textarea>
                 <div id="flight-notes" class="note-list"></div>
               </div>
             </details>
+@@TAB_SCOPE_FLIGHT@@
             <div class="briefing">
               <div class="system-board">
                 <div class="meta">Current system briefing</div>
@@ -14876,63 +16639,10 @@ Matched text: hidden unless explicitly enabled</textarea>
                   <button id="flight-refresh" class="ghost" type="button">Refresh</button>
                   <button class="ghost" type="button" disabled>Generate Briefing</button>
                 </div>
-                <details class="sso-scope-justification" open>
-                  <summary>Why This App Requests ESI Scopes</summary>
-                  <p>Corp Market Concierge uses EVE Online SSO so pilots can choose exactly what character data they share. The app only requests <strong>read-only</strong> ESI scopes. It cannot buy, sell, contract, move assets, send mail, place market orders, control your ship, or perform any in-game action for you.</p>
-                  <p>We use these scopes to make trade, hauling, and industry recommendations more useful:</p>
-                  <dl class="sso-scope-list">
-                    <div>
-                      <dt>esi-location.read_location.v1</dt>
-                      <dd>Used to find your current system so routes can start from where you actually are.</dd>
-                    </div>
-                    <div>
-                      <dt>esi-assets.read_assets.v1</dt>
-                      <dd>Used to see what materials/items you already own, so blueprint and hauling suggestions can account for stock you already have.</dd>
-                    </div>
-                    <div>
-                      <dt>esi-characters.read_blueprints.v1</dt>
-                      <dd>Used to identify owned blueprints and recommend profitable production options.</dd>
-                    </div>
-                    <div>
-                      <dt>esi-skills.read_skills.v1</dt>
-                      <dd>Used for industry and market math, such as tax/efficiency assumptions where relevant.</dd>
-                    </div>
-                    <div>
-                      <dt>esi-characters.read_standings.v1</dt>
-                      <dd>Used for character context and future access/standing-aware recommendations. This is read-only.</dd>
-                    </div>
-                    <div>
-                      <dt>esi-clones.read_implants.v1</dt>
-                      <dd>Used for future skill/implant-aware calculations where implants affect planning assumptions.</dd>
-                    </div>
-                    <div>
-                      <dt>esi-universe.read_structures.v1</dt>
-                      <dd>Used to resolve private/upwell structure names when ESI returns a structure ID instead of a normal station.</dd>
-                    </div>
-                    <div>
-                      <dt>esi-wallet.read_character_wallet.v1</dt>
-                      <dd>Used for wallet-aware affordability planning, so the app can avoid recommending purchases beyond available ISK. It is read-only and does not expose wallet transactions unless we request a separate transaction scope, which we do not.</dd>
-                    </div>
-                  </dl>
-                  <p>Public market prices and public market orders come from public ESI data. The app does not need market order write access, contract write access, mail access, or any gameplay-control permissions. Users can revoke access any time from EVE Online's authorized applications page.</p>
-                </details>
+@@SCOPE_JUSTIFICATION_PANEL@@
                 <div id="flight-esi-message" class="meta"></div>
               </div>
               <div class="module-stack">
-                <details class="module flight-output-module" open>
-                  <summary><h3 class="signal">Blueprint Library</h3></summary>
-                  <div class="module-content">
-                    <div id="flight-blueprint-summary" class="meta">Connect ESI to scan owned blueprints.</div>
-                    <div id="flight-blueprint-top" class="meta"></div>
-                  </div>
-                </details>
-                <details class="module flight-output-module" open>
-                  <summary><h3 class="warning">Materials And Assets</h3></summary>
-                  <div class="module-content">
-                    <div id="flight-asset-summary" class="meta">Connect ESI to scan owned asset stacks.</div>
-                    <div id="flight-asset-top" class="meta"></div>
-                  </div>
-                </details>
                 <details class="module flight-output-module" open>
                   <summary><h3 class="signal">Nearby Systems</h3></summary>
                   <div class="module-content">
@@ -14953,10 +16663,9 @@ Matched text: hidden unless explicitly enabled</textarea>
                   </div>
                 </details>
                 <details class="module flight-output-module" open>
-                  <summary><h3 class="signal">Recipe Cache</h3></summary>
+                  <summary><h3 class="signal">Industry Library Link</h3></summary>
                   <div class="module-content">
-                    <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
-                    <div id="flight-buildability-top" class="meta"></div>
+                    <div class="meta">Owned blueprints, material stock, recipe cache status, ME/TE, skill needs, and base job time now live in the Industry Library tab.</div>
                   </div>
                 </details>
                 <details class="module flight-output-module" open>
@@ -15020,12 +16729,76 @@ Matched text: hidden unless explicitly enabled</textarea>
               </div>
             </div>
             <ul class="charter-list">
-              <li><strong>Read-only ESI:</strong> location, assets, and blueprints only; market context uses public order data later.</li>
+              <li><strong>Read-only ESI:</strong> every requested Flight Attendant scope is read-only and listed in the scope explanation above.</li>
               <li><strong>No token file yet:</strong> this first ESI slice keeps the access token in server memory only.</li>
               <li><strong>Local notes:</strong> pilot-authored reminders can be stored without touching the EVE client.</li>
               <li><strong>No EVE client control:</strong> no keypresses, clicks, warps, contract creation, order placement, packet reading, OCR-driven reactions, or cache scraping.</li>
               <li><strong>Human confirmation:</strong> every trade, route, and market action remains a pilot decision inside EVE.</li>
             </ul>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-industry" class="tab-panel" data-tab-panel="industry" hidden>
+        <div class="industry-library-grid">
+          <section class="panel" aria-labelledby="industry-library-title">
+            <div class="panel-header">
+              <div>
+                <h2 id="industry-library-title">Industry Library</h2>
+                <div class="meta">Owned blueprint inventory, known recipes, material stock, and job assumptions from ESI plus the local SDE cache.</div>
+              </div>
+            </div>
+            <div class="module-stack">
+              <details class="module flight-output-module" open>
+                <summary><h3 class="signal">Owned Blueprints</h3></summary>
+                <div class="module-content">
+                  <div id="flight-blueprint-summary" class="meta">Connect ESI to scan owned blueprints.</div>
+                  <div id="flight-blueprint-top" class="meta"></div>
+                </div>
+              </details>
+              <details class="module flight-output-module" open>
+                <summary><h3 class="warning">Materials And Assets</h3></summary>
+                <div class="module-content">
+                  <div id="flight-asset-summary" class="meta">Connect ESI to scan owned asset stacks.</div>
+                  <div id="flight-asset-top" class="meta"></div>
+                </div>
+              </details>
+              <details class="module flight-output-module" open>
+                <summary><h3 class="signal">Recipe Cache</h3></summary>
+                <div class="module-content">
+                  <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
+                  <div id="flight-buildability-top" class="meta"></div>
+                </div>
+              </details>
+            </div>
+          </section>
+          <section class="panel profit-panel" aria-labelledby="industry-assumptions-title">
+            <div class="panel-header">
+              <div>
+                <h2 id="industry-assumptions-title">Decision Lenses</h2>
+                <div class="meta">These definitions are used by Blueprint Profitability so the math is readable and auditable.</div>
+              </div>
+            </div>
+            <div class="row">
+              <label>Planned build system
+                <input id="industry-build-system" autocomplete="off" placeholder="Current ESI system">
+              </label>
+              <label>Sale mode
+                <select id="industry-sale-mode">
+                  <option value="buy-order">Nearby buy order default</option>
+                  <option value="sell-order" disabled>Place sell order later</option>
+                </select>
+              </label>
+            </div>
+            <div id="industry-assumption-note" class="meta">Build system is saved locally as a planning assumption. Facility tax, rigs, SCC, and system cost index are not included until build-location math is added.</div>
+            <div class="decision-metrics">
+              <div class="decision-metric"><span>True Build Profit</span><b>Product net sale value minus all material value.</b><small>This is the serious profit number because owned materials are not treated as free.</small></div>
+              <div class="decision-metric"><span>Cash Needed</span><b>Only the ISK needed for missing materials.</b><small>This is cash-flow help, not true profit.</small></div>
+              <div class="decision-metric"><span>Jita Liquidation Alternative</span><b>What required materials could sell for in Jita.</b><small>Use this to compare building against selling the inputs directly.</small></div>
+              <div class="decision-metric"><span>Default Sale Mode</span><b>Nearby existing buy order.</b><small>Includes sales tax. Broker fee is only for non-immediate sell-order mode.</small></div>
+              <div class="decision-metric"><span>Build Location</span><b>Current ESI system by default.</b><small>Use the planned build system field when your production location differs from current ESI location.</small></div>
+              <div class="decision-metric"><span>Confidence</span><b>High, medium, or estimate.</b><small>Explains missing assumptions such as buyer depth, material prices, or facility costs.</small></div>
+            </div>
           </section>
         </div>
       </section>
@@ -15040,15 +16813,20 @@ Matched text: hidden unless explicitly enabled</textarea>
               </div>
               <span class="pill reserved">Manual Hauling</span>
             </div>
+@@TAB_SCOPE_HAULING@@
             <form id="haul-route-form" class="note-form">
               <div class="row">
-                <label>Start system
-                  <input id="haul-origin" name="origin_name" autocomplete="off" value="" placeholder="Current ESI location">
+                <div class="field system-suggest-field">
+                  <label for="haul-origin">Start system</label>
+                  <input id="haul-origin" name="origin_name" autocomplete="off" value="" placeholder="Current ESI location" aria-autocomplete="list" aria-controls="haul-origin-suggestions">
+                  <div id="haul-origin-suggestions" class="system-suggest-list" role="listbox" aria-label="Start system suggestions" hidden></div>
                   <small class="input-note">Leave blank to start from your live ESI system.</small>
-                </label>
-                <label>Destination
-                  <input id="haul-destination" name="destination" autocomplete="off" value="Jita" placeholder="Jita, Hek, Rens, Dihra">
-                </label>
+                </div>
+                <div class="field system-suggest-field">
+                  <label for="haul-destination">Destination</label>
+                  <input id="haul-destination" name="destination" autocomplete="off" value="Jita" placeholder="Jita, Hek, Rens, Dihra" aria-autocomplete="list" aria-controls="haul-destination-suggestions">
+                  <div id="haul-destination-suggestions" class="system-suggest-list" role="listbox" aria-label="Destination system suggestions" hidden></div>
+                </div>
               </div>
               <div class="row">
                 <label>Cargo m3
@@ -15211,11 +16989,12 @@ Matched text: hidden unless explicitly enabled</textarea>
           <section class="panel">
             <div class="panel-header">
               <div>
-                <h2>Market Acquisition Planner</h2>
-                <div class="meta">Public buy-order advice from current orders, market history, budget, estimated broker fee, and downstream demand.</div>
+                <h2>Market Investment Portfolio</h2>
+                <div class="meta">Diversified public buy-order portfolio from current orders, market history, total ISK, total jump budget, fees, and downstream demand.</div>
               </div>
               <span class="pill reserved">Advisory Only</span>
             </div>
+@@TAB_SCOPE_ACQUISITION@@
             <form id="acquisition-form" class="note-form">
               <div class="row">
                 <label>Buy order system
@@ -15224,11 +17003,11 @@ Matched text: hidden unless explicitly enabled</textarea>
                 </label>
                 <label>Downstream demand
                   <input id="acq-destination" name="destination" autocomplete="off" value="Jita" placeholder="Jita, Amarr, Hek, Rens">
-                  <small class="input-note">The planner checks public buy orders in this destination system.</small>
+                  <small class="input-note">The portfolio checks public buy orders in this destination system.</small>
                 </label>
               </div>
               <div class="row">
-                <label>Budget ISK
+                <label>Total investment ISK
                   <input id="acq-budget" name="budget_isk" type="number" min="1" max="10000000000" step="1" inputmode="decimal" value="50000000">
                 </label>
                 <label>Broker fee estimate
@@ -15240,6 +17019,10 @@ Matched text: hidden unless explicitly enabled</textarea>
                 <label>Collection range
                   <input id="acq-pickup-jumps" name="pickup_jumps" type="number" min="0" max="10" step="1" value="2">
                   <small class="input-note">Wider ranges can create scattered deliveries that must be hauled manually.</small>
+                </label>
+                <label>Total portfolio jumps
+                  <input id="acq-portfolio-jumps" name="portfolio_jumps" type="number" min="1" max="500" step="1" value="50">
+                  <small class="input-note">Overall planning cap for the spread. Example: 100M ISK and 50 jumps.</small>
                 </label>
                 <label>Target fill window
                   <input id="acq-target-days" name="target_days" type="number" min="1" max="30" step="1" value="3">
@@ -15270,12 +17053,12 @@ Matched text: hidden unless explicitly enabled</textarea>
                 </details>
                 <div id="acq-item-scope-summary" class="meta">Scanning common materials only.</div>
               </div>
-              <button id="acq-scan" class="ghost" type="submit">Plan Buy Orders</button>
+              <button id="acq-scan" class="ghost" type="submit">Build Portfolio</button>
             </form>
             <details class="output-details" open>
-              <summary>Planner Output</summary>
+              <summary>Portfolio Output</summary>
               <div class="output-details-body">
-                <div id="acq-summary" class="profit-summary">Connect ESI to plan market acquisitions.</div>
+                <div id="acq-summary" class="profit-summary">Connect ESI to build an investment portfolio.</div>
                 <div id="acq-strategy" class="acquisition-strategy-grid"></div>
                 <div id="acq-route" class="meta"></div>
               </div>
@@ -15285,15 +17068,15 @@ Matched text: hidden unless explicitly enabled</textarea>
           <section class="panel">
             <div class="panel-header">
               <div>
-                <h2>History Trap Signals</h2>
-                <div class="meta">Market history can reveal when the apparent spread is too thin, too spiky, or too slow to trust.</div>
+                <h2>Portfolio Risk Signals</h2>
+                <div class="meta">Market history can reveal when an apparent investment line is too thin, too spiky, or too slow to trust.</div>
               </div>
             </div>
             <ul class="charter-list">
               <li><strong>Possible trap:</strong> the current top order is far away from recent history or competing buy orders already consume the safe margin.</li>
               <li><strong>Caution:</strong> recent volume or order count is thin, so the order may sit or fill too slowly.</li>
               <li><strong>Clear:</strong> history supports a small test order, not a guarantee.</li>
-              <li><strong>Manual action:</strong> the planner never places orders, updates orders, creates contracts, or touches the EVE client.</li>
+              <li><strong>Manual action:</strong> the portfolio planner never places orders, updates orders, creates contracts, or touches the EVE client.</li>
             </ul>
           </section>
 
@@ -15301,19 +17084,19 @@ Matched text: hidden unless explicitly enabled</textarea>
             <div class="panel-header">
               <div>
                 <div class="profit-title">
-                  <h2 id="acq-results-title">Acquisition Recommendations</h2>
-                  <span class="pill reserved">Buy Order Plan</span>
+                  <h2 id="acq-results-title">Portfolio Spread</h2>
+                  <span class="pill reserved">Diversified Plan</span>
                 </div>
-                <div class="meta">Suggested bid ceilings, range, units, and market-history warnings for public buy orders.</div>
+                <div class="meta">A diversified spread of item lines, suggested bid ceilings, unit sizes, category weights, and market-history warnings.</div>
               </div>
             </div>
             <details class="output-details" open>
-              <summary>Recommendation Results</summary>
+              <summary>Portfolio Results</summary>
               <div class="output-details-body">
                 <div id="acq-quickbar-panel" class="quickbar-copy-panel" hidden>
                   <div>
                     <strong>Quickbar Import</strong>
-                    <div class="meta">Copies recommended item names only, one per line. Use this to import a watchlist; place buy orders manually after checking the warnings.</div>
+                    <div class="meta">Copies portfolio item names only, one per line. Use this to import a watchlist; place buy orders manually after checking the warnings.</div>
                     <div id="acq-quickbar-status" class="meta quickbar-copy-status" aria-live="polite"></div>
                   </div>
                   <button class="secondary" type="button" data-copy-quickbar="acquisition">Copy Quickbar Items</button>
@@ -15335,6 +17118,7 @@ Matched text: hidden unless explicitly enabled</textarea>
               </div>
               <span class="pill reserved">Wallet History</span>
             </div>
+@@TAB_SCOPE_TRADE_PNL@@
             <form id="trade-pnl-form" class="note-form">
               <div class="row">
                 <label>History window
@@ -15438,6 +17222,7 @@ Matched text: hidden unless explicitly enabled</textarea>
               </div>
               <span class="pill reserved">Public Data</span>
             </div>
+@@TAB_SCOPE_PLANETARY@@
             <form id="planetary-form" class="note-form">
               <div class="row">
                 <label>Market hub
@@ -15544,6 +17329,52 @@ Matched text: hidden unless explicitly enabled</textarea>
                 <a href="https://support.eveonline.com/hc/en-us/articles/203269921-Customs-Offices" target="_blank" rel="noreferrer">customs offices</a>,
                 <a href="https://support.eveonline.com/hc/en-us/articles/203218962-Broker-Fee-and-Sales-Tax" target="_blank" rel="noreferrer">broker fee and sales tax</a>,
                 <a href="https://developers.eveonline.com/docs/services/esi/endpoints/" target="_blank" rel="noreferrer">ESI endpoints</a>.
+              </div>
+            </div>
+            <div class="planetary-customs-tester" aria-label="Customs fee field tester">
+              <div class="planetary-customs-tester-head">
+                <strong>Customs Fee Field Test</strong>
+                <span>In-game quote check</span>
+              </div>
+              <div class="meta">Use the in-game customs transfer preview, then enter the quoted ISK here. This does not move goods; it only checks whether our formula matches the exact planet and pilot.</div>
+              <div class="planetary-customs-test-grid">
+                <label>Commodity tier
+                  <select id="planetary-test-tier">
+                    <option value="P0">P0 / Raw resource</option>
+                    <option value="P1" selected>P1 / Basic</option>
+                    <option value="P2">P2 / Refined</option>
+                    <option value="P3">P3 / Specialized</option>
+                    <option value="P4">P4 / Advanced</option>
+                  </select>
+                </label>
+                <label>Units
+                  <input id="planetary-test-quantity" type="number" min="1" step="1" inputmode="numeric" value="40">
+                </label>
+                <label>Transfer type
+                  <select id="planetary-test-transfer">
+                    <option value="export" selected>Launchpad export</option>
+                    <option value="import">Launchpad import</option>
+                    <option value="command-center-launch">Command Center launch</option>
+                  </select>
+                </label>
+              </div>
+              <div class="row">
+                <label>Observed owner tax ISK
+                  <input id="planetary-test-owner-isk" type="number" min="0" step="0.01" inputmode="decimal" placeholder="optional">
+                </label>
+                <label>Observed NPC/CONCORD ISK
+                  <input id="planetary-test-npc-isk" type="number" min="0" step="0.01" inputmode="decimal" placeholder="optional">
+                </label>
+                <label>Observed total ISK
+                  <input id="planetary-test-total-isk" type="number" min="0" step="0.01" inputmode="decimal" placeholder="from preview">
+                </label>
+              </div>
+              <div class="planetary-customs-test-actions">
+                <button id="planetary-test-calculate" class="secondary" type="button">Compare Customs Quote</button>
+                <button id="planetary-test-copy" class="secondary" type="button">Copy Test Checklist</button>
+              </div>
+              <div id="planetary-test-output" class="planetary-customs-test-output" aria-live="polite">
+                <div class="meta">Start with one small quote: P1 x40 export is a good baseline because the math is easy to verify in game.</div>
               </div>
             </div>
             <div class="planetary-answer-book" aria-label="Common Planetary Industry answers">
@@ -15690,6 +17521,7 @@ Matched text: hidden unless explicitly enabled</textarea>
               </div>
               <span class="pill reserved">Advisory Only</span>
             </div>
+@@TAB_SCOPE_REPROCESSING@@
             <form id="reprocessing-form" class="note-form">
               <div class="row">
                 <label>Ore
@@ -15829,6 +17661,41 @@ Matched text: hidden unless explicitly enabled</textarea>
     const offersEl = document.querySelector("#offers");
     const statusEl = document.querySelector("#status");
     const errorEl = document.querySelector("#form-error");
+    const discordAlertForm = document.querySelector("#discord-alert-form");
+    const discordAlertRuleForm = document.querySelector("#discord-alert-rule-form");
+    const discordAlertEnabled = document.querySelector("#discord-alert-enabled");
+    const discordAlertDryRun = document.querySelector("#discord-alert-dry-run");
+    const discordAlertSender = document.querySelector("#discord-alert-sender");
+    const discordAlertRouteEnabled = document.querySelector("#discord-alert-route-enabled");
+    const discordAlertRouteName = document.querySelector("#discord-alert-route-name");
+    const discordAlertDestination = document.querySelector("#discord-alert-destination");
+    const discordAlertRouteType = document.querySelector("#discord-alert-route-type");
+    const discordAlertRuleEnabled = document.querySelector("#discord-alert-rule-enabled");
+    const discordAlertRuleName = document.querySelector("#discord-alert-rule-name");
+    const discordAlertEventType = document.querySelector("#discord-alert-event-type");
+    const discordAlertSeverity = document.querySelector("#discord-alert-severity");
+    const discordAlertPhrases = document.querySelector("#discord-alert-phrases");
+    const discordAlertIncludeText = document.querySelector("#discord-alert-include-text");
+    const discordAlertTestSummary = document.querySelector("#discord-alert-test-summary");
+    const discordAlertTestSource = document.querySelector("#discord-alert-test-source");
+    const discordAlertTestSystem = document.querySelector("#discord-alert-test-system");
+    const discordAlertTestChannel = document.querySelector("#discord-alert-test-channel");
+    const discordAlertTestMessage = document.querySelector("#discord-alert-test-message");
+    const discordAlertPreview = document.querySelector("#discord-alert-preview");
+    const discordAlertSave = document.querySelector("#discord-alert-save");
+    const discordAlertPreviewButton = document.querySelector("#discord-alert-preview-button");
+    const discordAlertSendTest = document.querySelector("#discord-alert-send-test");
+    const discordAlertMessage = document.querySelector("#discord-alert-message");
+    const discordAlertWebhookStatus = document.querySelector("#discord-alert-webhook-status");
+    const discordAlertSenderStatus = document.querySelector("#discord-alert-sender-status");
+    const discordAlertForwardingStatus = document.querySelector("#discord-alert-forwarding-status");
+    const discordAlertTextStatus = document.querySelector("#discord-alert-text-status");
+    const fittingForm = document.querySelector("#fitting-form");
+    const fittingErrorEl = document.querySelector("#fitting-form-error");
+    const fittingsEl = document.querySelector("#fittings-list");
+    const fittingsStatusEl = document.querySelector("#fittings-status");
+    const fittingSearch = document.querySelector("#fitting-search");
+    const fittingFilters = document.querySelector("#fitting-filters");
     const tabButtons = document.querySelectorAll("[data-tab-target]");
     const tabPanels = document.querySelectorAll("[data-tab-panel]");
     const notesForm = document.querySelector("#flight-note-form");
@@ -15857,11 +17724,16 @@ Matched text: hidden unless explicitly enabled</textarea>
     const flightProfitSummary = document.querySelector("#flight-profit-summary");
     const flightProfitFilters = document.querySelector("#flight-profit-filters");
     const flightProfitTop = document.querySelector("#flight-profit-top");
+    const industryBuildSystem = document.querySelector("#industry-build-system");
+    const industrySaleMode = document.querySelector("#industry-sale-mode");
+    const industryAssumptionNote = document.querySelector("#industry-assumption-note");
     const flightCacheSummary = document.querySelector("#flight-cache-summary");
     const flightCacheList = document.querySelector("#flight-cache-list");
     const haulRouteForm = document.querySelector("#haul-route-form");
     const haulOrigin = document.querySelector("#haul-origin");
+    const haulOriginSuggestions = document.querySelector("#haul-origin-suggestions");
     const haulDestination = document.querySelector("#haul-destination");
+    const haulDestinationSuggestions = document.querySelector("#haul-destination-suggestions");
     const haulCargoM3 = document.querySelector("#haul-cargo-m3");
     const haulPurchaseBudget = document.querySelector("#haul-purchase-budget");
     const haulRoutePreference = document.querySelector("#haul-route-preference");
@@ -15900,6 +17772,7 @@ Matched text: hidden unless explicitly enabled</textarea>
     const acqBudget = document.querySelector("#acq-budget");
     const acqBrokerFee = document.querySelector("#acq-broker-fee");
     const acqPickupJumps = document.querySelector("#acq-pickup-jumps");
+    const acqPortfolioJumps = document.querySelector("#acq-portfolio-jumps");
     const acqTargetDays = document.querySelector("#acq-target-days");
     const acqMinMargin = document.querySelector("#acq-min-margin");
     const acqMinMarginValue = document.querySelector("#acq-min-margin-value");
@@ -15944,6 +17817,15 @@ Matched text: hidden unless explicitly enabled</textarea>
     const planetaryShoppingQuickbarStatus = document.querySelector("#planetary-shopping-quickbar-status");
     const planetarySellTargets = document.querySelector("#planetary-sell-targets");
     const planetarySellQuickbarStatus = document.querySelector("#planetary-sell-quickbar-status");
+    const planetaryTestTier = document.querySelector("#planetary-test-tier");
+    const planetaryTestQuantity = document.querySelector("#planetary-test-quantity");
+    const planetaryTestTransfer = document.querySelector("#planetary-test-transfer");
+    const planetaryTestOwnerIsk = document.querySelector("#planetary-test-owner-isk");
+    const planetaryTestNpcIsk = document.querySelector("#planetary-test-npc-isk");
+    const planetaryTestTotalIsk = document.querySelector("#planetary-test-total-isk");
+    const planetaryTestCalculate = document.querySelector("#planetary-test-calculate");
+    const planetaryTestCopy = document.querySelector("#planetary-test-copy");
+    const planetaryTestOutput = document.querySelector("#planetary-test-output");
     const planetaryResults = document.querySelector("#planetary-results");
     const reprocessingForm = document.querySelector("#reprocessing-form");
     const reprocessOre = document.querySelector("#reprocess-ore");
@@ -15973,6 +17855,7 @@ Matched text: hidden unless explicitly enabled</textarea>
     const flightIndustryNote = document.querySelector("#flight-industry-note");
     const notesKey = "eve-flight-attendant-notes-v1";
     const jumpsKey = "eve-flight-attendant-max-jumps-v1";
+    const industryBuildSystemKey = "eve-flight-industry-build-system-v1";
     const haulOriginKey = "eve-flight-haul-origin-v1";
     const haulDestinationKey = "eve-flight-haul-destination-v1";
     const haulCargoKey = "eve-flight-haul-cargo-m3-v1";
@@ -15993,6 +17876,7 @@ Matched text: hidden unless explicitly enabled</textarea>
     const acqBudgetKey = "eve-flight-acq-budget-v1";
     const acqBrokerFeeKey = "eve-flight-acq-broker-fee-v1";
     const acqPickupJumpsKey = "eve-flight-acq-pickup-jumps-v1";
+    const acqPortfolioJumpsKey = "eve-flight-acq-portfolio-jumps-v1";
     const acqTargetDaysKey = "eve-flight-acq-target-days-v1";
     const acqMinMarginKey = "eve-flight-acq-min-margin-v1";
     const acqCommonMaterialsKey = "eve-flight-acq-common-materials-v1";
@@ -16013,6 +17897,7 @@ Matched text: hidden unless explicitly enabled</textarea>
     const planetarySalesTaxKey = "eve-flight-planetary-sales-tax-v1";
     const planetaryBrokerFeeKey = "eve-flight-planetary-broker-fee-v1";
     const planetaryStrategyFilterKey = "eve-flight-planetary-strategy-filter-v1";
+    const planetaryCustomsBaseByTier = {P0: 5, P1: 400, P2: 7200, P3: 60000, P4: 1200000};
     const reprocessOreKey = "eve-flight-reprocess-ore-type-v1";
     const reprocessQuantityKey = "eve-flight-reprocess-quantity-v1";
     const reprocessLocationKey = "eve-flight-reprocess-location-v1";
@@ -16023,9 +17908,11 @@ Matched text: hidden unless explicitly enabled</textarea>
     const reprocessStructureBonusKey = "eve-flight-reprocess-structure-bonus-v1";
     const reprocessBatchKey = "eve-flight-reprocess-batch-v1";
     const reprocessAfterTaxKey = "eve-flight-reprocess-after-market-tax-v1";
-    const validTabs = new Set(["market", "flight", "hauling", "acquisition", "trade-pnl", "planetary", "reprocessing"]);
+    const validTabs = new Set(["market", "fittings", "flight", "industry", "hauling", "acquisition", "trade-pnl", "planetary", "reprocessing"]);
     let filterType = "";
     let includeClosed = false;
+    let includeArchivedFittings = false;
+    let fittingSearchTimer = null;
     let flightProfitFilter = "all";
     let flightProfitProducts = [];
     let buyerEventSource = null;
@@ -16088,6 +17975,176 @@ Matched text: hidden unless explicitly enabled</textarea>
       const statusLabel = response.status ? `HTTP ${response.status}` : "a non-JSON response";
       const detail = snippet ? ` (${snippet})` : "";
       throw new Error(`${fallbackMessage}: server returned ${statusLabel} instead of JSON${detail}.`);
+    }
+
+    function discordAlertLines(textarea) {
+      return String(textarea?.value || "")
+        .split(/\\n|,/)
+        .map((value) => value.trim())
+        .filter(Boolean);
+    }
+
+    function discordAlertSettingsFromForm() {
+      const routeName = String(discordAlertRouteName?.value || "IntelPet server webhook").trim() || "IntelPet server webhook";
+      const senderName = String(discordAlertSender?.value || "IntelPet").trim() || "IntelPet";
+      return {
+        enabled: Boolean(discordAlertEnabled?.checked),
+        dry_run: Boolean(discordAlertDryRun?.checked),
+        default_sender_name: senderName,
+        routes: [
+          {
+            name: routeName,
+            destination: String(discordAlertDestination?.value || "Configured Discord alert channel").trim() || "Configured Discord alert channel",
+            webhook_env_var: "CORP_MARKET_DISCORD_WEBHOOK_URL",
+            enabled: Boolean(discordAlertRouteEnabled?.checked),
+            route_type: discordAlertRouteType?.value || "webhook",
+            sender_name: senderName,
+          },
+        ],
+        rules: [
+          {
+            name: String(discordAlertRuleName?.value || "Corp help or hostile alert").trim() || "Corp help or hostile alert",
+            event_type: discordAlertEventType?.value || "intel",
+            severity: discordAlertSeverity?.value || "high",
+            phrases: discordAlertLines(discordAlertPhrases),
+            route_name: routeName,
+            include_matched_text: Boolean(discordAlertIncludeText?.checked),
+            enabled: Boolean(discordAlertRuleEnabled?.checked),
+            source: "intel_pet",
+          },
+        ],
+      };
+    }
+
+    function discordAlertEventFromForm() {
+      return {
+        summary: String(discordAlertTestSummary?.value || "").trim(),
+        source: String(discordAlertTestSource?.value || "").trim(),
+        system_name: String(discordAlertTestSystem?.value || "").trim(),
+        channel: String(discordAlertTestChannel?.value || "").trim(),
+        matched_text: String(discordAlertTestMessage?.value || "").trim(),
+      };
+    }
+
+    function setDiscordAlertMessage(message, kind = "") {
+      if (!discordAlertMessage) return;
+      discordAlertMessage.textContent = message || "";
+      discordAlertMessage.classList.toggle("ok", kind === "ok");
+      discordAlertMessage.classList.toggle("error", kind === "error");
+    }
+
+    function renderDiscordAlertPreview(payload) {
+      if (!discordAlertPreview) return;
+      discordAlertPreview.value = JSON.stringify(payload || {}, null, 2);
+    }
+
+    function updateDiscordAlertStatus(data) {
+      const settings = data?.settings || discordAlertSettingsFromForm();
+      const route = (settings.routes || [])[0] || {};
+      const rule = (settings.rules || [])[0] || {};
+      if (discordAlertWebhookStatus) discordAlertWebhookStatus.textContent = data?.webhook_configured ? "Configured" : "Missing";
+      if (discordAlertSenderStatus) discordAlertSenderStatus.textContent = route.sender_name || settings.default_sender_name || "IntelPet";
+      if (discordAlertForwardingStatus) {
+        discordAlertForwardingStatus.textContent = settings.enabled && !settings.dry_run ? "Manual tests live" : "Dry run";
+      }
+      if (discordAlertTextStatus) discordAlertTextStatus.textContent = rule.include_matched_text ? "Matched text" : "Summary only";
+      if (discordAlertSendTest) discordAlertSendTest.disabled = !data?.webhook_configured;
+    }
+
+    function applyDiscordAlertSettings(settings) {
+      if (!settings || !discordAlertForm) return;
+      const route = (settings.routes || [])[0] || {};
+      const rule = (settings.rules || [])[0] || {};
+      discordAlertEnabled.checked = Boolean(settings.enabled);
+      discordAlertDryRun.checked = settings.dry_run !== false;
+      discordAlertSender.value = settings.default_sender_name || route.sender_name || "IntelPet";
+      discordAlertRouteEnabled.checked = Boolean(route.enabled);
+      discordAlertRouteName.value = route.name || "IntelPet server webhook";
+      discordAlertDestination.value = route.destination || "Configured Discord alert channel";
+      discordAlertRouteType.value = route.route_type || "webhook";
+      discordAlertRuleEnabled.checked = Boolean(rule.enabled);
+      discordAlertRuleName.value = rule.name || "Corp help or hostile alert";
+      discordAlertEventType.value = rule.event_type || "intel";
+      discordAlertSeverity.value = rule.severity || "high";
+      discordAlertPhrases.value = (rule.phrases || []).join("\\n");
+      discordAlertIncludeText.checked = Boolean(rule.include_matched_text);
+    }
+
+    async function loadDiscordAlertSettings() {
+      if (!discordAlertForm) return;
+      try {
+        setDiscordAlertMessage("Loading Discord alert settings...");
+        const response = await fetch("/api/discord-alerts/settings");
+        const data = await readJsonApiResponse(response, "Could not load Discord alert settings");
+        applyDiscordAlertSettings(data.settings);
+        renderDiscordAlertPreview(data.preview_payload);
+        updateDiscordAlertStatus(data);
+        setDiscordAlertMessage(`Settings file: ${data.settings_file || "local profile data"}`, "ok");
+      } catch (error) {
+        setDiscordAlertMessage(error.message, "error");
+      }
+    }
+
+    async function previewDiscordAlertSettings() {
+      if (!discordAlertForm) return;
+      try {
+        const response = await fetch("/api/discord-alerts/test", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            send: false,
+            settings: discordAlertSettingsFromForm(),
+            event: discordAlertEventFromForm(),
+          }),
+        });
+        const data = await readJsonApiResponse(response, "Could not preview Discord alert");
+        renderDiscordAlertPreview(data.preview_payload);
+        updateDiscordAlertStatus({webhook_configured: data.webhook_configured, settings: discordAlertSettingsFromForm()});
+        setDiscordAlertMessage("Preview refreshed.", "ok");
+      } catch (error) {
+        setDiscordAlertMessage(error.message, "error");
+      }
+    }
+
+    async function saveDiscordAlertSettings() {
+      if (!discordAlertForm) return;
+      try {
+        setDiscordAlertMessage("Saving Discord alert settings...");
+        const response = await fetch("/api/discord-alerts/settings", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({settings: discordAlertSettingsFromForm()}),
+        });
+        const data = await readJsonApiResponse(response, "Could not save Discord alert settings");
+        applyDiscordAlertSettings(data.settings);
+        renderDiscordAlertPreview(data.preview_payload);
+        updateDiscordAlertStatus(data);
+        setDiscordAlertMessage(`Saved. ${data.webhook_configured ? "Webhook is configured." : "Webhook is not configured."}`, "ok");
+      } catch (error) {
+        setDiscordAlertMessage(error.message, "error");
+      }
+    }
+
+    async function sendDiscordAlertTest() {
+      if (!discordAlertForm) return;
+      try {
+        setDiscordAlertMessage("Sending Discord test alert...");
+        const response = await fetch("/api/discord-alerts/test", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            send: true,
+            settings: discordAlertSettingsFromForm(),
+            event: discordAlertEventFromForm(),
+          }),
+        });
+        const data = await readJsonApiResponse(response, "Could not send Discord test alert");
+        renderDiscordAlertPreview(data.preview_payload);
+        updateDiscordAlertStatus({webhook_configured: data.webhook_configured, settings: discordAlertSettingsFromForm()});
+        setDiscordAlertMessage(data.sent_to_discord ? "Test alert sent to Discord." : "Preview built; Discord did not return a message.", "ok");
+      } catch (error) {
+        setDiscordAlertMessage(error.message, "error");
+      }
     }
 
     function quickbarItemName(item) {
@@ -16427,6 +18484,79 @@ Matched text: hidden unless explicitly enabled</textarea>
       `).join("");
     }
 
+    function updateFittingFilterButtons() {
+      if (!fittingFilters) return;
+      fittingFilters.querySelectorAll("button").forEach((button) => {
+        const isArchivedButton = Boolean(button.dataset.fittingArchived);
+        button.classList.toggle("active", isArchivedButton === includeArchivedFittings);
+      });
+    }
+
+    function fittingSummary(fitting) {
+      const parts = [];
+      if (Number(fitting.fitted_line_count || 0)) parts.push(`${formatNumber(fitting.fitted_line_count)} fitted lines`);
+      if (Number(fitting.empty_slot_count || 0)) parts.push(`${formatNumber(fitting.empty_slot_count)} empty slots`);
+      if (Number(fitting.cargo_line_count || 0)) parts.push(`${formatNumber(fitting.cargo_line_count)} cargo stacks`);
+      return parts.join(", ") || "Parsed EVE fitting block";
+    }
+
+    function fittingStatusControls(fitting) {
+      if (fitting.status === "archived") {
+        return `<button type="button" data-fitting-status-id="${escapeHtml(fitting.id)}" data-fitting-status="active">Reopen</button>`;
+      }
+      return `<button type="button" data-fitting-status-id="${escapeHtml(fitting.id)}" data-fitting-status="archived">Archive</button>`;
+    }
+
+    async function loadFittings() {
+      if (!fittingsEl) return;
+      const params = new URLSearchParams();
+      if (includeArchivedFittings) params.set("include_archived", "1");
+      const query = String(fittingSearch ? fittingSearch.value : "").trim();
+      if (query) params.set("q", query);
+      const response = await fetch(`/api/fittings?${params}`);
+      const data = await readJsonApiResponse(response, "Could not load shared fittings");
+      renderFittings(data.fittings || []);
+      if (fittingsStatusEl) {
+        fittingsStatusEl.textContent = `${(data.fittings || []).length} fit${(data.fittings || []).length === 1 ? "" : "s"}`;
+      }
+    }
+
+    function renderFittings(fittings) {
+      if (!fittingsEl) return;
+      if (!fittings.length) {
+        fittingsEl.innerHTML = `<div class="empty">No shared fittings match this view.</div>`;
+        return;
+      }
+      fittingsEl.innerHTML = fittings.map((fitting) => `
+        <article class="fitting-card ${fitting.status === "archived" ? "archived" : ""}" data-fitting-card>
+          <div class="fitting-card-head">
+            <div>
+              <h3>${escapeHtml(fitting.display_name || fitting.fit_name || "Shared fitting")}</h3>
+              <div class="meta">${escapeHtml(fittingSummary(fitting))}</div>
+              <div class="fitting-meta-row">
+                <span class="pill ${fitting.status === "archived" ? "cancelled" : "sell"}">${escapeHtml(fitting.status || "active")}</span>
+                ${fitting.tags ? `<span class="pill reserved">${escapeHtml(fitting.tags)}</span>` : ""}
+                ${fitting.submitted_by ? `<span class="meta">by ${escapeHtml(fitting.submitted_by)}</span>` : ""}
+                ${fitting.updated_at ? `<span class="meta">updated ${escapeHtml(fitting.updated_at)}</span>` : ""}
+              </div>
+            </div>
+            <div class="actions">
+              <button type="button" data-copy-fitting="1">Copy Fit</button>
+              ${fittingStatusControls(fitting)}
+            </div>
+          </div>
+          <div class="fitting-link-row">
+            ${fitting.website_url ? `<a href="${escapeHtml(fitting.website_url)}" target="_blank" rel="noreferrer">Open website fitting link</a>` : `<span class="meta">No website fitting link tagged.</span>`}
+            <span class="meta fitting-copy-status" aria-live="polite"></span>
+          </div>
+          <details class="fitting-block-preview">
+            <summary>Fitting block</summary>
+            <textarea readonly spellcheck="false" data-fitting-text>${escapeHtml(fitting.fitting_text || "")}</textarea>
+          </details>
+        </article>
+      `).join("");
+    }
+
     function readNotes() {
       try {
         const notes = JSON.parse(window.localStorage.getItem(notesKey) || "[]");
@@ -16438,6 +18568,24 @@ Matched text: hidden unless explicitly enabled</textarea>
 
     function writeNotes(notes) {
       window.localStorage.setItem(notesKey, JSON.stringify(notes.slice(0, 30)));
+    }
+
+    function readIndustryBuildSystem() {
+      return String(window.localStorage.getItem(industryBuildSystemKey) || "").trim();
+    }
+
+    function updateIndustryAssumptionNote() {
+      if (!industryAssumptionNote) return;
+      const buildSystem = readIndustryBuildSystem();
+      const location = buildSystem || "current ESI system";
+      industryAssumptionNote.textContent = `Build system assumption: ${location}. Facility tax, rigs, SCC, and system cost index are not included until build-location math is added.`;
+    }
+
+    function writeIndustryBuildSystem(value) {
+      const buildSystem = String(value || "").trim();
+      window.localStorage.setItem(industryBuildSystemKey, buildSystem);
+      updateIndustryAssumptionNote();
+      return buildSystem;
     }
 
     function renderNotes() {
@@ -16538,6 +18686,198 @@ Matched text: hidden unless explicitly enabled</textarea>
     function formatIskPerHour(value) {
       if (value == null) return "unknown";
       return `${formatSignedIsk(value)}/h`;
+    }
+
+    function parseFieldNumber(field, fallback = 0) {
+      if (!field) return fallback;
+      const value = Number(field.value);
+      return Number.isFinite(value) ? value : fallback;
+    }
+
+    function parseOptionalFieldNumber(field) {
+      if (!field) return null;
+      const raw = String(field.value || "").trim();
+      if (!raw) return null;
+      const value = Number(raw);
+      return Number.isFinite(value) ? value : null;
+    }
+
+    function planetaryCustomsTransferLabel(mode) {
+      if (mode === "import") return "Launchpad import";
+      if (mode === "command-center-launch") return "Command Center launch";
+      return "Launchpad export";
+    }
+
+    function planetaryCustomsTransferMultiplier(mode) {
+      if (mode === "import") return 0.5;
+      if (mode === "command-center-launch") return 1.5;
+      return 1.0;
+    }
+
+    function planetaryCustomsFieldEstimate() {
+      const tier = String(planetaryTestTier?.value || "P1").toUpperCase();
+      const quantity = Math.max(1, Math.round(parseFieldNumber(planetaryTestQuantity, 1)));
+      const transferMode = String(planetaryTestTransfer?.value || "export");
+      const basePerUnit = Number(planetaryCustomsBaseByTier[tier] || planetaryCustomsBaseByTier.P1);
+      const multiplier = planetaryCustomsTransferMultiplier(transferMode);
+      const ownerPercent = Math.max(0, parseFieldNumber(planetaryOwnerTax, 0));
+      const npcPercent = Math.max(0, parseFieldNumber(planetaryNpcTax, 0));
+      const cceLevel = Math.max(0, Math.min(5, Math.round(parseFieldNumber(planetaryCce, 0))));
+      const taxableValue = basePerUnit * quantity * multiplier;
+      const isCommandCenterLaunch = transferMode === "command-center-launch";
+      const appliedOwnerPercent = isCommandCenterLaunch ? 0 : ownerPercent;
+      const ownerRate = appliedOwnerPercent / 100;
+      const npcRate = (npcPercent / 100) * Math.max(0, 1 - 0.1 * cceLevel);
+      const expectedOwner = taxableValue * ownerRate;
+      const expectedNpc = taxableValue * npcRate;
+      const expectedTotal = expectedOwner + expectedNpc;
+      const observedOwner = parseOptionalFieldNumber(planetaryTestOwnerIsk);
+      const observedNpc = parseOptionalFieldNumber(planetaryTestNpcIsk);
+      const observedTotalField = parseOptionalFieldNumber(planetaryTestTotalIsk);
+      const observedTotal = observedTotalField ?? (
+        observedOwner != null || observedNpc != null ? Number(observedOwner || 0) + Number(observedNpc || 0) : null
+      );
+      const delta = observedTotal == null ? null : observedTotal - expectedTotal;
+      const impliedRatePercent = observedTotal == null || taxableValue <= 0 ? null : (observedTotal / taxableValue) * 100;
+      const expectedRatePercent = (ownerRate + npcRate) * 100;
+      return {
+        tier,
+        quantity,
+        transferMode,
+        transferLabel: planetaryCustomsTransferLabel(transferMode),
+        basePerUnit,
+        multiplier,
+        taxableValue,
+        ownerPercent,
+        appliedOwnerPercent,
+        npcPercent,
+        cceLevel,
+        isCommandCenterLaunch,
+        effectiveNpcPercent: npcRate * 100,
+        expectedRatePercent,
+        expectedOwner,
+        expectedNpc,
+        expectedTotal,
+        observedOwner,
+        observedNpc,
+        observedTotal,
+        delta,
+        impliedRatePercent,
+      };
+    }
+
+    function planetaryCustomsFieldVerdict(estimate) {
+      if (estimate.observedTotal == null) {
+        return {
+          className: "",
+          text: "Enter the total ISK shown by the in-game transfer preview to compare it with this estimate.",
+        };
+      }
+      const absoluteDelta = Math.abs(Number(estimate.delta || 0));
+      if (absoluteDelta <= 1) {
+        return {className: "is-match", text: "Match: the in-game quote is within 1 ISK of the planner formula."};
+      }
+      if (absoluteDelta <= 5) {
+        return {className: "is-warn", text: "Small rounding gap: close enough to treat as matching unless larger tests disagree."};
+      }
+      const hints = [];
+      const expectedTotal = Math.max(0.01, Number(estimate.expectedTotal || 0.01));
+      const ratio = Number(estimate.observedTotal || 0) / expectedTotal;
+      if (estimate.transferMode === "import" && ratio > 1.8 && ratio < 2.2) {
+        hints.push("Observed is near 2x import math; the quote may be an export, not an import.");
+      }
+      if (estimate.transferMode === "export" && ratio > 1.35 && ratio < 1.65) {
+        hints.push("Observed is near 1.5x export math; check whether this was a Command Center launch.");
+      }
+      if (estimate.isCommandCenterLaunch && estimate.observedOwner != null && estimate.observedOwner > 1) {
+        hints.push("Command Center launch should not have a POCO owner-tax line; check whether this was actually a launchpad export.");
+      }
+      if (estimate.observedOwner != null && Math.abs(estimate.observedOwner - estimate.expectedOwner) > 1) {
+        hints.push("Owner-tax line differs; verify the POCO rate for your exact standings/access level.");
+      }
+      if (estimate.observedNpc != null && Math.abs(estimate.observedNpc - estimate.expectedNpc) > 1) {
+        hints.push("NPC/CONCORD line differs; verify high-sec NPC tax, CCE level, and whether CCE applies to that office.");
+      }
+      if (!hints.length) {
+        hints.push("Mismatch: record the item, tier, quantity, system, planet, owner/NPC wallet lines, and screenshot before we adjust core math.");
+      }
+      return {className: "is-mismatch", text: hints.join(" ")};
+    }
+
+    function renderPlanetaryCustomsFieldTest() {
+      if (!planetaryTestOutput) return;
+      const estimate = planetaryCustomsFieldEstimate();
+      const verdict = planetaryCustomsFieldVerdict(estimate);
+      const observedText = estimate.observedTotal == null ? "not entered" : formatIsk(estimate.observedTotal);
+      const deltaText = estimate.delta == null ? "not available" : formatSignedIsk(estimate.delta);
+      const impliedRateText = estimate.impliedRatePercent == null ? "not available" : formatPercent(estimate.impliedRatePercent);
+      planetaryTestOutput.innerHTML = `
+        <strong>${escapeHtml(estimate.transferLabel)} ${escapeHtml(estimate.tier)} x${formatNumber(estimate.quantity)}</strong>
+        <div class="planetary-test-metrics">
+          <div class="decision-metric"><span>Taxable Base</span><b>${formatIsk(estimate.taxableValue)}</b><small>${formatIsk(estimate.basePerUnit)} each x ${formatNumber(estimate.quantity)} x ${formatNumber(estimate.multiplier)}.</small></div>
+          <div class="decision-metric"><span>Expected Owner</span><b>${formatIsk(estimate.expectedOwner)}</b><small>${estimate.isCommandCenterLaunch ? "No owner-tax line expected." : `${formatPercent(estimate.ownerPercent)} owner tax.`}</small></div>
+          <div class="decision-metric"><span>Expected NPC</span><b>${formatIsk(estimate.expectedNpc)}</b><small>${formatPercent(estimate.effectiveNpcPercent)} after CCE ${formatNumber(estimate.cceLevel)}.</small></div>
+          <div class="decision-metric"><span>Expected Total</span><b>${formatIsk(estimate.expectedTotal)}</b><small>${formatPercent(estimate.expectedRatePercent)} effective export rate.</small></div>
+        </div>
+        <div class="planetary-test-metrics">
+          <div class="decision-metric"><span>Observed Total</span><b>${escapeHtml(observedText)}</b><small>From in-game preview.</small></div>
+          <div class="decision-metric"><span>Delta</span><b>${escapeHtml(deltaText)}</b><small>Observed minus expected.</small></div>
+          <div class="decision-metric"><span>Implied Rate</span><b>${escapeHtml(impliedRateText)}</b><small>Observed / taxable base.</small></div>
+          <div class="decision-metric"><span>Mode</span><b>${escapeHtml(estimate.transferLabel)}</b><small>${estimate.transferMode === "command-center-launch" ? "Use owner 0 if no owner line appears." : "POCO transfer preview."}</small></div>
+        </div>
+        <div class="planetary-test-verdict ${verdict.className}">${escapeHtml(verdict.text)}</div>
+      `;
+    }
+
+    function planetaryCustomsChecklistText() {
+      const estimate = planetaryCustomsFieldEstimate();
+      return [
+        "PI customs fee field test",
+        `Transfer: ${estimate.transferLabel}`,
+        `Tier: ${estimate.tier}`,
+        `Quantity: ${estimate.quantity}`,
+        `Base per unit: ${formatIsk(estimate.basePerUnit)}`,
+        `Taxable base: ${formatIsk(estimate.taxableValue)}`,
+        `Owner tax setting: ${formatPercent(estimate.ownerPercent)}`,
+        `Applied owner tax: ${formatPercent(estimate.appliedOwnerPercent)}`,
+        `NPC tax setting: ${formatPercent(estimate.npcPercent)}`,
+        `Customs Code Expertise: ${estimate.cceLevel}`,
+        `Expected owner tax: ${formatIsk(estimate.expectedOwner)}`,
+        `Expected NPC/CONCORD tax: ${formatIsk(estimate.expectedNpc)}`,
+        `Expected total: ${formatIsk(estimate.expectedTotal)}`,
+        `Observed owner tax: ${estimate.observedOwner == null ? "" : formatIsk(estimate.observedOwner)}`,
+        `Observed NPC/CONCORD tax: ${estimate.observedNpc == null ? "" : formatIsk(estimate.observedNpc)}`,
+        `Observed total: ${estimate.observedTotal == null ? "" : formatIsk(estimate.observedTotal)}`,
+        `Delta: ${estimate.delta == null ? "" : formatSignedIsk(estimate.delta)}`,
+        "",
+        "In-game steps:",
+        "1. Open the exact planet customs office or launchpad transfer window.",
+        "2. Add the test commodity and quantity, then read the preview before submitting.",
+        "3. Record separate owner and NPC/CONCORD wallet/preview lines when shown.",
+        "4. Do not submit the transfer unless you intentionally want to move the goods.",
+      ].join("\\n");
+    }
+
+    async function copyPlanetaryCustomsChecklist(button) {
+      if (!planetaryTestOutput) return;
+      const previousText = button ? button.textContent : "";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Copying...";
+      }
+      try {
+        await writeTextToClipboard(planetaryCustomsChecklistText());
+        renderPlanetaryCustomsFieldTest();
+        planetaryTestOutput.insertAdjacentHTML("beforeend", `<div class="meta">Copied the customs test checklist.</div>`);
+      } catch (error) {
+        renderPlanetaryCustomsFieldTest();
+        planetaryTestOutput.insertAdjacentHTML("beforeend", `<div class="planetary-test-verdict is-mismatch">${escapeHtml(error.message || "Clipboard copy failed.")}</div>`);
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = previousText;
+        }
+      }
     }
 
     function renderJitaRawValue(product) {
@@ -16739,6 +19079,130 @@ Matched text: hidden unless explicitly enabled</textarea>
       haulItemScopeSummary.textContent = `${scopeLabel}. More item types means a longer route calculation.`;
     }
 
+    function normalizedSystemSuggestionQuery(value) {
+      return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+    }
+
+    function systemSuggestionMeta(system) {
+      const parts = [];
+      if (system.security_status != null) {
+        parts.push(`sec ${Number(system.security_status || 0).toFixed(1)}`);
+      }
+      if (system.security_class) parts.push(system.security_class);
+      return parts.join(" ");
+    }
+
+    function renderSystemSuggestions(box, systems, activeIndex) {
+      if (!box) return;
+      if (!systems.length) {
+        box.innerHTML = `<div class="system-suggest-empty">No matching systems.</div>`;
+        box.hidden = false;
+        return;
+      }
+      box.innerHTML = systems.map((system, index) => {
+        const meta = systemSuggestionMeta(system);
+        return `
+          <button type="button" class="system-suggest-option${index === activeIndex ? " active" : ""}" data-system-index="${index}" role="option" aria-selected="${index === activeIndex ? "true" : "false"}">
+            <span>${escapeHtml(system.name || "Unknown system")}</span>
+            ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+          </button>
+        `;
+      }).join("");
+      box.hidden = false;
+    }
+
+    function hideSystemSuggestions(box) {
+      if (!box) return;
+      box.hidden = true;
+      box.innerHTML = "";
+    }
+
+    function setupSystemAutocomplete(input, box) {
+      if (!input || !box) return;
+      let timer = null;
+      let requestId = 0;
+      let activeIndex = -1;
+      let currentSystems = [];
+
+      function selectSystem(index) {
+        const system = currentSystems[index];
+        if (!system || !system.name) return;
+        input.value = system.name;
+        hideSystemSuggestions(box);
+        input.focus();
+        input.dispatchEvent(new Event("change", {bubbles: true}));
+      }
+
+      function updateActive(nextIndex) {
+        if (!currentSystems.length) return;
+        activeIndex = Math.max(0, Math.min(currentSystems.length - 1, nextIndex));
+        renderSystemSuggestions(box, currentSystems, activeIndex);
+      }
+
+      function scheduleLookup() {
+        const query = input.value || "";
+        const normalized = normalizedSystemSuggestionQuery(query);
+        if (timer) window.clearTimeout(timer);
+        if (normalized.length < 3) {
+          currentSystems = [];
+          activeIndex = -1;
+          hideSystemSuggestions(box);
+          return;
+        }
+        const thisRequest = ++requestId;
+        timer = window.setTimeout(async () => {
+          try {
+            const params = new URLSearchParams({q: query, limit: "10"});
+            const response = await fetch(`/api/flight/systems?${params}`);
+            const data = await response.json();
+            if (thisRequest !== requestId) return;
+            currentSystems = Array.isArray(data.systems) ? data.systems : [];
+            activeIndex = -1;
+            renderSystemSuggestions(box, currentSystems, activeIndex);
+          } catch (_error) {
+            if (thisRequest !== requestId) return;
+            currentSystems = [];
+            activeIndex = -1;
+            box.innerHTML = `<div class="system-suggest-empty">System lookup unavailable.</div>`;
+            box.hidden = false;
+          }
+        }, 180);
+      }
+
+      input.addEventListener("input", scheduleLookup);
+      input.addEventListener("focus", scheduleLookup);
+      input.addEventListener("keydown", (event) => {
+        if (box.hidden && event.key !== "ArrowDown") return;
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          if (box.hidden) {
+            scheduleLookup();
+            return;
+          }
+          updateActive(activeIndex < 0 ? 0 : activeIndex + 1);
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          updateActive(activeIndex < 0 ? currentSystems.length - 1 : activeIndex - 1);
+        } else if (event.key === "Enter" && activeIndex >= 0) {
+          event.preventDefault();
+          selectSystem(activeIndex);
+        } else if (event.key === "Escape") {
+          hideSystemSuggestions(box);
+        }
+      });
+      input.addEventListener("blur", () => {
+        window.setTimeout(() => hideSystemSuggestions(box), 140);
+      });
+      box.addEventListener("mousedown", (event) => {
+        if (event.target.closest("button[data-system-index]")) event.preventDefault();
+      });
+      box.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-system-index]");
+        if (!button) return;
+        selectSystem(Number(button.dataset.systemIndex));
+      });
+    }
+
     function readHaulSettings() {
       const originName = String(window.localStorage.getItem(haulOriginKey) || haulOrigin.value || "").trim();
       const destination = String(window.localStorage.getItem(haulDestinationKey) || haulDestination.value || "Jita").trim() || "Jita";
@@ -16836,6 +19300,12 @@ Matched text: hidden unless explicitly enabled</textarea>
       return Math.max(0, Math.min(10, Math.round(jumps)));
     }
 
+    function clampAcquisitionPortfolioJumps(value) {
+      const jumps = Number(value);
+      if (!Number.isFinite(jumps)) return 50;
+      return Math.max(1, Math.min(500, Math.round(jumps)));
+    }
+
     function clampAcquisitionTargetDays(value) {
       const days = Number(value);
       if (!Number.isFinite(days)) return 3;
@@ -16919,6 +19389,7 @@ Matched text: hidden unless explicitly enabled</textarea>
       const budget = Number(window.localStorage.getItem(acqBudgetKey) || acqBudget.value || 50000000);
       const brokerFee = Number(window.localStorage.getItem(acqBrokerFeeKey) || acqBrokerFee.value || 3);
       const pickupJumps = Number(window.localStorage.getItem(acqPickupJumpsKey) || acqPickupJumps.value || 2);
+      const portfolioJumps = Number(window.localStorage.getItem(acqPortfolioJumpsKey) || acqPortfolioJumps.value || 50);
       const targetDays = Number(window.localStorage.getItem(acqTargetDaysKey) || acqTargetDays.value || 3);
       const minMargin = Number(window.localStorage.getItem(acqMinMarginKey) || acqMinMargin.value || 10);
       const commonStored = window.localStorage.getItem(acqCommonMaterialsKey);
@@ -16928,6 +19399,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         budgetIsk: clampAcquisitionBudget(Number.isFinite(budget) ? budget : 50000000),
         brokerFeePercent: clampAcquisitionBrokerFee(Number.isFinite(brokerFee) ? brokerFee : 3),
         pickupJumps: clampAcquisitionPickupJumps(Number.isFinite(pickupJumps) ? pickupJumps : 2),
+        portfolioJumps: clampAcquisitionPortfolioJumps(Number.isFinite(portfolioJumps) ? portfolioJumps : 50),
         targetDays: clampAcquisitionTargetDays(Number.isFinite(targetDays) ? targetDays : 3),
         minMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
         includeCommonMaterials: commonStored == null ? acqCommonMaterials.checked : commonStored !== "0",
@@ -16942,6 +19414,7 @@ Matched text: hidden unless explicitly enabled</textarea>
       const budgetIsk = clampAcquisitionBudget(settings.budgetIsk);
       const brokerFeePercent = clampAcquisitionBrokerFee(settings.brokerFeePercent);
       const pickupJumps = clampAcquisitionPickupJumps(settings.pickupJumps);
+      const portfolioJumps = clampAcquisitionPortfolioJumps(settings.portfolioJumps);
       const targetDays = clampAcquisitionTargetDays(settings.targetDays);
       const minMarginPercent = clampHaulMinMargin(settings.minMarginPercent);
       const includeCommonMaterials = settings.includeCommonMaterials == null ? acqCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
@@ -16952,6 +19425,7 @@ Matched text: hidden unless explicitly enabled</textarea>
       acqBudget.value = String(budgetIsk);
       acqBrokerFee.value = String(brokerFeePercent);
       acqPickupJumps.value = String(pickupJumps);
+      acqPortfolioJumps.value = String(portfolioJumps);
       acqTargetDays.value = String(targetDays);
       acqMinMargin.value = String(minMarginPercent);
       acqCommonMaterials.checked = includeCommonMaterials;
@@ -16964,12 +19438,13 @@ Matched text: hidden unless explicitly enabled</textarea>
       window.localStorage.setItem(acqBudgetKey, String(budgetIsk));
       window.localStorage.setItem(acqBrokerFeeKey, String(brokerFeePercent));
       window.localStorage.setItem(acqPickupJumpsKey, String(pickupJumps));
+      window.localStorage.setItem(acqPortfolioJumpsKey, String(portfolioJumps));
       window.localStorage.setItem(acqTargetDaysKey, String(targetDays));
       window.localStorage.setItem(acqMinMarginKey, String(minMarginPercent));
       window.localStorage.setItem(acqCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
       window.localStorage.setItem(acqMarketGroupIdsKey, JSON.stringify(marketGroupIds));
       window.localStorage.setItem(acqMarketTypeIdsKey, JSON.stringify(marketTypeIds));
-      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, targetDays, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds};
+      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds};
     }
 
     async function loadFlightStatus() {
@@ -16987,7 +19462,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         resetFlightBuyers("Flight Attendant buyer scanner is offline.");
         resetFlightProfitability("Flight Attendant profitability ranking is offline.");
         resetFlightHauling("Flight Attendant hauler route scanner is offline.");
-        resetMarketAcquisition("Market acquisition planner is offline.");
+        resetMarketAcquisition("Market investment portfolio is offline.");
         resetTradePnl("Trade P&L analyzer is offline.");
         resetReprocessing("Ore reprocessing calculator is offline.");
         clearReprocessingLocations("Ore reprocessing calculator is offline.", true);
@@ -17013,7 +19488,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         resetFlightBuyers("Configure EVE SSO before scanning buyer orders.");
         resetFlightProfitability("Configure EVE SSO before ranking profitability.");
         resetFlightHauling("Configure EVE SSO before scanning hauler routes.");
-        resetMarketAcquisition("Configure EVE SSO before planning market acquisitions.");
+        resetMarketAcquisition("Configure EVE SSO before building an investment portfolio.");
         resetTradePnl("Configure EVE SSO before analyzing trade history.");
         resetReprocessing("Configure EVE SSO before calculating ore reprocessing.");
         clearReprocessingLocations("Configure EVE SSO before ranking reprocessing stations over 1.5 standing.", true);
@@ -17030,7 +19505,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         resetFlightBuyers("Connect ESI to scan nearby public buy orders.");
         resetFlightProfitability("Connect ESI to rank owned blueprint profitability.");
         resetFlightHauling("Connect ESI to scan route hauling opportunities.");
-        resetMarketAcquisition("Connect ESI to plan public buy orders.");
+        resetMarketAcquisition("Connect ESI to build an investment portfolio.");
         resetTradePnl("Connect ESI to analyze recent wallet transactions.");
         resetReprocessing("Connect ESI to calculate ore reprocessing.");
         clearReprocessingLocations("Connect ESI to rank reprocessing stations over 1.5 standing.", true);
@@ -17050,7 +19525,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         resetFlightBuyers("Use an allowlisted EVE character before scanning buyer orders.");
         resetFlightProfitability("Use an allowlisted EVE character before ranking profitability.");
         resetFlightHauling("Use an allowlisted EVE character before scanning hauler routes.");
-        resetMarketAcquisition("Use an allowlisted EVE character before planning market acquisitions.");
+        resetMarketAcquisition("Use an allowlisted EVE character before building an investment portfolio.");
         resetTradePnl("Use an allowlisted EVE character before analyzing trade history.");
         resetReprocessing("Use an allowlisted EVE character before calculating ore reprocessing.");
         clearReprocessingLocations("Use an allowlisted EVE character before ranking reprocessing stations over 1.5 standing.", true);
@@ -17065,7 +19540,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         resetFlightBuyers("Resolve the ESI error before scanning buyer orders.");
         resetFlightProfitability("Resolve the ESI error before ranking profitability.");
         resetFlightHauling("Resolve the ESI error before scanning hauler routes.");
-        resetMarketAcquisition("Resolve the ESI error before planning market acquisitions.");
+        resetMarketAcquisition("Resolve the ESI error before building an investment portfolio.");
         resetTradePnl("Resolve the ESI error before analyzing trade history.");
         resetReprocessing("Resolve the ESI error before calculating ore reprocessing.");
         clearReprocessingLocations("Resolve the ESI error before ranking reprocessing stations over 1.5 standing.", true);
@@ -17473,10 +19948,11 @@ Matched text: hidden unless explicitly enabled</textarea>
           : `missing ${formatNumber(product.missing_material_types)} material types`;
         const missing = renderMissingMaterials(product.missing_materials || []);
         const decisionClass = decisionClassName(decision.code);
-        const afterTaxProfit = formatSignedIsk(product.taxed_replacement_profit);
-        const afterTaxWalletGain = formatSignedIsk(product.taxed_cash_profit);
+        const trueBuildProfit = formatSignedIsk(product.taxed_replacement_profit);
+        const cashNeededLens = formatSignedIsk(product.taxed_cash_profit);
         const blueprintQuality = renderBlueprintQuality(product);
         const jobTime = product.adjusted_time_seconds ? formatDuration(product.adjusted_time_seconds) : "unknown";
+        const confidence = profitabilityConfidenceView(product);
         return `
           <div class="decision-row" data-decision="${escapeHtml(decision.code || "unknown")}">
             <div class="decision-head">
@@ -17484,13 +19960,18 @@ Matched text: hidden unless explicitly enabled</textarea>
               <span class="pill ${decisionClass}">${escapeHtml(decision.label || "Review")}</span>
             </div>
             <div class="meta">${escapeHtml(decision.reason || "Review current buyer and material pricing.")}</div>
-            <div class="decision-lede">Expected after tax and fees: ${afterTaxProfit} per run</div>
+            <div class="decision-lede">True build profit after sales tax: ${trueBuildProfit} per run</div>
+            <div class="confidence-strip">
+              <span class="pill confidence-pill ${escapeHtml(confidence.level)}">${escapeHtml(confidence.label)}</span>
+              <span class="meta">${escapeHtml(confidence.reason)}</span>
+            </div>
             <div class="decision-metrics">
-              <div class="decision-metric"><span>True Profit</span><b>${afterTaxProfit} (${formatPercent(product.taxed_replacement_margin_percent)})</b><small>After sales tax; counts all materials as valuable.</small></div>
-              <div class="decision-metric"><span>Wallet Gain</span><b>${afterTaxWalletGain} (${formatPercent(product.taxed_cash_margin_percent)})</b><small>After sales tax; only subtracts missing buys.</small></div>
+              <div class="decision-metric"><span>True Build Profit</span><b>${trueBuildProfit} (${formatPercent(product.taxed_replacement_margin_percent)})</b><small>Default assumes selling to a nearby existing buy order; owned materials are valued, not treated as free.</small></div>
+              <div class="decision-metric"><span>Cash Needed Lens</span><b>${cashNeededLens} (${formatPercent(product.taxed_cash_margin_percent)})</b><small>Cash-flow view after sales tax; subtracts only materials you still need to buy.</small></div>
               <div class="decision-metric"><span>True Profit / Hour</span><b>${formatIskPerHour(product.true_profit_per_hour)}</b><small>Uses TE-adjusted one-run job time.</small></div>
               <div class="decision-metric"><span>Job Time</span><b>${jobTime}</b><small>Base ${formatDuration(product.base_time_seconds)} with selected TE.</small></div>
               <div class="decision-metric"><span>Buyer</span><b>${buyer}</b></div>
+              <div class="decision-metric"><span>Jita Liquidation Alternative</span><b>${escapeHtml(renderJitaRawValue(product))}</b><small>Required materials if sold instead of built.</small></div>
               <div class="decision-metric"><span>Materials</span><b>${build}</b><small>${blueprintQuality}</small></div>
             </div>
             <div class="meta">${missing}</div>
@@ -17500,25 +19981,59 @@ Matched text: hidden unless explicitly enabled</textarea>
       }).join("")}</div>`;
     }
 
+    function profitabilityConfidenceView(product) {
+      const code = String(product.confidence || "incomplete");
+      const views = {
+        "strong": {
+          level: "high",
+          label: "High confidence",
+          reason: "Buyer, product revenue, and all ME-adjusted material prices are known for this run.",
+        },
+        "owned-materials": {
+          level: "medium",
+          label: "Medium confidence",
+          reason: "You can build from owned stock, but some replacement material prices are missing.",
+        },
+        "partial-replacement": {
+          level: "medium",
+          label: "Medium confidence",
+          reason: "Missing materials are priced, but not every required material has replacement pricing.",
+        },
+        "no-buyer": {
+          level: "low",
+          label: "Estimate only",
+          reason: "No nearby public buyer was found inside the selected jump range.",
+        },
+        "incomplete": {
+          level: "low",
+          label: "Estimate only",
+          reason: "One or more buyer, material price, or recipe assumptions are incomplete.",
+        },
+      };
+      return views[code] || views.incomplete;
+    }
+
     function renderProfitMathDetails(product) {
       const detailRows = [
         ["Blueprint quality", renderBlueprintQuality(product)],
         ["Base manufacturing time", formatDuration(product.base_time_seconds)],
         ["TE-adjusted job time", formatDuration(product.adjusted_time_seconds)],
-        ["After-tax true profit per hour", formatIskPerHour(product.true_profit_per_hour)],
-        ["After-tax wallet gain per hour", formatIskPerHour(product.wallet_gain_per_hour)],
+        ["True build profit per hour", formatIskPerHour(product.true_profit_per_hour)],
+        ["Cash needed lens per hour", formatIskPerHour(product.wallet_gain_per_hour)],
         ["Max blueprint copy runs", product.max_production_limit ? formatNumber(product.max_production_limit) : "unknown"],
         ["Required skills", renderSkillSummary(product.required_skills || [])],
-        ["Buyer revenue", formatIsk(product.product_revenue)],
+        ["Nearby buy-order revenue", formatIsk(product.product_revenue)],
         [`Sales tax (${formatRatePercent(product.sales_tax_rate)})`, `-${formatIsk(product.sales_tax)}`],
-        ["Immediate-sale broker fee", formatIsk(product.broker_fee)],
+        ["Nearby buy-order broker fee", formatIsk(product.broker_fee)],
         ["Net revenue after tax and fees", formatIsk(product.net_revenue)],
         ["ME-adjusted all materials value", `-${formatIsk(product.replacement_cost)}`],
         ["Jita raw materials value", renderJitaRawValue(product)],
         ["Jita raw value coverage", renderJitaRawCoverage(product)],
         ["ME-adjusted missing materials", `-${formatIsk(product.missing_replacement_cost)}`],
-        ["Before-tax true profit", formatSignedIsk(product.replacement_profit)],
-        ["Before-tax wallet gain", formatSignedIsk(product.cash_profit)],
+        ["Before-tax true build profit", formatSignedIsk(product.replacement_profit)],
+        ["Before-tax cash needed lens", formatSignedIsk(product.cash_profit)],
+        ["Sell-order mode", "not included in this default lens; broker fee and order-change fees must be added"],
+        ["Build-location costs", "not included yet; facility tax, SCC, rigs, and system cost index need a selected build facility"],
       ];
       return `
         <details class="profit-details">
@@ -17528,7 +20043,7 @@ Matched text: hidden unless explicitly enabled</textarea>
               <div class="profit-detail-row"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>
             `).join("")}
           </div>
-          <div class="meta">Before-tax values are shown here only. The card ranking uses after-tax true profit.</div>
+          <div class="meta">Default ranking assumes an immediate sale to a nearby public buy order. Before-tax values and missing sell-order/build-location assumptions are shown here only.</div>
         </details>
       `;
     }
@@ -18146,6 +20661,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         budgetIsk: acqBudget.value,
         brokerFeePercent: acqBrokerFee.value,
         pickupJumps: acqPickupJumps.value,
+        portfolioJumps: acqPortfolioJumps.value,
         targetDays: acqTargetDays.value,
         minMarginPercent: acqMinMargin.value,
         includeCommonMaterials: acqCommonMaterials.checked,
@@ -18153,7 +20669,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
       });
       acqScanButton.disabled = true;
-      acqSummary.textContent = `Checking public orders and market history for ${acquisitionItemScopeLabel(settings)}...`;
+      acqSummary.textContent = `Checking public orders and market history for a diversified ${acquisitionItemScopeLabel(settings)} portfolio...`;
       acqStrategy.innerHTML = "";
       acqRoute.textContent = "";
       resetQuickbarList(acqQuickbarPanel, acqQuickbarStatus, "acquisition");
@@ -18164,6 +20680,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         budget_isk: String(settings.budgetIsk),
         broker_fee_percent: String(settings.brokerFeePercent),
         pickup_jumps: String(settings.pickupJumps),
+        portfolio_jumps: String(settings.portfolioJumps),
         target_days: String(settings.targetDays),
         min_margin_percent: String(settings.minMarginPercent),
         common_materials: settings.includeCommonMaterials ? "1" : "0",
@@ -18172,7 +20689,7 @@ Matched text: hidden unless explicitly enabled</textarea>
       });
       try {
         const response = await fetch(`/api/flight/acquisition?${params}`);
-        const data = await readJsonApiResponse(response, "Could not plan market acquisitions");
+        const data = await readJsonApiResponse(response, "Could not build the investment portfolio");
         renderMarketAcquisition(data);
       } catch (error) {
         acqSummary.textContent = error.message;
@@ -18193,6 +20710,7 @@ Matched text: hidden unless explicitly enabled</textarea>
       const marketCache = acquisition.market_cache || {};
       const historyCache = acquisition.history_cache || {};
       const itemScope = acquisition.item_scope || {};
+      const portfolio = acquisition.portfolio || {};
       const selectedGroups = (itemScope.selected_market_groups || []).map((group) => group.name).filter(Boolean);
       const groupText = selectedGroups.length ? ` Market categories: ${selectedGroups.slice(0, 4).map((name) => escapeHtml(name)).join(", ")}${selectedGroups.length > 4 ? `, +${formatNumber(selectedGroups.length - 4)} more` : ""}.` : "";
       const selectedTypes = (itemScope.selected_market_types || []).map((item) => item.name).filter(Boolean);
@@ -18204,16 +20722,17 @@ Matched text: hidden unless explicitly enabled</textarea>
       acqRoute.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> buy-order area toward
         <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>.
-        <div class="meta">Budget ${formatIsk(acquisition.budget_isk)}; collection ${formatNumber(acquisition.pickup_jumps)} jumps; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days.</div>
+        <div class="meta">Total investment ${formatIsk(acquisition.budget_isk)}; collection range ${formatNumber(acquisition.pickup_jumps)} jumps; portfolio jump budget ${formatNumber(acquisition.portfolio_jumps)}; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days.</div>
         ${routeWarning}
       `;
       acqSummary.innerHTML = `
         <div class="profit-stats">
-          <div class="profit-stat"><span>Recommendations</span><b>${formatNumber(acquisition.opportunity_count)}</b></div>
-          <div class="profit-stat"><span>Possible Traps</span><b>${formatNumber(acquisition.possible_trap_count)}</b></div>
-          <div class="profit-stat"><span>Source Buys</span><b>${formatNumber(acquisition.source_buy_order_count)}</b></div>
-          <div class="profit-stat"><span>History Regions</span><b>${formatNumber(acquisition.history_region_count)}</b></div>
+          <div class="profit-stat"><span>Invested</span><b>${formatIsk(portfolio.invested_isk)}</b></div>
+          <div class="profit-stat"><span>Est. Net Profit</span><b>${formatSignedIsk(portfolio.estimated_net_profit)}</b></div>
+          <div class="profit-stat"><span>Categories</span><b>${formatNumber(portfolio.category_count)}</b></div>
+          <div class="profit-stat"><span>Jumps Used</span><b>${formatNumber(portfolio.used_jumps)} / ${formatNumber(portfolio.max_portfolio_jumps)}</b></div>
         </div>
+        <div class="meta">Portfolio lines ${formatNumber(portfolio.line_count)} from ${formatNumber(acquisition.opportunity_count)} viable recommendation(s); ${formatNumber(portfolio.possible_trap_excluded_count || acquisition.possible_trap_count)} Possible trap row(s) excluded from funded recommendations.</div>
         <div class="meta">Scanned ${formatNumber(acquisition.scanned_item_types)} item types across ${formatNumber(acquisition.pickup_regions_scanned)} pickup regions.${escapeHtml(itemLimit + regionLimit)}</div>
         <div class="meta">${escapeHtml(commonText)}${groupText}${typeText}</div>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on downstream buy-order sales.</div>
@@ -18221,20 +20740,27 @@ Matched text: hidden unless explicitly enabled</textarea>
         <div class="meta">${escapeHtml(acquisition.pricing_note || "Planner is advisory only; verify in EVE before posting buy orders.")}</div>
       `;
       acqStrategy.innerHTML = renderAcquisitionStrategy(acquisition.strategy || {});
-      acquisitionQuickbarItems = Array.isArray(acquisition.opportunities) ? acquisition.opportunities : [];
-      updateQuickbarPanel(acqQuickbarPanel, acqQuickbarStatus, acquisitionQuickbarItems, "recommended item");
-      acqResults.innerHTML = renderAcquisitionOpportunities(acquisition.opportunities || []);
+      acquisitionQuickbarItems = Array.isArray(portfolio.lines) && portfolio.lines.length
+        ? portfolio.lines
+        : (Array.isArray(acquisition.opportunities) ? acquisition.opportunities : []);
+      updateQuickbarPanel(acqQuickbarPanel, acqQuickbarStatus, acquisitionQuickbarItems, "portfolio item");
+      acqResults.innerHTML = renderAcquisitionPortfolio(portfolio, acquisition.opportunities || []);
     }
 
     function renderAcquisitionStrategy(strategy) {
       const best = strategy.best || {};
+      const portfolio = strategy.portfolio || {};
       const bestText = best.item_name
         ? `${escapeHtml(best.item_name)}: ${formatIsk(best.suggested_bid)} bid, ${formatNumber(best.recommended_units)} units, ${formatSignedIsk(best.net_profit)} estimated profit`
         : "No recommendation selected by the current filters.";
+      const portfolioText = Number(portfolio.line_count || 0) > 0
+        ? `${formatNumber(portfolio.line_count)} lines, ${formatNumber(portfolio.category_count)} categories, ${formatIsk(portfolio.invested_isk)} invested, ${formatNumber(portfolio.used_jumps)} / ${formatNumber(portfolio.max_portfolio_jumps)} planning jumps.`
+        : "No funded portfolio lines selected by the current filters.";
       return `
         <div class="acquisition-strategy-card">
           <strong>${escapeHtml(strategy.headline || "Acquisition strategy summary")}</strong>
           <div class="meta">${escapeHtml(strategy.plain_language || "Recommendations use public market orders, market history, budget, and fee assumptions.")}</div>
+          <div class="meta">${escapeHtml(portfolioText)}</div>
           <div class="meta">${escapeHtml(strategy.scope_note || "Narrower scopes usually finish faster and give cleaner recommendations.")}</div>
         </div>
         <div class="acquisition-strategy-card">
@@ -18258,9 +20784,81 @@ Matched text: hidden unless explicitly enabled</textarea>
       return "Clear";
     }
 
+    function renderPortfolioAllocationChips(portfolio) {
+      const allocations = Array.isArray(portfolio.category_allocations) ? portfolio.category_allocations : [];
+      if (!allocations.length) return "";
+      return `
+        <div class="filters portfolio-allocation-chips">
+          ${allocations.map((item) => `
+            <span class="pill decision-source">${escapeHtml(item.category)}: ${formatPercent(item.weight_percent)} / ${formatIsk(item.invested_isk)}</span>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderAcquisitionPortfolio(portfolio, opportunities) {
+      const lines = Array.isArray(portfolio.lines) ? portfolio.lines : [];
+      if (!lines.length) {
+        const fallback = renderAcquisitionOpportunities(opportunities || []);
+        return `
+          <div class="decision-empty">No diversified portfolio cleared the current investment and jump budget. Review single-item opportunities below as watchlist leads.</div>
+          ${fallback}
+        `;
+      }
+      return `
+        ${renderPortfolioAllocationChips(portfolio)}
+        <div class="decision-list">${lines.map((item) => {
+          const decision = item.decision || {};
+          const range = item.range_recommendation || {};
+          const destinationBuy = item.best_destination_buy || {};
+          const riskClass = acquisitionRiskClass(item.risk_level);
+          const scaledNote = Number(item.original_recommended_units || 0) > Number(item.recommended_units || 0)
+            ? `Scaled down from ${formatNumber(item.original_recommended_units)} units to fit the portfolio budget.`
+            : "Uses the full first-order size suggested by market history and destination demand.";
+          return `
+            <div class="decision-row">
+              <div class="decision-head">
+                <strong>${escapeHtml(item.item_name)}</strong>
+                <span class="pill decision-source">${escapeHtml(item.category || "Selected scope")}</span>
+                <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
+              </div>
+              <div class="decision-lede">${escapeHtml(decision.label || "Review")} at ${formatIsk(item.suggested_bid)} or less; ${escapeHtml(range.range || "station")} range. ${escapeHtml(scaledNote)}</div>
+              <div class="decision-metrics">
+                <div class="decision-metric"><span>Investment</span><b>${formatIsk(item.estimated_isk_committed)}</b><small>${formatPercent(item.portfolio_weight_percent)} of total budget.</small></div>
+                <div class="decision-metric"><span>Units</span><b>${formatNumber(item.recommended_units)}</b><small>Safe ceiling ${formatIsk(item.max_safe_bid)}.</small></div>
+                <div class="decision-metric"><span>After-Fee Profit</span><b>${formatSignedIsk(item.net_profit)}</b><small>${formatPercent(item.margin_percent)} on committed ISK.</small></div>
+                <div class="decision-metric"><span>Planning Jumps</span><b>${formatNumber(item.estimated_collection_jumps)}</b><small>Actual pickup route depends on where buy orders fill.</small></div>
+                <div class="decision-metric"><span>Destination Demand</span><b>${escapeHtml(destinationBuy.system_name || "unknown")}</b><small>${formatIsk(destinationBuy.price)} buy; ${formatNumber(destinationBuy.volume_remain)} units left.</small></div>
+              </div>
+              <div class="decision-lede">${escapeHtml(decision.reason || "Verify current orders in EVE before posting.")}</div>
+              ${renderAcquisitionHistoryFlags(item.history_flags || [])}
+              <details class="profit-details">
+                <summary>Portfolio math details</summary>
+                <div class="profit-detail-grid">
+                  <div class="profit-detail-row"><span>Category</span><b>${escapeHtml(item.category || "Selected scope")}</b></div>
+                  <div class="profit-detail-row"><span>Recommended range</span><b>${escapeHtml(range.range || "station")}</b></div>
+                  <div class="profit-detail-row"><span>Range reason</span><b>${escapeHtml(range.reason || "Keep the first order easy to monitor.")}</b></div>
+                  <div class="profit-detail-row"><span>Bid total</span><b>${formatIsk(item.estimated_bid_total)}</b></div>
+                  <div class="profit-detail-row"><span>Broker fee estimate</span><b>${formatIsk(item.estimated_broker_fee)}</b></div>
+                  <div class="profit-detail-row"><span>Estimated committed</span><b>${formatIsk(item.estimated_isk_committed)}</b></div>
+                  <div class="profit-detail-row"><span>Destination gross revenue</span><b>${formatIsk(item.gross_destination_revenue)}</b></div>
+                  <div class="profit-detail-row"><span>Estimated sales tax</span><b>-${formatIsk(item.estimated_sales_tax)}</b></div>
+                  <div class="profit-detail-row"><span>Destination net revenue</span><b>${formatIsk(item.estimated_net_revenue)}</b></div>
+                  <div class="profit-detail-row"><span>Estimated net profit</span><b>${formatSignedIsk(item.net_profit)}</b></div>
+                  <div class="profit-detail-row"><span>Source history</span><b>${renderHistoryStats(item.source_history || {})}</b></div>
+                  <div class="profit-detail-row"><span>Destination history</span><b>${renderHistoryStats(item.destination_history || {})}</b></div>
+                </div>
+              </details>
+            </div>
+          `;
+        }).join("")}</div>
+        <div class="meta">${escapeHtml(portfolio.manual_note || "Portfolio is advisory only; verify in EVE before committing ISK.")}</div>
+      `;
+    }
+
     function renderAcquisitionOpportunities(opportunities) {
       if (!opportunities.length) {
-        return `<div class="decision-empty">No buy-order acquisition recommendations cleared the current filters.</div>`;
+        return `<div class="decision-empty">No buy-order investment recommendations cleared the current filters.</div>`;
       }
       return `<div class="decision-list">${opportunities.slice(0, 12).map((item) => {
         const decision = item.decision || {};
@@ -18477,7 +21075,7 @@ Matched text: hidden unless explicitly enabled</textarea>
 
     function renderTradePnlPlanNote(totals) {
       if (Number(totals.planned_item_count || 0) <= 0) {
-        return "No saved Acquisition Planner expectations matched these item types.";
+        return "No saved Investment Portfolio expectations matched these item types.";
       }
       return `Planner comparison: ${formatNumber(totals.planned_item_count)} planned item types, ${formatNumber(totals.planned_matched_item_count)} matched to sells; actual versus plan ${formatSignedIsk(totals.actual_vs_plan_profit_isk)}.`;
     }
@@ -18601,7 +21199,7 @@ Matched text: hidden unless explicitly enabled</textarea>
     function renderTradePnlPlanReconciliation(plan) {
       if (!plan || !plan.available) return "";
       return `
-        <div class="meta">Acquisition Planner reconciliation <span class="pill ${tradePnlPlanClass(plan.status)}">${escapeHtml(plan.status_label || "Plan check")}</span></div>
+        <div class="meta">Investment Portfolio reconciliation <span class="pill ${tradePnlPlanClass(plan.status)}">${escapeHtml(plan.status_label || "Plan check")}</span></div>
         <div class="profit-detail-grid">
           <div class="profit-detail-row"><span>Planned at</span><b>${escapeHtml(plan.planned_at || "unknown")}</b></div>
           <div class="profit-detail-row"><span>Suggested bid</span><b>${formatOptionalIsk(plan.suggested_bid)}</b></div>
@@ -21008,6 +23606,33 @@ Matched text: hidden unless explicitly enabled</textarea>
       }
     });
 
+    if (fittingForm) {
+      fittingForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (fittingErrorEl) fittingErrorEl.hidden = true;
+        const formEl = event.currentTarget;
+        const form = new FormData(formEl);
+        const payload = Object.fromEntries(form.entries());
+        try {
+          const response = await fetch("/api/fittings", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(payload),
+          });
+          await readJsonApiResponse(response, "Fitting was not shared");
+          formEl.reset();
+          includeArchivedFittings = false;
+          updateFittingFilterButtons();
+          await loadFittings();
+        } catch (error) {
+          if (fittingErrorEl) {
+            fittingErrorEl.textContent = error.message;
+            fittingErrorEl.hidden = false;
+          }
+        }
+      });
+    }
+
     document.querySelector(".filters").addEventListener("click", async (event) => {
       const button = event.target.closest("button");
       if (!button) return;
@@ -21019,6 +23644,27 @@ Matched text: hidden unless explicitly enabled</textarea>
       updateFilterButtons();
       await loadOffers();
     });
+
+    if (fittingFilters) {
+      fittingFilters.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        includeArchivedFittings = Boolean(button.dataset.fittingArchived);
+        updateFittingFilterButtons();
+        await loadFittings();
+      });
+    }
+
+    if (fittingSearch) {
+      fittingSearch.addEventListener("input", () => {
+        if (fittingSearchTimer) window.clearTimeout(fittingSearchTimer);
+        fittingSearchTimer = window.setTimeout(() => {
+          loadFittings().catch((error) => {
+            if (fittingsEl) fittingsEl.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+          });
+        }, 180);
+      });
+    }
 
     offersEl.addEventListener("click", async (event) => {
       const reserveButton = event.target.closest("button[data-reserve]");
@@ -21058,6 +23704,52 @@ Matched text: hidden unless explicitly enabled</textarea>
       await loadOffers();
     });
 
+    if (fittingsEl) {
+      fittingsEl.addEventListener("click", async (event) => {
+        const copyButton = event.target.closest("button[data-copy-fitting]");
+        if (copyButton) {
+          const card = copyButton.closest("[data-fitting-card]");
+          const textArea = card ? card.querySelector("[data-fitting-text]") : null;
+          const status = card ? card.querySelector(".fitting-copy-status") : null;
+          const previousText = copyButton.textContent;
+          try {
+            copyButton.disabled = true;
+            copyButton.textContent = "Copying...";
+            await writeTextToClipboard(textArea ? textArea.value : "");
+            if (status) {
+              status.textContent = "Copied fitting block.";
+              status.classList.remove("error");
+            }
+          } catch (error) {
+            if (status) {
+              status.textContent = error.message || "Clipboard copy failed.";
+              status.classList.add("error");
+            }
+          } finally {
+            copyButton.disabled = false;
+            copyButton.textContent = previousText;
+          }
+          return;
+        }
+
+        const statusButton = event.target.closest("button[data-fitting-status-id]");
+        if (!statusButton) return;
+        const nextStatus = statusButton.dataset.fittingStatus;
+        if (nextStatus === "archived" && !window.confirm("Archive this shared fitting?")) return;
+        const response = await fetch(`/api/fittings/${statusButton.dataset.fittingStatusId}/status`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({status: nextStatus}),
+        });
+        const data = await response.json();
+        if (!data.ok) {
+          window.alert(data.error || "Could not update fitting");
+          return;
+        }
+        await loadFittings();
+      });
+    }
+
     notesForm.addEventListener("submit", (event) => {
       event.preventDefault();
       const form = new FormData(notesForm);
@@ -21094,6 +23786,17 @@ Matched text: hidden unless explicitly enabled</textarea>
     flightProfitScanButton.addEventListener("click", () => {
       loadFlightProfitability();
     });
+
+    if (industryBuildSystem) {
+      industryBuildSystem.value = readIndustryBuildSystem();
+      industryBuildSystem.addEventListener("change", () => {
+        writeIndustryBuildSystem(industryBuildSystem.value);
+      });
+      industryBuildSystem.addEventListener("input", () => {
+        window.localStorage.setItem(industryBuildSystemKey, String(industryBuildSystem.value || "").trim());
+        updateIndustryAssumptionNote();
+      });
+    }
 
     haulRouteForm.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -21187,6 +23890,9 @@ Matched text: hidden unless explicitly enabled</textarea>
       haulCompareResults.textContent = "";
     }
 
+    setupSystemAutocomplete(haulOrigin, haulOriginSuggestions);
+    setupSystemAutocomplete(haulDestination, haulDestinationSuggestions);
+
     haulOrigin.addEventListener("change", updateHaulScopeAndReset);
     haulDestination.addEventListener("change", updateHaulScopeAndReset);
     haulPurchaseBudget.addEventListener("change", updateHaulScopeAndReset);
@@ -21224,6 +23930,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         budgetIsk: acqBudget.value,
         brokerFeePercent: acqBrokerFee.value,
         pickupJumps: acqPickupJumps.value,
+        portfolioJumps: acqPortfolioJumps.value,
         targetDays: acqTargetDays.value,
         minMarginPercent: acqMinMargin.value,
         includeCommonMaterials: acqCommonMaterials.checked,
@@ -21231,7 +23938,7 @@ Matched text: hidden unless explicitly enabled</textarea>
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
       });
       const settings = readAcquisitionSettings();
-      resetMarketAcquisition(`Ready to plan buy orders from ${acquisitionStartLabel(settings)} toward ${settings.destination}.`);
+      resetMarketAcquisition(`Ready to build an investment portfolio from ${acquisitionStartLabel(settings)} toward ${settings.destination}.`);
     }
 
     acquisitionForm.addEventListener("submit", (event) => {
@@ -21243,6 +23950,7 @@ Matched text: hidden unless explicitly enabled</textarea>
     acqBudget.addEventListener("change", updateAcquisitionScopeAndReset);
     acqBrokerFee.addEventListener("change", updateAcquisitionScopeAndReset);
     acqPickupJumps.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqPortfolioJumps.addEventListener("change", updateAcquisitionScopeAndReset);
     acqTargetDays.addEventListener("change", updateAcquisitionScopeAndReset);
     acqMinMargin.addEventListener("input", () => {
       acqMinMarginValue.textContent = `${formatNumber(clampHaulMinMargin(acqMinMargin.value))}%`;
@@ -21333,6 +24041,16 @@ Matched text: hidden unless explicitly enabled</textarea>
     planetaryCce.addEventListener("change", updatePlanetaryAndReset);
     planetarySalesTax.addEventListener("change", updatePlanetaryAndReset);
     planetaryBrokerFee.addEventListener("change", updatePlanetaryAndReset);
+    [planetaryOwnerTax, planetaryNpcTax, planetaryCce, planetaryTestTier, planetaryTestQuantity, planetaryTestTransfer, planetaryTestOwnerIsk, planetaryTestNpcIsk, planetaryTestTotalIsk]
+      .filter(Boolean)
+      .forEach((field) => {
+        field.addEventListener("input", renderPlanetaryCustomsFieldTest);
+        field.addEventListener("change", renderPlanetaryCustomsFieldTest);
+      });
+    planetaryTestCalculate?.addEventListener("click", renderPlanetaryCustomsFieldTest);
+    planetaryTestCopy?.addEventListener("click", () => {
+      copyPlanetaryCustomsChecklist(planetaryTestCopy);
+    });
 
     function updateReprocessingAndReset() {
       const settings = writeReprocessingSettings({
@@ -21441,6 +24159,43 @@ Matched text: hidden unless explicitly enabled</textarea>
       loadFlightStatus();
     });
 
+    let discordAlertPreviewTimer = null;
+    function scheduleDiscordAlertPreview() {
+      if (!discordAlertForm) return;
+      if (discordAlertPreviewTimer) window.clearTimeout(discordAlertPreviewTimer);
+      discordAlertPreviewTimer = window.setTimeout(previewDiscordAlertSettings, 220);
+    }
+
+    if (discordAlertForm && discordAlertRuleForm) {
+      [
+        discordAlertEnabled,
+        discordAlertDryRun,
+        discordAlertSender,
+        discordAlertRouteEnabled,
+        discordAlertRouteName,
+        discordAlertDestination,
+        discordAlertRouteType,
+        discordAlertRuleEnabled,
+        discordAlertRuleName,
+        discordAlertEventType,
+        discordAlertSeverity,
+        discordAlertPhrases,
+        discordAlertIncludeText,
+        discordAlertTestSummary,
+        discordAlertTestSource,
+        discordAlertTestSystem,
+        discordAlertTestChannel,
+        discordAlertTestMessage,
+      ].forEach((control) => {
+        if (!control) return;
+        control.addEventListener("input", scheduleDiscordAlertPreview);
+        control.addEventListener("change", scheduleDiscordAlertPreview);
+      });
+      discordAlertSave.addEventListener("click", saveDiscordAlertSettings);
+      discordAlertPreviewButton.addEventListener("click", previewDiscordAlertSettings);
+      discordAlertSendTest.addEventListener("click", sendDiscordAlertTest);
+    }
+
     function alertDiscordSyncProblem(data) {
       if (data.discord_sync_error) {
         window.alert(`Updated locally, but Discord did not sync: ${data.discord_sync_error}`);
@@ -21448,6 +24203,7 @@ Matched text: hidden unless explicitly enabled</textarea>
     }
 
     writeMaxJumps(readMaxJumps());
+    writeIndustryBuildSystem(industryBuildSystem ? industryBuildSystem.value : readIndustryBuildSystem());
     const storedHaulCompareDestinations = readStoredHaulCompareDestinations();
     if (storedHaulCompareDestinations) applyHaulCompareDestinations(storedHaulCompareDestinations);
     writeHaulCompareDestinations();
@@ -21456,31 +24212,45 @@ Matched text: hidden unless explicitly enabled</textarea>
     writeAcquisitionSettings(readAcquisitionSettings());
     writeTradePnlSettings(readTradePnlSettings());
     writePlanetarySettings(readPlanetarySettings());
+    renderPlanetaryCustomsFieldTest();
     writeReprocessingSettings(readReprocessingSettings());
     updateReprocessingBatchManifest(parseReprocessingBatchInput(reprocessBatchInput.value), reprocessBatchInput.value);
     showTab(initialTab());
     updateFilterButtons();
+    updateFittingFilterButtons();
     renderNotes();
+    loadDiscordAlertSettings();
     loadFlightStatus();
     loadFlightDiagnostics();
     loadOffers().catch((error) => {
       offersEl.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
       statusEl.textContent = "Load failed";
     });
+    loadFittings().catch((error) => {
+      if (fittingsEl) fittingsEl.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+      if (fittingsStatusEl) fittingsStatusEl.textContent = "Load failed";
+    });
   </script>
 </body>
 </html>
 """
-    return markup.replace("@@CATEGORY_OPTIONS@@", category_options).replace(
-        "@@HAUL_MARKET_GROUP_OPTIONS@@",
-        haul_market_group_options,
-    ).replace(
-        "@@ACQUISITION_COMMON_MATERIAL_LIMIT@@",
-        f"{MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES:,}",
-    ).replace(
-        "@@REPROCESSING_ORE_OPTIONS@@",
-        reprocessing_ore_options,
-    )
+    replacements = {
+        "@@CATEGORY_OPTIONS@@": category_options,
+        "@@HAUL_MARKET_GROUP_OPTIONS@@": haul_market_group_options,
+        "@@ACQUISITION_COMMON_MATERIAL_LIMIT@@": f"{MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES:,}",
+        "@@REPROCESSING_ORE_OPTIONS@@": reprocessing_ore_options,
+        "@@SCOPE_JUSTIFICATION_PANEL@@": render_flight_scope_justification(),
+        "@@TAB_SCOPE_MARKET@@": render_flight_scope_summary("market"),
+        "@@TAB_SCOPE_FLIGHT@@": render_flight_scope_summary("flight"),
+        "@@TAB_SCOPE_HAULING@@": render_flight_scope_summary("hauling"),
+        "@@TAB_SCOPE_ACQUISITION@@": render_flight_scope_summary("acquisition"),
+        "@@TAB_SCOPE_TRADE_PNL@@": render_flight_scope_summary("trade-pnl"),
+        "@@TAB_SCOPE_PLANETARY@@": render_flight_scope_summary("planetary"),
+        "@@TAB_SCOPE_REPROCESSING@@": render_flight_scope_summary("reprocessing"),
+    }
+    for token, value in replacements.items():
+        markup = markup.replace(token, value)
+    return markup
 
 
 def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:
@@ -21712,6 +24482,7 @@ def run_server(args: argparse.Namespace) -> int:
         store,
         public_base_url=public_base_url,
         discord_webhook_url=args.discord_webhook_url,
+        discord_alert_settings_path=args.discord_alert_settings_path,
         discord_timeout_seconds=args.discord_timeout,
         discord_forum_posts=args.discord_forum_posts,
         discord_forum_tag_ids=parse_csv(args.discord_forum_tag_ids),
@@ -21748,6 +24519,7 @@ def run_server(args: argparse.Namespace) -> int:
             print("Discord forum mode is enabled; each offer will create a forum post/thread.")
     else:
         print("Discord webhook posting is disabled. Set --discord-webhook-url to post new offers.")
+    print(f"Discord alert settings file: {args.discord_alert_settings_path}")
     if args.admin_token:
         print("Remote offer creation/status writes require the market admin token.")
     if args.trusted_members_can_write_market:
@@ -21781,6 +24553,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--discord-webhook-url",
         default=os.environ.get("CORP_MARKET_DISCORD_WEBHOOK_URL", ""),
         help="Discord channel webhook URL used to post new offers.",
+    )
+    serve.add_argument(
+        "--discord-alert-settings-path",
+        type=Path,
+        default=Path(os.environ.get("CORP_MARKET_DISCORD_ALERT_SETTINGS_PATH", DEFAULT_DISCORD_ALERT_SETTINGS_PATH)),
+        help="Local JSON file used to persist Discord alert route and rule settings.",
     )
     serve.add_argument(
         "--discord-timeout",
@@ -21905,6 +24683,15 @@ def clean_multiline(value: Any, field: str, *, max_length: int) -> str:
     text = "\n".join(cleaned)
     if len(text) > max_length:
         raise ValueError(f"{field} must be {max_length} characters or less.")
+    return text
+
+
+def clean_fitting_text(value: Any) -> str:
+    text = clean_multiline(value, "fitting_text", max_length=DEFAULT_MAX_FITTING_TEXT_LENGTH)
+    if not text:
+        raise ValueError("fitting_text is required.")
+    if parse_fit_note(text) is None:
+        raise ValueError("fitting_text must use the standard EVE fitting clipboard format.")
     return text
 
 

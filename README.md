@@ -153,6 +153,8 @@ When idle, the overlay shows only the ship and a small `Options` button. Drag th
 
 Optional `--enable-location-cheer` uses read-only ESI location with `esi-location.read_location.v1` so the ship flies happily when you reach Dihra, Amarr, or Jita. The pet keeps the access token in memory only while running and does not share your location.
 
+Optional Discord voice notes let you say phrases such as `Aura take a note gate camp near Amarr` and post that deliberate note to a configured Discord notes-channel webhook. Notes are off by default, use a separate ignored local settings file at `profiles/intel_pet_discord_notes.json`, and disable Discord mentions.
+
 Chat alerts still come from local EVE `Chatlogs`, not ESI. When location cheer is enabled, the SSO character name is used as the default local chat-log `Listener` filter; pass `--all-listeners` to watch matching channels for every local character log.
 
 Local settings can live in ignored profile data at `profiles/intel_pet_settings.json`. More detail is in `docs/intel_pet.md`.
@@ -203,13 +205,13 @@ Always check the orders in EVE before hauling. The helper reads live EVE Workben
 
 ## Corp Market Concierge
 
-The corp market concierge is being reshaped into a Discord alert-router settings site for corporation coordination. The first tab now sketches rules for deciding which phrases, events, and severity levels may become Discord alert summaries, with matched text off by default and no raw-log forwarding.
+The corp market concierge is being reshaped into a Discord alert-router settings site for corporation coordination. The first tab saves local Discord alert route/rule settings, previews the exact payload, and can send a manual test through the configured webhook. The default sender is `IntelPet`, matched text stays off by default, and no raw-log forwarding is wired yet.
 
 The legacy market board still exists below that first tab. It can post offers or requests to a Discord channel through a webhook, sync listing status changes back to that Discord post, then give buyers and sellers a copyable EVE mail draft. It does not send EVE mail, create contracts, place orders, or automate the game client.
 
 Double-click `Start-EveCorpMarket.bat` for the local board at `http://127.0.0.1:8770/`.
 
-To post new offers into Discord, create a Discord channel webhook and run:
+To post new offers or send Discord alert tests, create a Discord channel webhook and run:
 
 ```powershell
 .\scripts\run_corp_market.ps1 serve --discord-webhook-url "https://discord.com/api/webhooks/..."
@@ -228,6 +230,8 @@ For a shared LAN test, set the public link base that Discord members should open
 For an Internet-accessible Flight Attendant link, use `--public-hosting-mode` with an HTTPS public base URL, EVE SSO credentials, and `--allowed-corporation-ids` or `--allowed-alliance-ids`. This keeps hosted Flight Attendant access member-only and tightens remote market writes.
 
 Listings are stored in ignored local SQLite data at `profiles/corp_market.sqlite3`. More detail is in `docs/corp_market_concierge.md`.
+
+The `Shared Fittings` tab stores user-pasted EVE fitting clipboard blocks in the same ignored local SQLite database. Each entry can include optional tags, a submitter, and a website fitting link; pilots still copy/import the fit manually in EVE.
 
 The Flight Attendant tab includes a `Static Cache Preflight` panel. Run `python .\scripts\update_industry_recipe_cache.py` on the same machine or container that serves the website before inviting testers; generated cache files under `cache\` are ignored and are not copied by Git pushes.
 

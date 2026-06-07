@@ -1,6 +1,6 @@
 # EVE Developer License Review
 
-Last verified: 2026-06-06
+Last verified: 2026-06-07
 
 Authoritative source:
 
@@ -28,6 +28,7 @@ The corp intel board and hosted Flight Attendant/Corp Market surfaces are design
 - It does not send keys, click, read packets, scrape cache files, inspect process memory, or automate gameplay.
 - It reads opted-in local chat logs and sends only matching intel events by default.
 - The EVE Intel Pet overlay is local-only and informational: it reads the user's own EVE chat logs, shows matching lines to that user, and does not share them by default.
+- Optional Intel Pet Discord voice notes are explicit user-authored note sends only, use a dedicated local ignored webhook settings file, disable Discord mentions, and do not automatically forward chat alerts.
 - The Intel Pet alert history is in-memory only for the current pet run and is not written to disk or shared with Discord, ESI, or the corp intel board.
 - Optional Intel Pet location cheer uses only the read-only `esi-location.read_location.v1` scope after explicit EVE SSO consent, keeps the access token in memory only while the pet is running, and shows local animation only.
 - Optional Intel Pet voice command sending is local-only, off by default, requires explicit user opt-in, uses exact matches from the existing EVE Voice Pilot command profile, and keeps the active EVE-window guard on by default.
@@ -72,6 +73,7 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - Keep channel allowlists narrow.
 - Keep the board private to the corporation unless a broader review is done.
 - Keep alert overlays informational and local-only unless there is a separate consent and policy review.
+- Keep Discord note sharing opt-in, deliberate, and separate from automatic chat alert forwarding.
 - Do not add automatic overlay-driven client input, OCR-driven gameplay decisions, bot-like behavior, input broadcasting, stored rapid keystroke patterns, or automated reactions.
 - Keep voice-driven client input off by default, exact-command only, active-window guarded by default, and manually configured by the local user.
 
@@ -97,3 +99,7 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - 2026-06-07: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding Intel Pet Diagnostics. The feature shows a local troubleshooting summary of settings, watched folders, filters, voice configuration, ESI location status, and in-memory counts; it excludes raw chat lines, alert message text, tokens, webhooks, and recordings, adds no ESI scope, shares nothing externally, and does not control the EVE client.
 - 2026-06-07: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before documenting the Intel Pet Discord messaging plan. The plan is not a runtime integration; it requires future opt-in routes, summary-only defaults, explicit matched-text toggles, no silent raw-log forwarding, no committed tokens or webhook URLs, no new ESI scope, and no EVE client control.
 - 2026-06-07: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before changing the Corp Market first tab toward a Discord alert-router settings surface. This first slice is planning-only in the browser plus summary-only payload helpers; it does not enable automatic Discord sending, adds no ESI scope, keeps market webhook secrets out of committed files, disables Discord mentions, and preserves the no raw-log-forwarding and no EVE client control boundaries.
+- 2026-06-07: Re-opened the official EVE Developer License Agreement, developer license docs, EVE SSO docs, and EVE third-party policy page before adding generated Flight Attendant scope justifications and per-tab scope disclosures. The change adds no new ESI scope or gameplay behavior; it makes current read-only scope use clearer by tab and preserves manual pilot action for hauling, buying, selling, reprocessing, and market orders.
+- 2026-06-07: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding the Shared Fittings tab. The change stores user-pasted EVE fitting clipboard blocks and optional website fitting links in ignored local SQLite data, adds no ESI scope, does not read the EVE client, and preserves manual copy/import behavior for pilots.
+- 2026-06-07: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before enabling persisted Discord alert-router settings and manual test sends from the Corp Market first tab. The feature saves only cleaned route/rule settings in ignored local JSON, uses the existing private webhook configuration for the default IntelPet sender, disables Discord mentions, keeps matched text opt-in, adds no ESI scope, does not automatically forward Intel Pet chat yet, and does not control the EVE client.
+- 2026-06-07: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding Intel Pet Discord voice notes. The feature sends only deliberate voice-note text after an explicit note phrase, stores the notes-channel webhook in ignored local settings, disables Discord mentions, adds no ESI scope, does not automatically forward chat alerts, and does not control the EVE client.
