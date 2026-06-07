@@ -68,7 +68,7 @@ You can add extra keywords or help phrases from the command line:
   --help-phrase "need evac"
 ```
 
-The first version has no Discord push. That keeps the trust boundary simple while we prove the overlay is useful.
+The current version has no Discord push. That keeps the trust boundary simple while we prove the overlay is useful. The future opt-in plan is in `docs/intel_pet_discord_plan.md`.
 
 ## Local Combat Kill Cheer
 
