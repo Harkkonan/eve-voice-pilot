@@ -7948,6 +7948,7 @@ def scan_market_acquisition_opportunities(
     market_type_names: Iterable[Any] = (),
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    scan_timer = StageTimer()
     systems = route_cache.systems or {}
     adjacency = route_cache.adjacency or {}
     clean_budget = clamp_acquisition_budget_isk(budget_isk)
@@ -7980,6 +7981,12 @@ def scan_market_acquisition_opportunities(
     scan_pickup_region_ids = pickup_region_ids[:MAX_FLIGHT_BUYER_SCAN_REGIONS]
     if destination.region_id is None:
         raise CorpMarketError("Destination system does not have a usable market region in the route graph cache.")
+    scan_timer.mark(
+        "route_scope",
+        "Build acquisition route scope",
+        pickup_systems=len(pickup_distances),
+        pickup_regions=len(scan_pickup_region_ids),
+    )
 
     item_targets, item_scope = build_market_item_targets(
         config=config,
@@ -8000,6 +8007,15 @@ def scan_market_acquisition_opportunities(
             extra = "..." if len(unresolved_pasted_names) > 5 else ""
             raise CorpMarketError(f"No pasted item names matched the static market cache: {preview}{extra}.")
         raise CorpMarketError("Choose Common materials, a market category, or at least one exact item before planning acquisitions.")
+    scan_timer.mark(
+        "item_targets",
+        "Resolve item scan targets",
+        scanned_item_types=len(scan_targets),
+        total_item_types=len(item_targets),
+        pasted_item_names=item_scope.get("pasted_market_type_count"),
+        resolved_pasted_item_names=item_scope.get("resolved_pasted_market_type_count"),
+        unresolved_pasted_item_names=len(item_scope.get("unresolved_pasted_market_type_names") or []),
+    )
     region_count = len(scan_pickup_region_ids)
     item_count = len(scan_targets)
 
@@ -8033,6 +8049,10 @@ def scan_market_acquisition_opportunities(
     caution_signal_count = 0
     errors = []
     destination_distances = {destination.solar_system_id: 0}
+    order_fetch_seconds = 0.0
+    order_filter_seconds = 0.0
+    history_fetch_seconds = 0.0
+    opportunity_score_seconds = 0.0
 
     for item_index, target in enumerate(scan_targets, start=1):
         type_id = int(target["type_id"])
@@ -8050,6 +8070,7 @@ def scan_market_acquisition_opportunities(
                     "percent": progress_percent(item_index, 0.0),
                 },
             )
+        timed_started_at = time.monotonic()
         (
             raw_source_buys_by_region,
             raw_source_sells_by_region,
@@ -8061,7 +8082,9 @@ def scan_market_acquisition_opportunities(
             pickup_region_ids=scan_pickup_region_ids,
             destination_region_id=destination.region_id,
         )
+        order_fetch_seconds += max(0.0, time.monotonic() - timed_started_at)
         errors.extend(order_errors)
+        timed_started_at = time.monotonic()
         for region_index, region_id in enumerate(scan_pickup_region_ids, start=1):
             raw_source_buys = raw_source_buys_by_region.get(region_id, [])
             for order in raw_source_buys:
@@ -8112,6 +8135,7 @@ def scan_market_acquisition_opportunities(
             )
             if record is not None:
                 destination_buy_orders.append(record)
+        order_filter_seconds += max(0.0, time.monotonic() - timed_started_at)
         if progress is not None:
             progress(
                 "orders",
@@ -8136,12 +8160,14 @@ def scan_market_acquisition_opportunities(
         source_region_id = origin.region_id or (scan_pickup_region_ids[0] if scan_pickup_region_ids else None)
         if source_region_id is None:
             continue
+        timed_started_at = time.monotonic()
         source_history, destination_history, history_errors = fetch_acquisition_history_batch(
             config=config,
             type_id=type_id,
             source_region_id=source_region_id,
             destination_region_id=destination.region_id,
         )
+        history_fetch_seconds += max(0.0, time.monotonic() - timed_started_at)
         errors.extend(history_errors)
         if source_history:
             history_regions.add(source_region_id)
@@ -8159,6 +8185,7 @@ def scan_market_acquisition_opportunities(
                 },
             )
 
+        timed_started_at = time.monotonic()
         best_destination_buy = destination_buy_orders[0]
         best_source_buy = source_buy_orders[0] if source_buy_orders else None
         best_source_sell = source_sell_orders[0] if source_sell_orders else None
@@ -8253,6 +8280,7 @@ def scan_market_acquisition_opportunities(
             "history_flags": flags,
         }
         opportunities.append(opportunity)
+        opportunity_score_seconds += max(0.0, time.monotonic() - timed_started_at)
         if progress is not None:
             progress(
                 "item_done",
@@ -8265,6 +8293,21 @@ def scan_market_acquisition_opportunities(
                     "percent": progress_percent(item_index, 1.0),
                 },
             )
+    scan_timer.mark(
+        "orders_history_scoring",
+        "Fetch orders and score market history",
+        item_types=len(scan_targets),
+        pickup_regions=region_count,
+        source_buy_orders=total_source_buy_order_count,
+        source_sell_orders=total_source_sell_order_count,
+        destination_buy_orders=total_destination_buy_order_count,
+        history_regions=len(history_regions),
+        opportunities=len(opportunities),
+        order_fetch_seconds=round(order_fetch_seconds, 3),
+        order_filter_seconds=round(order_filter_seconds, 3),
+        history_fetch_seconds=round(history_fetch_seconds, 3),
+        opportunity_score_seconds=round(opportunity_score_seconds, 3),
+    )
     if progress is not None:
         progress(
             "portfolio",
@@ -8289,6 +8332,14 @@ def scan_market_acquisition_opportunities(
         max_portfolio_jumps=clean_portfolio_jumps,
         pickup_jumps=clean_pickup_jumps,
     )
+    scan_timer.mark(
+        "ranking_portfolio",
+        "Rank results and build portfolio",
+        opportunities=len(opportunities),
+        portfolio_lines=portfolio.get("line_count"),
+        portfolio_available=portfolio.get("available"),
+    )
+    stage_timing = scan_timer.to_public_dict()
     return {
         "origin_system": origin.to_dict(jumps=0),
         "destination_system": destination.to_dict(jumps=0),
@@ -8337,6 +8388,7 @@ def scan_market_acquisition_opportunities(
         ),
         "portfolio": portfolio,
         "opportunities": opportunities[:MAX_FLIGHT_ACQUISITION_OPPORTUNITIES],
+        "stage_timing": stage_timing,
         "errors": errors[:12],
         "sales_tax": sales_tax,
         "market_cache": market_order_cache_status(),
@@ -22448,7 +22500,7 @@ help</textarea>
       const originSourceLabel = route.origin_source === "manual" ? "manual start override" : "live ESI start";
       const routeWarning = route.route_warning ? `<div class="meta">${escapeHtml(route.route_warning)}</div>` : "";
       const routeDiagnostics = renderHaulRouteDiagnostics(route.diagnostics || {});
-      const stageTiming = renderHaulStageTiming(data.server_timing || {}, hauling.stage_timing || {});
+      const stageTiming = renderScanStageTiming(data.server_timing || {}, hauling.stage_timing || {});
       const scanDuration = elapsedSeconds == null ? "" : `<div class="meta">Scan duration: ${escapeHtml(formatElapsedDuration(elapsedSeconds))}.</div>`;
       haulRouteSummary.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> to
@@ -22593,6 +22645,10 @@ help</textarea>
     }
 
     function renderHaulStageTiming(serverTiming, scanTiming) {
+      return renderScanStageTiming(serverTiming, scanTiming);
+    }
+
+    function renderScanStageTiming(serverTiming, scanTiming, title = "Scan stage timing") {
       const scanStages = Array.isArray(scanTiming?.stages) ? scanTiming.stages : [];
       if (!scanStages.length && !serverTiming?.total_seconds) return "";
       const serverTotal = serverTiming?.total_seconds == null ? "" : `Server total ${formatStageSeconds(serverTiming.total_seconds)}.`;
@@ -22605,8 +22661,13 @@ help</textarea>
         if (metrics.pickup_regions != null) metricParts.push(`${formatNumber(metrics.pickup_regions)} regions`);
         if (metrics.buy_orders != null) metricParts.push(`${formatNumber(metrics.buy_orders)} buys`);
         if (metrics.sell_orders != null) metricParts.push(`${formatNumber(metrics.sell_orders)} sells`);
+        if (metrics.source_buy_orders != null) metricParts.push(`${formatNumber(metrics.source_buy_orders)} source buys`);
+        if (metrics.source_sell_orders != null) metricParts.push(`${formatNumber(metrics.source_sell_orders)} source sells`);
+        if (metrics.destination_buy_orders != null) metricParts.push(`${formatNumber(metrics.destination_buy_orders)} destination buys`);
         if (metrics.profitable_candidates != null) metricParts.push(`${formatNumber(metrics.profitable_candidates)} candidates`);
+        if (metrics.opportunities != null) metricParts.push(`${formatNumber(metrics.opportunities)} opportunities`);
         if (metrics.history_requests != null) metricParts.push(`${formatNumber(metrics.history_requests)} histories`);
+        if (metrics.history_regions != null) metricParts.push(`${formatNumber(metrics.history_regions)} history regions`);
         const metricText = metricParts.length ? ` · ${metricParts.join(", ")}` : "";
         return `
           <div class="stage-timing-row">
@@ -22617,7 +22678,7 @@ help</textarea>
       }).join("");
       return `
         <div class="stage-timing">
-          <strong>Scan stage timing</strong>
+          <strong>${escapeHtml(title)}</strong>
           <div class="meta">${escapeHtml([serverTotal, scanTotal].filter(Boolean).join(" "))}</div>
           <div class="stage-timing-grid">${rows || `<div class="meta">No stage rows returned.</div>`}</div>
         </div>
@@ -23257,11 +23318,13 @@ help</textarea>
       const itemLimit = acquisition.item_truncated ? ` Limited to ${formatNumber(acquisition.scanned_item_types)} of ${formatNumber(acquisition.total_item_types)} selected item types.` : "";
       const regionLimit = acquisition.pickup_region_truncated ? ` Limited to ${formatNumber(acquisition.pickup_regions_scanned)} of ${formatNumber(acquisition.pickup_regions_total)} pickup regions.` : "";
       const routeWarning = route.route_warning ? `<div class="meta">${escapeHtml(route.route_warning)}</div>` : "";
+      const stageTiming = renderScanStageTiming(data.server_timing || {}, acquisition.stage_timing || {}, "Portfolio stage timing");
       acqRoute.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> buy-order area toward
         <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>.
         <div class="meta">Total investment ${formatIsk(acquisition.budget_isk)}; collection range ${formatNumber(acquisition.pickup_jumps)} jumps; portfolio jump budget ${formatNumber(acquisition.portfolio_jumps)}; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days.</div>
         ${routeWarning}
+        ${stageTiming}
       `;
       acqSummary.innerHTML = `
         <div class="profit-stats">

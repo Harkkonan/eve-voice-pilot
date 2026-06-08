@@ -432,6 +432,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "route-diagnostic-steps" in page
     assert "Scan stage timing" in page
     assert "renderHaulStageTiming" in page
+    assert "renderScanStageTiming" in page
+    assert "Portfolio stage timing" in page
     assert "renderHaulAccessGuardrails" in page
     assert "Access check" in page
     assert "Pickup access" in page
@@ -4285,6 +4287,14 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
     assert acquisition["portfolio"]["available"] is False
     assert acquisition["portfolio"]["possible_trap_excluded_count"] == 1
     assert acquisition["report_rows"] == []
+    scan_timing = acquisition["stage_timing"]
+    assert scan_timing["total_seconds"] >= 0
+    assert {
+        "route_scope",
+        "item_targets",
+        "orders_history_scoring",
+        "ranking_portfolio",
+    } <= {stage["key"] for stage in scan_timing["stages"]}
     event_names = [event for event, _payload in progress_events]
     assert event_names[:4] == ["scan_start", "location", "route_step", "skills"]
     assert {"scan_scope", "item_start", "orders", "history", "item_done", "portfolio"} <= set(event_names)
