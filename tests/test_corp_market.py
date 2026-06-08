@@ -4297,6 +4297,8 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
         "orders_history_scoring",
         "ranking_portfolio",
     } <= {stage["key"] for stage in scan_timing["stages"]}
+    order_stage = next(stage for stage in scan_timing["stages"] if stage["key"] == "orders_history_scoring")
+    assert order_stage["metrics"]["item_workers"] == 1
     event_names = [event for event, _payload in progress_events]
     assert event_names[:4] == ["scan_start", "location", "route_step", "skills"]
     assert {"scan_scope", "item_start", "orders", "history", "item_done", "portfolio"} <= set(event_names)

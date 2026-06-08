@@ -89,6 +89,7 @@ MAX_FLIGHT_HAUL_SCAN_TYPES = 240
 MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES = 30
 MAX_FLIGHT_ACQUISITION_SCAN_TYPES = 50
 MAX_FLIGHT_ACQUISITION_FETCH_WORKERS = 6
+MAX_FLIGHT_ACQUISITION_ITEM_WORKERS = 4
 MAX_FLIGHT_HAUL_FETCH_WORKERS = 6
 MAX_HAUL_MARKET_GROUP_IDS = 32
 MAX_HAUL_MARKET_TYPE_IDS = MAX_FLIGHT_HAUL_SCAN_TYPES
@@ -7931,7 +7932,7 @@ def fetch_acquisition_history_batch(
 @dataclass
 class AcquisitionItemScanResult:
     opportunity: dict[str, Any] | None = None
-    errors: list[str] = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
     source_buy_order_count: int = 0
     source_sell_order_count: int = 0
     destination_buy_order_count: int = 0
@@ -8326,8 +8327,10 @@ def scan_market_acquisition_opportunities(
     history_fetch_seconds = 0.0
     opportunity_score_seconds = 0.0
 
-    for item_index, target in enumerate(scan_targets, start=1):
-        item_result = scan_acquisition_item_opportunity(
+    item_worker_count = max(1, min(MAX_FLIGHT_ACQUISITION_ITEM_WORKERS, len(scan_targets)))
+
+    def run_item_scan(item_index: int, target: Mapping[str, Any]) -> AcquisitionItemScanResult:
+        return scan_acquisition_item_opportunity(
             config=config,
             target=target,
             item_index=item_index,
@@ -8348,6 +8351,18 @@ def scan_market_acquisition_opportunities(
             progress_percent=progress_percent,
             progress=progress,
         )
+
+    with ThreadPoolExecutor(max_workers=item_worker_count) as executor:
+        futures = {
+            executor.submit(run_item_scan, item_index, target): (item_index, target)
+            for item_index, target in enumerate(scan_targets, start=1)
+        }
+        item_results: list[tuple[int, AcquisitionItemScanResult]] = []
+        for future in as_completed(futures):
+            item_index, _target = futures[future]
+            item_results.append((item_index, future.result()))
+
+    for _item_index, item_result in sorted(item_results, key=lambda item: item[0]):
         errors.extend(item_result.errors)
         total_source_buy_order_count += item_result.source_buy_order_count
         total_source_sell_order_count += item_result.source_sell_order_count
@@ -8381,6 +8396,7 @@ def scan_market_acquisition_opportunities(
         "Fetch orders and score market history",
         item_types=len(scan_targets),
         pickup_regions=region_count,
+        item_workers=item_worker_count,
         source_buy_orders=total_source_buy_order_count,
         source_sell_orders=total_source_sell_order_count,
         destination_buy_orders=total_destination_buy_order_count,
@@ -13489,11 +13505,13 @@ def build_http_server(
         def _handle_flight_acquisition_progress(self) -> None:
             self._send_sse_headers()
             started_at = time.monotonic()
+            emit_lock = threading.Lock()
 
             def emit(event: str, payload: dict[str, Any]) -> None:
                 timed_payload = dict(payload)
                 timed_payload.setdefault("elapsed_seconds", round(time.monotonic() - started_at, 1))
-                self._send_sse_event(event, timed_payload)
+                with emit_lock:
+                    self._send_sse_event(event, timed_payload)
 
             if not sso_config.enabled:
                 emit("scan_error", {"ok": False, "error": "EVE SSO is not configured."})
@@ -22742,6 +22760,7 @@ help</textarea>
         if (metrics.scanned_item_types != null) metricParts.push(`${formatNumber(metrics.scanned_item_types)} types`);
         if (metrics.item_types != null) metricParts.push(`${formatNumber(metrics.item_types)} types`);
         if (metrics.pickup_regions != null) metricParts.push(`${formatNumber(metrics.pickup_regions)} regions`);
+        if (metrics.item_workers != null) metricParts.push(`${formatNumber(metrics.item_workers)} workers`);
         if (metrics.buy_orders != null) metricParts.push(`${formatNumber(metrics.buy_orders)} buys`);
         if (metrics.sell_orders != null) metricParts.push(`${formatNumber(metrics.sell_orders)} sells`);
         if (metrics.source_buy_orders != null) metricParts.push(`${formatNumber(metrics.source_buy_orders)} source buys`);
@@ -22751,10 +22770,10 @@ help</textarea>
         if (metrics.opportunities != null) metricParts.push(`${formatNumber(metrics.opportunities)} opportunities`);
         if (metrics.history_requests != null) metricParts.push(`${formatNumber(metrics.history_requests)} histories`);
         if (metrics.history_regions != null) metricParts.push(`${formatNumber(metrics.history_regions)} history regions`);
-        if (metrics.order_fetch_seconds != null) metricParts.push(`order fetch ${formatStageSeconds(metrics.order_fetch_seconds)}`);
-        if (metrics.order_filter_seconds != null) metricParts.push(`order filter ${formatStageSeconds(metrics.order_filter_seconds)}`);
-        if (metrics.history_fetch_seconds != null) metricParts.push(`history fetch ${formatStageSeconds(metrics.history_fetch_seconds)}`);
-        if (metrics.opportunity_score_seconds != null) metricParts.push(`score ${formatStageSeconds(metrics.opportunity_score_seconds)}`);
+        if (metrics.order_fetch_seconds != null) metricParts.push(`order fetch total ${formatStageSeconds(metrics.order_fetch_seconds)}`);
+        if (metrics.order_filter_seconds != null) metricParts.push(`order filter total ${formatStageSeconds(metrics.order_filter_seconds)}`);
+        if (metrics.history_fetch_seconds != null) metricParts.push(`history fetch total ${formatStageSeconds(metrics.history_fetch_seconds)}`);
+        if (metrics.opportunity_score_seconds != null) metricParts.push(`score total ${formatStageSeconds(metrics.opportunity_score_seconds)}`);
         const metricText = metricParts.length ? ` · ${metricParts.join(", ")}` : "";
         return `
           <div class="stage-timing-row">
