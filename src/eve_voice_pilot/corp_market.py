@@ -17832,7 +17832,7 @@ def _render_flight_attendant_dashboard() -> str:
         <div class="ops-launcher-stat"><span>Mode</span><b>Read-only</b></div>
         <div class="ops-launcher-actions">
           <a class="button-link" href="/flight/login">Connect ESI</a>
-          <a class="button-link ghost-link" href="#flight">Status</a>
+          <a class="button-link ghost-link" href="#flight">ESI Status</a>
         </div>
       </div>
       <div class="ops-launcher-card">
@@ -20357,13 +20357,27 @@ help</textarea>
       });
     }
 
+    function scrollTabIntoView(tabName) {
+      const targetTab = validTabs.has(tabName) ? tabName : "market";
+      const panel = Array.from(tabPanels).find((candidate) => candidate.dataset.tabPanel === targetTab);
+      if (!panel) return;
+      window.requestAnimationFrame(() => {
+        const anchor = targetTab === "flight"
+          ? panel.querySelector(".system-board") || panel
+          : panel;
+        anchor.scrollIntoView({block: "start", behavior: "smooth"});
+      });
+    }
+
     function initialTab() {
       const requested = window.location.hash.replace("#", "");
       return validTabs.has(requested) ? requested : "market";
     }
 
     function showTabFromHash() {
-      showTab(initialTab());
+      const tabName = initialTab();
+      showTab(tabName);
+      scrollTabIntoView(tabName);
     }
 
     function updateFilterButtons() {
@@ -26391,6 +26405,7 @@ help</textarea>
         event.preventDefault();
         showTab(tabName);
         window.history.replaceState(null, "", `#${tabName}`);
+        scrollTabIntoView(tabName);
       });
     });
 

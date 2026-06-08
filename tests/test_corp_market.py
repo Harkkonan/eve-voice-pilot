@@ -383,6 +383,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "class=\"ops-launcher\"" in page
     assert "Tester operations launcher" in page
     assert "Test Session" in page
+    assert "ESI Status" in page
     assert "Open Routes" in page
     assert "Open Portfolio" in page
     assert "id=\"haul-route-form\"" in page
