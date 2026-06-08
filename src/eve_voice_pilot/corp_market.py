@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -63,6 +64,7 @@ DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_MAX_FITTING_TEXT_LENGTH = 12000
 MAX_JSON_BODY_BYTES = 256 * 1024
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
+MAX_UI_PERFORMANCE_EVENTS = 300
 DEFAULT_DISCORD_ALERT_SENDER_NAME = "IntelPet"
 DEFAULT_DISCORD_ALERT_ROUTE_NAME = "IntelPet server webhook"
 DEFAULT_DISCORD_ALERT_DESTINATION = "Configured Discord alert channel"
@@ -736,6 +738,97 @@ class FlightEsiSessionStore:
         expired = [session_id for session_id, session in self._sessions.items() if session.expired]
         for session_id in expired:
             self._sessions.pop(session_id, None)
+
+
+class UiPerformanceMonitor:
+    def __init__(self, *, max_events: int = MAX_UI_PERFORMANCE_EVENTS) -> None:
+        self._events: deque[dict[str, Any]] = deque(maxlen=max(1, max_events))
+        self._lock = threading.Lock()
+
+    def record(self, payload: Mapping[str, Any], *, client: str = "") -> dict[str, Any]:
+        if not isinstance(payload, Mapping):
+            raise ValueError("UI performance payload must be a JSON object.")
+        event = {
+            "received_at": now_iso(),
+            "client": self._clean_text(client, max_length=80),
+            "kind": self._clean_text(payload.get("kind"), max_length=48) or "unknown",
+            "path": self._clean_path(payload.get("path")),
+            "hash": self._clean_text(payload.get("hash"), max_length=80),
+            "tab": self._clean_text(payload.get("tab"), max_length=48),
+            "button_text": self._clean_text(payload.get("button_text"), max_length=80),
+            "now_ms": self._clean_number(payload.get("now_ms")),
+            "handler_ms": self._clean_number(payload.get("handler_ms")),
+            "first_petal_ms": self._clean_number(payload.get("first_petal_ms")),
+            "create_ms": self._clean_number(payload.get("create_ms")),
+            "petal_count": self._clean_int(payload.get("petal_count")),
+            "active_petals": self._clean_int(payload.get("active_petals")),
+            "layer_created": bool(payload.get("layer_created")),
+            "dom_content_loaded_ms": self._clean_number(payload.get("dom_content_loaded_ms")),
+            "load_ms": self._clean_number(payload.get("load_ms")),
+            "response_end_ms": self._clean_number(payload.get("response_end_ms")),
+            "transfer_size_bytes": self._clean_int(payload.get("transfer_size_bytes")),
+            "decoded_body_size_bytes": self._clean_int(payload.get("decoded_body_size_bytes")),
+            "html_chars": self._clean_int(payload.get("html_chars")),
+        }
+        with self._lock:
+            self._events.append(event)
+        return event
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            events = list(self._events)
+        plex_clicks = [event for event in events if event["kind"] == "plex-click"]
+        page_loads = [event for event in events if event["kind"] == "page-load"]
+        return {
+            "ok": True,
+            "generated_at": now_iso(),
+            "event_count": len(events),
+            "summary": {
+                "plex_click_count": len(plex_clicks),
+                "last_plex_click": plex_clicks[-1] if plex_clicks else None,
+                "max_first_petal_ms": self._max_number(plex_clicks, "first_petal_ms"),
+                "max_create_ms": self._max_number(plex_clicks, "create_ms"),
+                "max_handler_ms": self._max_number(plex_clicks, "handler_ms"),
+                "last_page_load": page_loads[-1] if page_loads else None,
+                "max_load_ms": self._max_number(page_loads, "load_ms"),
+                "max_html_chars": self._max_number(page_loads, "html_chars"),
+            },
+            "events": events[-80:],
+        }
+
+    @staticmethod
+    def _clean_text(value: Any, *, max_length: int) -> str:
+        text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+        return text[:max_length]
+
+    @staticmethod
+    def _clean_path(value: Any) -> str:
+        path = urlparse(str(value or "")).path or "/"
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return path[:120]
+
+    @staticmethod
+    def _clean_number(value: Any) -> float | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if number != number or abs(number) == float("inf"):
+            return None
+        return round(number, 3)
+
+    @classmethod
+    def _clean_int(cls, value: Any) -> int | None:
+        number = cls._clean_number(value)
+        if number is None:
+            return None
+        return max(0, int(number))
+
+    @staticmethod
+    def _max_number(events: Iterable[dict[str, Any]], key: str) -> float | int | None:
+        numbers = [event[key] for event in events if isinstance(event.get(key), (int, float))]
+        return max(numbers) if numbers else None
 
 
 @dataclass(frozen=True)
@@ -11585,12 +11678,14 @@ def build_http_server(
     auth_state_store: AuthStateStore | None = None,
     flight_session_store: FlightEsiSessionStore | None = None,
     public_hosting_mode: bool = False,
+    ui_performance_monitor: bool = False,
 ) -> ThreadingHTTPServer:
     public_base_url = public_base_url.rstrip("/")
     sso_config = sso_config or EveSsoConfig()
     auth_state_store = auth_state_store or AuthStateStore()
     flight_session_store = flight_session_store or FlightEsiSessionStore()
     secure_flight_cookies = should_secure_flight_cookie(public_base_url)
+    ui_perf_monitor = UiPerformanceMonitor() if ui_performance_monitor else None
 
     class CorpMarketHandler(BaseHTTPRequestHandler):
         server_version = "CorpMarketConcierge/0.1"
@@ -11662,6 +11757,9 @@ def build_http_server(
                 return
             if path == "/api/flight/reprocessing-locations":
                 self._handle_flight_reprocessing_locations()
+                return
+            if path == "/api/ui-performance":
+                self._handle_ui_performance_snapshot()
                 return
             if path == "/flight/login":
                 self._handle_flight_login()
@@ -11736,6 +11834,9 @@ def build_http_server(
                 return
             if path == "/flight/logout":
                 self._handle_flight_logout()
+                return
+            if path == "/api/ui-performance":
+                self._handle_ui_performance_record()
                 return
             self.send_error(404, "Not found")
 
@@ -11886,6 +11987,24 @@ def build_http_server(
                 max_jumps=max_jumps,
             )
             self._send_json(payload)
+
+        def _handle_ui_performance_snapshot(self) -> None:
+            if ui_perf_monitor is None:
+                self._send_json({"ok": False, "error": "UI performance monitor is not enabled."}, status=404)
+                return
+            self._send_json(ui_perf_monitor.snapshot())
+
+        def _handle_ui_performance_record(self) -> None:
+            if ui_perf_monitor is None:
+                self._send_json({"ok": False, "error": "UI performance monitor is not enabled."}, status=404)
+                return
+            try:
+                payload = self._read_json_body()
+                event = ui_perf_monitor.record(payload, client=self.client_address[0] if self.client_address else "")
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid UI performance payload: {exc}"}, status=400)
+                return
+            self._send_json({"ok": True, "event": event})
 
         def _handle_flight_diagnostics(self) -> None:
             self._send_json(
@@ -24524,6 +24643,7 @@ def run_server(args: argparse.Namespace) -> int:
         auth_state_store=AuthStateStore(),
         flight_session_store=FlightEsiSessionStore(),
         public_hosting_mode=args.public_hosting_mode,
+        ui_performance_monitor=args.ui_performance_monitor,
     )
     url = f"http://{url_host}:{args.port}/"
     print(f"Corp market concierge listening at {url}")
@@ -24558,6 +24678,8 @@ def run_server(args: argparse.Namespace) -> int:
         print("Trusted allowlisted SSO members can create and update market listings.")
     if args.public_hosting_mode:
         print("Public hosting mode is enabled: HTTPS, EVE SSO, and a corp/alliance allowlist are required.")
+    if args.ui_performance_monitor:
+        print("UI performance monitor is enabled at /api/ui-performance. Activate browser reporting with ?ui_perf=1.")
     if args.open_browser:
         webbrowser.open(url)
     try:
@@ -24672,6 +24794,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--esi-base-url",
         default=os.environ.get("CORP_MARKET_ESI_BASE_URL", DEFAULT_ESI_BASE_URL),
         help="Base ESI URL.",
+    )
+    serve.add_argument(
+        "--ui-performance-monitor",
+        action="store_true",
+        default=env_bool("CORP_MARKET_UI_PERFORMANCE_MONITOR"),
+        help="Enable bounded browser UI timing diagnostics at /api/ui-performance.",
     )
     serve.add_argument("--open-browser", action="store_true", help="Open the market board in your default browser.")
     serve.set_defaults(func=run_server)

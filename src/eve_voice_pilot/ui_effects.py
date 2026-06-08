@@ -82,16 +82,55 @@ PLEX_BUTTON_EFFECT_SCRIPT = r"""
       const PLEX_BUTTON_SELECTOR = "button, .button-link, .actions a[href]";
       const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
       let activePlexPetals = 0;
+      const perfParams = new URLSearchParams(window.location.search);
+      if (["1", "true", "yes"].includes(String(perfParams.get("ui_perf") || "").toLowerCase())) {
+        window.localStorage?.setItem("eveVoiceUiPerf", "1");
+      } else if (["0", "false", "no"].includes(String(perfParams.get("ui_perf") || "").toLowerCase())) {
+        window.localStorage?.removeItem("eveVoiceUiPerf");
+      }
+      const reportUiPerf = (kind, payload = {}) => {
+        if (window.localStorage?.getItem("eveVoiceUiPerf") !== "1") return;
+        const body = JSON.stringify({
+          kind,
+          path: window.location.pathname,
+          hash: window.location.hash,
+          tab: document.body?.dataset?.activeTab || "",
+          now_ms: performance.now(),
+          ...payload,
+        });
+        window.fetch("/api/ui-performance", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body,
+          keepalive: true,
+        }).catch(() => {});
+      };
+
+      window.addEventListener("load", () => {
+        if (window.localStorage?.getItem("eveVoiceUiPerf") !== "1") return;
+        window.setTimeout(() => {
+          const nav = performance.getEntriesByType("navigation")[0];
+          reportUiPerf("page-load", {
+            dom_content_loaded_ms: nav ? nav.domContentLoadedEventEnd : 0,
+            load_ms: nav ? nav.loadEventEnd : 0,
+            response_end_ms: nav ? nav.responseEnd : 0,
+            transfer_size_bytes: nav ? nav.transferSize : 0,
+            decoded_body_size_bytes: nav ? nav.decodedBodySize : 0,
+            html_chars: document.documentElement?.outerHTML?.length || 0,
+          });
+        }, 0);
+      }, { once: true });
 
       function plexPetalLayer() {
         let layer = document.querySelector(".plex-petal-layer");
+        const created = !layer;
         if (!layer) {
           layer = document.createElement("div");
           layer.className = "plex-petal-layer";
           layer.setAttribute("aria-hidden", "true");
           document.body.appendChild(layer);
         }
-        return layer;
+        return { layer, created };
       }
 
       function canCelebratePlexPress(button) {
@@ -103,12 +142,15 @@ PLEX_BUTTON_EFFECT_SCRIPT = r"""
       }
 
       function spawnPlexPetals(button) {
-        if (!canCelebratePlexPress(button)) return;
+        const startedAt = performance.now();
+        if (!canCelebratePlexPress(button)) return null;
         const rect = button.getBoundingClientRect();
-        if (!rect.width || !rect.height) return;
+        if (!rect.width || !rect.height) return null;
 
-        const layer = plexPetalLayer();
+        const layerResult = plexPetalLayer();
+        const layer = layerResult.layer;
         const count = Math.min(14, Math.max(7, Math.round(rect.width / 32)));
+        let firstPetalMs = 0;
         for (let index = 0; index < count; index += 1) {
           const petal = document.createElement("span");
           const startX = rect.left + rect.width * (.18 + Math.random() * .64);
@@ -130,9 +172,19 @@ PLEX_BUTTON_EFFECT_SCRIPT = r"""
             activePlexPetals = Math.max(0, activePlexPetals - 1);
             petal.remove();
             if (activePlexPetals === 0 && layer.childElementCount === 0) layer.remove();
+            if (index === count - 1) {
+              reportUiPerf("plex-cleanup", { petal_count: count, active_petals: activePlexPetals });
+            }
           }, { once: true });
           layer.appendChild(petal);
+          if (!firstPetalMs) firstPetalMs = performance.now() - startedAt;
         }
+        return {
+          count,
+          layer_created: layerResult.created,
+          first_petal_ms: firstPetalMs,
+          create_ms: performance.now() - startedAt,
+        };
       }
 
       document.addEventListener("click", (event) => {
@@ -140,7 +192,14 @@ PLEX_BUTTON_EFFECT_SCRIPT = r"""
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
         const button = target?.closest(PLEX_BUTTON_SELECTOR);
         if (!button) return;
-        spawnPlexPetals(button);
+        const clickStartedAt = performance.now();
+        const result = spawnPlexPetals(button);
+        if (!result) return;
+        reportUiPerf("plex-click", {
+          button_text: String(button.textContent || "").trim().slice(0, 80),
+          handler_ms: performance.now() - clickStartedAt,
+          ...result,
+        });
       }, { capture: true });
     })();
 """

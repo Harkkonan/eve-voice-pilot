@@ -292,6 +292,8 @@ def test_dashboard_includes_plex_button_press_effect():
     assert "PLEX" in page
     assert "prefers-reduced-motion" in page
     assert "event.isTrusted" in page
+    assert "ui_perf" in page
+    assert "/api/ui-performance" in page
 
 
 def test_dashboard_includes_shared_fittings_tab():
@@ -1539,6 +1541,43 @@ def test_public_hosting_helpers_tighten_callbacks_cookies_and_writes():
         auth_header="Bearer secret",
         token_header="",
     )
+
+
+def test_ui_performance_monitor_sanitizes_and_summarizes_events():
+    monitor = corp_market.UiPerformanceMonitor(max_events=2)
+
+    monitor.record(
+        {
+            "kind": "page-load",
+            "path": "https://flight.test/secret?token=hidden",
+            "hash": "#flight",
+            "load_ms": "1234.5678",
+            "html_chars": "22000000",
+        },
+        client="127.0.0.1",
+    )
+    monitor.record(
+        {
+            "kind": "plex-click",
+            "path": "/",
+            "tab": "flight",
+            "button_text": "Rank Profit",
+            "handler_ms": "3.75",
+            "first_petal_ms": "1.25",
+            "create_ms": "2.5",
+            "petal_count": "8",
+        }
+    )
+
+    snapshot = monitor.snapshot()
+
+    assert snapshot["event_count"] == 2
+    assert snapshot["events"][0]["path"] == "/secret"
+    assert snapshot["summary"]["plex_click_count"] == 1
+    assert snapshot["summary"]["max_first_petal_ms"] == 1.25
+    assert snapshot["summary"]["max_create_ms"] == 2.5
+    assert snapshot["summary"]["last_plex_click"]["button_text"] == "Rank Profit"
+    assert snapshot["summary"]["max_html_chars"] == 22000000
 
 
 def test_fetch_flight_location_uses_read_only_esi_scope(monkeypatch):
