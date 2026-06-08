@@ -326,6 +326,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/hauling" in page
     assert "/api/flight/hauling/progress" in page
     assert "/api/flight/acquisition" in page
+    assert "/api/flight/acquisition/progress" in page
     assert "/api/flight/trade-pnl" in page
     assert "/api/flight/planetary" in page
     assert "/flight/login" in page
@@ -442,6 +443,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Total portfolio jumps" in page
     assert f"top {corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES} industry inputs" in page
     assert "id=\"acq-strategy\" class=\"acquisition-strategy-grid\"" in page
+    assert "id=\"acq-progress-log\"" in page
     assert "id=\"acq-quickbar-panel\" class=\"quickbar-copy-panel\" hidden" in page
     assert "data-copy-quickbar=\"acquisition\"" in page
     assert "id=\"acq-results\" class=\"decision-output\"" in page
@@ -452,6 +454,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "renderAcquisitionStrategy" in page
     assert "renderAcquisitionPortfolio" in page
     assert "writeAcquisitionSettings" in page
+    assert "appendAcquisitionProgress" in page
     assert "renderAcquisitionOpportunities" in page
     assert "data-tab-target=\"trade-pnl\"" in page
     assert "data-tab-target=\"planetary\"" in page
@@ -3891,6 +3894,7 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
     monkeypatch.setattr(corp_market, "fetch_market_sell_orders", fake_fetch_market_sell_orders)
     monkeypatch.setattr(corp_market, "fetch_market_history", fake_fetch_market_history)
 
+    progress_events = []
     payload = build_flight_acquisition_payload(
         config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
         session=session,
@@ -3900,6 +3904,7 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
         min_margin_percent=10,
         broker_fee_percent=3,
         target_days=3,
+        progress=lambda event, payload: progress_events.append((event, payload)),
     )
 
     assert payload["ok"] is True
@@ -3923,6 +3928,13 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
     assert "possible trap" in acquisition["pricing_note"]
     assert acquisition["portfolio"]["available"] is False
     assert acquisition["portfolio"]["possible_trap_excluded_count"] == 1
+    event_names = [event for event, _payload in progress_events]
+    assert event_names[:4] == ["scan_start", "location", "route_step", "skills"]
+    assert {"scan_scope", "item_start", "orders", "history", "item_done", "portfolio"} <= set(event_names)
+    assert progress_events[-1] == (
+        "portfolio",
+        {"message": "Ranking 1 viable opportunity row(s) into a diversified portfolio.", "opportunity_count": 1, "percent": 98},
+    )
 
 
 def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeypatch, tmp_path):

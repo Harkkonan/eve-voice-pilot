@@ -5893,9 +5893,14 @@ def build_flight_acquisition_payload(
     market_group_ids: Iterable[int] = (),
     market_type_ids: Iterable[int] = (),
     expectation_store: MarketStore | None = None,
+    progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
+    if progress is not None:
+        progress("scan_start", {"message": "Preparing investment portfolio scan.", "percent": 1})
     location = fetch_flight_location(config, session)
+    if progress is not None:
+        progress("location", {"message": "Loaded current ESI location.", "percent": 5})
     current_solar_system_id = int(location.get("solar_system_id") or 0)
     route_cache = load_route_graph_cache()
     if not route_cache.available:
@@ -5927,8 +5932,21 @@ def build_flight_acquisition_payload(
         avoid_recent_pod_kills=False,
         adjacency=adjacency,
     )
+    if progress is not None:
+        progress(
+            "route_step",
+            {
+                "message": (
+                    f"Planned {route_plan['preference_label'].lower()} route from {origin.name} "
+                    f"to {destination.name}."
+                ),
+                "percent": 8,
+            },
+        )
     skills = fetch_flight_skills(config, session)
     sales_tax = build_sales_tax_profile(skills)
+    if progress is not None:
+        progress("skills", {"message": "Loaded sales tax skill profile.", "percent": 10})
     acquisition = scan_market_acquisition_opportunities(
         config=config,
         recipe_cache=recipe_cache,
@@ -5945,6 +5963,7 @@ def build_flight_acquisition_payload(
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
         market_type_ids=market_type_ids,
+        progress=progress,
     )
     route_path = route_plan["path"]
     route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
@@ -5956,6 +5975,14 @@ def build_flight_acquisition_payload(
             acquisition=acquisition,
             generated_at=generated_at,
         )
+        if progress is not None:
+            progress(
+                "expectations",
+                {
+                    "message": f"Saved {expectation_snapshot.get('saved', 0)} local expectation row(s).",
+                    "percent": 99,
+                },
+            )
     acquisition["expectation_snapshot"] = {
         **expectation_snapshot,
         "source": "local-corp-market-sqlite",
@@ -7107,6 +7134,7 @@ def scan_market_acquisition_opportunities(
     include_common_materials: bool,
     market_group_ids: Iterable[int],
     market_type_ids: Iterable[int],
+    progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     systems = route_cache.systems or {}
     adjacency = route_cache.adjacency or {}
@@ -7154,6 +7182,29 @@ def scan_market_acquisition_opportunities(
     scan_targets = item_targets[:MAX_FLIGHT_ACQUISITION_SCAN_TYPES]
     if not scan_targets:
         raise CorpMarketError("Choose Common materials, a market category, or at least one exact item before planning acquisitions.")
+    region_count = len(scan_pickup_region_ids)
+    item_count = len(scan_targets)
+
+    def progress_percent(item_index: int, stage_fraction: float = 0.0) -> int:
+        if item_count <= 0:
+            return 100
+        completed = max(0.0, min(float(item_count), float(item_index - 1) + stage_fraction))
+        return max(10, min(98, round(10 + (completed / item_count) * 88)))
+
+    if progress is not None:
+        progress(
+            "scan_scope",
+            {
+                "message": (
+                    f"Scanning {item_count} item types across {region_count} pickup market regions, "
+                    f"then checking destination orders and market history."
+                ),
+                "item_count": item_count,
+                "region_count": region_count,
+                "pickup_system_count": len(pickup_distances),
+                "percent": 10,
+            },
+        )
 
     opportunities = []
     total_source_buy_order_count = 0
@@ -7165,11 +7216,23 @@ def scan_market_acquisition_opportunities(
     errors = []
     destination_distances = {destination.solar_system_id: 0}
 
-    for target in scan_targets:
+    for item_index, target in enumerate(scan_targets, start=1):
         type_id = int(target["type_id"])
         source_buy_orders = []
         source_sell_orders = []
-        for region_id in scan_pickup_region_ids:
+        if progress is not None:
+            progress(
+                "item_start",
+                {
+                    "message": f"Checking {target['name']} ({item_index}/{item_count}).",
+                    "item_index": item_index,
+                    "item_count": item_count,
+                    "item_name": target["name"],
+                    "type_id": type_id,
+                    "percent": progress_percent(item_index, 0.0),
+                },
+            )
+        for region_index, region_id in enumerate(scan_pickup_region_ids, start=1):
             try:
                 raw_source_buys = fetch_market_buy_orders(config, region_id=region_id, type_id=type_id)
             except CorpMarketError as exc:
@@ -7200,6 +7263,22 @@ def scan_market_acquisition_opportunities(
                 )
                 if record is not None:
                     source_sell_orders.append(record)
+            if progress is not None:
+                progress(
+                    "orders",
+                    {
+                        "message": (
+                            f"{target['name']}: pickup region {region_index}/{region_count} returned "
+                            f"{len(raw_source_buys)} buy rows and {len(raw_source_sells)} sell rows."
+                        ),
+                        "item_index": item_index,
+                        "item_count": item_count,
+                        "item_name": target["name"],
+                        "region_index": region_index,
+                        "region_count": region_count,
+                        "percent": progress_percent(item_index, 0.45 * (region_index / max(1, region_count))),
+                    },
+                )
         try:
             raw_destination_buys = fetch_market_buy_orders(config, region_id=destination.region_id, type_id=type_id)
         except CorpMarketError as exc:
@@ -7218,6 +7297,17 @@ def scan_market_acquisition_opportunities(
             )
             if record is not None:
                 destination_buy_orders.append(record)
+        if progress is not None:
+            progress(
+                "orders",
+                {
+                    "message": f"{target['name']}: destination region returned {len(raw_destination_buys)} buy rows.",
+                    "item_index": item_index,
+                    "item_count": item_count,
+                    "item_name": target["name"],
+                    "percent": progress_percent(item_index, 0.55),
+                },
+            )
 
         source_buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
         source_sell_orders.sort(key=lambda item: market_order_sort_key(item, order_type="sell"))
@@ -7248,6 +7338,17 @@ def scan_market_acquisition_opportunities(
                 )
         else:
             destination_history = source_history
+        if progress is not None:
+            progress(
+                "history",
+                {
+                    "message": f"{target['name']}: checked source and destination market history.",
+                    "item_index": item_index,
+                    "item_count": item_count,
+                    "item_name": target["name"],
+                    "percent": progress_percent(item_index, 0.75),
+                },
+            )
 
         best_destination_buy = destination_buy_orders[0]
         best_source_buy = source_buy_orders[0] if source_buy_orders else None
@@ -7343,6 +7444,27 @@ def scan_market_acquisition_opportunities(
             "history_flags": flags,
         }
         opportunities.append(opportunity)
+        if progress is not None:
+            progress(
+                "item_done",
+                {
+                    "message": f"{target['name']}: added a portfolio opportunity.",
+                    "item_index": item_index,
+                    "item_count": item_count,
+                    "item_name": target["name"],
+                    "opportunity_count": len(opportunities),
+                    "percent": progress_percent(item_index, 1.0),
+                },
+            )
+    if progress is not None:
+        progress(
+            "portfolio",
+            {
+                "message": f"Ranking {len(opportunities)} viable opportunity row(s) into a diversified portfolio.",
+                "opportunity_count": len(opportunities),
+                "percent": 98,
+            },
+        )
 
     opportunities.sort(
         key=lambda item: (
@@ -11746,6 +11868,9 @@ def build_http_server(
             if path == "/api/flight/acquisition":
                 self._handle_flight_acquisition()
                 return
+            if path == "/api/flight/acquisition/progress":
+                self._handle_flight_acquisition_progress()
+                return
             if path == "/api/flight/trade-pnl":
                 self._handle_flight_trade_pnl()
                 return
@@ -12345,6 +12470,83 @@ def build_http_server(
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
             self._send_json(payload)
+
+        def _handle_flight_acquisition_progress(self) -> None:
+            self._send_sse_headers()
+
+            def emit(event: str, payload: dict[str, Any]) -> None:
+                self._send_sse_event(event, payload)
+
+            if not sso_config.enabled:
+                emit("scan_error", {"ok": False, "error": "EVE SSO is not configured."})
+                return
+            session = self._flight_session()
+            if session is None:
+                emit("scan_error", {"ok": False, "error": "Connect ESI before building a market investment portfolio."})
+                return
+            access_error = flight_member_access_error(sso_config, session)
+            if access_error:
+                emit("scan_error", {"ok": False, "error": access_error})
+                return
+            query = parse_qs(urlparse(self.path).query)
+            origin = first_query_value(query, "origin_name") or ""
+            destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
+            budget_isk = clamp_acquisition_budget_isk(
+                (query.get("budget_isk") or [DEFAULT_ACQUISITION_BUDGET_ISK])[0]
+            )
+            pickup_jumps = clamp_acquisition_pickup_jumps(
+                (query.get("pickup_jumps") or [DEFAULT_ACQUISITION_PICKUP_JUMPS])[0]
+            )
+            portfolio_jumps = clamp_acquisition_portfolio_jumps(
+                (query.get("portfolio_jumps") or [DEFAULT_ACQUISITION_PORTFOLIO_JUMPS])[0]
+            )
+            min_margin = clamp_haul_min_detour_margin_percent(
+                (query.get("min_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
+            )
+            broker_fee = clamp_acquisition_broker_fee_percent(
+                (query.get("broker_fee_percent") or [DEFAULT_ACQUISITION_BROKER_FEE_PERCENT])[0]
+            )
+            target_days = clamp_acquisition_target_days(
+                (query.get("target_days") or [DEFAULT_ACQUISITION_TARGET_DAYS])[0]
+            )
+            route_preference = normalize_haul_route_preference(
+                (query.get("route_preference") or [DEFAULT_HAUL_ROUTE_PREFERENCE])[0]
+            )
+            include_common_materials = query_bool(
+                (query.get("common_materials") or ["1"])[0],
+                default=True,
+            )
+            market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
+            market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
+            try:
+                payload = build_flight_acquisition_payload(
+                    config=sso_config,
+                    session=session,
+                    origin_name=origin,
+                    destination_name=destination,
+                    budget_isk=budget_isk,
+                    pickup_jumps=pickup_jumps,
+                    portfolio_jumps=portfolio_jumps,
+                    min_margin_percent=min_margin,
+                    broker_fee_percent=broker_fee,
+                    target_days=target_days,
+                    route_preference=route_preference,
+                    include_common_materials=include_common_materials,
+                    market_group_ids=market_group_ids,
+                    market_type_ids=market_type_ids,
+                    expectation_store=store,
+                    progress=emit,
+                )
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except CorpMarketError as exc:
+                emit("scan_error", {"ok": False, "error": str(exc)})
+                return
+            try:
+                emit("result", payload)
+                emit("done", {"ok": True, "generated_at": now_iso()})
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
         def _handle_flight_trade_pnl(self) -> None:
             session = self._require_flight_session("analyzing trade profit and loss")
@@ -17203,6 +17405,7 @@ help</textarea>
                 <div id="acq-summary" class="profit-summary">Connect ESI to build an investment portfolio.</div>
                 <div id="acq-strategy" class="acquisition-strategy-grid"></div>
                 <div id="acq-route" class="meta"></div>
+                <div id="acq-progress-log" class="progress-log" hidden></div>
               </div>
             </details>
           </section>
@@ -17927,6 +18130,7 @@ help</textarea>
     const acqSummary = document.querySelector("#acq-summary");
     const acqStrategy = document.querySelector("#acq-strategy");
     const acqRoute = document.querySelector("#acq-route");
+    const acqProgressLog = document.querySelector("#acq-progress-log");
     const acqQuickbarPanel = document.querySelector("#acq-quickbar-panel");
     const acqQuickbarStatus = document.querySelector("#acq-quickbar-status");
     const acqResults = document.querySelector("#acq-results");
@@ -18070,6 +18274,13 @@ help</textarea>
     let haulProgressTimer = null;
     let haulProgressStartedAt = 0;
     let haulQuickbarItems = [];
+    let acquisitionEventSource = null;
+    let acquisitionScanFinished = false;
+    let acquisitionProgressTimer = null;
+    let acquisitionProgressStartedAt = 0;
+    let acquisitionProgressPercent = 0;
+    let acquisitionProgressMessage = "";
+    let acquisitionProgressSettings = null;
     let acquisitionQuickbarItems = [];
     let planetaryShoppingQuickbarItems = [];
     let planetarySellQuickbarItems = [];
@@ -20788,12 +20999,68 @@ help</textarea>
     }
 
     function resetMarketAcquisition(message) {
+      closeAcquisitionEventSource();
+      stopAcquisitionProgressTimer();
       acqSummary.textContent = message;
       acqStrategy.innerHTML = "";
       acqRoute.textContent = "";
+      acqProgressLog.hidden = true;
+      acqProgressLog.innerHTML = "";
       resetQuickbarList(acqQuickbarPanel, acqQuickbarStatus, "acquisition");
       acqResults.innerHTML = "";
       acqScanButton.disabled = false;
+    }
+
+    function closeAcquisitionEventSource() {
+      if (acquisitionEventSource) {
+        acquisitionEventSource.close();
+        acquisitionEventSource = null;
+      }
+    }
+
+    function currentAcquisitionElapsedSeconds() {
+      if (!acquisitionProgressStartedAt) return 0;
+      return Math.max(0, Math.floor((Date.now() - acquisitionProgressStartedAt) / 1000));
+    }
+
+    function stopAcquisitionProgressTimer() {
+      const elapsedSeconds = currentAcquisitionElapsedSeconds();
+      if (acquisitionProgressTimer) {
+        window.clearInterval(acquisitionProgressTimer);
+        acquisitionProgressTimer = null;
+      }
+      acquisitionProgressStartedAt = 0;
+      return elapsedSeconds;
+    }
+
+    function renderAcquisitionProgressSummary(settings = acquisitionProgressSettings) {
+      const activeSettings = settings || readAcquisitionSettings();
+      const elapsed = formatElapsedDuration(currentAcquisitionElapsedSeconds());
+      const percent = Math.max(0, Math.min(100, Math.round(Number(acquisitionProgressPercent || 0))));
+      const meterPercent = Math.max(4, percent);
+      const itemScope = acquisitionItemScopeLabel(activeSettings);
+      acqSummary.innerHTML = `
+        <div class="progress-status" aria-live="polite">
+          <span class="progress-spinner" aria-hidden="true"></span>
+          <div class="progress-copy">
+            <strong>${escapeHtml(acquisitionProgressMessage || `Building ${itemScope} portfolio`)}</strong>
+            <span><strong>${formatNumber(percent)}%</strong> complete &middot; ${escapeHtml(itemScope)}; destination ${escapeHtml(activeSettings.destination)}; budget ${formatIsk(activeSettings.budgetIsk)}; elapsed ${escapeHtml(elapsed)}.</span>
+          </div>
+        </div>
+        <div class="progress-bar is-meter" aria-label="${formatNumber(percent)}% complete" style="--progress-percent: ${meterPercent}%"><span></span></div>
+      `;
+    }
+
+    function startAcquisitionProgressTimer(settings) {
+      stopAcquisitionProgressTimer();
+      acquisitionProgressSettings = settings;
+      acquisitionProgressStartedAt = Date.now();
+      acquisitionProgressPercent = 0;
+      acquisitionProgressMessage = `Starting ${acquisitionItemScopeLabel(settings)} portfolio scan`;
+      renderAcquisitionProgressSummary(settings);
+      acquisitionProgressTimer = window.setInterval(() => {
+        renderAcquisitionProgressSummary(settings);
+      }, 1000);
     }
 
     async function loadMarketAcquisition() {
@@ -20810,11 +21077,16 @@ help</textarea>
         marketGroupIds: readAcqMarketGroupIdsFromInputs(),
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
       });
+      closeAcquisitionEventSource();
+      stopAcquisitionProgressTimer();
+      acquisitionScanFinished = false;
       acqScanButton.disabled = true;
-      acqSummary.textContent = `Checking public orders and market history for a diversified ${acquisitionItemScopeLabel(settings)} portfolio...`;
       acqStrategy.innerHTML = "";
       acqRoute.textContent = "";
+      acqProgressLog.hidden = false;
+      acqProgressLog.innerHTML = "";
       resetQuickbarList(acqQuickbarPanel, acqQuickbarStatus, "acquisition");
+      startAcquisitionProgressTimer(settings);
       acqResults.innerHTML = `<div class="decision-empty">Recommendations will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
         origin_name: settings.originName,
@@ -20829,18 +21101,159 @@ help</textarea>
         market_group_ids: settings.marketGroupIds.join(","),
         market_type_ids: settings.marketTypeIds.join(","),
       });
+      if (typeof EventSource === "undefined") {
+        try {
+          const response = await fetch(`/api/flight/acquisition?${params}`);
+          const data = await readJsonApiResponse(response, "Could not build the investment portfolio");
+          const elapsedSeconds = stopAcquisitionProgressTimer();
+          renderMarketAcquisition(data);
+          appendAcquisitionProgress("Done", {message: `Portfolio scan complete in ${formatElapsedDuration(elapsedSeconds)}.`, elapsed_seconds: elapsedSeconds});
+        } catch (error) {
+          const elapsedSeconds = stopAcquisitionProgressTimer();
+          appendAcquisitionProgress("Stopped", {message: error.message || "Portfolio scan failed.", elapsed_seconds: elapsedSeconds});
+          acqSummary.textContent = `${error.message || "Portfolio scan failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+          acqStrategy.innerHTML = "";
+          acqRoute.textContent = "";
+          acqResults.textContent = "";
+        } finally {
+          acqScanButton.disabled = false;
+        }
+        return;
+      }
       try {
-        const response = await fetch(`/api/flight/acquisition?${params}`);
-        const data = await readJsonApiResponse(response, "Could not build the investment portfolio");
-        renderMarketAcquisition(data);
+        acquisitionEventSource = new EventSource(`/api/flight/acquisition/progress?${params}`);
+        acquisitionEventSource.addEventListener("scan_start", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress("Start", payload);
+        });
+        acquisitionEventSource.addEventListener("location", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress("Location", payload);
+        });
+        acquisitionEventSource.addEventListener("route_step", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress("Route", payload);
+        });
+        acquisitionEventSource.addEventListener("skills", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress("Skills", payload);
+        });
+        acquisitionEventSource.addEventListener("scan_scope", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress("Scope", payload);
+        });
+        acquisitionEventSource.addEventListener("item_start", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress(`Item ${formatNumber(payload.item_index)}/${formatNumber(payload.item_count)}`, payload);
+        });
+        acquisitionEventSource.addEventListener("orders", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress("Orders", payload);
+        });
+        acquisitionEventSource.addEventListener("history", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress("History", payload);
+        });
+        acquisitionEventSource.addEventListener("item_done", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress("Added", payload);
+        });
+        acquisitionEventSource.addEventListener("portfolio", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress("Portfolio", payload);
+        });
+        acquisitionEventSource.addEventListener("expectations", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          updateAcquisitionProgressFromPayload(payload);
+          appendAcquisitionProgress("Saved", payload);
+        });
+        acquisitionEventSource.addEventListener("scan_error", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          acquisitionScanFinished = true;
+          const elapsedSeconds = stopAcquisitionProgressTimer();
+          closeAcquisitionEventSource();
+          appendAcquisitionProgress("Stopped", {message: payload.error || "Portfolio scan failed.", elapsed_seconds: elapsedSeconds});
+          acqSummary.textContent = `${payload.error || "Portfolio scan failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+          acqStrategy.innerHTML = "";
+          acqRoute.textContent = "";
+          acqResults.textContent = "";
+          acqScanButton.disabled = false;
+        });
+        acquisitionEventSource.addEventListener("result", (event) => {
+          acquisitionScanFinished = true;
+          const data = parseAcquisitionProgressEvent(event);
+          const elapsedSeconds = stopAcquisitionProgressTimer();
+          acquisitionProgressPercent = 100;
+          acquisitionProgressMessage = "Portfolio scan complete";
+          renderMarketAcquisition(data);
+          appendAcquisitionProgress("Done", {message: `Portfolio scan complete in ${formatElapsedDuration(elapsedSeconds)}.`, elapsed_seconds: elapsedSeconds});
+          closeAcquisitionEventSource();
+          acqScanButton.disabled = false;
+        });
+        acquisitionEventSource.onerror = () => {
+          if (acquisitionScanFinished) return;
+          const elapsedSeconds = stopAcquisitionProgressTimer();
+          closeAcquisitionEventSource();
+          appendAcquisitionProgress("Stopped", {message: "Portfolio scan connection closed before results arrived.", elapsed_seconds: elapsedSeconds});
+          acqSummary.textContent = `Portfolio scan connection closed before results arrived. Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+          acqStrategy.innerHTML = "";
+          acqRoute.textContent = "";
+          acqResults.textContent = "";
+          acqScanButton.disabled = false;
+        };
       } catch (error) {
+        closeAcquisitionEventSource();
+        const elapsedSeconds = stopAcquisitionProgressTimer();
+        appendAcquisitionProgress("Stopped", {message: error.message || "Portfolio scan failed.", elapsed_seconds: elapsedSeconds});
         acqSummary.textContent = error.message;
         acqStrategy.innerHTML = "";
         acqRoute.textContent = "";
         acqResults.textContent = "";
-      } finally {
         acqScanButton.disabled = false;
       }
+    }
+
+    function parseAcquisitionProgressEvent(event) {
+      try {
+        return JSON.parse(event.data || "{}");
+      } catch (_error) {
+        return {message: "Unreadable progress update."};
+      }
+    }
+
+    function updateAcquisitionProgressFromPayload(payload) {
+      if (payload.percent != null) {
+        acquisitionProgressPercent = Math.max(0, Math.min(100, Number(payload.percent) || 0));
+      }
+      if (payload.message) {
+        acquisitionProgressMessage = payload.message;
+      }
+      renderAcquisitionProgressSummary();
+    }
+
+    function appendAcquisitionProgress(label, payload) {
+      const message = payload.message || "";
+      if (!message) return;
+      const elapsedSeconds = payload.elapsed_seconds == null ? currentAcquisitionElapsedSeconds() : Number(payload.elapsed_seconds);
+      acqProgressLog.hidden = false;
+      const entry = document.createElement("div");
+      entry.className = "progress-entry";
+      entry.innerHTML = `<b>${escapeHtml(label)}</b><time>${escapeHtml(formatElapsedDuration(elapsedSeconds))}</time><span>${escapeHtml(message)}</span>`;
+      acqProgressLog.appendChild(entry);
+      while (acqProgressLog.children.length > 80) {
+        acqProgressLog.removeChild(acqProgressLog.firstElementChild);
+      }
+      acqProgressLog.scrollTop = acqProgressLog.scrollHeight;
     }
 
     function renderMarketAcquisition(data) {
