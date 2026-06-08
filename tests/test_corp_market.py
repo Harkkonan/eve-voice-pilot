@@ -393,7 +393,12 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Search opens matching categories and reveals exact item checkboxes." in page
     assert "id=\"haul-pasted-items\" name=\"market_type_names\"" in page
     assert "id=\"haul-pasted-items-status\"" in page
+    assert "id=\"haul-pasted-items-only\" name=\"pasted_items_only\" type=\"checkbox\" checked" in page
+    assert "Search pasted items only" in page
+    assert "Fast mode: pasted names ignore Common materials and market category selections." in page
     assert "parseHaulPastedItemNames" in page
+    assert "effectiveHaulScanSettings" in page
+    assert "eve-flight-haul-pasted-items-only-v1" in page
     assert "applyMarketItemSearch" in page
     assert "id=\"haul-market-groups\"" in page
     assert "Items to search" in page

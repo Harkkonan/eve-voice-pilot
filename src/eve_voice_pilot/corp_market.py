@@ -18196,6 +18196,13 @@ help</textarea>
                   <small class="input-note">One item per line. Commas and semicolons also work.</small>
                 </label>
                 <div id="haul-pasted-items-status" class="meta market-search-status">No pasted items.</div>
+                <label class="checkline">
+                  <input id="haul-pasted-items-only" name="pasted_items_only" type="checkbox" checked>
+                  <span>
+                    Search pasted items only
+                    <small>Fast mode: pasted names ignore Common materials and market category selections.</small>
+                  </span>
+                </label>
                 <details>
                   <summary>Market categories</summary>
                   <div id="haul-market-groups" class="haul-market-groups">
@@ -19079,6 +19086,7 @@ help</textarea>
     const haulItemSearchStatus = document.querySelector("#haul-item-search-status");
     const haulPastedItems = document.querySelector("#haul-pasted-items");
     const haulPastedItemsStatus = document.querySelector("#haul-pasted-items-status");
+    const haulPastedItemsOnly = document.querySelector("#haul-pasted-items-only");
     const haulMarketGroups = document.querySelector("#haul-market-groups");
     const haulMarketGroupInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-group]"));
     const haulMarketTypeInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-type]"));
@@ -19210,6 +19218,7 @@ help</textarea>
     const haulMarketGroupIdsKey = "eve-flight-haul-market-group-ids-v1";
     const haulMarketTypeIdsKey = "eve-flight-haul-market-type-ids-v1";
     const haulPastedItemsKey = "eve-flight-haul-pasted-items-v1";
+    const haulPastedItemsOnlyKey = "eve-flight-haul-pasted-items-only-v1";
     const haulCompareDestinationsKey = "eve-flight-haul-compare-destinations-v1";
     const acqOriginKey = "eve-flight-acq-origin-v1";
     const acqDestinationKey = "eve-flight-acq-destination-v1";
@@ -20592,21 +20601,42 @@ help</textarea>
     function updateHaulPastedItemsStatus(text) {
       if (!haulPastedItemsStatus) return;
       const names = parseHaulPastedItemNames(text);
+      if (haulPastedItemsOnly) haulPastedItemsOnly.disabled = names.length === 0;
+      const quickMode = haulPastedItemsOnly ? haulPastedItemsOnly.checked : true;
       haulPastedItemsStatus.textContent = names.length
-        ? `${formatNumber(names.length)} pasted item name${names.length === 1 ? "" : "s"} will be resolved from the static cache when the scan starts.`
+        ? quickMode
+          ? `${formatNumber(names.length)} pasted item name${names.length === 1 ? "" : "s"} will be scanned by itself in fast mode.`
+          : `${formatNumber(names.length)} pasted item name${names.length === 1 ? "" : "s"} will be combined with the selected item scope.`
         : "No pasted items.";
     }
 
+    function haulPastedOnlyActive(settings) {
+      return Boolean(settings && settings.pastedItemsOnly && parseHaulPastedItemNames(settings.pastedItemNames || "").length);
+    }
+
     function haulItemScopeLabel(settings) {
+      const pastedCount = parseHaulPastedItemNames(settings.pastedItemNames || "").length;
+      if (settings.pastedItemsOnly && pastedCount) {
+        return `pasted items only (${formatNumber(pastedCount)} pasted item${pastedCount === 1 ? "" : "s"})`;
+      }
       const parts = [];
       if (settings.includeCommonMaterials) parts.push("common materials");
       const groupCount = (settings.marketGroupIds || []).length;
       if (groupCount) parts.push(`${formatNumber(groupCount)} market categor${groupCount === 1 ? "y" : "ies"}`);
       const typeCount = (settings.marketTypeIds || []).length;
       if (typeCount) parts.push(`${formatNumber(typeCount)} exact item${typeCount === 1 ? "" : "s"}`);
-      const pastedCount = parseHaulPastedItemNames(settings.pastedItemNames || "").length;
       if (pastedCount) parts.push(`${formatNumber(pastedCount)} pasted item${pastedCount === 1 ? "" : "s"}`);
       return parts.length ? parts.join(" + ") : "no item scope selected";
+    }
+
+    function effectiveHaulScanSettings(settings) {
+      if (!haulPastedOnlyActive(settings)) return settings;
+      return {
+        ...settings,
+        includeCommonMaterials: false,
+        marketGroupIds: [],
+        marketTypeIds: [],
+      };
     }
 
     function haulStartLabel(settings) {
@@ -20623,10 +20653,13 @@ help</textarea>
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
         pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
+        pastedItemsOnly: haulPastedItemsOnly ? haulPastedItemsOnly.checked : true,
       };
       const scopeLabel = haulItemScopeLabel(activeSettings);
       updateHaulPastedItemsStatus(activeSettings.pastedItemNames || "");
-      haulItemScopeSummary.textContent = `${scopeLabel}. More item types means a longer route calculation.`;
+      haulItemScopeSummary.textContent = haulPastedOnlyActive(activeSettings)
+        ? `${scopeLabel}. Fast mode is on; Common materials and market categories are ignored for this scan.`
+        : `${scopeLabel}. More item types means a longer route calculation.`;
     }
 
     function normalizedSystemSuggestionQuery(value) {
@@ -20767,6 +20800,7 @@ help</textarea>
       const avoidStored = window.localStorage.getItem(haulAvoidPodKillsKey);
       const commonStored = window.localStorage.getItem(haulCommonMaterialsKey);
       const pastedItemNames = String(window.localStorage.getItem(haulPastedItemsKey) || (haulPastedItems ? haulPastedItems.value : "") || "").trim();
+      const pastedOnlyStored = window.localStorage.getItem(haulPastedItemsOnlyKey);
       return {
         originName,
         destination,
@@ -20783,6 +20817,7 @@ help</textarea>
         marketGroupIds: readStoredHaulMarketGroupIds(),
         marketTypeIds: readStoredHaulMarketTypeIds(),
         pastedItemNames,
+        pastedItemsOnly: pastedOnlyStored == null ? true : pastedOnlyStored !== "0",
       };
     }
 
@@ -20802,6 +20837,7 @@ help</textarea>
       const marketGroupIds = Array.isArray(settings.marketGroupIds) ? settings.marketGroupIds : readHaulMarketGroupIdsFromInputs();
       const marketTypeIds = Array.isArray(settings.marketTypeIds) ? settings.marketTypeIds : readHaulMarketTypeIdsFromInputs();
       const pastedItemNames = String(settings.pastedItemNames == null ? (haulPastedItems ? haulPastedItems.value : "") : settings.pastedItemNames).trim();
+      const pastedItemsOnly = settings.pastedItemsOnly == null ? (haulPastedItemsOnly ? haulPastedItemsOnly.checked : true) : Boolean(settings.pastedItemsOnly);
       haulOrigin.value = originName;
       haulDestination.value = destination;
       haulCargoM3.value = String(cargoM3);
@@ -20815,10 +20851,14 @@ help</textarea>
       haulAvoidPodKills.checked = avoidRecentPodKills;
       haulCommonMaterials.checked = includeCommonMaterials;
       if (haulPastedItems) haulPastedItems.value = pastedItemNames;
+      if (haulPastedItemsOnly) {
+        haulPastedItemsOnly.checked = pastedItemsOnly;
+        haulPastedItemsOnly.disabled = parseHaulPastedItemNames(pastedItemNames).length === 0;
+      }
       applyHaulMarketGroupIds(marketGroupIds);
       applyHaulMarketTypeIds(marketTypeIds);
       haulMinMarginValue.textContent = `${formatNumber(minDetourMarginPercent)}%`;
-      updateHaulItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames});
+      updateHaulItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly});
       window.localStorage.setItem(haulOriginKey, originName);
       window.localStorage.setItem(haulDestinationKey, destination);
       window.localStorage.setItem(haulCargoKey, String(cargoM3));
@@ -20834,7 +20874,8 @@ help</textarea>
       window.localStorage.setItem(haulMarketGroupIdsKey, JSON.stringify(marketGroupIds));
       window.localStorage.setItem(haulMarketTypeIdsKey, JSON.stringify(marketTypeIds));
       window.localStorage.setItem(haulPastedItemsKey, pastedItemNames);
-      return {originName, destination, cargoM3, purchaseBudgetIsk, detourJumps, minDetourMarginPercent, routePreference, sortBy, minProfitPerM3, minProfitPerExtraJump, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames};
+      window.localStorage.setItem(haulPastedItemsOnlyKey, pastedItemsOnly ? "1" : "0");
+      return {originName, destination, cargoM3, purchaseBudgetIsk, detourJumps, minDetourMarginPercent, routePreference, sortBy, minProfitPerM3, minProfitPerExtraJump, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly};
     }
 
     function clampAcquisitionBudget(value) {
@@ -21705,26 +21746,28 @@ help</textarea>
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
         pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
+        pastedItemsOnly: haulPastedItemsOnly ? haulPastedItemsOnly.checked : true,
       });
+      const scanSettings = effectiveHaulScanSettings(settings);
       haulCompareButton.disabled = true;
       haulCompareSummary.textContent = `Comparing ${formatNumber(destinations.length)} hub${destinations.length === 1 ? "" : "s"} with ${haulItemScopeLabel(settings)}...`;
       haulCompareResults.innerHTML = `<div class="decision-empty">Hub comparison is running. Large item scopes can take longer.</div>`;
       const params = new URLSearchParams({
-        origin_name: settings.originName,
+        origin_name: scanSettings.originName,
         destinations: destinations.join(","),
-        cargo_m3: String(settings.cargoM3),
-        purchase_budget_isk: String(settings.purchaseBudgetIsk),
-        route_preference: settings.routePreference,
-        avoid_recent_pod_kills: settings.avoidRecentPodKills ? "1" : "0",
-        common_materials: settings.includeCommonMaterials ? "1" : "0",
-        market_group_ids: settings.marketGroupIds.join(","),
-        market_type_ids: settings.marketTypeIds.join(","),
-        market_type_names: settings.pastedItemNames,
-        sort_by: settings.sortBy,
-        min_profit_per_m3: String(settings.minProfitPerM3),
-        min_profit_per_extra_jump: String(settings.minProfitPerExtraJump),
-        detour_jumps: String(settings.detourJumps),
-        min_detour_margin_percent: String(settings.minDetourMarginPercent),
+        cargo_m3: String(scanSettings.cargoM3),
+        purchase_budget_isk: String(scanSettings.purchaseBudgetIsk),
+        route_preference: scanSettings.routePreference,
+        avoid_recent_pod_kills: scanSettings.avoidRecentPodKills ? "1" : "0",
+        common_materials: scanSettings.includeCommonMaterials ? "1" : "0",
+        market_group_ids: scanSettings.marketGroupIds.join(","),
+        market_type_ids: scanSettings.marketTypeIds.join(","),
+        market_type_names: scanSettings.pastedItemNames,
+        sort_by: scanSettings.sortBy,
+        min_profit_per_m3: String(scanSettings.minProfitPerM3),
+        min_profit_per_extra_jump: String(scanSettings.minProfitPerExtraJump),
+        detour_jumps: String(scanSettings.detourJumps),
+        min_detour_margin_percent: String(scanSettings.minDetourMarginPercent),
       });
       try {
         const response = await fetch(`/api/flight/hauling/compare?${params}`);
@@ -21755,7 +21798,9 @@ help</textarea>
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
         pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
+        pastedItemsOnly: haulPastedItemsOnly ? haulPastedItemsOnly.checked : true,
       });
+      const scanSettings = effectiveHaulScanSettings(settings);
       closeHaulEventSource();
       stopHaulProgressTimer();
       haulScanFinished = false;
@@ -21774,21 +21819,21 @@ help</textarea>
       haulLoadPlan.innerHTML = renderHaulCargoLoader({cargo_capacity_m3: settings.cargoM3}, {scanning: true, cargoM3: settings.cargoM3});
       haulOpportunityTop.innerHTML = `<div class="decision-empty">Route opportunities will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
-        origin_name: settings.originName,
-        destination: settings.destination,
-        cargo_m3: String(settings.cargoM3),
-        purchase_budget_isk: String(settings.purchaseBudgetIsk),
-        route_preference: settings.routePreference,
-        avoid_recent_pod_kills: settings.avoidRecentPodKills ? "1" : "0",
-        common_materials: settings.includeCommonMaterials ? "1" : "0",
-        market_group_ids: settings.marketGroupIds.join(","),
-        market_type_ids: settings.marketTypeIds.join(","),
-        market_type_names: settings.pastedItemNames,
-        sort_by: settings.sortBy,
-        min_profit_per_m3: String(settings.minProfitPerM3),
-        min_profit_per_extra_jump: String(settings.minProfitPerExtraJump),
-        detour_jumps: String(settings.detourJumps),
-        min_detour_margin_percent: String(settings.minDetourMarginPercent),
+        origin_name: scanSettings.originName,
+        destination: scanSettings.destination,
+        cargo_m3: String(scanSettings.cargoM3),
+        purchase_budget_isk: String(scanSettings.purchaseBudgetIsk),
+        route_preference: scanSettings.routePreference,
+        avoid_recent_pod_kills: scanSettings.avoidRecentPodKills ? "1" : "0",
+        common_materials: scanSettings.includeCommonMaterials ? "1" : "0",
+        market_group_ids: scanSettings.marketGroupIds.join(","),
+        market_type_ids: scanSettings.marketTypeIds.join(","),
+        market_type_names: scanSettings.pastedItemNames,
+        sort_by: scanSettings.sortBy,
+        min_profit_per_m3: String(scanSettings.minProfitPerM3),
+        min_profit_per_extra_jump: String(scanSettings.minProfitPerExtraJump),
+        detour_jumps: String(scanSettings.detourJumps),
+        min_detour_margin_percent: String(scanSettings.minDetourMarginPercent),
       });
       haulEventSource = new EventSource(`/api/flight/hauling/progress?${params}`);
       haulEventSource.addEventListener("scan_start", (event) => {
@@ -25691,6 +25736,7 @@ help</textarea>
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
         pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
+        pastedItemsOnly: haulPastedItemsOnly ? haulPastedItemsOnly.checked : true,
       });
       const settings = readHaulSettings();
       resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(settings)} to ${settings.destination}.`);
@@ -25720,6 +25766,9 @@ help</textarea>
         updateHaulItemScopeSummary();
       });
       haulPastedItems.addEventListener("change", updateHaulScopeAndReset);
+    }
+    if (haulPastedItemsOnly) {
+      haulPastedItemsOnly.addEventListener("change", updateHaulScopeAndReset);
     }
     haulMarketGroups.addEventListener("click", (event) => {
       if (handleMarketGroupShowMore(haulMarketGroups, event)) return;
