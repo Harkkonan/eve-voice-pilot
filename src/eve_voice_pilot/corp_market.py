@@ -7928,6 +7928,278 @@ def fetch_acquisition_history_batch(
     return source_history, destination_history, errors
 
 
+@dataclass
+class AcquisitionItemScanResult:
+    opportunity: dict[str, Any] | None = None
+    errors: list[str] = field(default_factory=list)
+    source_buy_order_count: int = 0
+    source_sell_order_count: int = 0
+    destination_buy_order_count: int = 0
+    history_region_ids: set[int] = field(default_factory=set)
+    risk_level: str = ""
+    order_fetch_seconds: float = 0.0
+    order_filter_seconds: float = 0.0
+    history_fetch_seconds: float = 0.0
+    opportunity_score_seconds: float = 0.0
+
+
+def scan_acquisition_item_opportunity(
+    *,
+    config: EveSsoConfig,
+    target: Mapping[str, Any],
+    item_index: int,
+    item_count: int,
+    pickup_region_ids: Iterable[int],
+    region_count: int,
+    origin: RouteSystem,
+    destination: RouteSystem,
+    systems: Mapping[int, RouteSystem],
+    pickup_distances: Mapping[int, int],
+    destination_distances: Mapping[int, int],
+    budget_isk: float,
+    pickup_jumps: int,
+    min_margin_percent: float,
+    broker_fee_rate: float,
+    sales_tax_rate: float,
+    target_days: int,
+    progress_percent: Callable[[int, float], int],
+    progress: Callable[[str, dict[str, Any]], None] | None = None,
+) -> AcquisitionItemScanResult:
+    result = AcquisitionItemScanResult()
+    type_id = int(target["type_id"])
+    item_name = str(target.get("name") or f"Type {type_id}")
+    source_buy_orders: list[dict[str, Any]] = []
+    source_sell_orders: list[dict[str, Any]] = []
+    scan_pickup_region_ids = [int(region_id) for region_id in pickup_region_ids]
+
+    if progress is not None:
+        progress(
+            "item_start",
+            {
+                "message": f"Checking {item_name} ({item_index}/{item_count}).",
+                "item_index": item_index,
+                "item_count": item_count,
+                "item_name": item_name,
+                "type_id": type_id,
+                "percent": progress_percent(item_index, 0.0),
+            },
+        )
+
+    timed_started_at = time.monotonic()
+    (
+        raw_source_buys_by_region,
+        raw_source_sells_by_region,
+        raw_destination_buys,
+        order_errors,
+    ) = fetch_acquisition_order_batch(
+        config=config,
+        type_id=type_id,
+        pickup_region_ids=scan_pickup_region_ids,
+        destination_region_id=destination.region_id,
+    )
+    result.order_fetch_seconds += max(0.0, time.monotonic() - timed_started_at)
+    result.errors.extend(order_errors)
+
+    timed_started_at = time.monotonic()
+    for region_index, region_id in enumerate(scan_pickup_region_ids, start=1):
+        raw_source_buys = raw_source_buys_by_region.get(region_id, [])
+        for order in raw_source_buys:
+            record = build_reachable_market_order_record(
+                order,
+                systems=systems,
+                jump_distances=pickup_distances,
+                region_id=region_id,
+                order_type="buy",
+            )
+            if record is not None:
+                source_buy_orders.append(record)
+        raw_source_sells = raw_source_sells_by_region.get(region_id, [])
+        for order in raw_source_sells:
+            record = build_reachable_market_order_record(
+                order,
+                systems=systems,
+                jump_distances=pickup_distances,
+                region_id=region_id,
+                order_type="sell",
+            )
+            if record is not None:
+                source_sell_orders.append(record)
+        if progress is not None:
+            progress(
+                "orders",
+                {
+                    "message": (
+                        f"{item_name}: pickup region {region_index}/{region_count} returned "
+                        f"{len(raw_source_buys)} buy rows and {len(raw_source_sells)} sell rows."
+                    ),
+                    "item_index": item_index,
+                    "item_count": item_count,
+                    "item_name": item_name,
+                    "region_index": region_index,
+                    "region_count": region_count,
+                    "percent": progress_percent(item_index, 0.45 * (region_index / max(1, region_count))),
+                },
+            )
+
+    destination_buy_orders = []
+    for order in raw_destination_buys:
+        record = build_reachable_market_order_record(
+            order,
+            systems=systems,
+            jump_distances=destination_distances,
+            region_id=destination.region_id,
+            order_type="buy",
+        )
+        if record is not None:
+            destination_buy_orders.append(record)
+    result.order_filter_seconds += max(0.0, time.monotonic() - timed_started_at)
+    if progress is not None:
+        progress(
+            "orders",
+            {
+                "message": f"{item_name}: destination region returned {len(raw_destination_buys)} buy rows.",
+                "item_index": item_index,
+                "item_count": item_count,
+                "item_name": item_name,
+                "percent": progress_percent(item_index, 0.55),
+            },
+        )
+
+    source_buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
+    source_sell_orders.sort(key=lambda item: market_order_sort_key(item, order_type="sell"))
+    destination_buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
+    result.source_buy_order_count = len(source_buy_orders)
+    result.source_sell_order_count = len(source_sell_orders)
+    result.destination_buy_order_count = len(destination_buy_orders)
+    if not destination_buy_orders:
+        return result
+
+    source_region_id = origin.region_id or (scan_pickup_region_ids[0] if scan_pickup_region_ids else None)
+    if source_region_id is None:
+        return result
+
+    timed_started_at = time.monotonic()
+    source_history, destination_history, history_errors = fetch_acquisition_history_batch(
+        config=config,
+        type_id=type_id,
+        source_region_id=source_region_id,
+        destination_region_id=destination.region_id,
+    )
+    result.history_fetch_seconds += max(0.0, time.monotonic() - timed_started_at)
+    result.errors.extend(history_errors)
+    if source_history:
+        result.history_region_ids.add(int(source_region_id))
+    if destination_history:
+        result.history_region_ids.add(int(destination.region_id))
+    if progress is not None:
+        progress(
+            "history",
+            {
+                "message": f"{item_name}: checked source and destination market history.",
+                "item_index": item_index,
+                "item_count": item_count,
+                "item_name": item_name,
+                "percent": progress_percent(item_index, 0.75),
+            },
+        )
+
+    timed_started_at = time.monotonic()
+    try:
+        best_destination_buy = destination_buy_orders[0]
+        best_source_buy = source_buy_orders[0] if source_buy_orders else None
+        best_source_sell = source_sell_orders[0] if source_sell_orders else None
+        source_stats = market_history_stats(source_history)
+        destination_stats = market_history_stats(destination_history)
+        net_destination_price = float(best_destination_buy["price"]) * (1.0 - sales_tax_rate)
+        target_margin_rate = min_margin_percent / 100.0
+        max_safe_bid = net_destination_price / max((1.0 + broker_fee_rate) * (1.0 + target_margin_rate), 0.0001)
+        if max_safe_bid <= 0:
+            return result
+        suggested_bid = acquisition_suggested_bid(
+            max_safe_bid=max_safe_bid,
+            best_source_buy=best_source_buy,
+            best_source_sell=best_source_sell,
+            source_history=source_stats,
+        )
+        if suggested_bid <= 0:
+            return result
+        estimated_unit_cost = suggested_bid * (1.0 + broker_fee_rate)
+        budget_units = int(budget_isk // max(estimated_unit_cost, 0.01))
+        history_units = acquisition_history_unit_cap(source_stats, target_days=target_days)
+        destination_units = int(best_destination_buy.get("volume_remain") or 0)
+        units = min(limit for limit in (budget_units, destination_units, history_units) if limit >= 0)
+        if units <= 0:
+            return result
+        broker_fee_total = suggested_bid * units * broker_fee_rate
+        bid_total = suggested_bid * units
+        gross_destination_revenue = float(best_destination_buy["price"]) * units
+        net_revenue = net_destination_price * units
+        sales_tax_total = gross_destination_revenue - net_revenue
+        net_profit = net_revenue - bid_total - broker_fee_total
+        if net_profit <= 0:
+            return result
+        margin_percent = profit_margin_percent(net_profit, bid_total + broker_fee_total)
+        flags = acquisition_history_flags(
+            source_stats=source_stats,
+            destination_stats=destination_stats,
+            best_source_buy=best_source_buy,
+            best_source_sell=best_source_sell,
+            best_destination_buy=best_destination_buy,
+            max_safe_bid=max_safe_bid,
+            suggested_bid=suggested_bid,
+            units=units,
+            target_days=target_days,
+        )
+        risk_level = acquisition_risk_level(flags)
+        range_recommendation = acquisition_range_recommendation(
+            risk_level=risk_level,
+            source_stats=source_stats,
+            units=units,
+            pickup_jumps=pickup_jumps,
+            margin_percent=margin_percent,
+        )
+        result.risk_level = risk_level
+        result.opportunity = {
+            "type_id": type_id,
+            "item_name": item_name,
+            "recipe_count": int(target.get("recipe_count") or 0),
+            "source_labels": target.get("source_labels", []),
+            "market_group_id": target.get("market_group_id"),
+            "market_group_name": target.get("market_group_name") or "",
+            "volume_m3": target.get("volume_m3"),
+            "decision": acquisition_decision(risk_level=risk_level, margin_percent=margin_percent),
+            "risk_level": risk_level,
+            "range_recommendation": range_recommendation,
+            "placement_system": origin.name,
+            "pickup_jumps": pickup_jumps,
+            "target_days": target_days,
+            "suggested_bid": suggested_bid,
+            "max_safe_bid": max_safe_bid,
+            "recommended_units": units,
+            "estimated_bid_total": bid_total,
+            "estimated_broker_fee": broker_fee_total,
+            "estimated_isk_committed": bid_total + broker_fee_total,
+            "gross_destination_revenue": gross_destination_revenue,
+            "net_destination_price": net_destination_price,
+            "estimated_sales_tax": sales_tax_total,
+            "estimated_net_revenue": net_revenue,
+            "net_profit": net_profit,
+            "net_profit_per_unit": net_profit / units,
+            "margin_percent": margin_percent,
+            "sales_tax_rate": sales_tax_rate,
+            "broker_fee_rate": broker_fee_rate,
+            "best_source_buy": best_source_buy,
+            "best_source_sell": best_source_sell,
+            "best_destination_buy": best_destination_buy,
+            "source_history": source_stats,
+            "destination_history": destination_stats,
+            "history_flags": flags,
+        }
+        return result
+    finally:
+        result.opportunity_score_seconds += max(0.0, time.monotonic() - timed_started_at)
+
+
 def scan_market_acquisition_opportunities(
     *,
     config: EveSsoConfig,
@@ -8055,240 +8327,51 @@ def scan_market_acquisition_opportunities(
     opportunity_score_seconds = 0.0
 
     for item_index, target in enumerate(scan_targets, start=1):
-        type_id = int(target["type_id"])
-        source_buy_orders = []
-        source_sell_orders = []
-        if progress is not None:
-            progress(
-                "item_start",
-                {
-                    "message": f"Checking {target['name']} ({item_index}/{item_count}).",
-                    "item_index": item_index,
-                    "item_count": item_count,
-                    "item_name": target["name"],
-                    "type_id": type_id,
-                    "percent": progress_percent(item_index, 0.0),
-                },
-            )
-        timed_started_at = time.monotonic()
-        (
-            raw_source_buys_by_region,
-            raw_source_sells_by_region,
-            raw_destination_buys,
-            order_errors,
-        ) = fetch_acquisition_order_batch(
+        item_result = scan_acquisition_item_opportunity(
             config=config,
-            type_id=type_id,
+            target=target,
+            item_index=item_index,
+            item_count=item_count,
             pickup_region_ids=scan_pickup_region_ids,
-            destination_region_id=destination.region_id,
-        )
-        order_fetch_seconds += max(0.0, time.monotonic() - timed_started_at)
-        errors.extend(order_errors)
-        timed_started_at = time.monotonic()
-        for region_index, region_id in enumerate(scan_pickup_region_ids, start=1):
-            raw_source_buys = raw_source_buys_by_region.get(region_id, [])
-            for order in raw_source_buys:
-                record = build_reachable_market_order_record(
-                    order,
-                    systems=systems,
-                    jump_distances=pickup_distances,
-                    region_id=region_id,
-                    order_type="buy",
-                )
-                if record is not None:
-                    source_buy_orders.append(record)
-            raw_source_sells = raw_source_sells_by_region.get(region_id, [])
-            for order in raw_source_sells:
-                record = build_reachable_market_order_record(
-                    order,
-                    systems=systems,
-                    jump_distances=pickup_distances,
-                    region_id=region_id,
-                    order_type="sell",
-                )
-                if record is not None:
-                    source_sell_orders.append(record)
-            if progress is not None:
-                progress(
-                    "orders",
-                    {
-                        "message": (
-                            f"{target['name']}: pickup region {region_index}/{region_count} returned "
-                            f"{len(raw_source_buys)} buy rows and {len(raw_source_sells)} sell rows."
-                        ),
-                        "item_index": item_index,
-                        "item_count": item_count,
-                        "item_name": target["name"],
-                        "region_index": region_index,
-                        "region_count": region_count,
-                        "percent": progress_percent(item_index, 0.45 * (region_index / max(1, region_count))),
-                    },
-                )
-        destination_buy_orders = []
-        for order in raw_destination_buys:
-            record = build_reachable_market_order_record(
-                order,
-                systems=systems,
-                jump_distances=destination_distances,
-                region_id=destination.region_id,
-                order_type="buy",
-            )
-            if record is not None:
-                destination_buy_orders.append(record)
-        order_filter_seconds += max(0.0, time.monotonic() - timed_started_at)
-        if progress is not None:
-            progress(
-                "orders",
-                {
-                    "message": f"{target['name']}: destination region returned {len(raw_destination_buys)} buy rows.",
-                    "item_index": item_index,
-                    "item_count": item_count,
-                    "item_name": target["name"],
-                    "percent": progress_percent(item_index, 0.55),
-                },
-            )
-
-        source_buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
-        source_sell_orders.sort(key=lambda item: market_order_sort_key(item, order_type="sell"))
-        destination_buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
-        total_source_buy_order_count += len(source_buy_orders)
-        total_source_sell_order_count += len(source_sell_orders)
-        total_destination_buy_order_count += len(destination_buy_orders)
-        if not destination_buy_orders:
-            continue
-
-        source_region_id = origin.region_id or (scan_pickup_region_ids[0] if scan_pickup_region_ids else None)
-        if source_region_id is None:
-            continue
-        timed_started_at = time.monotonic()
-        source_history, destination_history, history_errors = fetch_acquisition_history_batch(
-            config=config,
-            type_id=type_id,
-            source_region_id=source_region_id,
-            destination_region_id=destination.region_id,
-        )
-        history_fetch_seconds += max(0.0, time.monotonic() - timed_started_at)
-        errors.extend(history_errors)
-        if source_history:
-            history_regions.add(source_region_id)
-        if destination_history:
-            history_regions.add(destination.region_id)
-        if progress is not None:
-            progress(
-                "history",
-                {
-                    "message": f"{target['name']}: checked source and destination market history.",
-                    "item_index": item_index,
-                    "item_count": item_count,
-                    "item_name": target["name"],
-                    "percent": progress_percent(item_index, 0.75),
-                },
-            )
-
-        timed_started_at = time.monotonic()
-        best_destination_buy = destination_buy_orders[0]
-        best_source_buy = source_buy_orders[0] if source_buy_orders else None
-        best_source_sell = source_sell_orders[0] if source_sell_orders else None
-        source_stats = market_history_stats(source_history)
-        destination_stats = market_history_stats(destination_history)
-        net_destination_price = float(best_destination_buy["price"]) * (1.0 - sales_tax_rate)
-        target_margin_rate = clean_min_margin_percent / 100.0
-        max_safe_bid = net_destination_price / max((1.0 + broker_fee_rate) * (1.0 + target_margin_rate), 0.0001)
-        if max_safe_bid <= 0:
-            continue
-        suggested_bid = acquisition_suggested_bid(
-            max_safe_bid=max_safe_bid,
-            best_source_buy=best_source_buy,
-            best_source_sell=best_source_sell,
-            source_history=source_stats,
-        )
-        if suggested_bid <= 0:
-            continue
-        estimated_unit_cost = suggested_bid * (1.0 + broker_fee_rate)
-        budget_units = int(clean_budget // max(estimated_unit_cost, 0.01))
-        history_units = acquisition_history_unit_cap(source_stats, target_days=clean_target_days)
-        destination_units = int(best_destination_buy.get("volume_remain") or 0)
-        units = min(limit for limit in (budget_units, destination_units, history_units) if limit >= 0)
-        if units <= 0:
-            continue
-        broker_fee_total = suggested_bid * units * broker_fee_rate
-        bid_total = suggested_bid * units
-        gross_destination_revenue = float(best_destination_buy["price"]) * units
-        net_revenue = net_destination_price * units
-        sales_tax_total = gross_destination_revenue - net_revenue
-        net_profit = net_revenue - bid_total - broker_fee_total
-        if net_profit <= 0:
-            continue
-        margin_percent = profit_margin_percent(net_profit, bid_total + broker_fee_total)
-        flags = acquisition_history_flags(
-            source_stats=source_stats,
-            destination_stats=destination_stats,
-            best_source_buy=best_source_buy,
-            best_source_sell=best_source_sell,
-            best_destination_buy=best_destination_buy,
-            max_safe_bid=max_safe_bid,
-            suggested_bid=suggested_bid,
-            units=units,
-            target_days=clean_target_days,
-        )
-        risk_level = acquisition_risk_level(flags)
-        if risk_level == "possible-trap":
-            trap_signal_count += 1
-        elif risk_level == "caution":
-            caution_signal_count += 1
-        range_recommendation = acquisition_range_recommendation(
-            risk_level=risk_level,
-            source_stats=source_stats,
-            units=units,
+            region_count=region_count,
+            origin=origin,
+            destination=destination,
+            systems=systems,
+            pickup_distances=pickup_distances,
+            destination_distances=destination_distances,
+            budget_isk=clean_budget,
             pickup_jumps=clean_pickup_jumps,
-            margin_percent=margin_percent,
+            min_margin_percent=clean_min_margin_percent,
+            broker_fee_rate=broker_fee_rate,
+            sales_tax_rate=sales_tax_rate,
+            target_days=clean_target_days,
+            progress_percent=progress_percent,
+            progress=progress,
         )
-        opportunity = {
-            "type_id": type_id,
-            "item_name": target["name"],
-            "recipe_count": int(target.get("recipe_count") or 0),
-            "source_labels": target.get("source_labels", []),
-            "market_group_id": target.get("market_group_id"),
-            "market_group_name": target.get("market_group_name") or "",
-            "volume_m3": target.get("volume_m3"),
-            "decision": acquisition_decision(risk_level=risk_level, margin_percent=margin_percent),
-            "risk_level": risk_level,
-            "range_recommendation": range_recommendation,
-            "placement_system": origin.name,
-            "pickup_jumps": clean_pickup_jumps,
-            "target_days": clean_target_days,
-            "suggested_bid": suggested_bid,
-            "max_safe_bid": max_safe_bid,
-            "recommended_units": units,
-            "estimated_bid_total": bid_total,
-            "estimated_broker_fee": broker_fee_total,
-            "estimated_isk_committed": bid_total + broker_fee_total,
-            "gross_destination_revenue": gross_destination_revenue,
-            "net_destination_price": net_destination_price,
-            "estimated_sales_tax": sales_tax_total,
-            "estimated_net_revenue": net_revenue,
-            "net_profit": net_profit,
-            "net_profit_per_unit": net_profit / units,
-            "margin_percent": margin_percent,
-            "sales_tax_rate": sales_tax_rate,
-            "broker_fee_rate": broker_fee_rate,
-            "best_source_buy": best_source_buy,
-            "best_source_sell": best_source_sell,
-            "best_destination_buy": best_destination_buy,
-            "source_history": source_stats,
-            "destination_history": destination_stats,
-            "history_flags": flags,
-        }
-        opportunities.append(opportunity)
-        opportunity_score_seconds += max(0.0, time.monotonic() - timed_started_at)
+        errors.extend(item_result.errors)
+        total_source_buy_order_count += item_result.source_buy_order_count
+        total_source_sell_order_count += item_result.source_sell_order_count
+        total_destination_buy_order_count += item_result.destination_buy_order_count
+        history_regions.update(item_result.history_region_ids)
+        order_fetch_seconds += item_result.order_fetch_seconds
+        order_filter_seconds += item_result.order_filter_seconds
+        history_fetch_seconds += item_result.history_fetch_seconds
+        opportunity_score_seconds += item_result.opportunity_score_seconds
+        if item_result.risk_level == "possible-trap":
+            trap_signal_count += 1
+        elif item_result.risk_level == "caution":
+            caution_signal_count += 1
+        if item_result.opportunity is None:
+            continue
+        opportunities.append(item_result.opportunity)
         if progress is not None:
             progress(
                 "item_done",
                 {
-                    "message": f"{target['name']}: added a portfolio opportunity.",
+                    "message": f"{item_result.opportunity['item_name']}: added a portfolio opportunity.",
                     "item_index": item_index,
                     "item_count": item_count,
-                    "item_name": target["name"],
+                    "item_name": item_result.opportunity["item_name"],
                     "opportunity_count": len(opportunities),
                     "percent": progress_percent(item_index, 1.0),
                 },
