@@ -263,14 +263,22 @@ def test_market_store_records_discord_sync_metadata(tmp_path):
 
 def test_dashboard_includes_flight_attendant_tab_and_safety_charter():
     page = render_dashboard()
+    flight_section = page.split('<section id="tab-flight"', 1)[1].split('<section id="tab-industry"', 1)[0]
 
     assert "data-tab-target=\"flight\"" in page
-    assert "Flight Attendant" in page
-    assert "Captain's Notes" in page
-    assert "Read-only ESI" in page
-    assert "No EVE client control" in page
-    assert "screen-reading reactions" in page
-    assert "No token file yet" in page
+    assert "Flight Attendant" in flight_section
+    assert "Captain's Notes" in flight_section
+    assert "Current system briefing" in flight_section
+    assert "ESI Flight Recorder" in flight_section
+    assert "Read-only ESI" in flight_section
+    assert "No EVE client control" in flight_section
+    assert "screen-reading reactions" in flight_section
+    assert "No token file yet" in flight_section
+    assert "Profitability Ranking" not in flight_section
+    assert "Static Cache Preflight" not in flight_section
+    assert "id=\"flight-blueprint-summary\"" not in flight_section
+    assert "id=\"flight-profit-scan\"" not in flight_section
+    assert "id=\"flight-buyer-scan\"" not in flight_section
 
 
 def test_dashboard_keeps_market_offer_workflow_controls():
@@ -318,6 +326,8 @@ def test_dashboard_includes_shared_fittings_tab():
 
 def test_dashboard_includes_flight_esi_hooks():
     page = render_dashboard()
+    flight_section = page.split('<section id="tab-flight"', 1)[1].split('<section id="tab-industry"', 1)[0]
+    industry_section = page.split('<section id="tab-industry"', 1)[1].split('<section id="tab-hauling"', 1)[0]
 
     assert "/api/flight/status" in page
     assert "/api/flight/industry" in page
@@ -335,6 +345,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-login-link\"" in page
     assert "data-tab-target=\"industry\"" in page
     assert "Industry Library" in page
+    assert "data-scope-tab=\"industry\"" in page
     assert "Decision Lenses" in page
     assert "id=\"industry-build-system\"" in page
     assert "id=\"industry-sale-mode\"" in page
@@ -358,6 +369,15 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Why This App Requests ESI Scopes" in page
     assert "It cannot buy, sell, contract, move assets, send mail, place market orders" in page
     assert "esi-wallet.read_character_wallet.v1" in page
+    assert "id=\"flight-blueprint-summary\"" in industry_section
+    assert "id=\"flight-profit-scan\"" in industry_section
+    assert "id=\"flight-buyer-scan\"" in industry_section
+    assert "Static Cache Preflight" in industry_section
+    assert "Profitability Ranking" in industry_section
+    assert "Nearby Systems" in industry_section
+    assert "id=\"flight-blueprint-summary\"" not in flight_section
+    assert "id=\"flight-profit-scan\"" not in flight_section
+    assert "id=\"flight-buyer-scan\"" not in flight_section
     assert "data-tab-target=\"hauling\"" in page
     assert "data-tab-target=\"acquisition\"" in page
     assert "id=\"haul-route-form\"" in page

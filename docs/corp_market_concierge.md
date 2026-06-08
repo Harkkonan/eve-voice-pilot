@@ -43,11 +43,10 @@ The local board now includes a `Flight Attendant` tab beside the market board.
 The first version is a safe briefing surface:
 
 - It stores captain's notes in the browser only.
-- It can use read-only ESI location, assets, and blueprints to show the connected pilot's current system, owned blueprint summary, and material stacks.
-- It includes a separate `Industry Library` tab for owned blueprints, owned materials, recipe cache status, ME/TE, required skills, max production limit, base job time, and TE-adjusted timing assumptions.
-- It can compare owned blueprint type IDs with a local static recipe cache before market pricing is added.
-- It can use a local SDE route graph to show systems within the selected jump range of the current ESI location.
-- It can scan public ESI buy orders for products made by owned blueprints and filter those buyer orders to the selected jump range.
+- It can use read-only ESI location to show the connected pilot's current system.
+- It keeps the ESI Flight Recorder, scope explanation, Captain's Notes, and Safety Charter on the Flight Attendant tab.
+- It includes a separate `Industry Library` tab for owned blueprints, owned materials, recipe cache status, nearby systems, buyer scans, profitability ranking, ME/TE, required skills, max production limit, base job time, and TE-adjusted timing assumptions.
+- The `Industry Library` tab compares owned blueprint type IDs with the local static recipe cache and can scan public ESI buy orders for products made by owned blueprints.
 - It includes a `Hauler Routes` tab that compares cheap public material sell orders on or near a selected route with higher public buy orders in the destination system, then lets the pilot rank and filter results by total profit, ISK per m3, ISK per extra jump, or margin.
 - It includes a `Market Investment Portfolio` tab that compares public buy/sell orders with public market history before suggesting a diversified spread of public buy-order candidates across item families, total ISK budget, and total planning-jump budget.
 - It includes a `Trade P&L` tab that reads recent wallet transactions and wallet journal fee rows to match visible buys and sells into item-level profit, loss, open stock, unmatched sells, and optional matched transaction rows. The tab can narrow history from 1 hour to 30 days and can apply consideration rules to the considered income total: count every item, ignore SDE-labeled materials and inputs, ignore a custom list, or combine materials with a custom list. Ignored items stay visible with their real result. Inventory mode can add a Fuzzwork Jita 4-4 aggregate estimate for open stock; realized P&L remains based on matched wallet transactions. Investment Portfolio recommendations are saved as local expected bid/profit snapshots so P&L can show actual-vs-plan deltas later. Seen wallet transactions are also saved locally so older buys can be replayed as opening inventory for later sells.
@@ -137,7 +136,7 @@ Use the diagnostics endpoint after startup:
 https://YOUR-DOMAIN-OR-TUNNEL/api/flight/diagnostics
 ```
 
-The Flight Attendant tab also shows a **Static Cache Preflight** panel. Check it before inviting testers or after deploying a new server/container. If it reports a missing cache, run the cache refresh on the same host that serves the website, then restart or refresh the page.
+The Industry Library tab also shows a **Static Cache Preflight** panel. Check it before inviting testers or after deploying a new server/container. If it reports a missing cache, run the cache refresh on the same host that serves the website, then restart or refresh the page.
 
 Remote market listing writes are locked down in public hosting mode. Add an admin token for operator-only writes, or add `--trusted-members-can-write-market` if allowlisted EVE SSO members should be able to create, reserve, and update market listings from the shared site:
 

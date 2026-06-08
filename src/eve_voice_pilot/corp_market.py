@@ -290,8 +290,18 @@ FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
     },
     "flight": {
         "label": "Flight Attendant",
-        "summary": "Uses the core Flight Attendant scopes for status, owned blueprints, owned assets, buyer scans, profitability, cache checks, and manual decision support. Reprocessing implant and structure-name reads are separate opt-in scopes.",
-        "scopes": DEFAULT_FLIGHT_ESI_SCOPES,
+        "summary": "Uses live location for the current-system briefing and keeps the app-wide ESI scope explanation, safety charter, and transparency recorder visible. Blueprint and profitability tools now live in Industry Library.",
+        "scopes": (FLIGHT_LOCATION_SCOPE,),
+    },
+    "industry": {
+        "label": "Industry Library",
+        "summary": "Uses owned blueprints, owned assets, live location, skills, and public market data for recipe checks, material coverage, nearby buyer scans, and profitability ranking. All build and trade actions remain manual.",
+        "scopes": (
+            FLIGHT_LOCATION_SCOPE,
+            FLIGHT_ASSETS_SCOPE,
+            FLIGHT_BLUEPRINTS_SCOPE,
+            FLIGHT_SKILLS_SCOPE,
+        ),
     },
     "hauling": {
         "label": "Hauler Routes",
@@ -18634,42 +18644,86 @@ help</textarea>
                 </section>
                 <div id="flight-esi-message" class="meta"></div>
               </div>
-              <div class="module-stack">
-                <details class="module flight-output-module" open>
-                  <summary><h3 class="signal">Nearby Systems</h3></summary>
-                  <div class="module-content">
-                    <label>Max jumps
-                      <input id="flight-max-jumps" type="number" min="0" max="25" step="1" value="5">
-                    </label>
-                    <div id="flight-route-summary" class="meta">Connect ESI to calculate nearby systems.</div>
-                    <div id="flight-route-top" class="meta"></div>
-                  </div>
-                </details>
-                <details class="module flight-output-module" open>
-                  <summary><h3 class="warning">Buyer Orders</h3></summary>
-                  <div class="module-content">
-                    <button id="flight-buyer-scan" class="ghost" type="button">Scan Buyers</button>
-                    <div id="flight-buyer-summary" class="meta">Connect ESI to scan nearby public buy orders.</div>
-                    <div id="flight-buyer-progress-log" class="progress-log" hidden></div>
-                    <div id="flight-buyer-top" class="meta"></div>
-                  </div>
-                </details>
-                <details class="module flight-output-module" open>
-                  <summary><h3 class="signal">Industry Library Link</h3></summary>
-                  <div class="module-content">
-                    <div class="meta">Owned blueprints, material stock, recipe cache status, ME/TE, skill needs, and base job time now live in the Industry Library tab.</div>
-                  </div>
-                </details>
-                <details class="module flight-output-module" open>
-                  <summary><h3 class="danger">Pilot Still Acts</h3></summary>
-                  <div class="module-content">
-                    <div id="flight-industry-note" class="meta">No warps, orders, contracts, clicks, or client input are performed by this page.</div>
-                  </div>
-                </details>
-              </div>
             </div>
           </section>
 
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Safety Charter</h2>
+                <div class="meta">The Flight Attendant should advise like a crew member, not fly the ship.</div>
+              </div>
+            </div>
+            <ul class="charter-list">
+              <li><strong>Read-only ESI:</strong> every requested Flight Attendant scope is read-only and listed in the scope explanation above.</li>
+              <li><strong>No token file yet:</strong> this first ESI slice keeps the access token in server memory only.</li>
+              <li><strong>Local notes:</strong> pilot-authored reminders can be stored without touching the EVE client.</li>
+              <li><strong>No EVE client control:</strong> no keypresses, clicks, warps, contract creation, order placement, packet reading, screen-reading reactions, or cache scraping.</li>
+              <li><strong>Human confirmation:</strong> every trade, route, and market action remains a pilot decision inside EVE.</li>
+            </ul>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-industry" class="tab-panel" data-tab-panel="industry" hidden>
+        <div class="industry-library-grid">
+          <section class="panel" aria-labelledby="industry-library-title">
+            <div class="panel-header">
+              <div>
+                <h2 id="industry-library-title">Industry Library</h2>
+                <div class="meta">Owned blueprint inventory, known recipes, material stock, and job assumptions from ESI plus the local SDE cache.</div>
+              </div>
+            </div>
+@@TAB_SCOPE_INDUSTRY@@
+            <div class="module-stack">
+              <details class="module flight-output-module" open>
+                <summary><h3 class="signal">Owned Blueprints</h3></summary>
+                <div class="module-content">
+                  <div id="flight-blueprint-summary" class="meta">Connect ESI to scan owned blueprints.</div>
+                  <div id="flight-blueprint-top" class="meta"></div>
+                </div>
+              </details>
+              <details class="module flight-output-module" open>
+                <summary><h3 class="warning">Materials And Assets</h3></summary>
+                <div class="module-content">
+                  <div id="flight-asset-summary" class="meta">Connect ESI to scan owned asset stacks.</div>
+                  <div id="flight-asset-top" class="meta"></div>
+                </div>
+              </details>
+              <details class="module flight-output-module" open>
+                <summary><h3 class="signal">Recipe Cache</h3></summary>
+                <div class="module-content">
+                  <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
+                  <div id="flight-buildability-top" class="meta"></div>
+                </div>
+              </details>
+              <details class="module flight-output-module" open>
+                <summary><h3 class="signal">Nearby Systems</h3></summary>
+                <div class="module-content">
+                  <label>Max jumps
+                    <input id="flight-max-jumps" type="number" min="0" max="25" step="1" value="5">
+                  </label>
+                  <div id="flight-route-summary" class="meta">Connect ESI to calculate nearby systems.</div>
+                  <div id="flight-route-top" class="meta"></div>
+                </div>
+              </details>
+              <details class="module flight-output-module" open>
+                <summary><h3 class="warning">Buyer Orders</h3></summary>
+                <div class="module-content">
+                  <button id="flight-buyer-scan" class="ghost" type="button">Scan Buyers</button>
+                  <div id="flight-buyer-summary" class="meta">Connect ESI to scan nearby public buy orders.</div>
+                  <div id="flight-buyer-progress-log" class="progress-log" hidden></div>
+                  <div id="flight-buyer-top" class="meta"></div>
+                </div>
+              </details>
+              <details class="module flight-output-module" open>
+                <summary><h3 class="danger">Pilot Still Acts</h3></summary>
+                <div class="module-content">
+                  <div id="flight-industry-note" class="meta">No warps, orders, contracts, clicks, or client input are performed by this page.</div>
+                </div>
+              </details>
+            </div>
+          </section>
           <section class="panel profit-panel" aria-labelledby="flight-profit-title">
             <div class="panel-header">
               <div>
@@ -18700,7 +18754,6 @@ help</textarea>
               </div>
             </details>
           </section>
-
           <section class="panel cache-preflight-panel" aria-labelledby="flight-cache-title">
             <div class="panel-header">
               <div>
@@ -18711,58 +18764,6 @@ help</textarea>
             </div>
             <div id="flight-cache-summary" class="profit-summary">Checking static caches...</div>
             <div id="flight-cache-list" class="cache-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Safety Charter</h2>
-                <div class="meta">The Flight Attendant should advise like a crew member, not fly the ship.</div>
-              </div>
-            </div>
-            <ul class="charter-list">
-              <li><strong>Read-only ESI:</strong> every requested Flight Attendant scope is read-only and listed in the scope explanation above.</li>
-              <li><strong>No token file yet:</strong> this first ESI slice keeps the access token in server memory only.</li>
-              <li><strong>Local notes:</strong> pilot-authored reminders can be stored without touching the EVE client.</li>
-              <li><strong>No EVE client control:</strong> no keypresses, clicks, warps, contract creation, order placement, packet reading, screen-reading reactions, or cache scraping.</li>
-              <li><strong>Human confirmation:</strong> every trade, route, and market action remains a pilot decision inside EVE.</li>
-            </ul>
-          </section>
-        </div>
-      </section>
-
-      <section id="tab-industry" class="tab-panel" data-tab-panel="industry" hidden>
-        <div class="industry-library-grid">
-          <section class="panel" aria-labelledby="industry-library-title">
-            <div class="panel-header">
-              <div>
-                <h2 id="industry-library-title">Industry Library</h2>
-                <div class="meta">Owned blueprint inventory, known recipes, material stock, and job assumptions from ESI plus the local SDE cache.</div>
-              </div>
-            </div>
-            <div class="module-stack">
-              <details class="module flight-output-module" open>
-                <summary><h3 class="signal">Owned Blueprints</h3></summary>
-                <div class="module-content">
-                  <div id="flight-blueprint-summary" class="meta">Connect ESI to scan owned blueprints.</div>
-                  <div id="flight-blueprint-top" class="meta"></div>
-                </div>
-              </details>
-              <details class="module flight-output-module" open>
-                <summary><h3 class="warning">Materials And Assets</h3></summary>
-                <div class="module-content">
-                  <div id="flight-asset-summary" class="meta">Connect ESI to scan owned asset stacks.</div>
-                  <div id="flight-asset-top" class="meta"></div>
-                </div>
-              </details>
-              <details class="module flight-output-module" open>
-                <summary><h3 class="signal">Recipe Cache</h3></summary>
-                <div class="module-content">
-                  <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
-                  <div id="flight-buildability-top" class="meta"></div>
-                </div>
-              </details>
-            </div>
           </section>
           <section class="panel profit-panel" aria-labelledby="industry-assumptions-title">
             <div class="panel-header">
@@ -27519,6 +27520,7 @@ help</textarea>
         "@@FLIGHT_SCOPE_METADATA_JSON@@": render_flight_scope_metadata_json(),
         "@@TAB_SCOPE_MARKET@@": render_flight_scope_summary("market"),
         "@@TAB_SCOPE_FLIGHT@@": render_flight_scope_summary("flight"),
+        "@@TAB_SCOPE_INDUSTRY@@": render_flight_scope_summary("industry"),
         "@@TAB_SCOPE_HAULING@@": render_flight_scope_summary("hauling"),
         "@@TAB_SCOPE_ACQUISITION@@": render_flight_scope_summary("acquisition"),
         "@@TAB_SCOPE_TRADE_PNL@@": render_flight_scope_summary("trade-pnl"),
