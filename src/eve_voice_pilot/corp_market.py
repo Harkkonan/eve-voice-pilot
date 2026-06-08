@@ -6573,6 +6573,7 @@ def scan_route_hauling_opportunities(
     no_pickup_sell_order_count = 0
     destination_demand_gated_count = 0
     errors = []
+    history_candidates: list[dict[str, Any]] = []
     emit_haul_route_progress(
         progress=progress,
         route_path=route_path,
@@ -6731,17 +6732,6 @@ def scan_route_hauling_opportunities(
         net_profit_per_extra_jump = None
         if extra_route_jumps is not None:
             net_profit_per_extra_jump = total_net_profit / max(1, int(extra_route_jumps))
-        if progress is not None:
-            progress(
-                "orders",
-                {
-                    "type_id": type_id,
-                    "item_name": target["name"],
-                    "material_index": target_index,
-                    "scanned_materials": len(scan_targets),
-                    "message": f"Checking market history for {target['name']}",
-                },
-            )
         matched_pickup_region_ids = sorted(
             {
                 int(system.region_id)
@@ -6751,36 +6741,7 @@ def scan_route_hauling_opportunities(
                 if system is not None and system.region_id is not None
             }
         )
-        pickup_history_rows = []
-        for region_id in matched_pickup_region_ids:
-            try:
-                pickup_history_rows.append(fetch_market_history(config, region_id=region_id, type_id=type_id))
-                history_regions.add(region_id)
-            except CorpMarketError as exc:
-                errors.append({"history": "pickup", "type_id": type_id, "region_id": region_id, "error": str(exc)})
-        try:
-            destination_history_rows = fetch_market_history(config, region_id=destination.region_id, type_id=type_id)
-            history_regions.add(destination.region_id)
-        except CorpMarketError as exc:
-            errors.append(
-                {"history": "destination", "type_id": type_id, "region_id": destination.region_id, "error": str(exc)}
-            )
-            destination_history_rows = []
-        pickup_history = market_history_stats(combine_market_history_rows(pickup_history_rows))
-        destination_history = market_history_stats(destination_history_rows)
-        history_flags = hauling_history_flags(
-            pickup_stats=pickup_history,
-            destination_stats=destination_history,
-            average_pickup_price=float(depth_match["average_pickup_price"]),
-            average_destination_price=float(depth_match["average_destination_price"]),
-            units=int(depth_match["units"]),
-        )
-        risk_level = acquisition_risk_level(history_flags)
-        if risk_level == "possible-trap":
-            trap_signal_count += 1
-        elif risk_level == "caution":
-            caution_signal_count += 1
-        opportunities.append(
+        history_candidates.append(
             {
                 "type_id": type_id,
                 "item_name": target["name"],
@@ -6823,12 +6784,72 @@ def scan_route_hauling_opportunities(
                 "order_depth": depth_match["order_depth"],
                 "load_plan_depth": depth_match["load_plan_depth"],
                 "order_depth_truncated": depth_match["order_depth_truncated"],
-                "decision": hauling_decision(risk_level=risk_level, margin_percent=margin_percent),
+                "matched_pickup_region_ids": matched_pickup_region_ids,
+            }
+        )
+
+    history_requests = []
+    for candidate in history_candidates:
+        type_id = int(candidate["type_id"])
+        history_requests.append((type_id, int(destination.region_id)))
+        for region_id in candidate.get("matched_pickup_region_ids", []):
+            history_requests.append((type_id, int(region_id)))
+    if progress is not None and history_candidates:
+        progress(
+            "orders",
+            {
+                "history_candidate_count": len(history_candidates),
+                "history_request_count": len(set(history_requests)),
+                "message": f"Checking market history for {len(history_candidates)} profitable haul candidates.",
+            },
+        )
+    history_by_type_region, batch_errors = fetch_haul_history_batch(config=config, requests=history_requests)
+    errors.extend(batch_errors)
+    for candidate_index, candidate in enumerate(history_candidates, start=1):
+        type_id = int(candidate["type_id"])
+        if progress is not None:
+            progress(
+                "orders",
+                {
+                    "type_id": type_id,
+                    "item_name": candidate["item_name"],
+                    "history_candidate_index": candidate_index,
+                    "history_candidate_count": len(history_candidates),
+                    "message": f"Scoring market history for {candidate['item_name']}",
+                },
+            )
+        pickup_history_rows = []
+        for region_id in candidate.get("matched_pickup_region_ids", []):
+            history_key = (type_id, int(region_id))
+            if history_key in history_by_type_region:
+                pickup_history_rows.append(history_by_type_region[history_key])
+                history_regions.add(int(region_id))
+        destination_history_key = (type_id, int(destination.region_id))
+        destination_history_rows = history_by_type_region.get(destination_history_key, [])
+        if destination_history_key in history_by_type_region:
+            history_regions.add(int(destination.region_id))
+        pickup_history = market_history_stats(combine_market_history_rows(pickup_history_rows))
+        destination_history = market_history_stats(destination_history_rows)
+        history_flags = hauling_history_flags(
+            pickup_stats=pickup_history,
+            destination_stats=destination_history,
+            average_pickup_price=float(candidate["average_pickup_price"]),
+            average_destination_price=float(candidate["average_destination_price"]),
+            units=int(candidate["units"]),
+        )
+        risk_level = acquisition_risk_level(history_flags)
+        if risk_level == "possible-trap":
+            trap_signal_count += 1
+        elif risk_level == "caution":
+            caution_signal_count += 1
+        opportunities.append(
+            {
+                **candidate,
+                "decision": hauling_decision(risk_level=risk_level, margin_percent=candidate["margin_percent"]),
                 "risk_level": risk_level,
                 "history_flags": history_flags,
                 "pickup_history": pickup_history,
                 "destination_history": destination_history,
-                "matched_pickup_region_ids": matched_pickup_region_ids,
             }
         )
 
@@ -7230,6 +7251,40 @@ def fetch_haul_pickup_sell_batch(
                 errors.append({"order_type": "sell", "type_id": type_id, "region_id": region_id, "error": str(exc)})
                 sells_by_type_region[(type_id, region_id)] = []
     return sells_by_type_region, errors
+
+
+def fetch_haul_history_batch(
+    *,
+    config: EveSsoConfig,
+    requests: Iterable[tuple[int, int]],
+) -> tuple[dict[tuple[int, int], list[dict[str, Any]]], list[dict[str, Any]]]:
+    history_by_type_region: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    errors: list[dict[str, Any]] = []
+    clean_request_set: set[tuple[int, int]] = set()
+    for raw_type_id, raw_region_id in requests:
+        type_id = clean_optional_int(raw_type_id)
+        region_id = clean_optional_int(raw_region_id)
+        if type_id is not None and region_id is not None:
+            clean_request_set.add((type_id, region_id))
+    clean_requests = tuple(
+        sorted(clean_request_set)
+    )
+    if not clean_requests:
+        return history_by_type_region, errors
+
+    worker_count = max(1, min(MAX_FLIGHT_HAUL_FETCH_WORKERS, len(clean_requests)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(fetch_market_history, config, region_id=region_id, type_id=type_id): (type_id, region_id)
+            for type_id, region_id in clean_requests
+        }
+        for future in as_completed(futures):
+            type_id, region_id = futures[future]
+            try:
+                history_by_type_region[(type_id, region_id)] = future.result()
+            except CorpMarketError as exc:
+                errors.append({"history": "market", "type_id": type_id, "region_id": region_id, "error": str(exc)})
+    return history_by_type_region, errors
 
 
 def fetch_acquisition_order_batch(
