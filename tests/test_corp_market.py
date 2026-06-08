@@ -436,6 +436,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Portfolio stage timing" in page
     assert "order fetch" in page
     assert "history fetch" in page
+    assert "id=\"acq-item-workers\"" in page
+    assert "Scan speed" in page
+    assert "Use Conservative if ESI or hosting feels touchy." in page
     assert "renderHaulAccessGuardrails" in page
     assert "Access check" in page
     assert "Pickup access" in page
@@ -649,12 +652,21 @@ def test_dashboard_renders_flight_scope_disclosures_by_tab():
     for scope in corp_market.DEFAULT_FLIGHT_ESI_SCOPES:
         assert scope in page
 
+    for scope in corp_market.OPTIONAL_REPROCESSING_ESI_SCOPES:
+        assert scope in page
+        assert scope not in corp_market.DEFAULT_FLIGHT_ESI_SCOPES
+
     assert "Current location" in page
     assert "Character wallet" in page
+    assert "Optional Reprocessing ESI" in page
+    assert "Opt In To Implant/Structure Reads" in page
+    assert "Normal Flight Attendant login requests these core scopes" in page
+    assert "Optional reprocessing opt-in" in page
     assert "Reads recent wallet transactions and market fee journal rows" in page
     assert "No character ESI scope is used by this tab today" in page
     assert "No character ESI scopes are used by this tab" in page
     assert "It is read-only and cannot create, edit, or cancel orders" in page
+    assert "full consented Flight Attendant scope set" not in page
     assert "does not expose wallet transactions unless we request a separate transaction scope" not in page
 
 
@@ -685,6 +697,40 @@ def test_flight_scope_metadata_json_uses_scope_registry():
     assert metadata["location"]["label"] == "Current location"
     assert metadata["wallet"]["scope"] == corp_market.FLIGHT_WALLET_SCOPE
     assert metadata["wallet"]["label"] == "Character wallet"
+    assert metadata["implants"]["scope"] == corp_market.FLIGHT_IMPLANTS_SCOPE
+    assert metadata["implants"]["optional_reprocessing"] is True
+    assert metadata["structures"]["scope"] == corp_market.FLIGHT_STRUCTURES_SCOPE
+    assert metadata["structures"]["optional_reprocessing"] is True
+
+
+def test_reprocessing_scopes_are_explicit_login_opt_in():
+    config = corp_market.EveSsoConfig(
+        client_id="client-id",
+        client_secret="client-secret",
+        callback_url="https://market.test/flight/callback",
+    )
+
+    default_scopes = corp_market.flight_scopes_for_login(config)
+    opt_in_scopes = corp_market.flight_scopes_for_login(
+        config,
+        scope_mode=corp_market.REPROCESSING_SCOPE_MODE,
+    )
+
+    assert corp_market.FLIGHT_IMPLANTS_SCOPE not in default_scopes
+    assert corp_market.FLIGHT_STRUCTURES_SCOPE not in default_scopes
+    assert corp_market.FLIGHT_IMPLANTS_SCOPE in opt_in_scopes
+    assert corp_market.FLIGHT_STRUCTURES_SCOPE in opt_in_scopes
+
+    url = corp_market.build_sso_authorization_url(
+        corp_market.flight_sso_config_for_login(config, scope_mode=corp_market.REPROCESSING_SCOPE_MODE),
+        "test-state",
+        metadata={"authorization_endpoint": "https://login.test/oauth/authorize"},
+    )
+    query = parse_qs(url.split("?", 1)[1])
+    requested_scopes = query["scope"][0].split()
+
+    assert corp_market.FLIGHT_IMPLANTS_SCOPE in requested_scopes
+    assert corp_market.FLIGHT_STRUCTURES_SCOPE in requested_scopes
 
 
 def test_route_system_suggestions_rank_prefixes_and_aliases(tmp_path):
@@ -735,6 +781,11 @@ def test_flight_status_reports_missing_sso_configuration():
     assert "esi-skills.read_skills.v1" in payload["required_scopes"]
     assert "esi-characters.read_standings.v1" in payload["required_scopes"]
     assert "esi-wallet.read_character_wallet.v1" in payload["required_scopes"]
+    assert corp_market.FLIGHT_IMPLANTS_SCOPE not in payload["required_scopes"]
+    assert corp_market.FLIGHT_STRUCTURES_SCOPE not in payload["required_scopes"]
+    assert payload["optional_reprocessing_scopes"] == list(corp_market.OPTIONAL_REPROCESSING_ESI_SCOPES)
+    assert payload["missing_optional_reprocessing_scopes"] == list(corp_market.OPTIONAL_REPROCESSING_ESI_SCOPES)
+    assert payload["reprocessing_opt_in_url"] == corp_market.REPROCESSING_OPT_IN_LOGIN_URL
     assert payload["membership"]["required"] is False
     assert payload["hosting"]["token_storage"] == "server-memory-only"
 
@@ -2238,7 +2289,7 @@ def test_acquisition_scan_request_parses_query_contract():
         parse_qs(
             "origin_name=Rens&destination=Amarr&budget_isk=75000000&pickup_jumps=5"
             "&portfolio_jumps=80&min_margin_percent=22&broker_fee_percent=4.5"
-            "&target_days=7&route_preference=lesssecure&common_materials=0"
+            "&target_days=7&item_workers=6&route_preference=lesssecure&common_materials=0"
             "&market_group_ids=20&market_type_ids=44992,34&market_type_names=Epithal%0APLEX"
         )
     )
@@ -2251,6 +2302,7 @@ def test_acquisition_scan_request_parses_query_contract():
     assert request.min_margin_percent == pytest.approx(22.0)
     assert request.broker_fee_percent == pytest.approx(4.5)
     assert request.target_days == 7
+    assert request.item_workers == 6
     assert request.route_preference == "less_secure"
     assert request.include_common_materials is False
     assert request.market_group_ids == (20,)

@@ -51,7 +51,7 @@ The first version is a safe briefing surface:
 - It includes a `Hauler Routes` tab that compares cheap public material sell orders on or near a selected route with higher public buy orders in the destination system, then lets the pilot rank and filter results by total profit, ISK per m3, ISK per extra jump, or margin.
 - It includes a `Market Investment Portfolio` tab that compares public buy/sell orders with public market history before suggesting a diversified spread of public buy-order candidates across item families, total ISK budget, and total planning-jump budget.
 - It includes a `Trade P&L` tab that reads recent wallet transactions and wallet journal fee rows to match visible buys and sells into item-level profit, loss, open stock, unmatched sells, and optional matched transaction rows. The tab can narrow history from 1 hour to 30 days and can apply consideration rules to the considered income total: count every item, ignore SDE-labeled materials and inputs, ignore a custom list, or combine materials with a custom list. Ignored items stay visible with their real result. Inventory mode can add a Fuzzwork Jita 4-4 aggregate estimate for open stock; realized P&L remains based on matched wallet transactions. Investment Portfolio recommendations are saved as local expected bid/profit snapshots so P&L can show actual-vs-plan deltas later. Seen wallet transactions are also saved locally so older buys can be replayed as opening inventory for later sells.
-- It includes an `Ore Reprocessing` tab that uses ESI location, skills, standings, and implants plus local SDE ore data to estimate mineral output from a typed ore amount.
+- It includes an `Ore Reprocessing` tab that uses ESI location, skills, standings, optional implant/structure-name reads, and local SDE ore data to estimate mineral output from a typed ore amount.
 - It includes a `Planetary Industry` planner for comparing PI schematics, material chains, market prices, planet availability, and customs transfer costs before a pilot moves goods manually.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, read the EVE screen, or scrape cache files.
@@ -76,10 +76,17 @@ esi-assets.read_assets.v1
 esi-characters.read_blueprints.v1
 esi-skills.read_skills.v1
 esi-characters.read_standings.v1
-esi-clones.read_implants.v1
-esi-universe.read_structures.v1
 esi-wallet.read_character_wallet.v1
 ```
+
+Optional reprocessing opt-in scopes:
+
+```text
+esi-clones.read_implants.v1
+esi-universe.read_structures.v1
+```
+
+The normal Flight Attendant login does not request the optional reprocessing scopes. A pilot must choose the reprocessing opt-in link before the app asks EVE SSO for implant reads or private structure-name resolution. Manual implant, structure bonus, facility yield, and processing-fee overrides still work without these optional scopes.
 
 The wallet scope is used by `Trade P&L` for recent market transactions and related market fee rows. The server still keeps the access token in memory only, and the tab does not place, edit, cancel, or update any market orders. Trade P&L consideration rules change only the local considered income summary; ignored rows remain visible with their actual profit or loss. The materials rule uses the local SDE market group lineage for `Materials` when available, with a mineral fallback for common inputs such as Pyerite. Open-stock market valuation uses public Fuzzwork aggregates and is labeled as an estimate, not realized wallet income. Planner expectation snapshots and seen wallet transaction rows are local rows in the ignored `profiles/corp_market.sqlite3` database; they do not create orders and do not leave the server process except as displayed P&L comparison output.
 
@@ -141,7 +148,7 @@ $env:CORP_MARKET_ADMIN_TOKEN = "change-this-token"
 
 ### Local Static Data Caches
 
-Flight Attendant uses ESI to learn your actual location, owned blueprints, materials, reprocessing skills, standings, and implants. It uses CCP's Static Data Export for blueprint recipes, jump-aware route math, ore portions, mineral outputs, and NPC station reprocessing values. Build or refresh the local static caches from PowerShell:
+Flight Attendant uses ESI to learn your actual location, owned blueprints, materials, reprocessing skills, standings, and wallet trade history. The reprocessing tab can optionally read implants and accessible structure names only after the pilot chooses the reprocessing opt-in. It uses CCP's Static Data Export for blueprint recipes, jump-aware route math, ore portions, mineral outputs, and NPC station reprocessing values. Build or refresh the local static caches from PowerShell:
 
 ```powershell
 python .\scripts\update_industry_recipe_cache.py
@@ -206,13 +213,13 @@ The `Ore Reprocessing` tab estimates mineral output from an ore type and ore-uni
 - current system, station, or structure from ESI location;
 - Reprocessing, Reprocessing Efficiency, and ore-processing skill levels from ESI skills;
 - NPC corporation or faction standing from ESI standings for NPC station tax reduction;
-- known Zainou Beancounter reprocessing implants from ESI implants;
+- known Zainou Beancounter reprocessing implants from ESI implants, only after the pilot chooses the optional reprocessing opt-in;
 - ore portion size, material outputs, and NPC station base yield/tax from the local SDE cache;
 - public Jita buy orders from ESI to compare the immediate value of the processed materials against the original unprocessed ore stack.
 
 For NPC stations, the calculator applies the station's SDE reprocessing efficiency and station take, then reduces station take by the connected pilot's ESI standing where possible. The location selector can use the pilot's current ESI location or list NPC stations from the local SDE cache whose owner corporation or faction standing is over 1.5 in the pilot's ESI standings. Those station options include the standings-adjusted processing fee and can be sorted by best net yield, lowest processing fee, or highest standing. The SDE cache does not include every station display name, so the selector may show the solar system, owner, and station id until a specific station is selected for calculation.
 
-For Upwell structures, ESI can resolve the current structure name/owner if the pilot has access, but it does not expose the active reprocessing rig, facility tax, service settings, or structure bonus. Use the manual override fields for those structure values.
+For Upwell structures, ESI can resolve the current structure name/owner if the pilot has access and chooses the optional reprocessing opt-in, but it does not expose the active reprocessing rig, facility tax, service settings, or structure bonus. Use the manual override fields for those structure values.
 
 This tab is advisory only. It never starts a reprocessing job, moves items, presses keys, places orders, or writes to the EVE client.
 

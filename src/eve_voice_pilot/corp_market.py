@@ -4,7 +4,7 @@ import argparse
 import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -89,7 +89,8 @@ MAX_FLIGHT_HAUL_SCAN_TYPES = 240
 MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES = 30
 MAX_FLIGHT_ACQUISITION_SCAN_TYPES = 50
 MAX_FLIGHT_ACQUISITION_FETCH_WORKERS = 6
-MAX_FLIGHT_ACQUISITION_ITEM_WORKERS = 4
+DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS = 4
+MAX_FLIGHT_ACQUISITION_ITEM_WORKERS = 6
 MAX_FLIGHT_HAUL_FETCH_WORKERS = 6
 MAX_HAUL_MARKET_GROUP_IDS = 32
 MAX_HAUL_MARKET_TYPE_IDS = MAX_FLIGHT_HAUL_SCAN_TYPES
@@ -218,10 +219,14 @@ DEFAULT_FLIGHT_ESI_SCOPES = (
     FLIGHT_BLUEPRINTS_SCOPE,
     FLIGHT_SKILLS_SCOPE,
     FLIGHT_STANDINGS_SCOPE,
-    FLIGHT_IMPLANTS_SCOPE,
-    FLIGHT_STRUCTURES_SCOPE,
     FLIGHT_WALLET_SCOPE,
 )
+OPTIONAL_REPROCESSING_ESI_SCOPES = (
+    FLIGHT_IMPLANTS_SCOPE,
+    FLIGHT_STRUCTURES_SCOPE,
+)
+REPROCESSING_SCOPE_MODE = "reprocessing"
+REPROCESSING_OPT_IN_LOGIN_URL = f"/flight/login?scope_mode={REPROCESSING_SCOPE_MODE}"
 FLIGHT_ESI_SCOPE_DISCLOSURES: dict[str, dict[str, str]] = {
     FLIGHT_LOCATION_SCOPE: {
         "label": "Current location",
@@ -245,17 +250,38 @@ FLIGHT_ESI_SCOPE_DISCLOSURES: dict[str, dict[str, str]] = {
     },
     FLIGHT_IMPLANTS_SCOPE: {
         "label": "Character implants",
-        "detail": "Reads implants when available so reprocessing can detect known RX reprocessing implants instead of requiring a manual override.",
+        "detail": "Optional for reprocessing. Reads implants only after explicit opt-in so the calculator can detect known RX reprocessing implants instead of requiring a manual override.",
     },
     FLIGHT_STRUCTURES_SCOPE: {
         "label": "Structure names",
-        "detail": "Resolves private Upwell structure names when ESI returns a structure ID for the pilot's current location.",
+        "detail": "Optional for reprocessing. Resolves private Upwell structure names only after explicit opt-in when ESI returns a structure ID for the pilot's current location.",
     },
     FLIGHT_WALLET_SCOPE: {
         "label": "Character wallet",
         "detail": "Reads recent wallet transactions and market fee journal rows for Trade P&L. It is read-only and cannot create, edit, or cancel orders.",
     },
 }
+
+
+def merge_flight_scopes(*scope_groups: Iterable[str]) -> tuple[str, ...]:
+    merged: list[str] = []
+    for scope_group in scope_groups:
+        for scope in scope_group:
+            clean_scope = str(scope or "").strip()
+            if clean_scope and clean_scope not in merged:
+                merged.append(clean_scope)
+    return tuple(merged)
+
+
+def flight_scopes_for_login(config: EveSsoConfig, *, scope_mode: str = "") -> tuple[str, ...]:
+    base_scopes = tuple(config.scopes or DEFAULT_FLIGHT_ESI_SCOPES)
+    if scope_mode == REPROCESSING_SCOPE_MODE:
+        return merge_flight_scopes(base_scopes, OPTIONAL_REPROCESSING_ESI_SCOPES)
+    return merge_flight_scopes(base_scopes)
+
+
+def flight_sso_config_for_login(config: EveSsoConfig, *, scope_mode: str = "") -> EveSsoConfig:
+    return replace(config, scopes=flight_scopes_for_login(config, scope_mode=scope_mode))
 FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
     "market": {
         "label": "Discord Alerts",
@@ -264,7 +290,7 @@ FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
     },
     "flight": {
         "label": "Flight Attendant",
-        "summary": "Uses the full consented Flight Attendant scope set for status, owned blueprints, owned assets, buyer scans, profitability, cache checks, and manual decision support.",
+        "summary": "Uses the core Flight Attendant scopes for status, owned blueprints, owned assets, buyer scans, profitability, cache checks, and manual decision support. Reprocessing implant and structure-name reads are separate opt-in scopes.",
         "scopes": DEFAULT_FLIGHT_ESI_SCOPES,
     },
     "hauling": {
@@ -289,7 +315,7 @@ FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
     },
     "reprocessing": {
         "label": "Reprocessing",
-        "summary": "Uses location, skills, standings, implants when present, and structure-name resolution when present to estimate reprocessing output and station choice.",
+        "summary": "Uses location, skills, and standings by default. Implant reads and private structure-name resolution are optional reprocessing scopes that are requested only when the pilot opts in.",
         "scopes": (
             FLIGHT_LOCATION_SCOPE,
             FLIGHT_SKILLS_SCOPE,
@@ -6071,6 +6097,7 @@ def build_flight_acquisition_payload(
     market_group_ids: Iterable[int] = (),
     market_type_ids: Iterable[int] = (),
     market_type_names: Iterable[Any] = (),
+    item_workers: int = DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS,
     expectation_store: MarketStore | None = None,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -6143,6 +6170,7 @@ def build_flight_acquisition_payload(
         market_group_ids=market_group_ids,
         market_type_ids=market_type_ids,
         market_type_names=market_type_names,
+        item_workers=item_workers,
         progress=progress,
     )
     route_path = route_plan["path"]
@@ -8219,6 +8247,7 @@ def scan_market_acquisition_opportunities(
     market_group_ids: Iterable[int],
     market_type_ids: Iterable[int],
     market_type_names: Iterable[Any] = (),
+    item_workers: int = DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     scan_timer = StageTimer()
@@ -8230,6 +8259,7 @@ def scan_market_acquisition_opportunities(
     clean_min_margin_percent = clamp_haul_min_detour_margin_percent(min_margin_percent)
     clean_broker_fee_percent = clamp_acquisition_broker_fee_percent(broker_fee_percent)
     clean_target_days = clamp_acquisition_target_days(target_days)
+    clean_item_workers = clamp_acquisition_item_workers(item_workers)
     broker_fee_rate = clean_broker_fee_percent / 100.0
     sales_tax_rate = clean_optional_float(sales_tax.get("rate")) or 0.0
 
@@ -8327,7 +8357,7 @@ def scan_market_acquisition_opportunities(
     history_fetch_seconds = 0.0
     opportunity_score_seconds = 0.0
 
-    item_worker_count = max(1, min(MAX_FLIGHT_ACQUISITION_ITEM_WORKERS, len(scan_targets)))
+    item_worker_count = max(1, min(clean_item_workers, len(scan_targets)))
 
     def run_item_scan(item_index: int, target: Mapping[str, Any]) -> AcquisitionItemScanResult:
         return scan_acquisition_item_opportunity(
@@ -8448,6 +8478,7 @@ def scan_market_acquisition_opportunities(
         "min_margin_percent": clean_min_margin_percent,
         "broker_fee_percent": clean_broker_fee_percent,
         "target_days": clean_target_days,
+        "item_workers": clean_item_workers,
         "pickup_system_count": len(pickup_distances),
         "pickup_regions_scanned": len(scan_pickup_region_ids),
         "pickup_regions_total": len(pickup_region_ids),
@@ -10562,6 +10593,14 @@ def clamp_acquisition_target_days(value: Any) -> int:
     return max(1, min(MAX_ACQUISITION_TARGET_DAYS, days))
 
 
+def clamp_acquisition_item_workers(value: Any) -> int:
+    try:
+        workers = int(value)
+    except (TypeError, ValueError):
+        workers = DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS
+    return max(1, min(MAX_FLIGHT_ACQUISITION_ITEM_WORKERS, workers))
+
+
 def clamp_trade_pnl_days(value: Any) -> int:
     try:
         days = int(value)
@@ -10735,6 +10774,7 @@ class AcquisitionScanRequest:
     min_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT
     broker_fee_percent: float = DEFAULT_ACQUISITION_BROKER_FEE_PERCENT
     target_days: int = DEFAULT_ACQUISITION_TARGET_DAYS
+    item_workers: int = DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS
     route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE
     include_common_materials: bool = True
     market_group_ids: tuple[int, ...] = ()
@@ -10758,6 +10798,9 @@ class AcquisitionScanRequest:
                 query_first(query, "broker_fee_percent", DEFAULT_ACQUISITION_BROKER_FEE_PERCENT)
             ),
             target_days=clamp_acquisition_target_days(query_first(query, "target_days", DEFAULT_ACQUISITION_TARGET_DAYS)),
+            item_workers=clamp_acquisition_item_workers(
+                query_first(query, "item_workers", DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS)
+            ),
             route_preference=normalize_haul_route_preference(
                 query_first(query, "route_preference", DEFAULT_HAUL_ROUTE_PREFERENCE)
             ),
@@ -10777,6 +10820,7 @@ class AcquisitionScanRequest:
             "min_margin_percent": self.min_margin_percent,
             "broker_fee_percent": self.broker_fee_percent,
             "target_days": self.target_days,
+            "item_workers": self.item_workers,
             "route_preference": self.route_preference,
             "include_common_materials": self.include_common_materials,
             "market_group_ids": self.market_group_ids,
@@ -11729,7 +11773,7 @@ def build_flight_reprocessing_payload(
     jita_valuation["after_tax"] = build_reprocessing_after_tax_valuation(jita_valuation, sales_tax)
 
     notes = [
-        "Uses ESI location, skills, standings, and implants when the connected session has those scopes.",
+        "Uses ESI location, skills, standings, and optional implant/structure-name reads when the connected session has those opt-in scopes.",
         "Uses CCP static data for ore portions, material outputs, and NPC station reprocessing values.",
         "Jita values use public Jita buy orders for immediate liquidation estimates.",
         "After-tax Jita values subtract ESI Accounting sales tax from immediate buy-order proceeds; broker fee is 0% for immediate sales.",
@@ -12686,14 +12730,21 @@ def build_flight_status_payload(
 ) -> dict[str, Any]:
     clean_max_jumps = clamp_flight_max_jumps(max_jumps)
     required_scopes = list(config.scopes or DEFAULT_FLIGHT_ESI_SCOPES)
+    optional_reprocessing_scopes = list(OPTIONAL_REPROCESSING_ESI_SCOPES)
     granted_scopes = set(session.scopes) if session else set()
     missing_required_scopes = [scope for scope in required_scopes if scope not in granted_scopes]
+    missing_optional_reprocessing_scopes = [
+        scope for scope in optional_reprocessing_scopes if scope not in granted_scopes
+    ]
     payload: dict[str, Any] = {
         "ok": True,
         "sso_configured": config.enabled,
         "connected": bool(session),
         "required_scopes": required_scopes,
         "missing_required_scopes": missing_required_scopes if session else [],
+        "optional_reprocessing_scopes": optional_reprocessing_scopes,
+        "missing_optional_reprocessing_scopes": missing_optional_reprocessing_scopes if session else optional_reprocessing_scopes,
+        "reprocessing_opt_in_url": REPROCESSING_OPT_IN_LOGIN_URL,
         "login_url": "/flight/login",
         "logout_url": "/flight/logout",
         "callback_url": callback_url,
@@ -13701,6 +13752,10 @@ def build_http_server(
             self._send_json(payload)
 
         def _handle_flight_login(self) -> None:
+            query = parse_qs(urlparse(self.path).query)
+            scope_mode = first_query_value(query, "scope_mode")
+            if scope_mode != REPROCESSING_SCOPE_MODE:
+                scope_mode = ""
             if not sso_config.enabled:
                 self._send_html(
                     render_flight_auth_result(
@@ -13716,7 +13771,8 @@ def build_http_server(
                 return
             try:
                 state = auth_state_store.create()
-                url = build_sso_authorization_url(sso_config, state)
+                login_config = flight_sso_config_for_login(sso_config, scope_mode=scope_mode)
+                url = build_sso_authorization_url(login_config, state)
             except (CorpIntelError, CorpMarketError) as exc:
                 self._send_html(render_flight_auth_result(str(exc), ok=False), status=502)
                 return
@@ -14710,22 +14766,32 @@ def render_flight_scope_summary(tab_key: str) -> str:
 
 
 def render_flight_scope_justification() -> str:
-    scope_rows = []
-    for scope in DEFAULT_FLIGHT_ESI_SCOPES:
-        disclosure = FLIGHT_ESI_SCOPE_DISCLOSURES[scope]
-        scope_rows.append(
-            f"""                    <div>
+    def rows_for(scopes: Iterable[str]) -> str:
+        scope_rows = []
+        for scope in scopes:
+            disclosure = FLIGHT_ESI_SCOPE_DISCLOSURES[scope]
+            scope_rows.append(
+                f"""                    <div>
                       <dt><code>{html.escape(scope)}</code> <span>{html.escape(disclosure["label"])}</span></dt>
                       <dd>{html.escape(disclosure["detail"])}</dd>
                     </div>"""
-        )
+            )
+        return chr(10).join(scope_rows)
+
+    core_rows = rows_for(DEFAULT_FLIGHT_ESI_SCOPES)
+    optional_rows = rows_for(OPTIONAL_REPROCESSING_ESI_SCOPES)
+    optional_scope_list = ", ".join(OPTIONAL_REPROCESSING_ESI_SCOPES)
     return f"""
                 <details class="sso-scope-justification" open>
                   <summary>Why This App Requests ESI Scopes</summary>
                   <p>Corp Market Concierge uses EVE Online SSO so pilots can choose exactly what character data they share. The app only requests <strong>read-only</strong> ESI scopes. It cannot buy, sell, contract, move assets, send mail, place market orders, control your ship, or perform any in-game action for you.</p>
-                  <p>These are the current Flight Attendant scopes and why each one is requested:</p>
+                  <p>Normal Flight Attendant login requests these core scopes:</p>
                   <dl class="sso-scope-list">
-{chr(10).join(scope_rows)}
+{core_rows}
+                  </dl>
+                  <p><strong>Optional reprocessing opt-in:</strong> if a pilot chooses the reprocessing opt-in button, the app also requests <code>{html.escape(optional_scope_list)}</code>. Those scopes are used only to detect known RX reprocessing implants and resolve accessible Upwell structure names. Manual overrides still work without them.</p>
+                  <dl class="sso-scope-list">
+{optional_rows}
                   </dl>
                   <p>Public market prices and public market orders come from public ESI data. The app does not need market order write access, contract write access, mail access, or gameplay-control permissions. Users can revoke access any time from EVE Online's authorized applications page.</p>
                 </details>"""
@@ -14746,6 +14812,7 @@ def render_flight_scope_metadata_json() -> str:
         key: {
             "scope": scope,
             "label": FLIGHT_ESI_SCOPE_DISCLOSURES[scope]["label"],
+            "optional_reprocessing": scope in OPTIONAL_REPROCESSING_ESI_SCOPES,
         }
         for key, scope in scope_keys.items()
     }
@@ -15452,6 +15519,29 @@ def _render_flight_attendant_dashboard() -> str:
       color: var(--muted);
       font-size: 13px;
     }
+    .reprocess-opt-in-card {
+      display: grid;
+      gap: 8px;
+      margin-top: 14px;
+      padding: 10px;
+      border: 1px solid rgba(224, 168, 74, .34);
+      border-radius: 7px;
+      background: rgba(224, 168, 74, .07);
+    }
+    .reprocess-opt-in-card h3 {
+      margin: 0;
+      color: var(--amber);
+      font-size: 15px;
+    }
+    .reprocess-opt-in-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .reprocess-opt-in-card .scope-chip-row {
+      justify-content: flex-start;
+    }
     .esi-flight-recorder {
       display: grid;
       gap: 10px;
@@ -16066,6 +16156,26 @@ def _render_flight_attendant_dashboard() -> str:
     }
     body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .charter-list li {
       border-left-color: rgba(45, 107, 52, .72);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .reprocess-opt-in-card {
+      color: #241f18;
+      border-color: rgba(61, 51, 34, .36);
+      background: rgba(244, 232, 196, .78);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .reprocess-opt-in-card h3,
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .reprocess-opt-in-card p,
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .reprocess-opt-in-card .meta {
+      color: inherit;
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .reprocess-opt-in-card .scope-chip {
+      color: #3b2b12;
+      border-color: rgba(61, 51, 34, .42);
+      background: rgba(255, 246, 217, .72);
+    }
+    body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-knowledge-panel .reprocess-opt-in-card .button-link.secondary {
+      background: #241f18;
+      color: #f0d38a;
+      border-color: rgba(61, 51, 34, .56);
     }
     body[data-active-tab="reprocessing"] #tab-reprocessing .reprocess-batch-panel {
       border-color: rgba(224, 168, 74, .38);
@@ -18753,6 +18863,14 @@ help</textarea>
                   <input id="acq-target-days" name="target_days" type="number" min="1" max="30" step="1" value="3">
                   <small class="input-note">History volume caps the first order size to this many days of recent volume.</small>
                 </label>
+                <label>Scan speed
+                  <select id="acq-item-workers" name="item_workers">
+                    <option value="2">Conservative</option>
+                    <option value="4" selected>Balanced</option>
+                    <option value="6">Fast</option>
+                  </select>
+                  <small class="input-note">More speed checks more items at once. Use Conservative if ESI or hosting feels touchy.</small>
+                </label>
                 <label>Minimum margin
                   <input id="acq-min-margin" name="min_margin_percent" type="range" min="0" max="100" step="1" value="10">
                   <span class="range-readout"><span class="meta">After-fee target margin</span><strong id="acq-min-margin-value">10%</strong></span>
@@ -19269,7 +19387,7 @@ help</textarea>
             <div class="panel-header">
               <div>
                 <h2>Ore Reprocessing Calculator</h2>
-                <div class="meta">ESI-backed character skills, standings, implants, and location with SDE ore output tables.</div>
+                <div class="meta">ESI-backed character skills, standings, optional implant/structure-name reads, and location with SDE ore output tables.</div>
               </div>
               <span class="pill reserved">Advisory Only</span>
             </div>
@@ -19334,7 +19452,7 @@ help</textarea>
                   <div class="row">
                     <label>Implant override
                       <input id="reprocess-implant-bonus" name="implant_bonus_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Auto">
-                      <small class="input-note">Leave blank to read known RX-801, RX-802, or RX-804 implants from ESI.</small>
+                      <small class="input-note">Leave blank to use optional ESI implant reads when you have opted in, or enter a manual bonus.</small>
                     </label>
                     <label>Structure bonus override
                       <input id="reprocess-structure-bonus" name="structure_bonus_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="0">
@@ -19354,8 +19472,18 @@ help</textarea>
                 <div class="meta">The calculator uses only official API/static data plus local overrides.</div>
               </div>
             </div>
+            <div class="reprocess-opt-in-card" aria-labelledby="reprocess-opt-in-title">
+              <h3 id="reprocess-opt-in-title">Optional Reprocessing ESI</h3>
+              <p id="reprocess-opt-in-status">Implant and structure-name reads are off unless you explicitly opt in.</p>
+              <div class="scope-chip-row" aria-label="Optional reprocessing ESI scopes">
+@@OPTIONAL_REPROCESSING_SCOPE_CHIPS@@
+              </div>
+              <p class="meta">Choosing this asks EVE SSO for the two scopes above. It does not reveal structure rigs, service settings, owner tax, wallet details, tokens, or raw API responses, and it cannot start reprocessing.</p>
+              <a id="reprocess-opt-in-link" class="button-link secondary" href="/flight/login?scope_mode=reprocessing">Opt In To Implant/Structure Reads</a>
+            </div>
             <ul class="charter-list">
-              <li><strong>Automatic:</strong> current system/station, trained skill levels, standings, known reprocessing implants, and NPC station base yield/tax.</li>
+              <li><strong>Automatic by default:</strong> current system/station, trained skill levels, standings, and NPC station base yield/tax.</li>
+              <li><strong>Optional opt-in:</strong> known reprocessing implants and accessible Upwell structure names.</li>
               <li><strong>Manual:</strong> Upwell rig, service, security, and owner tax settings when ESI does not expose them.</li>
               <li><strong>Static data:</strong> ore portions and mineral outputs come from CCP's SDE cache.</li>
               <li><strong>No client control:</strong> this page never starts a reprocess job or touches the EVE client.</li>
@@ -19533,6 +19661,7 @@ help</textarea>
     const acqPickupJumps = document.querySelector("#acq-pickup-jumps");
     const acqPortfolioJumps = document.querySelector("#acq-portfolio-jumps");
     const acqTargetDays = document.querySelector("#acq-target-days");
+    const acqItemWorkers = document.querySelector("#acq-item-workers");
     const acqMinMargin = document.querySelector("#acq-min-margin");
     const acqMinMarginValue = document.querySelector("#acq-min-margin-value");
     const acqCommonMaterials = document.querySelector("#acq-common-materials");
@@ -19616,6 +19745,8 @@ help</textarea>
     const reprocessCopyRaw = document.querySelector("#reprocess-copy-raw");
     const reprocessCopyMinerals = document.querySelector("#reprocess-copy-minerals");
     const reprocessCopyStatus = document.querySelector("#reprocess-copy-status");
+    const reprocessOptInStatus = document.querySelector("#reprocess-opt-in-status");
+    const reprocessOptInLink = document.querySelector("#reprocess-opt-in-link");
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
@@ -19646,6 +19777,7 @@ help</textarea>
     const acqPickupJumpsKey = "eve-flight-acq-pickup-jumps-v1";
     const acqPortfolioJumpsKey = "eve-flight-acq-portfolio-jumps-v1";
     const acqTargetDaysKey = "eve-flight-acq-target-days-v1";
+    const acqItemWorkersKey = "eve-flight-acq-item-workers-v1";
     const acqMinMarginKey = "eve-flight-acq-min-margin-v1";
     const acqCommonMaterialsKey = "eve-flight-acq-common-materials-v1";
     const acqMarketGroupIdsKey = "eve-flight-acq-market-group-ids-v1";
@@ -19683,6 +19815,9 @@ help</textarea>
       if (entry && entry.scope) labels[entry.scope] = entry.label || entry.scope;
       return labels;
     }, {});
+    const optionalReprocessingScopeNames = new Set(Object.values(flightScopeMetadata)
+      .filter((entry) => entry && entry.optional_reprocessing && entry.scope)
+      .map((entry) => entry.scope));
     const validTabs = new Set(["market", "fittings", "flight", "industry", "hauling", "acquisition", "trade-pnl", "planetary", "reprocessing"]);
     let filterType = "";
     let includeClosed = false;
@@ -19722,6 +19857,7 @@ help</textarea>
     let reprocessLastPayloads = [];
     let reprocessLastNotes = [];
     let esiFlightActivities = [];
+    let currentFlightGrantedScopes = new Set();
     let reprocessAssaySortKey = "delta";
     let reprocessAssaySortDirection = "desc";
 
@@ -19767,7 +19903,7 @@ help</textarea>
     function flightActivityScopes(...keys) {
       return keys
         .map((key) => (flightScopeMetadata[key] || {}).scope)
-        .filter(Boolean);
+        .filter((scope) => scope && (!optionalReprocessingScopeNames.has(scope) || currentFlightGrantedScopes.has(scope)));
     }
 
     function flightActivityText(value, fallback = "") {
@@ -21423,6 +21559,12 @@ help</textarea>
       return Math.max(1, Math.min(30, Math.round(days)));
     }
 
+    function clampAcquisitionItemWorkers(value) {
+      const workers = Number(value);
+      if (!Number.isFinite(workers)) return 4;
+      return Math.max(1, Math.min(6, Math.round(workers)));
+    }
+
     function readAcqMarketGroupIdsFromInputs() {
       return acqMarketGroupInputs
         .filter((input) => input.checked)
@@ -21539,6 +21681,7 @@ help</textarea>
       const pickupJumps = Number(window.localStorage.getItem(acqPickupJumpsKey) || acqPickupJumps.value || 2);
       const portfolioJumps = Number(window.localStorage.getItem(acqPortfolioJumpsKey) || acqPortfolioJumps.value || 50);
       const targetDays = Number(window.localStorage.getItem(acqTargetDaysKey) || acqTargetDays.value || 3);
+      const itemWorkers = Number(window.localStorage.getItem(acqItemWorkersKey) || acqItemWorkers.value || 4);
       const minMargin = Number(window.localStorage.getItem(acqMinMarginKey) || acqMinMargin.value || 10);
       const commonStored = window.localStorage.getItem(acqCommonMaterialsKey);
       const pastedItemNames = String(window.localStorage.getItem(acqPastedItemsKey) || (acqPastedItems ? acqPastedItems.value : "") || "").trim();
@@ -21551,6 +21694,7 @@ help</textarea>
         pickupJumps: clampAcquisitionPickupJumps(Number.isFinite(pickupJumps) ? pickupJumps : 2),
         portfolioJumps: clampAcquisitionPortfolioJumps(Number.isFinite(portfolioJumps) ? portfolioJumps : 50),
         targetDays: clampAcquisitionTargetDays(Number.isFinite(targetDays) ? targetDays : 3),
+        itemWorkers: clampAcquisitionItemWorkers(Number.isFinite(itemWorkers) ? itemWorkers : 4),
         minMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
         includeCommonMaterials: commonStored == null ? acqCommonMaterials.checked : commonStored !== "0",
         marketGroupIds: readStoredAcqMarketGroupIds(),
@@ -21568,6 +21712,7 @@ help</textarea>
       const pickupJumps = clampAcquisitionPickupJumps(settings.pickupJumps);
       const portfolioJumps = clampAcquisitionPortfolioJumps(settings.portfolioJumps);
       const targetDays = clampAcquisitionTargetDays(settings.targetDays);
+      const itemWorkers = clampAcquisitionItemWorkers(settings.itemWorkers == null ? acqItemWorkers.value : settings.itemWorkers);
       const minMarginPercent = clampHaulMinMargin(settings.minMarginPercent);
       const includeCommonMaterials = settings.includeCommonMaterials == null ? acqCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
       const marketGroupIds = Array.isArray(settings.marketGroupIds) ? settings.marketGroupIds : readAcqMarketGroupIdsFromInputs();
@@ -21581,6 +21726,7 @@ help</textarea>
       acqPickupJumps.value = String(pickupJumps);
       acqPortfolioJumps.value = String(portfolioJumps);
       acqTargetDays.value = String(targetDays);
+      acqItemWorkers.value = String(itemWorkers);
       acqMinMargin.value = String(minMarginPercent);
       acqCommonMaterials.checked = includeCommonMaterials;
       if (acqPastedItems) acqPastedItems.value = pastedItemNames;
@@ -21599,13 +21745,14 @@ help</textarea>
       window.localStorage.setItem(acqPickupJumpsKey, String(pickupJumps));
       window.localStorage.setItem(acqPortfolioJumpsKey, String(portfolioJumps));
       window.localStorage.setItem(acqTargetDaysKey, String(targetDays));
+      window.localStorage.setItem(acqItemWorkersKey, String(itemWorkers));
       window.localStorage.setItem(acqMinMarginKey, String(minMarginPercent));
       window.localStorage.setItem(acqCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
       window.localStorage.setItem(acqMarketGroupIdsKey, JSON.stringify(marketGroupIds));
       window.localStorage.setItem(acqMarketTypeIdsKey, JSON.stringify(marketTypeIds));
       window.localStorage.setItem(acqPastedItemsKey, pastedItemNames);
       window.localStorage.setItem(acqPastedItemsOnlyKey, pastedItemsOnly ? "1" : "0");
-      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly};
+      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, itemWorkers, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly};
     }
 
     async function loadFlightStatus() {
@@ -21637,14 +21784,42 @@ help</textarea>
       }
     }
 
+    function renderReprocessingOptInStatus(data) {
+      if (reprocessOptInLink) {
+        reprocessOptInLink.href = data.reprocessing_opt_in_url || "/flight/login?scope_mode=reprocessing";
+        reprocessOptInLink.hidden = false;
+      }
+      if (!reprocessOptInStatus) return;
+      const optionalScopes = Array.isArray(data.optional_reprocessing_scopes) ? data.optional_reprocessing_scopes : [];
+      const missingScopes = Array.isArray(data.missing_optional_reprocessing_scopes) ? data.missing_optional_reprocessing_scopes : optionalScopes;
+      if (!data.sso_configured) {
+        reprocessOptInStatus.textContent = "EVE SSO must be configured before optional reprocessing scopes can be requested.";
+        if (reprocessOptInLink) reprocessOptInLink.hidden = true;
+        return;
+      }
+      if (!data.connected) {
+        reprocessOptInStatus.textContent = "Implant and structure-name reads are off. Choose this opt-in link only if you want reprocessing to read those two extra ESI scopes.";
+        return;
+      }
+      if (missingScopes.length) {
+        reprocessOptInStatus.textContent = `Optional reprocessing reads are off for this session. Opt in to add: ${missingScopes.join(", ")}.`;
+        return;
+      }
+      reprocessOptInStatus.textContent = "Optional reprocessing reads are connected for this session: implant detection and accessible structure-name resolution are enabled.";
+      if (reprocessOptInLink) reprocessOptInLink.hidden = true;
+    }
+
     function renderFlightStatus(data) {
       const requiredScopes = data.required_scopes || [];
       const missingRequiredScopes = data.missing_required_scopes || [];
       const scopeLabel = requiredScopes.join(", ") || "esi-location.read_location.v1";
+      const character = data.character || {};
+      currentFlightGrantedScopes = new Set(Array.isArray(character.scopes) ? character.scopes : []);
       flightLoginLink.href = data.login_url || "/flight/login";
       flightLogoutLink.href = data.logout_url || "/flight/logout";
       flightLogoutLink.hidden = !data.connected;
       flightScopeName.textContent = requiredScopes.length > 1 ? `${requiredScopes.length} scopes` : "Location only";
+      renderReprocessingOptInStatus(data);
       if (!data.sso_configured) {
         flightSystemName.textContent = "ESI Setup Needed";
         flightLocationLine.textContent = "Register the callback URL, then restart with SSO credentials.";
@@ -21679,7 +21854,6 @@ help</textarea>
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
         return;
       }
-      const character = data.character || {};
       const location = data.location || {};
       const membership = data.membership || {};
       flightPilotName.textContent = character.character_name || "Connected pilot";
@@ -23193,6 +23367,7 @@ help</textarea>
         pickupJumps: acqPickupJumps.value,
         portfolioJumps: acqPortfolioJumps.value,
         targetDays: acqTargetDays.value,
+        itemWorkers: acqItemWorkers.value,
         minMarginPercent: acqMinMargin.value,
         includeCommonMaterials: acqCommonMaterials.checked,
         marketGroupIds: readAcqMarketGroupIdsFromInputs(),
@@ -23221,6 +23396,7 @@ help</textarea>
         pickup_jumps: String(scanSettings.pickupJumps),
         portfolio_jumps: String(scanSettings.portfolioJumps),
         target_days: String(scanSettings.targetDays),
+        item_workers: String(scanSettings.itemWorkers),
         min_margin_percent: String(scanSettings.minMarginPercent),
         common_materials: scanSettings.includeCommonMaterials ? "1" : "0",
         market_group_ids: scanSettings.marketGroupIds.join(","),
@@ -23428,7 +23604,7 @@ help</textarea>
       acqRoute.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> buy-order area toward
         <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>.
-        <div class="meta">Total investment ${formatIsk(acquisition.budget_isk)}; collection range ${formatNumber(acquisition.pickup_jumps)} jumps; portfolio jump budget ${formatNumber(acquisition.portfolio_jumps)}; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days.</div>
+        <div class="meta">Total investment ${formatIsk(acquisition.budget_isk)}; collection range ${formatNumber(acquisition.pickup_jumps)} jumps; portfolio jump budget ${formatNumber(acquisition.portfolio_jumps)}; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days; scan speed ${formatNumber(acquisition.item_workers || 4)} workers.</div>
         ${routeWarning}
         ${stageTiming}
       `;
@@ -24634,7 +24810,7 @@ help</textarea>
           scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
           label: "Reprocessing location check failed",
           description: "The app could not rank reprocessing locations from ESI and local static data.",
-          reason: "Location, skills, standings, implants, and structure resolution support station-aware reprocessing estimates.",
+          reason: "Location, skills, and standings support station-aware estimates. Implant and structure-name reads are included only after the pilot opts in.",
         });
       } finally {
         reprocessRefreshLocations.disabled = false;
@@ -24980,8 +25156,8 @@ help</textarea>
         recordEsiActivity({
           scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
           label: "Reprocessing estimate checked",
-          description: "Updated ore output, station fee, skill, standing, and implant-aware estimate data.",
-          reason: "The calculator uses those reads to show manual reprocessing estimates without controlling the EVE client.",
+          description: "Updated ore output, station fee, skill, standing, and any opted-in implant/structure-name context.",
+          reason: "The calculator uses these read-only checks to show manual reprocessing estimates without controlling the EVE client.",
           status: "success",
         });
       } catch (error) {
@@ -24993,7 +25169,7 @@ help</textarea>
           scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
           label: "Reprocessing estimate check failed",
           description: "The app could not calculate the ore reprocessing estimate.",
-          reason: "The calculator uses those reads to show manual reprocessing estimates without controlling the EVE client.",
+          reason: "The calculator uses these read-only checks to show manual reprocessing estimates without controlling the EVE client.",
         });
       } finally {
         reprocessCalculateButton.disabled = false;
@@ -25025,8 +25201,8 @@ help</textarea>
         recordEsiActivity({
           scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
           label: "Reprocessing batch checked",
-          description: "Updated ore output, station fee, skill, standing, and implant-aware estimates for a pasted batch.",
-          reason: "The calculator uses those reads to show manual reprocessing estimates without controlling the EVE client.",
+          description: "Updated ore output, station fee, skill, standing, and any opted-in implant/structure-name context for a pasted batch.",
+          reason: "The calculator uses these read-only checks to show manual reprocessing estimates without controlling the EVE client.",
           status: payloads.length ? "success" : "empty",
         });
       } catch (error) {
@@ -25038,7 +25214,7 @@ help</textarea>
           scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
           label: "Reprocessing batch check failed",
           description: "The app could not calculate the pasted ore batch.",
-          reason: "The calculator uses those reads to show manual reprocessing estimates without controlling the EVE client.",
+          reason: "The calculator uses these read-only checks to show manual reprocessing estimates without controlling the EVE client.",
         });
       } finally {
         reprocessCalculateButton.disabled = false;
@@ -26764,6 +26940,7 @@ help</textarea>
         pickupJumps: acqPickupJumps.value,
         portfolioJumps: acqPortfolioJumps.value,
         targetDays: acqTargetDays.value,
+        itemWorkers: acqItemWorkers.value,
         minMarginPercent: acqMinMargin.value,
         includeCommonMaterials: acqCommonMaterials.checked,
         marketGroupIds: readAcqMarketGroupIdsFromInputs(),
@@ -26786,6 +26963,7 @@ help</textarea>
     acqPickupJumps.addEventListener("change", updateAcquisitionScopeAndReset);
     acqPortfolioJumps.addEventListener("change", updateAcquisitionScopeAndReset);
     acqTargetDays.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqItemWorkers.addEventListener("change", updateAcquisitionScopeAndReset);
     acqMinMargin.addEventListener("input", () => {
       acqMinMarginValue.textContent = `${formatNumber(clampHaulMinMargin(acqMinMargin.value))}%`;
     });
@@ -27094,6 +27272,7 @@ help</textarea>
         "@@HAUL_MARKET_GROUP_OPTIONS@@": haul_market_group_options,
         "@@ACQUISITION_COMMON_MATERIAL_LIMIT@@": f"{MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES:,}",
         "@@REPROCESSING_ORE_OPTIONS@@": reprocessing_ore_options,
+        "@@OPTIONAL_REPROCESSING_SCOPE_CHIPS@@": render_scope_chip_list(OPTIONAL_REPROCESSING_ESI_SCOPES),
         "@@SCOPE_JUSTIFICATION_PANEL@@": render_flight_scope_justification(),
         "@@FLIGHT_SCOPE_METADATA_JSON@@": render_flight_scope_metadata_json(),
         "@@TAB_SCOPE_MARKET@@": render_flight_scope_summary("market"),
