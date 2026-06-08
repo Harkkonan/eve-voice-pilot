@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -85,6 +86,7 @@ MAX_FLIGHT_HAUL_MATERIAL_TYPES = 80
 MAX_FLIGHT_HAUL_SCAN_TYPES = 240
 MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES = 30
 MAX_FLIGHT_ACQUISITION_SCAN_TYPES = 50
+MAX_FLIGHT_ACQUISITION_FETCH_WORKERS = 6
 MAX_HAUL_MARKET_GROUP_IDS = 32
 MAX_HAUL_MARKET_TYPE_IDS = MAX_FLIGHT_HAUL_SCAN_TYPES
 MAX_FLIGHT_HAUL_OPPORTUNITIES = 20
@@ -7117,6 +7119,84 @@ def build_haul_load_plan(
     }
 
 
+def fetch_acquisition_order_batch(
+    *,
+    config: EveSsoConfig,
+    type_id: int,
+    pickup_region_ids: Iterable[int],
+    destination_region_id: int,
+) -> tuple[dict[int, list[dict[str, Any]]], dict[int, list[dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]]:
+    source_buys_by_region: dict[int, list[dict[str, Any]]] = {}
+    source_sells_by_region: dict[int, list[dict[str, Any]]] = {}
+    destination_buys: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    tasks: list[tuple[str, int, Callable[..., list[dict[str, Any]]]]] = []
+    for region_id in pickup_region_ids:
+        clean_region_id = int(region_id)
+        tasks.append(("source_buy", clean_region_id, fetch_market_buy_orders))
+        tasks.append(("source_sell", clean_region_id, fetch_market_sell_orders))
+    tasks.append(("destination_buy", int(destination_region_id), fetch_market_buy_orders))
+    if not tasks:
+        return source_buys_by_region, source_sells_by_region, destination_buys, errors
+
+    worker_count = max(1, min(MAX_FLIGHT_ACQUISITION_FETCH_WORKERS, len(tasks)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(fetcher, config, region_id=region_id, type_id=type_id): (kind, region_id)
+            for kind, region_id, fetcher in tasks
+        }
+        for future in as_completed(futures):
+            kind, region_id = futures[future]
+            order_type = "sell" if kind == "source_sell" else "buy"
+            try:
+                raw_orders = future.result()
+            except CorpMarketError as exc:
+                errors.append({"order_type": order_type, "type_id": type_id, "region_id": region_id, "error": str(exc)})
+                raw_orders = []
+            if kind == "source_buy":
+                source_buys_by_region[region_id] = raw_orders
+            elif kind == "source_sell":
+                source_sells_by_region[region_id] = raw_orders
+            else:
+                destination_buys = raw_orders
+    return source_buys_by_region, source_sells_by_region, destination_buys, errors
+
+
+def fetch_acquisition_history_batch(
+    *,
+    config: EveSsoConfig,
+    type_id: int,
+    source_region_id: int,
+    destination_region_id: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    source_history: list[dict[str, Any]] = []
+    destination_history: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    tasks: list[tuple[str, int]] = [("source", int(source_region_id))]
+    if int(destination_region_id) != int(source_region_id):
+        tasks.append(("destination", int(destination_region_id)))
+    worker_count = max(1, min(MAX_FLIGHT_ACQUISITION_FETCH_WORKERS, len(tasks)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(fetch_market_history, config, region_id=region_id, type_id=type_id): (kind, region_id)
+            for kind, region_id in tasks
+        }
+        for future in as_completed(futures):
+            kind, region_id = futures[future]
+            try:
+                history = future.result()
+            except CorpMarketError as exc:
+                errors.append({"history": kind, "type_id": type_id, "region_id": region_id, "error": str(exc)})
+                history = []
+            if kind == "source":
+                source_history = history
+            else:
+                destination_history = history
+    if int(destination_region_id) == int(source_region_id):
+        destination_history = source_history
+    return source_history, destination_history, errors
+
+
 def scan_market_acquisition_opportunities(
     *,
     config: EveSsoConfig,
@@ -7232,12 +7312,20 @@ def scan_market_acquisition_opportunities(
                     "percent": progress_percent(item_index, 0.0),
                 },
             )
+        (
+            raw_source_buys_by_region,
+            raw_source_sells_by_region,
+            raw_destination_buys,
+            order_errors,
+        ) = fetch_acquisition_order_batch(
+            config=config,
+            type_id=type_id,
+            pickup_region_ids=scan_pickup_region_ids,
+            destination_region_id=destination.region_id,
+        )
+        errors.extend(order_errors)
         for region_index, region_id in enumerate(scan_pickup_region_ids, start=1):
-            try:
-                raw_source_buys = fetch_market_buy_orders(config, region_id=region_id, type_id=type_id)
-            except CorpMarketError as exc:
-                errors.append({"order_type": "buy", "type_id": type_id, "region_id": region_id, "error": str(exc)})
-                raw_source_buys = []
+            raw_source_buys = raw_source_buys_by_region.get(region_id, [])
             for order in raw_source_buys:
                 record = build_reachable_market_order_record(
                     order,
@@ -7248,11 +7336,7 @@ def scan_market_acquisition_opportunities(
                 )
                 if record is not None:
                     source_buy_orders.append(record)
-            try:
-                raw_source_sells = fetch_market_sell_orders(config, region_id=region_id, type_id=type_id)
-            except CorpMarketError as exc:
-                errors.append({"order_type": "sell", "type_id": type_id, "region_id": region_id, "error": str(exc)})
-                raw_source_sells = []
+            raw_source_sells = raw_source_sells_by_region.get(region_id, [])
             for order in raw_source_sells:
                 record = build_reachable_market_order_record(
                     order,
@@ -7279,13 +7363,6 @@ def scan_market_acquisition_opportunities(
                         "percent": progress_percent(item_index, 0.45 * (region_index / max(1, region_count))),
                     },
                 )
-        try:
-            raw_destination_buys = fetch_market_buy_orders(config, region_id=destination.region_id, type_id=type_id)
-        except CorpMarketError as exc:
-            errors.append(
-                {"order_type": "buy", "type_id": type_id, "region_id": destination.region_id, "error": str(exc)}
-            )
-            raw_destination_buys = []
         destination_buy_orders = []
         for order in raw_destination_buys:
             record = build_reachable_market_order_record(
@@ -7321,23 +7398,17 @@ def scan_market_acquisition_opportunities(
         source_region_id = origin.region_id or (scan_pickup_region_ids[0] if scan_pickup_region_ids else None)
         if source_region_id is None:
             continue
-        source_history = []
-        destination_history = []
-        try:
-            source_history = fetch_market_history(config, region_id=source_region_id, type_id=type_id)
+        source_history, destination_history, history_errors = fetch_acquisition_history_batch(
+            config=config,
+            type_id=type_id,
+            source_region_id=source_region_id,
+            destination_region_id=destination.region_id,
+        )
+        errors.extend(history_errors)
+        if source_history:
             history_regions.add(source_region_id)
-        except CorpMarketError as exc:
-            errors.append({"history": "source", "type_id": type_id, "region_id": source_region_id, "error": str(exc)})
-        if destination.region_id != source_region_id:
-            try:
-                destination_history = fetch_market_history(config, region_id=destination.region_id, type_id=type_id)
-                history_regions.add(destination.region_id)
-            except CorpMarketError as exc:
-                errors.append(
-                    {"history": "destination", "type_id": type_id, "region_id": destination.region_id, "error": str(exc)}
-                )
-        else:
-            destination_history = source_history
+        if destination_history:
+            history_regions.add(destination.region_id)
         if progress is not None:
             progress(
                 "history",
@@ -12473,9 +12544,12 @@ def build_http_server(
 
         def _handle_flight_acquisition_progress(self) -> None:
             self._send_sse_headers()
+            started_at = time.monotonic()
 
             def emit(event: str, payload: dict[str, Any]) -> None:
-                self._send_sse_event(event, payload)
+                timed_payload = dict(payload)
+                timed_payload.setdefault("elapsed_seconds", round(time.monotonic() - started_at, 1))
+                self._send_sse_event(event, timed_payload)
 
             if not sso_config.enabled:
                 emit("scan_error", {"ok": False, "error": "EVE SSO is not configured."})
