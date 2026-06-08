@@ -46,6 +46,7 @@ from eve_voice_pilot.planetary_industry import (
     planetary_chain_material_type_ids,
     rank_planetary_opportunities,
 )
+from eve_voice_pilot.ui_effects import inject_plex_button_effect
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12768,7 +12769,7 @@ def render_dashboard() -> str:
 
 
 def _render_legacy_market_dashboard() -> str:
-    return """
+    markup = """
 <!doctype html>
 <html lang="en">
 <head>
@@ -13126,6 +13127,7 @@ loadOffers().catch((error) => {
 </body>
 </html>
 """
+    return inject_plex_button_effect(markup)
 
 
 def render_reprocessing_ore_options() -> str:
@@ -24280,7 +24282,7 @@ help</textarea>
     }
     for token, value in replacements.items():
         markup = markup.replace(token, value)
-    return markup
+    return inject_plex_button_effect(markup)
 
 
 def render_offer_page(listing: MarketListing, draft: MailDraft) -> str:

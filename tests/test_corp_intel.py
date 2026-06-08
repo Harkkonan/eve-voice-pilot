@@ -360,6 +360,13 @@ def test_dashboard_access_allows_verified_member():
     assert access.status == 200
 
 
+def test_dashboard_includes_plex_button_press_effect():
+    assert "plex-petal-layer" in corp_intel.DASHBOARD_HTML
+    assert "PLEX" in corp_intel.DASHBOARD_HTML
+    assert "prefers-reduced-motion" in corp_intel.DASHBOARD_HTML
+    assert "event.isTrusted" in corp_intel.DASHBOARD_HTML
+
+
 def test_verify_sso_character_builds_verified_pilot_from_public_esi(monkeypatch):
     config = EveSsoConfig(
         client_id="client-123",

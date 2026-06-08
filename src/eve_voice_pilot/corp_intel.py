@@ -28,6 +28,8 @@ import jwt
 from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError, PyJWKClientError
 
+from eve_voice_pilot.ui_effects import inject_plex_button_effect
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SYSTEM_CACHE_PATH = ROOT / "cache" / "eve_solar_systems.json"
@@ -2877,7 +2879,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-DASHBOARD_HTML = r"""<!doctype html>
+DASHBOARD_HTML = inject_plex_button_effect(r"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -4436,7 +4438,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   </script>
 </body>
 </html>
-"""
+""")
 
 
 if __name__ == "__main__":

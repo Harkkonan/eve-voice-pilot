@@ -285,6 +285,15 @@ def test_dashboard_keeps_market_offer_workflow_controls():
     assert "Mail draft" in page
 
 
+def test_dashboard_includes_plex_button_press_effect():
+    page = render_dashboard()
+
+    assert "plex-petal-layer" in page
+    assert "PLEX" in page
+    assert "prefers-reduced-motion" in page
+    assert "event.isTrusted" in page
+
+
 def test_dashboard_includes_shared_fittings_tab():
     page = render_dashboard()
 
