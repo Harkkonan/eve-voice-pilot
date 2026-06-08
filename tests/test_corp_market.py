@@ -4356,6 +4356,8 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
     } <= {stage["key"] for stage in scan_timing["stages"]}
     order_stage = next(stage for stage in scan_timing["stages"] if stage["key"] == "orders_history_scoring")
     assert order_stage["metrics"]["item_workers"] == 1
+    assert order_stage["metrics"]["history_requests"] == 2
+    assert order_stage["metrics"]["source_history_gated_items"] == 0
     event_names = [event for event, _payload in progress_events]
     assert event_names[:4] == ["scan_start", "location", "route_step", "skills"]
     assert {"scan_scope", "item_start", "orders", "history", "item_done", "portfolio"} <= set(event_names)
@@ -4363,6 +4365,72 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
         "portfolio",
         {"message": "Ranking 1 viable opportunity row(s) into a diversified portfolio.", "opportunity_count": 1, "percent": 98},
     )
+
+
+def test_acquisition_item_scan_skips_destination_history_without_source_signal(monkeypatch):
+    origin = RouteSystem(solar_system_id=1, name="Start", region_id=100, security_status=0.9)
+    destination = RouteSystem(solar_system_id=30000142, name="Jita", region_id=200, security_status=0.9)
+    systems = {
+        1: origin,
+        2: RouteSystem(solar_system_id=2, name="One Jump", region_id=100, security_status=0.8),
+        30000142: destination,
+    }
+
+    def fake_fetch_acquisition_order_batch(**kwargs):
+        return (
+            {100: []},
+            {100: []},
+            [
+                {
+                    "order_id": 20,
+                    "is_buy_order": True,
+                    "system_id": 30000142,
+                    "location_id": 60003760,
+                    "price": 500.0,
+                    "volume_remain": 10,
+                    "min_volume": 1,
+                }
+            ],
+            [],
+        )
+
+    history_calls = []
+
+    def fake_fetch_market_history(config, *, region_id, type_id):
+        history_calls.append((region_id, type_id))
+        return []
+
+    monkeypatch.setattr(corp_market, "fetch_acquisition_order_batch", fake_fetch_acquisition_order_batch)
+    monkeypatch.setattr(corp_market, "fetch_market_history", fake_fetch_market_history)
+
+    progress_events = []
+    result = corp_market.scan_acquisition_item_opportunity(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        target={"type_id": 34, "name": "Tritanium"},
+        item_index=1,
+        item_count=1,
+        pickup_region_ids=(100,),
+        region_count=1,
+        origin=origin,
+        destination=destination,
+        systems=systems,
+        pickup_distances={1: 0, 2: 1},
+        destination_distances={30000142: 0},
+        budget_isk=1_000_000,
+        pickup_jumps=1,
+        min_margin_percent=10,
+        broker_fee_rate=0.03,
+        sales_tax_rate=0.03375,
+        target_days=3,
+        progress_percent=lambda item_index, stage_fraction=0.0: 50,
+        progress=lambda event, payload: progress_events.append((event, payload)),
+    )
+
+    assert result.opportunity is None
+    assert result.history_request_count == 1
+    assert result.source_history_gated_count == 1
+    assert history_calls == [(100, 34)]
+    assert "history_skip" in [event for event, _payload in progress_events]
 
 
 def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeypatch, tmp_path):

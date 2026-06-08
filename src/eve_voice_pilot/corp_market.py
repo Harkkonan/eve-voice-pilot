@@ -7964,6 +7964,8 @@ class AcquisitionItemScanResult:
     source_buy_order_count: int = 0
     source_sell_order_count: int = 0
     destination_buy_order_count: int = 0
+    history_request_count: int = 0
+    source_history_gated_count: int = 0
     history_region_ids: set[int] = field(default_factory=set)
     risk_level: str = ""
     order_fetch_seconds: float = 0.0
@@ -8107,15 +8109,58 @@ def scan_acquisition_item_opportunity(
     if source_region_id is None:
         return result
 
-    timed_started_at = time.monotonic()
-    source_history, destination_history, history_errors = fetch_acquisition_history_batch(
-        config=config,
-        type_id=type_id,
-        source_region_id=source_region_id,
-        destination_region_id=destination.region_id,
-    )
-    result.history_fetch_seconds += max(0.0, time.monotonic() - timed_started_at)
-    result.errors.extend(history_errors)
+    source_history: list[dict[str, Any]] = []
+    destination_history: list[dict[str, Any]] = []
+    has_source_order_signal = bool(source_buy_orders or source_sell_orders)
+    if has_source_order_signal:
+        timed_started_at = time.monotonic()
+        source_history, destination_history, history_errors = fetch_acquisition_history_batch(
+            config=config,
+            type_id=type_id,
+            source_region_id=source_region_id,
+            destination_region_id=destination.region_id,
+        )
+        result.history_fetch_seconds += max(0.0, time.monotonic() - timed_started_at)
+        result.history_request_count += 1 if int(destination.region_id) == int(source_region_id) else 2
+        result.errors.extend(history_errors)
+    else:
+        timed_started_at = time.monotonic()
+        try:
+            source_history = fetch_market_history(config, region_id=source_region_id, type_id=type_id)
+        except CorpMarketError as exc:
+            result.errors.append(
+                {"history": "source", "type_id": type_id, "region_id": source_region_id, "error": str(exc)}
+            )
+            source_history = []
+        result.history_fetch_seconds += max(0.0, time.monotonic() - timed_started_at)
+        result.history_request_count += 1
+        if not source_history:
+            result.source_history_gated_count += 1
+            if progress is not None:
+                progress(
+                    "history_skip",
+                    {
+                        "message": f"{item_name}: skipped destination market history because no pickup orders or source history were found.",
+                        "item_index": item_index,
+                        "item_count": item_count,
+                        "item_name": item_name,
+                        "percent": progress_percent(item_index, 0.75),
+                    },
+                )
+            return result
+        if int(destination.region_id) == int(source_region_id):
+            destination_history = source_history
+        else:
+            timed_started_at = time.monotonic()
+            try:
+                destination_history = fetch_market_history(config, region_id=destination.region_id, type_id=type_id)
+            except CorpMarketError as exc:
+                result.errors.append(
+                    {"history": "destination", "type_id": type_id, "region_id": destination.region_id, "error": str(exc)}
+                )
+                destination_history = []
+            result.history_fetch_seconds += max(0.0, time.monotonic() - timed_started_at)
+            result.history_request_count += 1
     if source_history:
         result.history_region_ids.add(int(source_region_id))
     if destination_history:
@@ -8347,6 +8392,8 @@ def scan_market_acquisition_opportunities(
     total_source_buy_order_count = 0
     total_source_sell_order_count = 0
     total_destination_buy_order_count = 0
+    total_history_request_count = 0
+    source_history_gated_count = 0
     history_regions = set()
     trap_signal_count = 0
     caution_signal_count = 0
@@ -8392,11 +8439,13 @@ def scan_market_acquisition_opportunities(
             item_index, _target = futures[future]
             item_results.append((item_index, future.result()))
 
-    for _item_index, item_result in sorted(item_results, key=lambda item: item[0]):
+    for item_index, item_result in sorted(item_results, key=lambda item: item[0]):
         errors.extend(item_result.errors)
         total_source_buy_order_count += item_result.source_buy_order_count
         total_source_sell_order_count += item_result.source_sell_order_count
         total_destination_buy_order_count += item_result.destination_buy_order_count
+        total_history_request_count += item_result.history_request_count
+        source_history_gated_count += item_result.source_history_gated_count
         history_regions.update(item_result.history_region_ids)
         order_fetch_seconds += item_result.order_fetch_seconds
         order_filter_seconds += item_result.order_filter_seconds
@@ -8430,6 +8479,8 @@ def scan_market_acquisition_opportunities(
         source_buy_orders=total_source_buy_order_count,
         source_sell_orders=total_source_sell_order_count,
         destination_buy_orders=total_destination_buy_order_count,
+        history_requests=total_history_request_count,
+        source_history_gated_items=source_history_gated_count,
         history_regions=len(history_regions),
         opportunities=len(opportunities),
         order_fetch_seconds=round(order_fetch_seconds, 3),
@@ -23076,6 +23127,7 @@ help</textarea>
         if (metrics.opportunities != null) metricParts.push(`${formatNumber(metrics.opportunities)} opportunities`);
         if (metrics.history_requests != null) metricParts.push(`${formatNumber(metrics.history_requests)} histories`);
         if (metrics.history_regions != null) metricParts.push(`${formatNumber(metrics.history_regions)} history regions`);
+        if (metrics.source_history_gated_items != null) metricParts.push(`${formatNumber(metrics.source_history_gated_items)} source-history gated`);
         if (metrics.order_fetch_seconds != null) metricParts.push(`order fetch total ${formatStageSeconds(metrics.order_fetch_seconds)}`);
         if (metrics.order_filter_seconds != null) metricParts.push(`order filter total ${formatStageSeconds(metrics.order_filter_seconds)}`);
         if (metrics.history_fetch_seconds != null) metricParts.push(`history fetch total ${formatStageSeconds(metrics.history_fetch_seconds)}`);
