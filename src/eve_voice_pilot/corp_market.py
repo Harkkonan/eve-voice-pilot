@@ -6069,6 +6069,7 @@ def build_flight_acquisition_payload(
     include_common_materials: bool = True,
     market_group_ids: Iterable[int] = (),
     market_type_ids: Iterable[int] = (),
+    market_type_names: Iterable[Any] = (),
     expectation_store: MarketStore | None = None,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -6140,6 +6141,7 @@ def build_flight_acquisition_payload(
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
         market_type_ids=market_type_ids,
+        market_type_names=market_type_names,
         progress=progress,
     )
     route_path = route_plan["path"]
@@ -6738,7 +6740,7 @@ def scan_route_hauling_opportunities(
         route_jumps=route_jumps,
     )
 
-    item_targets, item_scope = build_haul_item_targets(
+    item_targets, item_scope = build_market_item_targets(
         config=config,
         recipe_cache=recipe_cache,
         include_common_materials=include_common_materials,
@@ -7943,6 +7945,7 @@ def scan_market_acquisition_opportunities(
     include_common_materials: bool,
     market_group_ids: Iterable[int],
     market_type_ids: Iterable[int],
+    market_type_names: Iterable[Any] = (),
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     systems = route_cache.systems or {}
@@ -7978,18 +7981,24 @@ def scan_market_acquisition_opportunities(
     if destination.region_id is None:
         raise CorpMarketError("Destination system does not have a usable market region in the route graph cache.")
 
-    item_targets, item_scope = build_haul_item_targets(
+    item_targets, item_scope = build_market_item_targets(
         config=config,
         recipe_cache=recipe_cache,
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
         market_type_ids=market_type_ids,
+        market_type_names=market_type_names,
         common_material_limit=MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES,
         scan_type_limit=MAX_FLIGHT_ACQUISITION_SCAN_TYPES,
     )
     item_truncated = len(item_targets) > MAX_FLIGHT_ACQUISITION_SCAN_TYPES
     scan_targets = item_targets[:MAX_FLIGHT_ACQUISITION_SCAN_TYPES]
     if not scan_targets:
+        unresolved_pasted_names = item_scope.get("unresolved_pasted_market_type_names") or []
+        if unresolved_pasted_names:
+            preview = ", ".join(str(name) for name in unresolved_pasted_names[:5])
+            extra = "..." if len(unresolved_pasted_names) > 5 else ""
+            raise CorpMarketError(f"No pasted item names matched the static market cache: {preview}{extra}.")
         raise CorpMarketError("Choose Common materials, a market category, or at least one exact item before planning acquisitions.")
     region_count = len(scan_pickup_region_ids)
     item_count = len(scan_targets)
@@ -9782,7 +9791,7 @@ def industry_material_trade_targets(recipes: dict[int, IndustryRecipe]) -> list[
     return sorted(targets, key=lambda item: (-int(item["recipe_count"]), str(item["name"]), int(item["type_id"])))
 
 
-def build_haul_item_targets(
+def build_market_item_targets(
     *,
     config: EveSsoConfig,
     recipe_cache: IndustryRecipeCache,
@@ -9919,6 +9928,29 @@ def build_haul_item_targets(
         "total_item_types": len(targets),
         "scan_type_limit": clean_scan_type_limit,
     }
+
+
+def build_haul_item_targets(
+    *,
+    config: EveSsoConfig,
+    recipe_cache: IndustryRecipeCache,
+    include_common_materials: bool,
+    market_group_ids: Iterable[int],
+    market_type_ids: Iterable[int] = (),
+    market_type_names: Iterable[Any] = (),
+    common_material_limit: int = MAX_FLIGHT_HAUL_MATERIAL_TYPES,
+    scan_type_limit: int = MAX_FLIGHT_HAUL_SCAN_TYPES,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    return build_market_item_targets(
+        config=config,
+        recipe_cache=recipe_cache,
+        include_common_materials=include_common_materials,
+        market_group_ids=market_group_ids,
+        market_type_ids=market_type_ids,
+        market_type_names=market_type_names,
+        common_material_limit=common_material_limit,
+        scan_type_limit=scan_type_limit,
+    )
 
 
 def resolve_route_system(route_cache: RouteGraphCache, name: str) -> RouteSystem | None:
@@ -10447,6 +10479,159 @@ def query_bool(value: Any, *, default: bool = False) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def query_first(params: Mapping[str, list[str]], key: str, default: Any = "") -> Any:
+    values = params.get(key)
+    if not values:
+        return default
+    return values[0]
+
+
+@dataclass(frozen=True)
+class HaulScanRequest:
+    origin_name: str = ""
+    destination_name: str = DEFAULT_HAUL_DESTINATION_SYSTEM
+    detour_jumps: int = DEFAULT_HAUL_DETOUR_JUMPS
+    cargo_capacity_m3: float = DEFAULT_HAUL_CARGO_M3
+    purchase_budget_isk: float = DEFAULT_HAUL_PURCHASE_BUDGET_ISK
+    min_detour_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT
+    route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE
+    avoid_recent_pod_kills: bool = DEFAULT_HAUL_AVOID_RECENT_POD_KILLS
+    include_common_materials: bool = True
+    market_group_ids: tuple[int, ...] = ()
+    market_type_ids: tuple[int, ...] = ()
+    market_type_names: tuple[str, ...] = ()
+    sort_by: str = DEFAULT_HAUL_SORT_BY
+    min_profit_per_m3: float = 0.0
+    min_profit_per_extra_jump: float = 0.0
+
+    @classmethod
+    def from_query(cls, query: Mapping[str, list[str]]) -> "HaulScanRequest":
+        return cls(
+            origin_name=str(query_first(query, "origin_name", "") or ""),
+            destination_name=str(query_first(query, "destination", DEFAULT_HAUL_DESTINATION_SYSTEM) or DEFAULT_HAUL_DESTINATION_SYSTEM),
+            detour_jumps=clamp_haul_detour_jumps(query_first(query, "detour_jumps", DEFAULT_HAUL_DETOUR_JUMPS)),
+            cargo_capacity_m3=clamp_haul_cargo_m3(query_first(query, "cargo_m3", DEFAULT_HAUL_CARGO_M3)),
+            purchase_budget_isk=clamp_haul_purchase_budget_isk(
+                query_first(query, "purchase_budget_isk", DEFAULT_HAUL_PURCHASE_BUDGET_ISK)
+            ),
+            min_detour_margin_percent=clamp_haul_min_detour_margin_percent(
+                query_first(query, "min_detour_margin_percent", DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT)
+            ),
+            route_preference=normalize_haul_route_preference(
+                query_first(query, "route_preference", DEFAULT_HAUL_ROUTE_PREFERENCE)
+            ),
+            avoid_recent_pod_kills=query_bool(
+                query_first(query, "avoid_recent_pod_kills", str(int(DEFAULT_HAUL_AVOID_RECENT_POD_KILLS))),
+                default=DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
+            ),
+            include_common_materials=query_bool(query_first(query, "common_materials", "1"), default=True),
+            market_group_ids=clean_haul_market_group_ids(query.get("market_group_ids") or []),
+            market_type_ids=clean_haul_market_type_ids(query.get("market_type_ids") or []),
+            market_type_names=clean_haul_market_type_names(query.get("market_type_names") or query.get("item_names") or []),
+            sort_by=normalize_haul_sort_by(query_first(query, "sort_by", DEFAULT_HAUL_SORT_BY)),
+            min_profit_per_m3=clamp_haul_efficiency_floor_isk(query_first(query, "min_profit_per_m3", 0)),
+            min_profit_per_extra_jump=clamp_haul_efficiency_floor_isk(query_first(query, "min_profit_per_extra_jump", 0)),
+        )
+
+    def payload_kwargs(self) -> dict[str, Any]:
+        return {
+            "origin_name": self.origin_name,
+            "destination_name": self.destination_name,
+            "detour_jumps": self.detour_jumps,
+            "cargo_capacity_m3": self.cargo_capacity_m3,
+            "purchase_budget_isk": self.purchase_budget_isk,
+            "min_detour_margin_percent": self.min_detour_margin_percent,
+            "route_preference": self.route_preference,
+            "avoid_recent_pod_kills": self.avoid_recent_pod_kills,
+            "include_common_materials": self.include_common_materials,
+            "market_group_ids": self.market_group_ids,
+            "market_type_ids": self.market_type_ids,
+            "market_type_names": self.market_type_names,
+            "sort_by": self.sort_by,
+            "min_profit_per_m3": self.min_profit_per_m3,
+            "min_profit_per_extra_jump": self.min_profit_per_extra_jump,
+        }
+
+    def comparison_kwargs(self) -> dict[str, Any]:
+        kwargs = self.payload_kwargs()
+        kwargs.pop("destination_name", None)
+        return kwargs
+
+
+@dataclass(frozen=True)
+class HaulComparisonRequest:
+    scan: HaulScanRequest
+    destinations: tuple[str, ...]
+
+    @classmethod
+    def from_query(cls, query: Mapping[str, list[str]]) -> "HaulComparisonRequest":
+        scan = HaulScanRequest.from_query(query)
+        return cls(
+            scan=scan,
+            destinations=clean_haul_compare_destinations(query.get("destinations") or []),
+        )
+
+
+@dataclass(frozen=True)
+class AcquisitionScanRequest:
+    origin_name: str = ""
+    destination_name: str = DEFAULT_HAUL_DESTINATION_SYSTEM
+    budget_isk: float = DEFAULT_ACQUISITION_BUDGET_ISK
+    pickup_jumps: int = DEFAULT_ACQUISITION_PICKUP_JUMPS
+    portfolio_jumps: int = DEFAULT_ACQUISITION_PORTFOLIO_JUMPS
+    min_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT
+    broker_fee_percent: float = DEFAULT_ACQUISITION_BROKER_FEE_PERCENT
+    target_days: int = DEFAULT_ACQUISITION_TARGET_DAYS
+    route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE
+    include_common_materials: bool = True
+    market_group_ids: tuple[int, ...] = ()
+    market_type_ids: tuple[int, ...] = ()
+    market_type_names: tuple[str, ...] = ()
+
+    @classmethod
+    def from_query(cls, query: Mapping[str, list[str]]) -> "AcquisitionScanRequest":
+        return cls(
+            origin_name=str(query_first(query, "origin_name", "") or ""),
+            destination_name=str(query_first(query, "destination", DEFAULT_HAUL_DESTINATION_SYSTEM) or DEFAULT_HAUL_DESTINATION_SYSTEM),
+            budget_isk=clamp_acquisition_budget_isk(query_first(query, "budget_isk", DEFAULT_ACQUISITION_BUDGET_ISK)),
+            pickup_jumps=clamp_acquisition_pickup_jumps(query_first(query, "pickup_jumps", DEFAULT_ACQUISITION_PICKUP_JUMPS)),
+            portfolio_jumps=clamp_acquisition_portfolio_jumps(
+                query_first(query, "portfolio_jumps", DEFAULT_ACQUISITION_PORTFOLIO_JUMPS)
+            ),
+            min_margin_percent=clamp_haul_min_detour_margin_percent(
+                query_first(query, "min_margin_percent", DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT)
+            ),
+            broker_fee_percent=clamp_acquisition_broker_fee_percent(
+                query_first(query, "broker_fee_percent", DEFAULT_ACQUISITION_BROKER_FEE_PERCENT)
+            ),
+            target_days=clamp_acquisition_target_days(query_first(query, "target_days", DEFAULT_ACQUISITION_TARGET_DAYS)),
+            route_preference=normalize_haul_route_preference(
+                query_first(query, "route_preference", DEFAULT_HAUL_ROUTE_PREFERENCE)
+            ),
+            include_common_materials=query_bool(query_first(query, "common_materials", "1"), default=True),
+            market_group_ids=clean_haul_market_group_ids(query.get("market_group_ids") or []),
+            market_type_ids=clean_haul_market_type_ids(query.get("market_type_ids") or []),
+            market_type_names=clean_haul_market_type_names(query.get("market_type_names") or query.get("item_names") or []),
+        )
+
+    def payload_kwargs(self) -> dict[str, Any]:
+        return {
+            "origin_name": self.origin_name,
+            "destination_name": self.destination_name,
+            "budget_isk": self.budget_isk,
+            "pickup_jumps": self.pickup_jumps,
+            "portfolio_jumps": self.portfolio_jumps,
+            "min_margin_percent": self.min_margin_percent,
+            "broker_fee_percent": self.broker_fee_percent,
+            "target_days": self.target_days,
+            "route_preference": self.route_preference,
+            "include_common_materials": self.include_common_materials,
+            "market_group_ids": self.market_group_ids,
+            "market_type_ids": self.market_type_ids,
+            "market_type_names": self.market_type_names,
+        }
 
 
 class StageTimer:
@@ -13078,54 +13263,12 @@ def build_http_server(
             if session is None:
                 return
             query = parse_qs(urlparse(self.path).query)
-            origin = first_query_value(query, "origin_name") or ""
-            destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
-            detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
-            cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
-            purchase_budget_isk = clamp_haul_purchase_budget_isk(
-                (query.get("purchase_budget_isk") or [DEFAULT_HAUL_PURCHASE_BUDGET_ISK])[0]
-            )
-            min_detour_margin = clamp_haul_min_detour_margin_percent(
-                (query.get("min_detour_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
-            )
-            route_preference = normalize_haul_route_preference(
-                (query.get("route_preference") or [DEFAULT_HAUL_ROUTE_PREFERENCE])[0]
-            )
-            avoid_recent_pod_kills = query_bool(
-                (query.get("avoid_recent_pod_kills") or [str(int(DEFAULT_HAUL_AVOID_RECENT_POD_KILLS))])[0],
-                default=DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
-            )
-            include_common_materials = query_bool(
-                (query.get("common_materials") or ["1"])[0],
-                default=True,
-            )
-            market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
-            market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
-            market_type_names = query.get("market_type_names") or query.get("item_names") or []
-            sort_by = normalize_haul_sort_by((query.get("sort_by") or [DEFAULT_HAUL_SORT_BY])[0])
-            min_profit_per_m3 = clamp_haul_efficiency_floor_isk((query.get("min_profit_per_m3") or [0])[0])
-            min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(
-                (query.get("min_profit_per_extra_jump") or [0])[0]
-            )
+            request = HaulScanRequest.from_query(query)
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
                     session=session,
-                    origin_name=origin,
-                    destination_name=destination,
-                    detour_jumps=detour_jumps,
-                    cargo_capacity_m3=cargo_m3,
-                    purchase_budget_isk=purchase_budget_isk,
-                    min_detour_margin_percent=min_detour_margin,
-                    route_preference=route_preference,
-                    avoid_recent_pod_kills=avoid_recent_pod_kills,
-                    include_common_materials=include_common_materials,
-                    market_group_ids=market_group_ids,
-                    market_type_ids=market_type_ids,
-                    market_type_names=market_type_names,
-                    sort_by=sort_by,
-                    min_profit_per_m3=min_profit_per_m3,
-                    min_profit_per_extra_jump=min_profit_per_extra_jump,
+                    **request.payload_kwargs(),
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -13137,54 +13280,13 @@ def build_http_server(
             if session is None:
                 return
             query = parse_qs(urlparse(self.path).query)
-            origin = first_query_value(query, "origin_name") or ""
-            destinations = clean_haul_compare_destinations(query.get("destinations") or [])
-            detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
-            cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
-            purchase_budget_isk = clamp_haul_purchase_budget_isk(
-                (query.get("purchase_budget_isk") or [DEFAULT_HAUL_PURCHASE_BUDGET_ISK])[0]
-            )
-            min_detour_margin = clamp_haul_min_detour_margin_percent(
-                (query.get("min_detour_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
-            )
-            route_preference = normalize_haul_route_preference(
-                (query.get("route_preference") or [DEFAULT_HAUL_ROUTE_PREFERENCE])[0]
-            )
-            avoid_recent_pod_kills = query_bool(
-                (query.get("avoid_recent_pod_kills") or [str(int(DEFAULT_HAUL_AVOID_RECENT_POD_KILLS))])[0],
-                default=DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
-            )
-            include_common_materials = query_bool(
-                (query.get("common_materials") or ["1"])[0],
-                default=True,
-            )
-            market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
-            market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
-            market_type_names = query.get("market_type_names") or query.get("item_names") or []
-            sort_by = normalize_haul_sort_by((query.get("sort_by") or [DEFAULT_HAUL_SORT_BY])[0])
-            min_profit_per_m3 = clamp_haul_efficiency_floor_isk((query.get("min_profit_per_m3") or [0])[0])
-            min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(
-                (query.get("min_profit_per_extra_jump") or [0])[0]
-            )
+            request = HaulComparisonRequest.from_query(query)
             try:
                 payload = build_flight_hauling_comparison_payload(
                     config=sso_config,
                     session=session,
-                    origin_name=origin,
-                    destinations=destinations,
-                    detour_jumps=detour_jumps,
-                    cargo_capacity_m3=cargo_m3,
-                    purchase_budget_isk=purchase_budget_isk,
-                    min_detour_margin_percent=min_detour_margin,
-                    route_preference=route_preference,
-                    avoid_recent_pod_kills=avoid_recent_pod_kills,
-                    include_common_materials=include_common_materials,
-                    market_group_ids=market_group_ids,
-                    market_type_ids=market_type_ids,
-                    market_type_names=market_type_names,
-                    sort_by=sort_by,
-                    min_profit_per_m3=min_profit_per_m3,
-                    min_profit_per_extra_jump=min_profit_per_extra_jump,
+                    destinations=request.destinations,
+                    **request.scan.comparison_kwargs(),
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -13212,55 +13314,13 @@ def build_http_server(
                 emit("scan_error", {"ok": False, "error": access_error})
                 return
             query = parse_qs(urlparse(self.path).query)
-            origin = first_query_value(query, "origin_name") or ""
-            destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
-            detour_jumps = clamp_haul_detour_jumps((query.get("detour_jumps") or [DEFAULT_HAUL_DETOUR_JUMPS])[0])
-            cargo_m3 = clamp_haul_cargo_m3((query.get("cargo_m3") or [DEFAULT_HAUL_CARGO_M3])[0])
-            purchase_budget_isk = clamp_haul_purchase_budget_isk(
-                (query.get("purchase_budget_isk") or [DEFAULT_HAUL_PURCHASE_BUDGET_ISK])[0]
-            )
-            min_detour_margin = clamp_haul_min_detour_margin_percent(
-                (query.get("min_detour_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
-            )
-            route_preference = normalize_haul_route_preference(
-                (query.get("route_preference") or [DEFAULT_HAUL_ROUTE_PREFERENCE])[0]
-            )
-            avoid_recent_pod_kills = query_bool(
-                (query.get("avoid_recent_pod_kills") or [str(int(DEFAULT_HAUL_AVOID_RECENT_POD_KILLS))])[0],
-                default=DEFAULT_HAUL_AVOID_RECENT_POD_KILLS,
-            )
-            include_common_materials = query_bool(
-                (query.get("common_materials") or ["1"])[0],
-                default=True,
-            )
-            market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
-            market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
-            market_type_names = query.get("market_type_names") or query.get("item_names") or []
-            sort_by = normalize_haul_sort_by((query.get("sort_by") or [DEFAULT_HAUL_SORT_BY])[0])
-            min_profit_per_m3 = clamp_haul_efficiency_floor_isk((query.get("min_profit_per_m3") or [0])[0])
-            min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(
-                (query.get("min_profit_per_extra_jump") or [0])[0]
-            )
+            request = HaulScanRequest.from_query(query)
             try:
                 payload = build_flight_hauling_payload(
                     config=sso_config,
                     session=session,
-                    origin_name=origin,
-                    destination_name=destination,
-                    detour_jumps=detour_jumps,
-                    cargo_capacity_m3=cargo_m3,
-                    purchase_budget_isk=purchase_budget_isk,
-                    min_detour_margin_percent=min_detour_margin,
-                    route_preference=route_preference,
-                    avoid_recent_pod_kills=avoid_recent_pod_kills,
-                    include_common_materials=include_common_materials,
-                    market_group_ids=market_group_ids,
-                    market_type_ids=market_type_ids,
-                    market_type_names=market_type_names,
-                    sort_by=sort_by,
-                    min_profit_per_m3=min_profit_per_m3,
-                    min_profit_per_extra_jump=min_profit_per_extra_jump,
                     progress=emit,
+                    **request.payload_kwargs(),
                 )
             except (BrokenPipeError, ConnectionResetError):
                 return
@@ -13278,52 +13338,13 @@ def build_http_server(
             if session is None:
                 return
             query = parse_qs(urlparse(self.path).query)
-            origin = first_query_value(query, "origin_name") or ""
-            destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
-            budget_isk = clamp_acquisition_budget_isk(
-                (query.get("budget_isk") or [DEFAULT_ACQUISITION_BUDGET_ISK])[0]
-            )
-            pickup_jumps = clamp_acquisition_pickup_jumps(
-                (query.get("pickup_jumps") or [DEFAULT_ACQUISITION_PICKUP_JUMPS])[0]
-            )
-            portfolio_jumps = clamp_acquisition_portfolio_jumps(
-                (query.get("portfolio_jumps") or [DEFAULT_ACQUISITION_PORTFOLIO_JUMPS])[0]
-            )
-            min_margin = clamp_haul_min_detour_margin_percent(
-                (query.get("min_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
-            )
-            broker_fee = clamp_acquisition_broker_fee_percent(
-                (query.get("broker_fee_percent") or [DEFAULT_ACQUISITION_BROKER_FEE_PERCENT])[0]
-            )
-            target_days = clamp_acquisition_target_days(
-                (query.get("target_days") or [DEFAULT_ACQUISITION_TARGET_DAYS])[0]
-            )
-            route_preference = normalize_haul_route_preference(
-                (query.get("route_preference") or [DEFAULT_HAUL_ROUTE_PREFERENCE])[0]
-            )
-            include_common_materials = query_bool(
-                (query.get("common_materials") or ["1"])[0],
-                default=True,
-            )
-            market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
-            market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
+            request = AcquisitionScanRequest.from_query(query)
             try:
                 payload = build_flight_acquisition_payload(
                     config=sso_config,
                     session=session,
-                    origin_name=origin,
-                    destination_name=destination,
-                    budget_isk=budget_isk,
-                    pickup_jumps=pickup_jumps,
-                    portfolio_jumps=portfolio_jumps,
-                    min_margin_percent=min_margin,
-                    broker_fee_percent=broker_fee,
-                    target_days=target_days,
-                    route_preference=route_preference,
-                    include_common_materials=include_common_materials,
-                    market_group_ids=market_group_ids,
-                    market_type_ids=market_type_ids,
                     expectation_store=store,
+                    **request.payload_kwargs(),
                 )
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
@@ -13351,53 +13372,14 @@ def build_http_server(
                 emit("scan_error", {"ok": False, "error": access_error})
                 return
             query = parse_qs(urlparse(self.path).query)
-            origin = first_query_value(query, "origin_name") or ""
-            destination = first_query_value(query, "destination") or DEFAULT_HAUL_DESTINATION_SYSTEM
-            budget_isk = clamp_acquisition_budget_isk(
-                (query.get("budget_isk") or [DEFAULT_ACQUISITION_BUDGET_ISK])[0]
-            )
-            pickup_jumps = clamp_acquisition_pickup_jumps(
-                (query.get("pickup_jumps") or [DEFAULT_ACQUISITION_PICKUP_JUMPS])[0]
-            )
-            portfolio_jumps = clamp_acquisition_portfolio_jumps(
-                (query.get("portfolio_jumps") or [DEFAULT_ACQUISITION_PORTFOLIO_JUMPS])[0]
-            )
-            min_margin = clamp_haul_min_detour_margin_percent(
-                (query.get("min_margin_percent") or [DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT])[0]
-            )
-            broker_fee = clamp_acquisition_broker_fee_percent(
-                (query.get("broker_fee_percent") or [DEFAULT_ACQUISITION_BROKER_FEE_PERCENT])[0]
-            )
-            target_days = clamp_acquisition_target_days(
-                (query.get("target_days") or [DEFAULT_ACQUISITION_TARGET_DAYS])[0]
-            )
-            route_preference = normalize_haul_route_preference(
-                (query.get("route_preference") or [DEFAULT_HAUL_ROUTE_PREFERENCE])[0]
-            )
-            include_common_materials = query_bool(
-                (query.get("common_materials") or ["1"])[0],
-                default=True,
-            )
-            market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
-            market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
+            request = AcquisitionScanRequest.from_query(query)
             try:
                 payload = build_flight_acquisition_payload(
                     config=sso_config,
                     session=session,
-                    origin_name=origin,
-                    destination_name=destination,
-                    budget_isk=budget_isk,
-                    pickup_jumps=pickup_jumps,
-                    portfolio_jumps=portfolio_jumps,
-                    min_margin_percent=min_margin,
-                    broker_fee_percent=broker_fee,
-                    target_days=target_days,
-                    route_preference=route_preference,
-                    include_common_materials=include_common_materials,
-                    market_group_ids=market_group_ids,
-                    market_type_ids=market_type_ids,
                     expectation_store=store,
                     progress=emit,
+                    **request.payload_kwargs(),
                 )
             except (BrokenPipeError, ConnectionResetError):
                 return
@@ -18635,6 +18617,18 @@ help</textarea>
                     <small>Default: top @@ACQUISITION_COMMON_MATERIAL_LIMIT@@ industry inputs by recipe use for a faster hosted scan.</small>
                   </span>
                 </label>
+                <label class="market-item-paste">Paste item names
+                  <textarea id="acq-pasted-items" name="market_type_names" rows="3" spellcheck="false" placeholder="Epithal&#10;Warp Core Stabilizer I&#10;Type-D Restrained Inertial Stabilizers"></textarea>
+                  <small class="input-note">One item per line. Commas and semicolons also work.</small>
+                </label>
+                <div id="acq-pasted-items-status" class="meta market-search-status">No pasted items.</div>
+                <label class="checkline">
+                  <input id="acq-pasted-items-only" name="pasted_items_only" type="checkbox" checked>
+                  <span>
+                    Search pasted items only
+                    <small>Fast mode: pasted names ignore Common materials and market category selections.</small>
+                  </span>
+                </label>
                 <details>
                   <summary>Market categories</summary>
                   <div id="acq-market-groups" class="haul-market-groups">
@@ -19389,6 +19383,9 @@ help</textarea>
     const acqMinMargin = document.querySelector("#acq-min-margin");
     const acqMinMarginValue = document.querySelector("#acq-min-margin-value");
     const acqCommonMaterials = document.querySelector("#acq-common-materials");
+    const acqPastedItems = document.querySelector("#acq-pasted-items");
+    const acqPastedItemsStatus = document.querySelector("#acq-pasted-items-status");
+    const acqPastedItemsOnly = document.querySelector("#acq-pasted-items-only");
     const acqMarketGroups = document.querySelector("#acq-market-groups");
     const acqMarketGroupInputs = Array.from(acqMarketGroups.querySelectorAll("input[data-haul-market-group]"));
     const acqMarketTypeInputs = Array.from(acqMarketGroups.querySelectorAll("input[data-haul-market-type]"));
@@ -19500,6 +19497,8 @@ help</textarea>
     const acqCommonMaterialsKey = "eve-flight-acq-common-materials-v1";
     const acqMarketGroupIdsKey = "eve-flight-acq-market-group-ids-v1";
     const acqMarketTypeIdsKey = "eve-flight-acq-market-type-ids-v1";
+    const acqPastedItemsKey = "eve-flight-acq-pasted-items-v1";
+    const acqPastedItemsOnlyKey = "eve-flight-acq-pasted-items-only-v1";
     const tradePnlWindowHoursKey = "eve-flight-trade-pnl-window-hours-v1";
     const tradePnlLensKey = "eve-flight-trade-pnl-lens-v1";
     const tradePnlConsiderationRuleKey = "eve-flight-trade-pnl-consideration-rule-v1";
@@ -20968,7 +20967,7 @@ help</textarea>
       const quickMode = haulPastedItemsOnly ? haulPastedItemsOnly.checked : true;
       haulPastedItemsStatus.textContent = names.length
         ? quickMode
-          ? `${formatNumber(names.length)} pasted item name${names.length === 1 ? "" : "s"} will be scanned by itself in fast mode.`
+          ? `${formatNumber(names.length)} pasted item name${names.length === 1 ? "" : "s"} will be scanned ${names.length === 1 ? "by itself" : "by themselves"} in fast mode.`
           : `${formatNumber(names.length)} pasted item name${names.length === 1 ? "" : "s"} will be combined with the selected item scope.`
         : "No pasted items.";
     }
@@ -21319,14 +21318,45 @@ help</textarea>
       });
     }
 
+    function updateAcqPastedItemsStatus(text) {
+      if (!acqPastedItemsStatus) return;
+      const names = parseHaulPastedItemNames(text);
+      if (acqPastedItemsOnly) acqPastedItemsOnly.disabled = names.length === 0;
+      const quickMode = acqPastedItemsOnly ? acqPastedItemsOnly.checked : true;
+      acqPastedItemsStatus.textContent = names.length
+        ? quickMode
+          ? `${formatNumber(names.length)} pasted item name${names.length === 1 ? "" : "s"} will be scanned ${names.length === 1 ? "by itself" : "by themselves"} in fast mode.`
+          : `${formatNumber(names.length)} pasted item name${names.length === 1 ? "" : "s"} will be combined with the selected item scope.`
+        : "No pasted items.";
+    }
+
+    function acquisitionPastedOnlyActive(settings) {
+      return Boolean(settings && settings.pastedItemsOnly && parseHaulPastedItemNames(settings.pastedItemNames || "").length);
+    }
+
     function acquisitionItemScopeLabel(settings) {
+      const pastedCount = parseHaulPastedItemNames(settings.pastedItemNames || "").length;
+      if (settings.pastedItemsOnly && pastedCount) {
+        return `pasted items only (${formatNumber(pastedCount)} pasted item${pastedCount === 1 ? "" : "s"})`;
+      }
       const parts = [];
       if (settings.includeCommonMaterials) parts.push("common materials");
       const groupCount = (settings.marketGroupIds || []).length;
       if (groupCount) parts.push(`${formatNumber(groupCount)} market categor${groupCount === 1 ? "y" : "ies"}`);
       const typeCount = (settings.marketTypeIds || []).length;
       if (typeCount) parts.push(`${formatNumber(typeCount)} exact item${typeCount === 1 ? "" : "s"}`);
+      if (pastedCount) parts.push(`${formatNumber(pastedCount)} pasted item${pastedCount === 1 ? "" : "s"}`);
       return parts.length ? parts.join(" + ") : "no item scope selected";
+    }
+
+    function effectiveAcquisitionScanSettings(settings) {
+      if (!acquisitionPastedOnlyActive(settings)) return settings;
+      return {
+        ...settings,
+        includeCommonMaterials: false,
+        marketGroupIds: [],
+        marketTypeIds: [],
+      };
     }
 
     function updateAcquisitionItemScopeSummary(settings = null) {
@@ -21334,8 +21364,14 @@ help</textarea>
         includeCommonMaterials: acqCommonMaterials.checked,
         marketGroupIds: readAcqMarketGroupIdsFromInputs(),
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
+        pastedItemNames: acqPastedItems ? acqPastedItems.value : "",
+        pastedItemsOnly: acqPastedItemsOnly ? acqPastedItemsOnly.checked : true,
       };
-      acqItemScopeSummary.textContent = `${acquisitionItemScopeLabel(activeSettings)}. Market history is checked for every scanned item type.`;
+      const scopeLabel = acquisitionItemScopeLabel(activeSettings);
+      updateAcqPastedItemsStatus(activeSettings.pastedItemNames || "");
+      acqItemScopeSummary.textContent = acquisitionPastedOnlyActive(activeSettings)
+        ? `${scopeLabel}. Fast mode is on; Common materials and market categories are ignored for this scan.`
+        : `${scopeLabel}. Market history is checked for every scanned item type.`;
     }
 
     function acquisitionStartLabel(settings) {
@@ -21352,6 +21388,8 @@ help</textarea>
       const targetDays = Number(window.localStorage.getItem(acqTargetDaysKey) || acqTargetDays.value || 3);
       const minMargin = Number(window.localStorage.getItem(acqMinMarginKey) || acqMinMargin.value || 10);
       const commonStored = window.localStorage.getItem(acqCommonMaterialsKey);
+      const pastedItemNames = String(window.localStorage.getItem(acqPastedItemsKey) || (acqPastedItems ? acqPastedItems.value : "") || "").trim();
+      const pastedOnlyStored = window.localStorage.getItem(acqPastedItemsOnlyKey);
       return {
         originName,
         destination,
@@ -21364,6 +21402,8 @@ help</textarea>
         includeCommonMaterials: commonStored == null ? acqCommonMaterials.checked : commonStored !== "0",
         marketGroupIds: readStoredAcqMarketGroupIds(),
         marketTypeIds: readStoredAcqMarketTypeIds(),
+        pastedItemNames,
+        pastedItemsOnly: pastedOnlyStored == null ? true : pastedOnlyStored !== "0",
       };
     }
 
@@ -21379,6 +21419,8 @@ help</textarea>
       const includeCommonMaterials = settings.includeCommonMaterials == null ? acqCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
       const marketGroupIds = Array.isArray(settings.marketGroupIds) ? settings.marketGroupIds : readAcqMarketGroupIdsFromInputs();
       const marketTypeIds = Array.isArray(settings.marketTypeIds) ? settings.marketTypeIds : readAcqMarketTypeIdsFromInputs();
+      const pastedItemNames = String(settings.pastedItemNames == null ? (acqPastedItems ? acqPastedItems.value : "") : settings.pastedItemNames).trim();
+      const pastedItemsOnly = settings.pastedItemsOnly == null ? (acqPastedItemsOnly ? acqPastedItemsOnly.checked : true) : Boolean(settings.pastedItemsOnly);
       acqOrigin.value = originName;
       acqDestination.value = destination;
       acqBudget.value = String(budgetIsk);
@@ -21388,10 +21430,15 @@ help</textarea>
       acqTargetDays.value = String(targetDays);
       acqMinMargin.value = String(minMarginPercent);
       acqCommonMaterials.checked = includeCommonMaterials;
+      if (acqPastedItems) acqPastedItems.value = pastedItemNames;
+      if (acqPastedItemsOnly) {
+        acqPastedItemsOnly.checked = pastedItemsOnly;
+        acqPastedItemsOnly.disabled = parseHaulPastedItemNames(pastedItemNames).length === 0;
+      }
       applyAcqMarketGroupIds(marketGroupIds);
       applyAcqMarketTypeIds(marketTypeIds);
       acqMinMarginValue.textContent = `${formatNumber(minMarginPercent)}%`;
-      updateAcquisitionItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds});
+      updateAcquisitionItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly});
       window.localStorage.setItem(acqOriginKey, originName);
       window.localStorage.setItem(acqDestinationKey, destination);
       window.localStorage.setItem(acqBudgetKey, String(budgetIsk));
@@ -21403,7 +21450,9 @@ help</textarea>
       window.localStorage.setItem(acqCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
       window.localStorage.setItem(acqMarketGroupIdsKey, JSON.stringify(marketGroupIds));
       window.localStorage.setItem(acqMarketTypeIdsKey, JSON.stringify(marketTypeIds));
-      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds};
+      window.localStorage.setItem(acqPastedItemsKey, pastedItemNames);
+      window.localStorage.setItem(acqPastedItemsOnlyKey, pastedItemsOnly ? "1" : "0");
+      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly};
     }
 
     async function loadFlightStatus() {
@@ -22981,7 +23030,10 @@ help</textarea>
         includeCommonMaterials: acqCommonMaterials.checked,
         marketGroupIds: readAcqMarketGroupIdsFromInputs(),
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
+        pastedItemNames: acqPastedItems ? acqPastedItems.value : "",
+        pastedItemsOnly: acqPastedItemsOnly ? acqPastedItemsOnly.checked : true,
       });
+      const scanSettings = effectiveAcquisitionScanSettings(settings);
       closeAcquisitionEventSource();
       stopAcquisitionProgressTimer();
       acquisitionScanFinished = false;
@@ -22995,17 +23047,18 @@ help</textarea>
       startAcquisitionProgressTimer(settings);
       acqResults.innerHTML = `<div class="decision-empty">Recommendations will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
-        origin_name: settings.originName,
-        destination: settings.destination,
-        budget_isk: String(settings.budgetIsk),
-        broker_fee_percent: String(settings.brokerFeePercent),
-        pickup_jumps: String(settings.pickupJumps),
-        portfolio_jumps: String(settings.portfolioJumps),
-        target_days: String(settings.targetDays),
-        min_margin_percent: String(settings.minMarginPercent),
-        common_materials: settings.includeCommonMaterials ? "1" : "0",
-        market_group_ids: settings.marketGroupIds.join(","),
-        market_type_ids: settings.marketTypeIds.join(","),
+        origin_name: scanSettings.originName,
+        destination: scanSettings.destination,
+        budget_isk: String(scanSettings.budgetIsk),
+        broker_fee_percent: String(scanSettings.brokerFeePercent),
+        pickup_jumps: String(scanSettings.pickupJumps),
+        portfolio_jumps: String(scanSettings.portfolioJumps),
+        target_days: String(scanSettings.targetDays),
+        min_margin_percent: String(scanSettings.minMarginPercent),
+        common_materials: scanSettings.includeCommonMaterials ? "1" : "0",
+        market_group_ids: scanSettings.marketGroupIds.join(","),
+        market_type_ids: scanSettings.marketTypeIds.join(","),
+        market_type_names: scanSettings.pastedItemNames,
       });
       if (typeof EventSource === "undefined") {
         try {
@@ -26546,6 +26599,8 @@ help</textarea>
         includeCommonMaterials: acqCommonMaterials.checked,
         marketGroupIds: readAcqMarketGroupIdsFromInputs(),
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
+        pastedItemNames: acqPastedItems ? acqPastedItems.value : "",
+        pastedItemsOnly: acqPastedItemsOnly ? acqPastedItemsOnly.checked : true,
       });
       const settings = readAcquisitionSettings();
       resetMarketAcquisition(`Ready to build an investment portfolio from ${acquisitionStartLabel(settings)} toward ${settings.destination}.`);
@@ -26567,6 +26622,16 @@ help</textarea>
     });
     acqMinMargin.addEventListener("change", updateAcquisitionScopeAndReset);
     acqCommonMaterials.addEventListener("change", updateAcquisitionScopeAndReset);
+    if (acqPastedItems) {
+      acqPastedItems.addEventListener("input", () => {
+        window.localStorage.setItem(acqPastedItemsKey, String(acqPastedItems.value || "").trim());
+        updateAcquisitionItemScopeSummary();
+      });
+      acqPastedItems.addEventListener("change", updateAcquisitionScopeAndReset);
+    }
+    if (acqPastedItemsOnly) {
+      acqPastedItemsOnly.addEventListener("change", updateAcquisitionScopeAndReset);
+    }
     acqMarketGroups.addEventListener("click", (event) => {
       if (handleMarketGroupShowMore(acqMarketGroups, event)) return;
       if (event.target.closest("input[data-haul-market-group], input[data-haul-market-type], .mini-check, .market-item-check")) {

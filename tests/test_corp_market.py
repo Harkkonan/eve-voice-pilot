@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 import sys
+from urllib.parse import parse_qs
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -2199,6 +2200,61 @@ def test_haul_compare_destinations_parse_dedupe_and_limit():
     assert corp_market.clean_haul_compare_destinations(["A,B,C,D,E,F,G"]) == ("A", "B", "C", "D", "E", "F")
 
 
+def test_haul_scan_request_parses_query_contract():
+    request = corp_market.HaulScanRequest.from_query(
+        parse_qs(
+            "origin_name=Hek&destination=Jita&detour_jumps=4&cargo_m3=12000"
+            "&purchase_budget_isk=123456789&min_detour_margin_percent=18"
+            "&route_preference=shortest&avoid_recent_pod_kills=1&common_materials=0"
+            "&market_group_ids=4,11&market_type_ids=34,35&market_type_names=Tritanium%0APLEX"
+            "&sort_by=isk_per_m3&min_profit_per_m3=100&min_profit_per_extra_jump=250"
+        )
+    )
+
+    assert request.origin_name == "Hek"
+    assert request.destination_name == "Jita"
+    assert request.detour_jumps == 4
+    assert request.cargo_capacity_m3 == pytest.approx(12000.0)
+    assert request.purchase_budget_isk == pytest.approx(123456789.0)
+    assert request.min_detour_margin_percent == pytest.approx(18.0)
+    assert request.route_preference == "shorter"
+    assert request.avoid_recent_pod_kills is True
+    assert request.include_common_materials is False
+    assert request.market_group_ids == (4, 11)
+    assert request.market_type_ids == (34, 35)
+    assert request.market_type_names == ("Tritanium", "PLEX")
+    assert request.sort_by == "profit_per_m3"
+    assert request.min_profit_per_m3 == pytest.approx(100.0)
+    assert request.min_profit_per_extra_jump == pytest.approx(250.0)
+    assert "destination_name" not in request.comparison_kwargs()
+
+
+def test_acquisition_scan_request_parses_query_contract():
+    request = corp_market.AcquisitionScanRequest.from_query(
+        parse_qs(
+            "origin_name=Rens&destination=Amarr&budget_isk=75000000&pickup_jumps=5"
+            "&portfolio_jumps=80&min_margin_percent=22&broker_fee_percent=4.5"
+            "&target_days=7&route_preference=lesssecure&common_materials=0"
+            "&market_group_ids=20&market_type_ids=44992,34&market_type_names=Epithal%0APLEX"
+        )
+    )
+
+    assert request.origin_name == "Rens"
+    assert request.destination_name == "Amarr"
+    assert request.budget_isk == pytest.approx(75000000.0)
+    assert request.pickup_jumps == 5
+    assert request.portfolio_jumps == 80
+    assert request.min_margin_percent == pytest.approx(22.0)
+    assert request.broker_fee_percent == pytest.approx(4.5)
+    assert request.target_days == 7
+    assert request.route_preference == "less_secure"
+    assert request.include_common_materials is False
+    assert request.market_group_ids == (20,)
+    assert request.market_type_ids == (44992, 34)
+    assert request.market_type_names == ("Epithal", "PLEX")
+    assert request.payload_kwargs()["destination_name"] == "Amarr"
+
+
 def test_market_order_location_guardrail_labels_station_structure_and_unknown():
     station = corp_market.market_order_location_guardrail(60008494)
     structure = corp_market.market_order_location_guardrail(1_030_000_000_000)
@@ -2280,6 +2336,36 @@ def test_acquisition_common_material_limit_keeps_hosted_scan_small(tmp_path):
     assert scope["common_material_scan_limit"] == corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES
     assert scope["common_material_available_item_types"] == corp_market.MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES + 7
     assert scope["scan_type_limit"] == corp_market.MAX_FLIGHT_ACQUISITION_SCAN_TYPES
+
+
+def test_market_item_targets_keep_haul_wrapper_compatible(tmp_path):
+    recipe_cache = IndustryRecipeCache(
+        path=tmp_path / "recipes.json",
+        available=True,
+        recipes={
+            681: IndustryRecipe(
+                blueprint_type_id=681,
+                blueprint_name="Hobgoblin I Blueprint",
+                product_type_id=165,
+                product_name="Hobgoblin I",
+                product_quantity=1,
+                materials=(IndustryMaterial(type_id=34, name="Tritanium", quantity=1000, volume_m3=0.01),),
+            )
+        },
+    )
+    kwargs = {
+        "config": corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        "recipe_cache": recipe_cache,
+        "include_common_materials": True,
+        "market_group_ids": (),
+    }
+
+    market_targets, market_scope = corp_market.build_market_item_targets(**kwargs)
+    haul_targets, haul_scope = corp_market.build_haul_item_targets(**kwargs)
+
+    assert market_targets == haul_targets
+    assert market_scope == haul_scope
+    assert market_scope["total_item_types"] == 1
 
 
 def test_haul_item_targets_combine_common_materials_and_market_groups(monkeypatch, tmp_path):
