@@ -56,6 +56,7 @@ The first version is a safe briefing surface:
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
 - It does not warp, click, press keys, create contracts, place orders, read packets, read the EVE screen, or scrape cache files.
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
+- It shows an `ESI Flight Recorder` panel near the scope explanation. The recorder is a browser-session-only, plain-language transparency feed for recent checks such as location, industry library, wallet P&L, route scans, public market pricing, and reprocessing estimates. It does not store or display access tokens, refresh tokens, authorization headers, raw ESI responses, transaction IDs, character IDs, or private location IDs.
 
 Treat future Flight Attendant work like a crew member giving advice: the tool can brief the pilot, but the pilot takes every in-game action manually.
 

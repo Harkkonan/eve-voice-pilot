@@ -14596,6 +14596,27 @@ def render_flight_scope_justification() -> str:
                 </details>"""
 
 
+def render_flight_scope_metadata_json() -> str:
+    scope_keys = {
+        "location": FLIGHT_LOCATION_SCOPE,
+        "assets": FLIGHT_ASSETS_SCOPE,
+        "blueprints": FLIGHT_BLUEPRINTS_SCOPE,
+        "skills": FLIGHT_SKILLS_SCOPE,
+        "standings": FLIGHT_STANDINGS_SCOPE,
+        "implants": FLIGHT_IMPLANTS_SCOPE,
+        "structures": FLIGHT_STRUCTURES_SCOPE,
+        "wallet": FLIGHT_WALLET_SCOPE,
+    }
+    metadata = {
+        key: {
+            "scope": scope,
+            "label": FLIGHT_ESI_SCOPE_DISCLOSURES[scope]["label"],
+        }
+        for key, scope in scope_keys.items()
+    }
+    return json.dumps(metadata, sort_keys=True)
+
+
 def _render_flight_attendant_dashboard() -> str:
     category_options = "\n".join(
         f'                    <option value="{html.escape(key)}">{html.escape(label)}</option>'
@@ -15295,6 +15316,136 @@ def _render_flight_attendant_dashboard() -> str:
       margin: 2px 0 0;
       color: var(--muted);
       font-size: 13px;
+    }
+    .esi-flight-recorder {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+      border: 1px solid rgba(224, 168, 74, .28);
+      border-radius: 7px;
+      background:
+        linear-gradient(135deg, rgba(224, 168, 74, .08), transparent 46%),
+        rgba(5, 9, 11, .46);
+      padding: 10px;
+    }
+    .esi-flight-recorder-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .esi-flight-recorder h3 {
+      margin: 0 0 4px;
+      color: var(--amber);
+      font-size: 16px;
+      line-height: 1.2;
+    }
+    .esi-flight-recorder p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .esi-flight-activity-list {
+      display: grid;
+      gap: 8px;
+    }
+    .esi-flight-empty {
+      border: 1px dashed rgba(97, 199, 217, .28);
+      border-radius: 6px;
+      padding: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+    .esi-flight-activity {
+      display: grid;
+      gap: 7px;
+      border: 1px solid rgba(63, 85, 80, .66);
+      border-left: 3px solid var(--cyan);
+      border-radius: 6px;
+      background: rgba(8, 13, 15, .48);
+      padding: 9px;
+    }
+    .esi-flight-activity.status-error { border-left-color: var(--red); }
+    .esi-flight-activity.status-empty { border-left-color: var(--amber); }
+    .esi-flight-activity-top,
+    .esi-flight-scope-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .esi-flight-activity-title {
+      color: var(--text);
+      font-weight: 900;
+      overflow-wrap: anywhere;
+    }
+    .esi-flight-activity-time {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .esi-flight-status {
+      margin-left: auto;
+      border: 1px solid rgba(97, 199, 217, .3);
+      border-radius: 999px;
+      padding: 2px 7px;
+      color: var(--cyan);
+      background: rgba(97, 199, 217, .08);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .esi-flight-status.status-error {
+      border-color: rgba(229, 116, 102, .36);
+      color: var(--red);
+      background: rgba(229, 116, 102, .08);
+    }
+    .esi-flight-status.status-empty {
+      border-color: rgba(224, 168, 74, .36);
+      color: var(--amber);
+      background: rgba(224, 168, 74, .08);
+    }
+    .esi-flight-activity-copy {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .esi-flight-scope-pill {
+      display: inline-grid;
+      gap: 2px;
+      max-width: 100%;
+      border: 1px solid rgba(224, 168, 74, .28);
+      border-radius: 6px;
+      background: rgba(224, 168, 74, .07);
+      padding: 5px 6px;
+      color: var(--amber);
+      font-size: 11px;
+      line-height: 1.25;
+    }
+    .esi-flight-scope-pill strong {
+      color: var(--amber);
+      font-family: Segoe UI, system-ui, sans-serif;
+      font-size: 11px;
+    }
+    .esi-flight-scope-pill code {
+      color: var(--muted);
+      font-family: Consolas, monospace;
+      font-size: 10px;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .esi-flight-scope-pill.no-scope {
+      border-color: rgba(97, 199, 217, .24);
+      color: var(--muted);
+      background: rgba(97, 199, 217, .06);
+    }
+    .esi-flight-privacy-note {
+      border-top: 1px solid rgba(63, 85, 80, .5);
+      padding-top: 8px;
     }
     .progress-bar.is-meter span {
       width: var(--progress-percent, 0%);
@@ -18040,6 +18191,19 @@ help</textarea>
                   <button class="ghost" type="button" disabled>Generate Briefing</button>
                 </div>
 @@SCOPE_JUSTIFICATION_PANEL@@
+                <section class="esi-flight-recorder" aria-labelledby="esi-flight-recorder-title">
+                  <div class="esi-flight-recorder-head">
+                    <div>
+                      <h3 id="esi-flight-recorder-title">ESI Flight Recorder</h3>
+                      <p>A plain-language record of what the app recently checked with your authorized ESI access.</p>
+                    </div>
+                    <span class="pill reserved">Session local</span>
+                  </div>
+                  <div id="esi-flight-activity-list" class="esi-flight-activity-list" aria-live="polite">
+                    <div class="esi-flight-empty">No recent ESI activity yet.</div>
+                  </div>
+                  <p class="esi-flight-privacy-note">Privacy: the app uses ESI scopes only for data you authorized. This recorder does not show access tokens, refresh tokens, authorization headers, raw API responses, or private identifiers.</p>
+                </section>
                 <div id="flight-esi-message" class="meta"></div>
               </div>
               <div class="module-stack">
@@ -19147,6 +19311,7 @@ help</textarea>
     const flightScopeName = document.querySelector("#flight-scope-name");
     const flightTokenStatus = document.querySelector("#flight-token-status");
     const flightMessage = document.querySelector("#flight-esi-message");
+    const esiFlightActivityList = document.querySelector("#esi-flight-activity-list");
     const flightLoginLink = document.querySelector("#flight-login-link");
     const flightLogoutLink = document.querySelector("#flight-logout-link");
     const flightRefreshButton = document.querySelector("#flight-refresh");
@@ -19361,6 +19526,11 @@ help</textarea>
     const reprocessStructureBonusKey = "eve-flight-reprocess-structure-bonus-v1";
     const reprocessBatchKey = "eve-flight-reprocess-batch-v1";
     const reprocessAfterTaxKey = "eve-flight-reprocess-after-market-tax-v1";
+    const flightScopeMetadata = @@FLIGHT_SCOPE_METADATA_JSON@@;
+    const flightScopeLabelsByName = Object.values(flightScopeMetadata).reduce((labels, entry) => {
+      if (entry && entry.scope) labels[entry.scope] = entry.label || entry.scope;
+      return labels;
+    }, {});
     const validTabs = new Set(["market", "fittings", "flight", "industry", "hauling", "acquisition", "trade-pnl", "planetary", "reprocessing"]);
     let filterType = "";
     let includeClosed = false;
@@ -19399,6 +19569,7 @@ help</textarea>
     let planetaryProducedQuickbarItems = [];
     let reprocessLastPayloads = [];
     let reprocessLastNotes = [];
+    let esiFlightActivities = [];
     let reprocessAssaySortKey = "delta";
     let reprocessAssaySortDirection = "desc";
 
@@ -19439,6 +19610,92 @@ help</textarea>
       const statusLabel = response.status ? `HTTP ${response.status}` : "a non-JSON response";
       const detail = snippet ? ` (${snippet})` : "";
       throw new Error(`${fallbackMessage}: server returned ${statusLabel} instead of JSON${detail}.`);
+    }
+
+    function flightActivityScopes(...keys) {
+      return keys
+        .map((key) => (flightScopeMetadata[key] || {}).scope)
+        .filter(Boolean);
+    }
+
+    function flightActivityText(value, fallback = "") {
+      return String(value || fallback || "")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .slice(0, 240);
+    }
+
+    function esiActivityStatusLabel(status) {
+      if (status === "error") return "Error";
+      if (status === "empty") return "No data";
+      return "Success";
+    }
+
+    function formatEsiActivityTime(recordedAt) {
+      const timestamp = Date.parse(recordedAt);
+      if (!Number.isFinite(timestamp)) return "just now";
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+      if (elapsedSeconds < 10) return "just now";
+      if (elapsedSeconds < 60) return `${elapsedSeconds}s ago`;
+      const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+      if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+      return new Date(timestamp).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+    }
+
+    function renderEsiActivityScopes(scopes) {
+      const cleanScopes = Array.isArray(scopes) ? scopes.filter(Boolean) : [];
+      if (!cleanScopes.length) {
+        return '<span class="esi-flight-scope-pill no-scope"><strong>No character ESI scope</strong><code>public ESI/static data only</code></span>';
+      }
+      return cleanScopes.map((scope) => {
+        const label = flightScopeLabelsByName[scope] || scope;
+        return `<span class="esi-flight-scope-pill"><strong>${escapeHtml(label)}</strong><code>${escapeHtml(scope)}</code></span>`;
+      }).join("");
+    }
+
+    function renderEsiActivityFeed() {
+      if (!esiFlightActivityList) return;
+      if (!esiFlightActivities.length) {
+        esiFlightActivityList.innerHTML = '<div class="esi-flight-empty">No recent ESI activity yet.</div>';
+        return;
+      }
+      esiFlightActivityList.innerHTML = esiFlightActivities.map((activity) => {
+        const status = ["success", "error", "empty"].includes(activity.status) ? activity.status : "success";
+        return `
+          <article class="esi-flight-activity status-${status}">
+            <div class="esi-flight-activity-top">
+              <strong class="esi-flight-activity-title">${escapeHtml(activity.label)}</strong>
+              <time class="esi-flight-activity-time" datetime="${escapeHtml(activity.recordedAt)}">${escapeHtml(formatEsiActivityTime(activity.recordedAt))}</time>
+              <span class="esi-flight-status status-${status}">${escapeHtml(esiActivityStatusLabel(status))}</span>
+            </div>
+            <div class="esi-flight-scope-row">${renderEsiActivityScopes(activity.scopes)}</div>
+            <p class="esi-flight-activity-copy">${escapeHtml(activity.description)}</p>
+            <p class="esi-flight-activity-copy"><strong>Why:</strong> ${escapeHtml(activity.reason)}</p>
+          </article>
+        `;
+      }).join("");
+    }
+
+    function recordEsiActivity(activity) {
+      if (!esiFlightActivityList || !activity) return;
+      const scopes = Array.from(new Set(Array.isArray(activity.scopes) ? activity.scopes.filter(Boolean) : []));
+      const status = ["success", "error", "empty"].includes(activity.status) ? activity.status : "success";
+      esiFlightActivities = [
+        {
+          recordedAt: new Date().toISOString(),
+          scopes,
+          label: flightActivityText(activity.label, "ESI checked"),
+          description: flightActivityText(activity.description, "The app checked authorized ESI data."),
+          reason: flightActivityText(activity.reason, "This supports a visible planning estimate on the page."),
+          status,
+        },
+        ...esiFlightActivities,
+      ].slice(0, 10);
+      renderEsiActivityFeed();
+    }
+
+    function recordEsiActivityError(activity) {
+      recordEsiActivity({...activity, status: "error"});
     }
 
     function discordAlertLines(textarea) {
@@ -21169,6 +21426,12 @@ help</textarea>
         resetReprocessing("Ore reprocessing calculator is offline.");
         clearReprocessingLocations("Ore reprocessing calculator is offline.", true);
         resetFlightIndustry("Flight Attendant ESI status is offline.");
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location"),
+          label: "Location check failed",
+          description: "The app could not refresh the current system from ESI.",
+          reason: "Current location starts nearby-system, hauling, acquisition, and reprocessing estimates from the right place.",
+        });
       }
     }
 
@@ -21247,6 +21510,12 @@ help</textarea>
         resetReprocessing("Resolve the ESI error before calculating ore reprocessing.");
         clearReprocessingLocations("Resolve the ESI error before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location"),
+          label: "Location check failed",
+          description: "ESI did not return a usable current-system result for this refresh.",
+          reason: "The Flight Attendant needs current location to anchor route and station-aware planning.",
+        });
         return;
       }
       flightSystemName.textContent = location.solar_system_name || "Unknown System";
@@ -21268,6 +21537,13 @@ help</textarea>
       resetTradePnl(`Ready to analyze ${tradePnlWindowLabel(tradePnlSettings.windowHours)} of trade history.`);
       const reprocessSettings = readReprocessingSettings();
       resetReprocessing(`Ready to calculate ${formatNumber(reprocessSettings.quantity)} ore units.`);
+      recordEsiActivity({
+        scopes: flightActivityScopes("location"),
+        label: "Location checked",
+        description: "Refreshed the current system for route and readiness estimates.",
+        reason: "The Flight Attendant uses location to start nearby systems, hauling, acquisition, and reprocessing from the right place.",
+        status: location.solar_system_name ? "success" : "empty",
+      });
       loadReprocessingLocations();
       loadFlightIndustry();
     }
@@ -21373,10 +21649,24 @@ help</textarea>
           if (!data.ok) throw new Error(data.error || "Could not scan buyer orders");
           stopBuyerProgressTimer();
           renderFlightBuyers(data.buyers || {});
+          const buyers = data.buyers || {};
+          recordEsiActivity({
+            scopes: flightActivityScopes("location", "blueprints"),
+            label: "Buyer orders checked",
+            description: "Scanned nearby public buy orders for products made by known blueprints.",
+            reason: "Buyer order visibility helps compare production choices before the pilot takes manual market action.",
+            status: Number(buyers.products_with_buyers || buyers.order_count || 0) ? "success" : "empty",
+          });
         } catch (error) {
           stopBuyerProgressTimer();
           flightBuyerSummary.textContent = error.message;
           flightBuyerTop.textContent = "";
+          recordEsiActivityError({
+            scopes: flightActivityScopes("location", "blueprints"),
+            label: "Buyer order check failed",
+            description: "The app could not complete the nearby buy-order scan.",
+            reason: "Buyer order visibility helps compare production choices before the pilot takes manual market action.",
+          });
         } finally {
           flightBuyerScanButton.disabled = false;
         }
@@ -21428,6 +21718,12 @@ help</textarea>
           flightBuyerSummary.textContent = `${payload.error || "Buyer scan failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
           flightBuyerTop.textContent = "";
           flightBuyerScanButton.disabled = false;
+          recordEsiActivityError({
+            scopes: flightActivityScopes("location", "blueprints"),
+            label: "Buyer order check failed",
+            description: "The app could not complete the nearby buy-order scan.",
+            reason: "Buyer order visibility helps compare production choices before the pilot takes manual market action.",
+          });
         });
         buyerEventSource.addEventListener("result", (event) => {
           buyerScanFinished = true;
@@ -21436,6 +21732,14 @@ help</textarea>
           buyerProgressPercent = 100;
           buyerProgressMessage = "Buyer scan complete";
           renderFlightBuyers(data.buyers || {});
+          const buyers = data.buyers || {};
+          recordEsiActivity({
+            scopes: flightActivityScopes("location", "blueprints"),
+            label: "Buyer orders checked",
+            description: "Scanned nearby public buy orders for products made by known blueprints.",
+            reason: "Buyer order visibility helps compare production choices before the pilot takes manual market action.",
+            status: Number(buyers.products_with_buyers || buyers.order_count || 0) ? "success" : "empty",
+          });
           appendBuyerProgress("Done", {message: `Buyer scan complete in ${formatElapsedDuration(elapsedSeconds)}.`, elapsed_seconds: elapsedSeconds});
           closeBuyerEventSource();
           flightBuyerScanButton.disabled = false;
@@ -21448,6 +21752,12 @@ help</textarea>
           flightBuyerSummary.textContent = `Buyer scan connection closed before results arrived. Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
           flightBuyerTop.textContent = "";
           flightBuyerScanButton.disabled = false;
+          recordEsiActivityError({
+            scopes: flightActivityScopes("location", "blueprints"),
+            label: "Buyer order check failed",
+            description: "The buyer scan connection closed before the app could show results.",
+            reason: "Buyer order visibility helps compare production choices before the pilot takes manual market action.",
+          });
         };
       } catch (error) {
         closeBuyerEventSource();
@@ -21455,6 +21765,12 @@ help</textarea>
         flightBuyerSummary.textContent = error.message;
         flightBuyerTop.textContent = "";
         flightBuyerScanButton.disabled = false;
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location", "blueprints"),
+          label: "Buyer order check failed",
+          description: "The app could not start the nearby buy-order scan.",
+          reason: "Buyer order visibility helps compare production choices before the pilot takes manual market action.",
+        });
       }
     }
 
@@ -21570,10 +21886,24 @@ help</textarea>
         if (!data.ok) throw new Error(data.error || "Could not rank profitability");
         stopFlightProfitProgress();
         renderFlightProfitability(data.profitability || {});
+        const profitability = data.profitability || {};
+        recordEsiActivity({
+          scopes: flightActivityScopes("location", "assets", "blueprints", "skills"),
+          label: "Profitability checked",
+          description: "Refreshed owned inputs, blueprint options, skills, and nearby public market prices for ranking.",
+          reason: "These reads let the app estimate whether a blueprint is buildable and worth pursuing before manual action.",
+          status: Number(profitability.scanned_products || profitability.profitable_products || 0) ? "success" : "empty",
+        });
       } catch (error) {
         stopFlightProfitProgress();
         flightProfitSummary.textContent = error.message;
         flightProfitTop.textContent = "";
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location", "assets", "blueprints", "skills"),
+          label: "Profitability check failed",
+          description: "The app could not complete the blueprint profitability scan.",
+          reason: "Profitability ranking needs owned inputs, blueprint options, skills, and public market pricing.",
+        });
       } finally {
         flightProfitScanButton.disabled = false;
       }
@@ -21975,6 +22305,12 @@ help</textarea>
         resetHaulOpportunitySelection();
         haulOpportunityTop.textContent = "";
         haulScanButton.disabled = false;
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location", "skills"),
+          label: "Hauler route check failed",
+          description: "The app could not complete the route opportunity scan.",
+          reason: "Hauler route planning uses current/manual route context, skills for tax-aware math, and public market orders.",
+        });
       });
       haulEventSource.addEventListener("result", (event) => {
         haulScanFinished = true;
@@ -21996,6 +22332,12 @@ help</textarea>
         resetHaulOpportunitySelection();
         haulOpportunityTop.textContent = "";
         haulScanButton.disabled = false;
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location", "skills"),
+          label: "Hauler route check failed",
+          description: "The route scan connection closed before the app could show results.",
+          reason: "Hauler route planning uses current/manual route context, skills for tax-aware math, and public market orders.",
+        });
       };
     }
 
@@ -22102,6 +22444,13 @@ help</textarea>
         <div class="meta">${escapeHtml(hauling.pricing_note || "Public market order route scan.")}</div>
       `;
       haulOpportunityTop.innerHTML = renderHaulOpportunities(haulOpportunities);
+      recordEsiActivity({
+        scopes: flightActivityScopes("location", "skills"),
+        label: "Hauler route checked",
+        description: "Checked route context, skill-based tax estimates, and public market orders for hauling opportunities.",
+        reason: "The app uses those reads to suggest manual buy-and-haul candidates without placing orders.",
+        status: Number(hauling.profitable_opportunities || haulOpportunities.length || 0) ? "success" : "empty",
+      });
     }
 
     function renderHaulHubComparison(data) {
@@ -22672,6 +23021,12 @@ help</textarea>
           acqStrategy.innerHTML = "";
           acqRoute.textContent = "";
           acqResults.textContent = "";
+          recordEsiActivityError({
+            scopes: flightActivityScopes("location", "skills"),
+            label: "Acquisition portfolio check failed",
+            description: "The app could not complete the investment portfolio scan.",
+            reason: "Acquisition planning uses current/manual route context, skill-based tax estimates, public orders, and public market history.",
+          });
         } finally {
           acqScanButton.disabled = false;
         }
@@ -22745,6 +23100,12 @@ help</textarea>
           acqRoute.textContent = "";
           acqResults.textContent = "";
           acqScanButton.disabled = false;
+          recordEsiActivityError({
+            scopes: flightActivityScopes("location", "skills"),
+            label: "Acquisition portfolio check failed",
+            description: "The app could not complete the investment portfolio scan.",
+            reason: "Acquisition planning uses current/manual route context, skill-based tax estimates, public orders, and public market history.",
+          });
         });
         acquisitionEventSource.addEventListener("result", (event) => {
           acquisitionScanFinished = true;
@@ -22767,6 +23128,12 @@ help</textarea>
           acqRoute.textContent = "";
           acqResults.textContent = "";
           acqScanButton.disabled = false;
+          recordEsiActivityError({
+            scopes: flightActivityScopes("location", "skills"),
+            label: "Acquisition portfolio check failed",
+            description: "The portfolio scan connection closed before the app could show results.",
+            reason: "Acquisition planning uses current/manual route context, skill-based tax estimates, public orders, and public market history.",
+          });
         };
       } catch (error) {
         closeAcquisitionEventSource();
@@ -22777,6 +23144,12 @@ help</textarea>
         acqRoute.textContent = "";
         acqResults.textContent = "";
         acqScanButton.disabled = false;
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location", "skills"),
+          label: "Acquisition portfolio check failed",
+          description: "The app could not start the investment portfolio scan.",
+          reason: "Acquisition planning uses current/manual route context, skill-based tax estimates, public orders, and public market history.",
+        });
       }
     }
 
@@ -22858,6 +23231,13 @@ help</textarea>
       updateQuickbarPanel(acqQuickbarPanel, acqQuickbarStatus, acquisitionQuickbarItems, "portfolio item");
       updateReportPanel("acquisition", acquisition.report_rows || []);
       acqResults.innerHTML = renderAcquisitionPortfolio(portfolio, acquisition.opportunities || []);
+      recordEsiActivity({
+        scopes: flightActivityScopes("location", "skills"),
+        label: "Acquisition portfolio checked",
+        description: "Checked route context, skill-based tax estimates, public orders, and public market history for buy-order candidates.",
+        reason: "The app uses those reads to suggest manual investment candidates without creating market orders.",
+        status: Number(portfolio.line_count || acquisition.opportunity_count || 0) ? "success" : "empty",
+      });
     }
 
     function renderAcquisitionStrategy(strategy) {
@@ -23129,10 +23509,25 @@ help</textarea>
         const data = await response.json();
         if (!data.ok) throw new Error(data.error || "Could not analyze trade profit and loss");
         renderTradePnl(data);
+        const pnl = data.trade_pnl || {};
+        const totals = pnl.totals || {};
+        recordEsiActivity({
+          scopes: flightActivityScopes("wallet"),
+          label: "Wallet checked",
+          description: "Refreshed recent wallet transactions and market fee rows for Trade P&L.",
+          reason: "Wallet reads let the app compare expected spread against actual realized trading results.",
+          status: Number(totals.transaction_count || totals.item_count || 0) ? "success" : "empty",
+        });
       } catch (error) {
         tradePnlSummary.textContent = error.message;
         tradePnlFees.textContent = "";
         tradePnlResults.textContent = "";
+        recordEsiActivityError({
+          scopes: flightActivityScopes("wallet"),
+          label: "Wallet check failed",
+          description: "The app could not refresh recent wallet transactions for Trade P&L.",
+          reason: "Wallet reads let the app compare expected spread against actual realized trading results.",
+        });
       } finally {
         tradePnlAnalyzeButton.disabled = false;
       }
@@ -23485,9 +23880,23 @@ help</textarea>
         const data = await response.json();
         if (!data.ok) throw new Error(data.error || "Could not rank planetary industry");
         renderPlanetaryRanking(data);
+        const planetary = data.planetary || {};
+        recordEsiActivity({
+          scopes: [],
+          label: "Public market data checked",
+          description: "Updated PI price estimates using public market data and local static planetary data.",
+          reason: "Planetary planning compares public prices, schematic chains, and manual tax settings without character ESI scopes.",
+          status: Number(planetary.opportunity_count || planetary.schematic_count || 0) ? "success" : "empty",
+        });
       } catch (error) {
         planetarySummary.textContent = error.message;
         planetaryResults.innerHTML = "";
+        recordEsiActivityError({
+          scopes: [],
+          label: "Public market data check failed",
+          description: "The app could not refresh PI public market pricing.",
+          reason: "Planetary planning compares public prices, schematic chains, and manual tax settings without character ESI scopes.",
+        });
       } finally {
         planetaryRankButton.disabled = false;
       }
@@ -23999,6 +24408,12 @@ help</textarea>
         renderReprocessingLocations(data, settings.locationId);
       } catch (error) {
         reprocessLocationStatus.textContent = error.message;
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
+          label: "Reprocessing location check failed",
+          description: "The app could not rank reprocessing locations from ESI and local static data.",
+          reason: "Location, skills, standings, implants, and structure resolution support station-aware reprocessing estimates.",
+        });
       } finally {
         reprocessRefreshLocations.disabled = false;
       }
@@ -24037,6 +24452,13 @@ help</textarea>
         reprocessLocationStatus.textContent = `Loaded ${formatNumber(stations.length)} NPC stations over 1.5 standing, sorted by ${sortLabel}.`;
       }
       renderReprocessingLocationRecommendations(recommendations);
+      recordEsiActivity({
+        scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
+        label: "Reprocessing locations checked",
+        description: "Refreshed current location, standings-aware station choices, and reprocessing context.",
+        reason: "These reads help rank manual reprocessing locations without starting any in-game job.",
+        status: stations.length || recommendations.length ? "success" : "empty",
+      });
     }
 
     function mergeReprocessingStationLists(stations, recommendations) {
@@ -24333,11 +24755,24 @@ help</textarea>
         const response = await fetch(`/api/flight/reprocessing?${params}`);
         const data = await readJsonApiResponse(response, "Could not calculate ore reprocessing");
         renderReprocessingCalculation(data);
+        recordEsiActivity({
+          scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
+          label: "Reprocessing estimate checked",
+          description: "Updated ore output, station fee, skill, standing, and implant-aware estimate data.",
+          reason: "The calculator uses those reads to show manual reprocessing estimates without controlling the EVE client.",
+          status: "success",
+        });
       } catch (error) {
         reprocessSummary.innerHTML = renderReprocessingPendingAssay(error.message);
         reprocessLocationDetail.innerHTML = "";
         reprocessResults.innerHTML = renderReprocessingEmptyWorkbench(error.message);
         setReprocessingBatchStatus(error.message, true);
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
+          label: "Reprocessing estimate check failed",
+          description: "The app could not calculate the ore reprocessing estimate.",
+          reason: "The calculator uses those reads to show manual reprocessing estimates without controlling the EVE client.",
+        });
       } finally {
         reprocessCalculateButton.disabled = false;
       }
@@ -24365,11 +24800,24 @@ help</textarea>
         }
         renderReprocessingBatchCalculation(payloads);
         setReprocessingBatchStatus(`Batch complete: ${formatNumber(payloads.length)} ore stack${payloads.length === 1 ? "" : "s"} calculated.`);
+        recordEsiActivity({
+          scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
+          label: "Reprocessing batch checked",
+          description: "Updated ore output, station fee, skill, standing, and implant-aware estimates for a pasted batch.",
+          reason: "The calculator uses those reads to show manual reprocessing estimates without controlling the EVE client.",
+          status: payloads.length ? "success" : "empty",
+        });
       } catch (error) {
         reprocessSummary.innerHTML = renderReprocessingPendingAssay(error.message);
         reprocessLocationDetail.innerHTML = "";
         reprocessResults.innerHTML = renderReprocessingEmptyWorkbench(error.message);
         setReprocessingBatchStatus(error.message, true);
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location", "skills", "standings", "implants", "structures"),
+          label: "Reprocessing batch check failed",
+          description: "The app could not calculate the pasted ore batch.",
+          reason: "The calculator uses those reads to show manual reprocessing estimates without controlling the EVE client.",
+        });
       } finally {
         reprocessCalculateButton.disabled = false;
       }
@@ -25579,6 +26027,16 @@ help</textarea>
         const data = await response.json();
         if (!data.ok) throw new Error(data.error || "Could not load industry inventory");
         renderFlightIndustry(data.industry || {});
+        const industry = data.industry || {};
+        const blueprints = industry.blueprints || {};
+        const assets = industry.assets || {};
+        recordEsiActivity({
+          scopes: flightActivityScopes("assets", "blueprints"),
+          label: "Industry library checked",
+          description: `Refreshed known blueprints and material stacks for build planning.`,
+          reason: "Owned blueprints and assets let the app rank production options the pilot can actually build.",
+          status: (Number(blueprints.count || 0) || Number(assets.stack_count || assets.count || 0)) ? "success" : "empty",
+        });
       } catch (error) {
         flightBlueprintSummary.textContent = error.message;
         flightAssetSummary.textContent = error.message;
@@ -25586,6 +26044,12 @@ help</textarea>
         flightBuildabilityTop.textContent = "";
         resetFlightProfitability("Industry analysis requires a connected ESI session with blueprint and asset scopes.");
         flightIndustryNote.textContent = "Industry analysis requires a connected ESI session with blueprint and asset scopes.";
+        recordEsiActivityError({
+          scopes: flightActivityScopes("assets", "blueprints"),
+          label: "Industry library check failed",
+          description: "The app could not refresh owned blueprints and material stacks.",
+          reason: "Industry data supports blueprint ranking, material coverage, and buildability estimates.",
+        });
       }
     }
 
@@ -26397,6 +26861,7 @@ help</textarea>
         "@@ACQUISITION_COMMON_MATERIAL_LIMIT@@": f"{MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES:,}",
         "@@REPROCESSING_ORE_OPTIONS@@": reprocessing_ore_options,
         "@@SCOPE_JUSTIFICATION_PANEL@@": render_flight_scope_justification(),
+        "@@FLIGHT_SCOPE_METADATA_JSON@@": render_flight_scope_metadata_json(),
         "@@TAB_SCOPE_MARKET@@": render_flight_scope_summary("market"),
         "@@TAB_SCOPE_FLIGHT@@": render_flight_scope_summary("flight"),
         "@@TAB_SCOPE_HAULING@@": render_flight_scope_summary("hauling"),

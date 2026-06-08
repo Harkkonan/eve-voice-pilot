@@ -653,6 +653,35 @@ def test_dashboard_renders_flight_scope_disclosures_by_tab():
     assert "does not expose wallet transactions unless we request a separate transaction scope" not in page
 
 
+def test_dashboard_renders_esi_flight_recorder_transparency_panel():
+    page = render_dashboard()
+
+    assert "ESI Flight Recorder" in page
+    assert "A plain-language record of what the app recently checked with your authorized ESI access." in page
+    assert "No recent ESI activity yet." in page
+    assert "recordEsiActivity" in page
+    assert "flightScopeMetadata" in page
+    assert "Wallet checked" in page
+    assert "Industry library checked" in page
+    assert "Public market data checked" in page
+    assert "No character ESI scope" in page
+
+    recorder_markup = page.split('<section class="esi-flight-recorder"', 1)[1].split("</section>", 1)[0]
+    assert "access_token" not in recorder_markup
+    assert "refresh_token" not in recorder_markup
+    assert "Authorization" not in recorder_markup
+    assert "Bearer" not in recorder_markup
+
+
+def test_flight_scope_metadata_json_uses_scope_registry():
+    metadata = json.loads(corp_market.render_flight_scope_metadata_json())
+
+    assert metadata["location"]["scope"] == corp_market.FLIGHT_LOCATION_SCOPE
+    assert metadata["location"]["label"] == "Current location"
+    assert metadata["wallet"]["scope"] == corp_market.FLIGHT_WALLET_SCOPE
+    assert metadata["wallet"]["label"] == "Character wallet"
+
+
 def test_route_system_suggestions_rank_prefixes_and_aliases(tmp_path):
     route_cache = RouteGraphCache(
         path=tmp_path / "route.json",
