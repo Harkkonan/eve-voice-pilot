@@ -3,7 +3,6 @@
 This repo is a Windows-first Python project for EVE Online helpers:
 
 - `EVE Voice Pilot`: a cautious voice-command app that maps one spoken command to one key or key chord.
-- `OCR Watcher`: a guarded screen-region watcher for manual testing and narrow hotkey experiments.
 - `Corp Intel Board`: an opt-in, read-only chat-log intel dashboard.
 - `Corp Market Concierge` / `Flight Attendant`: Discord-friendly corp coordination and read-only ESI planning helpers.
 - `Trade Agent`: EVE Workbench and ESI-backed route/trade recommendations.
@@ -34,9 +33,9 @@ This project should stay on the conservative side of EVE third-party-tool rules.
 - Voice commands must remain one spoken command to one key or key chord.
 - Do not add timed chains, stored rapid keystroke patterns, input broadcasting, multi-client automation, mouse movement/click automation, or bot-like gameplay loops.
 - Do not read EVE process memory, scrape cache files, inspect packets, reverse engineer the client, or modify the game client.
+- Do not add screen-reading features for EVE gameplay state such as stopped, moving, warping, targets, overview state, or timers unless the owner explicitly requests a fresh policy and design review.
 - Do not add automatic in-game mail, contracts, market orders, asset moves, fleet actions, warps, targeting, module cycling, or other gameplay actions.
 - Keep key sending guarded by the active-window check unless the user explicitly chooses otherwise in a clear local setting.
-- Treat OCR-driven gameplay decisions and reaction alerts as high-risk; prefer dry-run diagnostics or manual user confirmation.
 - ESI and SSO features should use the minimum scopes needed, respect rate limits/cache behavior, verify identity where applicable, and avoid storing access/refresh tokens unless there is a specific reviewed reason.
 
 ## Privacy And Data Handling
@@ -44,7 +43,7 @@ This project should stay on the conservative side of EVE third-party-tool rules.
 - Prefer opt-in local operation over silent collection.
 - Keep raw chat logs, private channel text, player-by-player transcripts, invite links, tokens, and personal paths out of committed docs and generated public artifacts.
 - Public or shareable reports should be explicitly public-safe and should redact private links and sensitive details.
-- Store local operational state under ignored paths such as `profiles/*.sqlite3`, `profiles/my_eve_commands.json`, `profiles/my_ocr_watcher_settings.json`, `cache/`, `models/`, and `local_archives/`.
+- Store local operational state under ignored paths such as `profiles/*.sqlite3`, `profiles/my_eve_commands.json`, `cache/`, `models/`, and `local_archives/`.
 - If adding a new local state file, update `.gitignore` and verify it with `git status --ignored` or `git check-ignore` before the feature is considered done.
 
 ## Project Conventions

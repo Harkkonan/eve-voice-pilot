@@ -268,7 +268,7 @@ def test_dashboard_includes_flight_attendant_tab_and_safety_charter():
     assert "Captain's Notes" in page
     assert "Read-only ESI" in page
     assert "No EVE client control" in page
-    assert "OCR-driven reactions" in page
+    assert "screen-reading reactions" in page
     assert "No token file yet" in page
 
 

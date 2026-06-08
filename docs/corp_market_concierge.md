@@ -54,7 +54,7 @@ The first version is a safe briefing surface:
 - It includes an `Ore Reprocessing` tab that uses ESI location, skills, standings, and implants plus local SDE ore data to estimate mineral output from a typed ore amount.
 - It includes a `Planetary Industry` planner for comparing PI schematics, material chains, market prices, planet availability, and customs transfer costs before a pilot moves goods manually.
 - It keeps disabled placeholders for briefing generation until additional scopes and storage are reviewed.
-- It does not warp, click, press keys, create contracts, place orders, read packets, scrape cache files, or react to OCR.
+- It does not warp, click, press keys, create contracts, place orders, read packets, read the EVE screen, or scrape cache files.
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
 
 Treat future Flight Attendant work like a crew member giving advice: the tool can brief the pilot, but the pilot takes every in-game action manually.

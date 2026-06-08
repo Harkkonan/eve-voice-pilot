@@ -10,7 +10,7 @@ The first version is intentionally cautious:
 - Key sending is blocked unless the active window title contains `EVE`, unless you turn that check off.
 - Exact command phrases can fire from partial live transcription before the final transcript is ready.
 - Live command matching is strict. Use clear phrases like `open map` instead of short one-word aliases for important actions.
-- It does not do timed chains, repeats, mouse moves, input broadcasting, or multi-client automation.
+- It does not do timed chains, repeats, mouse moves, screen reading, input broadcasting, or multi-client automation.
 
 ## First Run
 
@@ -76,40 +76,6 @@ Use `Regenerate Voice Clips` after changing the response voice or style.
 The recommended EVE keybind list is in `docs/eve_voice_keybind_standard.md`. A sortable CSV is in `data/eve_voice_keybind_standard.csv`.
 
 The matching app profile is `profiles/eve_voice_standard.json`. It remaps medium slots to `Alt+1` through `Alt+8` instead of the EVE default `Alt+F1` through `Alt+F8`, because `Alt+F4` is a risky Windows close-window shortcut.
-
-## OCR Watcher
-
-The OCR watcher is a command-line helper that reads one screen rectangle and sends a key chord when the watched text value changes. It does not send on the first stable read; the first value becomes the baseline.
-
-It uses `pytesseract`, which also needs the Tesseract Windows app installed. If Tesseract is not on `PATH`, pass the full `tesseract.exe` path with `--tesseract-cmd`.
-
-For easier setup, double-click `Start-EveOcrWatcherGui.bat` or run:
-
-```powershell
-.\scripts\run_ocr_watcher_gui.ps1
-```
-
-The GUI has settings fields, preset buttons, test buttons, live mouse coordinates, and an output log. Use `Select Region` to drag a rectangle around the text on screen. Use `Show Region` to draw a temporary overlay on the screen area being watched, and `Preview Region` to open the actual screen crop. Start with `Read Once` to see what OCR returns, then use `Start Dry Run` to confirm changes are detected before using `Start Live Watch`. Live watch asks for confirmation before sending keys. The `Set Top Left` and `Set Bottom Right` buttons capture your mouse position after 3 seconds to help tune the screen region.
-
-Dry-run a region first:
-
-```powershell
-.\scripts\run_ocr_watcher.ps1 --region "100,200,260,40" --hotkey "CTRL+SHIFT+F9" --pattern "([0-9,]+)" --dry-run
-```
-
-Read once without watching:
-
-```powershell
-.\scripts\run_ocr_watcher.ps1 --region "100,200,260,40" --hotkey "CTRL+SHIFT+F9" --pattern "([0-9,]+)" --once
-```
-
-Send for real after the value changes:
-
-```powershell
-.\scripts\run_ocr_watcher.ps1 --region "100,200,260,40" --hotkey "CTRL+SHIFT+F9" --pattern "([0-9,]+)" --stable-samples 2 --cooldown 1.5 --allow-live-send
-```
-
-CLI watch mode stays dry-run unless `--allow-live-send` is present. By default, key sending is blocked unless the active window title contains `EVE`. Use `--window-title-contains ""` only if you intentionally want to disable that guard.
 
 ## Corp Intel Board
 

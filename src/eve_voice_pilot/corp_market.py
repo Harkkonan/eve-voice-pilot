@@ -16883,7 +16883,7 @@ help</textarea>
               <li><strong>Read-only ESI:</strong> every requested Flight Attendant scope is read-only and listed in the scope explanation above.</li>
               <li><strong>No token file yet:</strong> this first ESI slice keeps the access token in server memory only.</li>
               <li><strong>Local notes:</strong> pilot-authored reminders can be stored without touching the EVE client.</li>
-              <li><strong>No EVE client control:</strong> no keypresses, clicks, warps, contract creation, order placement, packet reading, OCR-driven reactions, or cache scraping.</li>
+              <li><strong>No EVE client control:</strong> no keypresses, clicks, warps, contract creation, order placement, packet reading, screen-reading reactions, or cache scraping.</li>
               <li><strong>Human confirmation:</strong> every trade, route, and market action remains a pilot decision inside EVE.</li>
             </ul>
           </section>
