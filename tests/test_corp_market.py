@@ -442,6 +442,12 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-copy-report=\"hauling\"" in page
     assert "data-download-report=\"hauling\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
+    assert "haul-opportunity-layout" in page
+    assert "haul-opportunity-card" in page
+    assert "renderHaulOpportunityDetail" in page
+    assert "data-haul-opportunity-detail" in page
+    assert "Select an opportunity to view details." in page
+    assert "Expected vs Realized export row" in page
     assert "Profit per m3" in page
     assert "Profit per extra jump" in page
     assert "id=\"acquisition-form\"" in page

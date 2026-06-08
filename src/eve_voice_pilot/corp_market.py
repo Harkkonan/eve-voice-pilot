@@ -15628,6 +15628,106 @@ def _render_flight_attendant_dashboard() -> str:
     .decision-metric b { display: block; color: var(--text); font-size: 13px; overflow-wrap: anywhere; margin-top: 2px; }
     .decision-metric small { display: block; color: var(--muted); margin-top: 3px; line-height: 1.25; }
     .decision-lede { color: var(--text); font-weight: 700; margin-top: 8px; }
+    .haul-opportunity-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(340px, .78fr);
+      gap: 12px;
+      align-items: start;
+      margin-top: 9px;
+    }
+    .haul-opportunity-list { display: grid; gap: 8px; min-width: 0; }
+    .haul-opportunity-card {
+      border: 1px solid rgba(63, 85, 80, .82);
+      background: linear-gradient(180deg, rgba(17, 24, 25, .82), rgba(8, 13, 15, .72));
+      border-radius: 7px;
+      padding: 10px;
+      cursor: pointer;
+      outline: none;
+    }
+    .haul-opportunity-card:hover,
+    .haul-opportunity-card:focus-visible {
+      border-color: rgba(97, 199, 217, .82);
+      box-shadow: 0 0 0 2px rgba(97, 199, 217, .16);
+    }
+    .haul-opportunity-card.is-selected {
+      border-color: var(--cyan);
+      background: linear-gradient(180deg, rgba(38, 73, 78, .72), rgba(11, 20, 22, .78));
+      box-shadow: 0 0 0 2px rgba(97, 199, 217, .2);
+    }
+    .haul-card-head,
+    .haul-card-actions,
+    .haul-detail-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .haul-card-title { display: grid; gap: 4px; min-width: 0; }
+    .haul-card-title strong,
+    .haul-detail-head strong {
+      color: var(--text);
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .haul-card-route {
+      color: var(--text);
+      font-weight: 800;
+      line-height: 1.35;
+      margin: 8px 0;
+      overflow-wrap: anywhere;
+    }
+    .haul-card-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .haul-card-metric {
+      border: 1px solid rgba(63, 85, 80, .46);
+      border-radius: 6px;
+      padding: 7px;
+      background: rgba(8, 13, 15, .38);
+    }
+    .haul-card-metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .haul-card-metric b {
+      display: block;
+      color: var(--text);
+      font-size: 13px;
+      margin-top: 2px;
+      overflow-wrap: anywhere;
+    }
+    .haul-card-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+    .haul-card-actions { align-items: center; margin-top: 9px; }
+    .haul-card-actions button { padding: 7px 10px; min-height: 34px; }
+    .haul-opportunity-detail-region {
+      position: sticky;
+      top: 12px;
+      min-width: 0;
+    }
+    .haul-detail-panel {
+      border: 1px solid rgba(97, 199, 217, .44);
+      border-radius: 7px;
+      background: linear-gradient(180deg, rgba(12, 22, 24, .92), rgba(6, 10, 12, .84));
+      padding: 12px;
+      min-width: 0;
+    }
+    .haul-detail-section { margin-top: 10px; }
+    .haul-detail-section > strong {
+      color: var(--text);
+      display: block;
+      margin-bottom: 6px;
+    }
+    .haul-detail-report-preview {
+      max-height: 170px;
+      margin-top: 7px;
+    }
+    .haul-inline-detail { display: none; }
     .confidence-strip { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
     .confidence-pill { border: 1px solid rgba(86, 199, 112, .45); background: rgba(38, 111, 57, .36); color: #89f1a0; }
     .confidence-pill.medium { border-color: rgba(89, 203, 224, .45); background: rgba(33, 94, 105, .38); color: var(--accent); }
@@ -17554,6 +17654,10 @@ def _render_flight_attendant_dashboard() -> str:
       .scope-panel { grid-template-columns: 1fr; }
       .scope-chip-row { justify-content: flex-start; }
       .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
+      .haul-opportunity-layout { grid-template-columns: 1fr; }
+      .haul-opportunity-detail-region { display: none; }
+      .haul-inline-detail { display: block; margin-top: 8px; }
+      .haul-card-metrics { grid-template-columns: 1fr; }
       .fitting-toolbar, .fitting-card-head { grid-template-columns: 1fr; }
       .planetary-tax-guide-head { align-items: start; flex-direction: column; }
       .planetary-tax-guide-head span { white-space: normal; }
@@ -19278,6 +19382,8 @@ help</textarea>
     let haulProgressStartedAt = 0;
     let haulQuickbarItems = [];
     let haulReportRows = [];
+    let haulOpportunities = [];
+    let selectedHaulOpportunityIndex = -1;
     let acquisitionEventSource = null;
     let acquisitionScanFinished = false;
     let acquisitionProgressTimer = null;
@@ -21664,6 +21770,7 @@ help</textarea>
     function resetFlightHauling(message) {
       closeHaulEventSource();
       stopHaulProgressTimer();
+      resetHaulOpportunitySelection();
       haulRouteSummary.textContent = message;
       haulRoutePath.textContent = "";
       haulProgressLog.hidden = true;
@@ -21674,6 +21781,11 @@ help</textarea>
       resetReportPanel("hauling");
       haulOpportunityTop.textContent = "";
       haulScanButton.disabled = false;
+    }
+
+    function resetHaulOpportunitySelection() {
+      haulOpportunities = [];
+      selectedHaulOpportunityIndex = -1;
     }
 
     function closeHaulEventSource() {
@@ -21815,6 +21927,7 @@ help</textarea>
       haulProgressLog.innerHTML = "";
       resetQuickbarList(haulQuickbarPanel, haulQuickbarStatus, "hauling");
       resetReportPanel("hauling");
+      resetHaulOpportunitySelection();
       startHaulProgressTimer(settings, routeRule, podRule);
       haulLoadPlan.innerHTML = renderHaulCargoLoader({cargo_capacity_m3: settings.cargoM3}, {scanning: true, cargoM3: settings.cargoM3});
       haulOpportunityTop.innerHTML = `<div class="decision-empty">Route opportunities will appear here when the scan finishes.</div>`;
@@ -21859,6 +21972,7 @@ help</textarea>
         haulRouteSummary.textContent = `${payload.error || "Route scan failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
         haulOpportunitySummary.textContent = `Route scan failed after ${formatElapsedDuration(elapsedSeconds)}.`;
         haulLoadPlan.textContent = "";
+        resetHaulOpportunitySelection();
         haulOpportunityTop.textContent = "";
         haulScanButton.disabled = false;
       });
@@ -21879,6 +21993,7 @@ help</textarea>
         haulRouteSummary.textContent = `Route scan connection closed before results arrived. Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
         haulOpportunitySummary.textContent = `Route scan failed after ${formatElapsedDuration(elapsedSeconds)}.`;
         haulLoadPlan.textContent = "";
+        resetHaulOpportunitySelection();
         haulOpportunityTop.textContent = "";
         haulScanButton.disabled = false;
       };
@@ -21960,6 +22075,8 @@ help</textarea>
       haulQuickbarItems = Array.isArray(hauling.opportunities) ? hauling.opportunities : [];
       updateQuickbarPanel(haulQuickbarPanel, haulQuickbarStatus, haulQuickbarItems, "route item");
       updateReportPanel("hauling", hauling.report_rows || []);
+      haulOpportunities = Array.isArray(hauling.opportunities) ? hauling.opportunities : [];
+      selectedHaulOpportunityIndex = initialHaulOpportunityIndex(haulOpportunities);
       haulOpportunitySummary.innerHTML = `
         <div class="profit-stats">
           <div class="profit-stat"><span>Profitable</span><b>${formatNumber(hauling.profitable_opportunities)}</b></div>
@@ -21984,7 +22101,7 @@ help</textarea>
         <div class="meta">History cache: ${formatNumber(historyCache.entries)} entries; checked ${formatNumber(hauling.history_region_count)} market-history regions for matched opportunities.</div>
         <div class="meta">${escapeHtml(hauling.pricing_note || "Public market order route scan.")}</div>
       `;
-      haulOpportunityTop.innerHTML = renderHaulOpportunities(hauling.opportunities || []);
+      haulOpportunityTop.innerHTML = renderHaulOpportunities(haulOpportunities);
     }
 
     function renderHaulHubComparison(data) {
@@ -22215,84 +22332,225 @@ help</textarea>
       `;
     }
 
+    function initialHaulOpportunityIndex(opportunities) {
+      if (!opportunities.length) return -1;
+      if (window.matchMedia && window.matchMedia("(max-width: 720px)").matches) return -1;
+      return 0;
+    }
+
+    function normalizedReportText(value) {
+      return String(value || "").trim().toLocaleLowerCase();
+    }
+
+    function haulOpportunityReportRow(item) {
+      const itemName = normalizedReportText(item?.item_name);
+      if (!itemName) return null;
+      const pickupName = normalizedReportText(item?.pickup_order?.system_name);
+      const nameMatches = haulReportRows.filter((row) => normalizedReportText(row?.["Item Name"]) === itemName);
+      if (pickupName) {
+        const pickupMatch = nameMatches.find((row) => normalizedReportText(row?.["Location to Post Order"]).includes(pickupName));
+        if (pickupMatch) return pickupMatch;
+      }
+      return nameMatches[0] || null;
+    }
+
+    function haulOpportunityReportStatus(item) {
+      const row = haulOpportunityReportRow(item);
+      return String(row?.Status || "Candidate");
+    }
+
     function renderHaulOpportunities(opportunities) {
-      if (!opportunities.length) return `<div class="decision-empty">No profitable route opportunities found for this destination yet.</div>`;
-      return `<div class="decision-list">${opportunities.slice(0, 12).map((item) => {
-        const pickup = item.pickup_order || {};
-        const destination = item.destination_order || {};
-        const extraJumps = item.extra_route_jumps == null ? "unknown" : `${formatNumber(item.extra_route_jumps)} extra`;
-        const efficiencyJumpNote = Number(item.extra_route_jumps || 0) <= 0
-          ? "Direct-route pickup; no added jumps."
-          : "After-tax profit divided by added jumps.";
-        const matchedVolumeText = item.matched_volume_m3 == null ? "unknown" : formatVolume(item.matched_volume_m3);
-        const efficiencyVolumeNote = item.net_profit_per_m3 == null
-          ? "Volume unknown."
-          : `${matchedVolumeText} matched volume.`;
-        const pickupPrice = item.average_pickup_price == null ? pickup.price : item.average_pickup_price;
-        const destinationPrice = item.average_destination_price == null ? destination.price : item.average_destination_price;
-        const depthText = item.matched_order_pair_count
-          ? `${formatNumber(item.matched_sell_order_count)} sell order${Number(item.matched_sell_order_count || 0) === 1 ? "" : "s"} matched to ${formatNumber(item.matched_buy_order_count)} destination buy order${Number(item.matched_buy_order_count || 0) === 1 ? "" : "s"}`
-          : "top order match";
-        const pickupSystemsText = item.matched_pickup_system_count
-          ? `${formatNumber(item.matched_pickup_system_count)} pickup system${Number(item.matched_pickup_system_count || 0) === 1 ? "" : "s"}`
-          : "one pickup system";
-        const depthRows = (item.order_depth || []).slice(0, 4).map((row) => {
-          const rowPickup = row.pickup_order || {};
-          const rowDestination = row.destination_order || {};
-          return `${formatNumber(row.units)} from ${rowPickup.system_name || "pickup"} ${formatIsk(row.pickup_price)} -> ${rowDestination.system_name || "destination"} ${formatIsk(row.destination_price)}`;
-        }).join("; ");
-        const decision = item.decision || {};
-        const riskClass = acquisitionRiskClass(item.risk_level);
-        const limitNotes = [];
-        if (item.cargo_limited) limitNotes.push("cargo limited");
-        if (item.budget_limited) limitNotes.push("budget limited");
-        const cargoNote = item.volume_m3 == null
-          ? `volume unknown${limitNotes.length ? `; ${limitNotes.join("; ")}` : ""}`
-          : `${formatVolume(item.volume_m3)} each${limitNotes.length ? `; ${limitNotes.join("; ")}` : ""}`;
-        return `
-          <div class="decision-row">
-            <div class="decision-head">
-              <strong>${escapeHtml(item.item_name)}</strong>
-              <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
-              <span class="pill decision-build">${formatSignedIsk(item.net_profit)}</span>
-            </div>
-            <div class="decision-lede">Buy from ${escapeHtml(pickup.system_name || "pickup")} corridor at ${formatIsk(pickupPrice)} avg; sell in ${escapeHtml(destination.system_name || "destination")} at ${formatIsk(destinationPrice)} avg.</div>
-            <div class="decision-lede">${escapeHtml(decision.label || "Review manually")}: ${escapeHtml(decision.reason || "Verify current orders in EVE before hauling.")}</div>
-            ${renderAcquisitionHistoryFlags(item.history_flags || [])}
-            ${renderHaulAccessGuardrails(item)}
-            <div class="decision-metrics">
-              <div class="decision-metric"><span>Units</span><b>${formatNumber(item.units)}</b><small>${escapeHtml(cargoNote)}</small></div>
-              <div class="decision-metric"><span>After-Tax Per Unit</span><b>${formatSignedIsk(item.net_profit_per_unit)}</b><small>${formatPercent(item.margin_percent)} on pickup cost.</small></div>
-              <div class="decision-metric"><span>Depth</span><b>${escapeHtml(depthText)}</b><small>${escapeHtml(pickupSystemsText)}.</small></div>
-              <div class="decision-metric"><span>Route</span><b>${escapeHtml(extraJumps)}</b><small>Origin-pickup-destination compared with direct route.</small></div>
-              <div class="decision-metric"><span>Efficiency</span><b>${formatSignedIskRate(item.net_profit_per_extra_jump, "extra jump")}</b><small>${escapeHtml(efficiencyJumpNote)} ${formatSignedIskRate(item.net_profit_per_m3, "m3")} from ${escapeHtml(efficiencyVolumeNote)}</small></div>
-            </div>
-            <details class="profit-details">
-              <summary>Order details</summary>
-              <div class="profit-detail-grid">
-                <div class="profit-detail-row"><span>Primary pickup</span><b>${escapeHtml(pickup.system_name || "unknown")} (${formatNumber(pickup.jumps)} jumps)</b></div>
-                <div class="profit-detail-row"><span>Pickup access</span><b>${escapeHtml(pickup.location_kind_label || "Unknown location")}</b><small>${escapeHtml(pickup.location_access_note || "Verify in EVE.")}</small></div>
-                <div class="profit-detail-row"><span>Destination access</span><b>${escapeHtml(destination.location_kind_label || "Unknown location")}</b><small>${escapeHtml(destination.location_access_note || "Verify in EVE.")}</small></div>
-                <div class="profit-detail-row"><span>Pickup detour</span><b>${formatNumber(item.pickup_detour_jumps)} max; ${formatNumber(item.primary_pickup_detour_jumps)} primary</b></div>
-                <div class="profit-detail-row"><span>Purchase budget</span><b>${formatIsk(item.purchase_budget_isk)}</b></div>
-                <div class="profit-detail-row"><span>Budget remaining</span><b>${formatIsk(item.budget_remaining_isk)}</b></div>
-                <div class="profit-detail-row"><span>Pickup cost</span><b>${formatIsk(item.pickup_cost)}</b></div>
-                <div class="profit-detail-row"><span>Destination gross</span><b>${formatIsk(item.gross_destination_revenue)}</b></div>
-                <div class="profit-detail-row"><span>Sales tax</span><b>${formatIsk(item.sales_tax_total)} (${formatRatePercent(item.sales_tax_rate)})</b></div>
-                <div class="profit-detail-row"><span>Net destination revenue</span><b>${formatIsk(item.net_destination_revenue)}</b></div>
-                <div class="profit-detail-row"><span>Gross spread per unit</span><b>${formatSignedIsk(item.gross_spread_per_unit)}</b></div>
-                <div class="profit-detail-row"><span>Matched volume</span><b>${escapeHtml(matchedVolumeText)}</b></div>
-                <div class="profit-detail-row"><span>Profit per m3</span><b>${formatSignedIskRate(item.net_profit_per_m3, "m3")}</b></div>
-                <div class="profit-detail-row"><span>Profit per extra jump</span><b>${formatSignedIskRate(item.net_profit_per_extra_jump, "extra jump")}</b></div>
-                <div class="profit-detail-row"><span>Matched pairs</span><b>${formatNumber(item.matched_order_pair_count)}</b></div>
-                <div class="profit-detail-row"><span>Depth rows</span><b>${escapeHtml(depthRows || "not returned")}${item.order_depth_truncated ? "..." : ""}</b></div>
-                <div class="profit-detail-row"><span>Pickup history</span><b>${renderHistoryStats(item.pickup_history || {})}</b></div>
-                <div class="profit-detail-row"><span>Destination history</span><b>${renderHistoryStats(item.destination_history || {})}</b></div>
-              </div>
-            </details>
+      haulOpportunities = Array.isArray(opportunities) ? opportunities : [];
+      if (!haulOpportunities.length) {
+        selectedHaulOpportunityIndex = -1;
+        return `<div class="decision-empty">No profitable route opportunities found for this destination yet.</div>`;
+      }
+      if (selectedHaulOpportunityIndex >= haulOpportunities.length) selectedHaulOpportunityIndex = -1;
+      const selectedItem = selectedHaulOpportunityIndex >= 0 ? haulOpportunities[selectedHaulOpportunityIndex] : null;
+      const selectedReportRow = selectedItem ? haulOpportunityReportRow(selectedItem) : null;
+      const cards = haulOpportunities.map((item, index) => renderHaulOpportunityCard(item, index)).join("");
+      const detail = selectedItem
+        ? renderHaulOpportunityDetail(selectedItem, selectedReportRow)
+        : `<div class="decision-empty">Select an opportunity to view details.</div>`;
+      return `
+        <div class="haul-opportunity-layout">
+          <div class="haul-opportunity-list" role="list" aria-label="Hauler opportunity summaries">
+            ${cards}
           </div>
-        `;
-      }).join("")}</div>`;
+          <aside class="haul-opportunity-detail-region" aria-label="Selected hauler opportunity details">
+            ${detail}
+          </aside>
+        </div>
+      `;
+    }
+
+    function renderHaulOpportunityCard(item, index) {
+      const pickup = item.pickup_order || {};
+      const destination = item.destination_order || {};
+      const pickupPrice = item.average_pickup_price == null ? pickup.price : item.average_pickup_price;
+      const destinationPrice = item.average_destination_price == null ? destination.price : item.average_destination_price;
+      const riskClass = acquisitionRiskClass(item.risk_level);
+      const status = haulOpportunityReportStatus(item);
+      const statusClass = status === "Planned" ? "decision-build" : "decision-source";
+      const selected = index === selectedHaulOpportunityIndex;
+      const inlineDetail = selected
+        ? `<div class="haul-inline-detail">${renderHaulOpportunityDetail(item, haulOpportunityReportRow(item), {showClose: true})}</div>`
+        : "";
+      return `
+        <article class="haul-opportunity-card${selected ? " is-selected" : ""}" role="listitem" tabindex="0" data-haul-opportunity-index="${index}" aria-selected="${selected ? "true" : "false"}">
+          <div class="haul-card-head">
+            <div class="haul-card-title">
+              <strong>${escapeHtml(item.item_name || "Unknown item")}</strong>
+              <span class="meta">${escapeHtml(status)} route opportunity</span>
+            </div>
+            <span class="pill decision-build">${formatSignedIsk(item.net_profit)}</span>
+          </div>
+          <div class="haul-card-route">
+            Buy ${escapeHtml(pickup.system_name || "pickup")} @ ${formatIsk(pickupPrice)} &rarr;
+            Sell ${escapeHtml(destination.system_name || "destination")} @ ${formatIsk(destinationPrice)}
+          </div>
+          <div class="haul-card-metrics">
+            <div class="haul-card-metric"><span>Units</span><b>${formatNumber(item.units)}</b></div>
+            <div class="haul-card-metric"><span>Profit / Unit</span><b>${formatSignedIsk(item.net_profit_per_unit)}</b></div>
+            <div class="haul-card-metric"><span>Buy Price</span><b>${formatIsk(pickupPrice)}</b></div>
+            <div class="haul-card-metric"><span>Sell Price</span><b>${formatIsk(destinationPrice)}</b></div>
+          </div>
+          <div class="haul-card-badges">
+            <span class="pill ${statusClass}">${escapeHtml(status)}</span>
+            <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
+            ${renderHaulCompactBadges(item)}
+          </div>
+          <div class="haul-card-actions">
+            <span class="meta">Expected profit ${formatSignedIsk(item.net_profit)}</span>
+            <button class="secondary" type="button" data-haul-opportunity-detail="${index}">Details</button>
+          </div>
+          ${inlineDetail}
+        </article>
+      `;
+    }
+
+    function renderHaulCompactBadges(item) {
+      const badges = [];
+      const pickup = item.pickup_order || {};
+      const destination = item.destination_order || {};
+      if (item.cargo_limited) badges.push(`<span class="pill decision-watch">Cargo limited</span>`);
+      if (item.budget_limited) badges.push(`<span class="pill decision-watch">Budget limited</span>`);
+      if (pickup.location_kind_label || destination.location_kind_label) badges.push(`<span class="pill decision-watch">Access check</span>`);
+      const flags = Array.isArray(item.history_flags) ? item.history_flags : [];
+      flags.slice(0, 2).forEach((flag) => {
+        const cls = flag.severity === "trap" ? "decision-price" : flag.severity === "caution" ? "decision-watch" : "decision-build";
+        badges.push(`<span class="pill ${cls}" title="${escapeHtml(flag.detail || "")}">${escapeHtml(flag.label || "History signal")}</span>`);
+      });
+      if (flags.length > 2) badges.push(`<span class="pill reserved">+${formatNumber(flags.length - 2)} history</span>`);
+      if (!flags.length) badges.push(`<span class="pill reserved">History checked</span>`);
+      return badges.join("");
+    }
+
+    function renderHaulOpportunityDetail(item, reportRow, options = {}) {
+      if (!item) return `<div class="decision-empty">Select an opportunity to view details.</div>`;
+      const pickup = item.pickup_order || {};
+      const destination = item.destination_order || {};
+      const pickupPrice = item.average_pickup_price == null ? pickup.price : item.average_pickup_price;
+      const destinationPrice = item.average_destination_price == null ? destination.price : item.average_destination_price;
+      const extraJumps = item.extra_route_jumps == null ? "unknown" : `${formatNumber(item.extra_route_jumps)} extra`;
+      const efficiencyJumpNote = Number(item.extra_route_jumps || 0) <= 0
+        ? "Direct-route pickup; no added jumps."
+        : "After-tax profit divided by added jumps.";
+      const matchedVolumeText = item.matched_volume_m3 == null ? "unknown" : formatVolume(item.matched_volume_m3);
+      const efficiencyVolumeNote = item.net_profit_per_m3 == null
+        ? "Volume unknown."
+        : `${matchedVolumeText} matched volume.`;
+      const depthText = item.matched_order_pair_count
+        ? `${formatNumber(item.matched_sell_order_count)} sell order${Number(item.matched_sell_order_count || 0) === 1 ? "" : "s"} matched to ${formatNumber(item.matched_buy_order_count)} destination buy order${Number(item.matched_buy_order_count || 0) === 1 ? "" : "s"}`
+        : "top order match";
+      const pickupSystemsText = item.matched_pickup_system_count
+        ? `${formatNumber(item.matched_pickup_system_count)} pickup system${Number(item.matched_pickup_system_count || 0) === 1 ? "" : "s"}`
+        : "one pickup system";
+      const depthRows = (item.order_depth || []).slice(0, 4).map((row) => {
+        const rowPickup = row.pickup_order || {};
+        const rowDestination = row.destination_order || {};
+        return `${formatNumber(row.units)} from ${rowPickup.system_name || "pickup"} ${formatIsk(row.pickup_price)} -> ${rowDestination.system_name || "destination"} ${formatIsk(row.destination_price)}`;
+      }).join("; ");
+      const decision = item.decision || {};
+      const riskClass = acquisitionRiskClass(item.risk_level);
+      const limitNotes = [];
+      if (item.cargo_limited) limitNotes.push("cargo limited");
+      if (item.budget_limited) limitNotes.push("budget limited");
+      const cargoNote = item.volume_m3 == null
+        ? `volume unknown${limitNotes.length ? `; ${limitNotes.join("; ")}` : ""}`
+        : `${formatVolume(item.volume_m3)} each${limitNotes.length ? `; ${limitNotes.join("; ")}` : ""}`;
+      const closeButton = options.showClose ? `<button class="secondary" type="button" data-haul-detail-close="1">Close</button>` : "";
+      return `
+        <section class="haul-detail-panel">
+          <div class="haul-detail-head">
+            <div>
+              <strong>${escapeHtml(item.item_name || "Unknown item")}</strong>
+              <div class="meta">${escapeHtml(haulOpportunityReportStatus(item))} opportunity; ${escapeHtml(acquisitionRiskLabel(item.risk_level))}; expected profit ${formatSignedIsk(item.net_profit)}.</div>
+            </div>
+            <div class="haul-card-badges">
+              <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
+              ${closeButton}
+            </div>
+          </div>
+          <div class="decision-lede">Buy from ${escapeHtml(pickup.system_name || "pickup")} corridor at ${formatIsk(pickupPrice)} avg; sell in ${escapeHtml(destination.system_name || "destination")} at ${formatIsk(destinationPrice)} avg.</div>
+          <div class="decision-lede">${escapeHtml(decision.label || "Review manually")}: ${escapeHtml(decision.reason || "Verify current orders in EVE before hauling.")}</div>
+          <div class="haul-detail-section">
+            <strong>History and warnings</strong>
+            ${renderAcquisitionHistoryFlags(item.history_flags || []) || `<div class="meta">Market history was checked; no warning flags were returned for this opportunity.</div>`}
+          </div>
+          <div class="haul-detail-section">
+            <strong>Access check</strong>
+            ${renderHaulAccessGuardrails(item)}
+          </div>
+          <div class="decision-metrics">
+            <div class="decision-metric"><span>Units</span><b>${formatNumber(item.units)}</b><small>${escapeHtml(cargoNote)}</small></div>
+            <div class="decision-metric"><span>After-Tax Per Unit</span><b>${formatSignedIsk(item.net_profit_per_unit)}</b><small>${formatPercent(item.margin_percent)} on pickup cost.</small></div>
+            <div class="decision-metric"><span>Depth</span><b>${escapeHtml(depthText)}</b><small>${escapeHtml(pickupSystemsText)}.</small></div>
+            <div class="decision-metric"><span>Route</span><b>${escapeHtml(extraJumps)}</b><small>Origin-pickup-destination compared with direct route.</small></div>
+            <div class="decision-metric"><span>Efficiency</span><b>${formatSignedIskRate(item.net_profit_per_extra_jump, "extra jump")}</b><small>${escapeHtml(efficiencyJumpNote)} ${formatSignedIskRate(item.net_profit_per_m3, "m3")} from ${escapeHtml(efficiencyVolumeNote)}</small></div>
+          </div>
+          <details class="profit-details" open>
+            <summary>Order details</summary>
+            <div class="profit-detail-grid">
+              <div class="profit-detail-row"><span>Primary pickup</span><b>${escapeHtml(pickup.system_name || "unknown")} (${formatNumber(pickup.jumps)} jumps)</b></div>
+              <div class="profit-detail-row"><span>Pickup access</span><b>${escapeHtml(pickup.location_kind_label || "Unknown location")}</b><small>${escapeHtml(pickup.location_access_note || "Verify in EVE.")}</small></div>
+              <div class="profit-detail-row"><span>Destination access</span><b>${escapeHtml(destination.location_kind_label || "Unknown location")}</b><small>${escapeHtml(destination.location_access_note || "Verify in EVE.")}</small></div>
+              <div class="profit-detail-row"><span>Pickup detour</span><b>${formatNumber(item.pickup_detour_jumps)} max; ${formatNumber(item.primary_pickup_detour_jumps)} primary</b></div>
+              <div class="profit-detail-row"><span>Purchase budget</span><b>${formatIsk(item.purchase_budget_isk)}</b></div>
+              <div class="profit-detail-row"><span>Budget remaining</span><b>${formatIsk(item.budget_remaining_isk)}</b></div>
+              <div class="profit-detail-row"><span>Pickup cost</span><b>${formatIsk(item.pickup_cost)}</b></div>
+              <div class="profit-detail-row"><span>Destination gross</span><b>${formatIsk(item.gross_destination_revenue)}</b></div>
+              <div class="profit-detail-row"><span>Sales tax</span><b>${formatIsk(item.sales_tax_total)} (${formatRatePercent(item.sales_tax_rate)})</b></div>
+              <div class="profit-detail-row"><span>Net destination revenue</span><b>${formatIsk(item.net_destination_revenue)}</b></div>
+              <div class="profit-detail-row"><span>Gross spread per unit</span><b>${formatSignedIsk(item.gross_spread_per_unit)}</b></div>
+              <div class="profit-detail-row"><span>Matched volume</span><b>${escapeHtml(matchedVolumeText)}</b></div>
+              <div class="profit-detail-row"><span>Profit per m3</span><b>${formatSignedIskRate(item.net_profit_per_m3, "m3")}</b></div>
+              <div class="profit-detail-row"><span>Profit per extra jump</span><b>${formatSignedIskRate(item.net_profit_per_extra_jump, "extra jump")}</b></div>
+              <div class="profit-detail-row"><span>Matched pairs</span><b>${formatNumber(item.matched_order_pair_count)}</b></div>
+              <div class="profit-detail-row"><span>Depth rows</span><b>${escapeHtml(depthRows || "not returned")}${item.order_depth_truncated ? "..." : ""}</b></div>
+              <div class="profit-detail-row"><span>Pickup history</span><b>${renderHistoryStats(item.pickup_history || {})}</b></div>
+              <div class="profit-detail-row"><span>Destination history</span><b>${renderHistoryStats(item.destination_history || {})}</b></div>
+            </div>
+          </details>
+          <div class="haul-detail-section">
+            <strong>Expected vs Realized export row</strong>
+            ${renderHaulReportRowPreview(reportRow)}
+          </div>
+        </section>
+      `;
+    }
+
+    function renderHaulReportRowPreview(row) {
+      if (!row) return `<div class="decision-empty">No export row returned for this opportunity.</div>`;
+      return `<div class="spreadsheet-report-preview haul-detail-report-preview">${renderReportPreview([row])}</div>`;
+    }
+
+    function selectHaulOpportunity(index) {
+      const nextIndex = Number(index);
+      selectedHaulOpportunityIndex = Number.isInteger(nextIndex) && nextIndex >= 0 && nextIndex < haulOpportunities.length
+        ? nextIndex
+        : -1;
+      haulOpportunityTop.innerHTML = renderHaulOpportunities(haulOpportunities);
     }
 
     function resetMarketAcquisition(message) {
@@ -25789,6 +26047,27 @@ help</textarea>
       haulCompareResults.textContent = "";
     });
     haulCompareButton.addEventListener("click", loadHaulHubComparison);
+    haulOpportunityTop.addEventListener("click", (event) => {
+      if (event.target.closest("button[data-haul-detail-close]")) {
+        selectHaulOpportunity(-1);
+        return;
+      }
+      const detailButton = event.target.closest("button[data-haul-opportunity-detail]");
+      if (detailButton) {
+        selectHaulOpportunity(detailButton.dataset.haulOpportunityDetail);
+        return;
+      }
+      const card = event.target.closest("[data-haul-opportunity-index]");
+      if (!card) return;
+      selectHaulOpportunity(card.dataset.haulOpportunityIndex);
+    });
+    haulOpportunityTop.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const card = event.target.closest("[data-haul-opportunity-index]");
+      if (!card) return;
+      event.preventDefault();
+      selectHaulOpportunity(card.dataset.haulOpportunityIndex);
+    });
 
     function updateAcquisitionScopeAndReset() {
       writeAcquisitionSettings({
