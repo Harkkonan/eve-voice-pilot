@@ -5908,34 +5908,41 @@ def build_flight_hauling_payload(
     route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
     route_jumps = max(0, len(route_path) - 1)
     server_timing = server_timer.to_public_dict()
+    generated_at = now_iso()
+    route_payload = {
+        "origin": origin.to_dict(jumps=0),
+        "destination": destination.to_dict(jumps=max(0, len(route_path) - 1)),
+        "origin_query": clean_origin_name,
+        "origin_source": origin_source,
+        "destination_query": destination_name,
+        "route_jumps": route_jumps,
+        "detour_jumps": clamp_haul_detour_jumps(detour_jumps),
+        "cargo_capacity_m3": clamp_haul_cargo_m3(cargo_capacity_m3),
+        "purchase_budget_isk": clamp_haul_purchase_budget_isk(purchase_budget_isk),
+        "min_detour_margin_percent": clamp_haul_min_detour_margin_percent(min_detour_margin_percent),
+        "route_preference": route_plan["preference"],
+        "route_preference_label": route_plan["preference_label"],
+        "route_source": route_plan["source"],
+        "avoid_recent_pod_kills": route_plan["avoid_recent_pod_kills"],
+        "recent_pod_kill_system_count": route_plan["recent_pod_kill_system_count"],
+        "avoided_pod_kill_system_count": len(route_plan["avoided_pod_kill_system_ids"]),
+        "route_pod_kill_system_count": len(route_plan["route_pod_kill_system_ids"]),
+        "route_warning": route_plan["warning"],
+        "diagnostics": build_haul_route_diagnostics(route_plan, route_jumps=route_jumps),
+        "systems": route_systems,
+    }
+    opportunities["report_rows"] = build_haul_expected_realized_report_rows(
+        generated_at=generated_at,
+        route=route_payload,
+        hauling=opportunities,
+    )
     return {
         "ok": True,
-        "generated_at": now_iso(),
+        "generated_at": generated_at,
         "server_timing": server_timing,
         "character": session.to_public_dict(),
         "location": location,
-        "route": {
-            "origin": origin.to_dict(jumps=0),
-            "destination": destination.to_dict(jumps=max(0, len(route_path) - 1)),
-            "origin_query": clean_origin_name,
-            "origin_source": origin_source,
-            "destination_query": destination_name,
-            "route_jumps": route_jumps,
-            "detour_jumps": clamp_haul_detour_jumps(detour_jumps),
-            "cargo_capacity_m3": clamp_haul_cargo_m3(cargo_capacity_m3),
-            "purchase_budget_isk": clamp_haul_purchase_budget_isk(purchase_budget_isk),
-            "min_detour_margin_percent": clamp_haul_min_detour_margin_percent(min_detour_margin_percent),
-            "route_preference": route_plan["preference"],
-            "route_preference_label": route_plan["preference_label"],
-            "route_source": route_plan["source"],
-            "avoid_recent_pod_kills": route_plan["avoid_recent_pod_kills"],
-            "recent_pod_kill_system_count": route_plan["recent_pod_kill_system_count"],
-            "avoided_pod_kill_system_count": len(route_plan["avoided_pod_kill_system_ids"]),
-            "route_pod_kill_system_count": len(route_plan["route_pod_kill_system_ids"]),
-            "route_warning": route_plan["warning"],
-            "diagnostics": build_haul_route_diagnostics(route_plan, route_jumps=route_jumps),
-            "systems": route_systems,
-        },
+        "route": route_payload,
         "hauling": opportunities,
     }
 
@@ -6157,24 +6164,30 @@ def build_flight_acquisition_payload(
         **expectation_snapshot,
         "source": "local-corp-market-sqlite",
     }
+    route_payload = {
+        "origin": origin.to_dict(jumps=0),
+        "destination": destination.to_dict(jumps=max(0, len(route_path) - 1)),
+        "origin_query": clean_origin_name,
+        "origin_source": origin_source,
+        "destination_query": destination_name,
+        "route_jumps": max(0, len(route_path) - 1),
+        "route_preference": route_plan["preference"],
+        "route_preference_label": route_plan["preference_label"],
+        "route_source": route_plan["source"],
+        "route_warning": route_plan["warning"],
+        "systems": route_systems,
+    }
+    acquisition["report_rows"] = build_acquisition_expected_realized_report_rows(
+        generated_at=generated_at,
+        route=route_payload,
+        acquisition=acquisition,
+    )
     return {
         "ok": True,
         "generated_at": generated_at,
         "character": session.to_public_dict(),
         "location": location,
-        "route": {
-            "origin": origin.to_dict(jumps=0),
-            "destination": destination.to_dict(jumps=max(0, len(route_path) - 1)),
-            "origin_query": clean_origin_name,
-            "origin_source": origin_source,
-            "destination_query": destination_name,
-            "route_jumps": max(0, len(route_path) - 1),
-            "route_preference": route_plan["preference"],
-            "route_preference_label": route_plan["preference_label"],
-            "route_source": route_plan["source"],
-            "route_warning": route_plan["warning"],
-            "systems": route_systems,
-        },
+        "route": route_payload,
         "acquisition": acquisition,
     }
 
@@ -7413,6 +7426,312 @@ def build_haul_load_plan(
     }
 
 
+def expected_realized_report_number(value: Any) -> float | int | str:
+    number = clean_optional_float(value)
+    if number is None:
+        return ""
+    rounded = round(number)
+    if abs(number - rounded) < 1e-9:
+        return int(rounded)
+    return number
+
+
+def build_expected_realized_report_row(
+    *,
+    date_created: str,
+    category: str,
+    location_to_post_order: str,
+    order_type: str,
+    item_name: str,
+    quantity: Any,
+    price_per_item: Any,
+    expected_return_per_item: Any,
+    realized_return_per_item: Any = None,
+    date_completed: str = "",
+    status: str = "Planned",
+    notes: str = "",
+) -> dict[str, Any]:
+    quantity_number = clean_optional_float(quantity)
+    price_number = clean_optional_float(price_per_item)
+    expected_return_number = clean_optional_float(expected_return_per_item)
+    realized_return_number = clean_optional_float(realized_return_per_item)
+
+    expected_total_cost = (
+        quantity_number * price_number
+        if quantity_number is not None and price_number is not None
+        else None
+    )
+    expected_total_return = (
+        quantity_number * expected_return_number
+        if quantity_number is not None and expected_return_number is not None
+        else None
+    )
+    realized_total_return = (
+        quantity_number * realized_return_number
+        if quantity_number is not None and realized_return_number is not None
+        else None
+    )
+    expected_total_profit = (
+        expected_total_return - expected_total_cost
+        if expected_total_return is not None and expected_total_cost is not None
+        else None
+    )
+    realized_total_profit = (
+        realized_total_return - expected_total_cost
+        if realized_total_return is not None and expected_total_cost is not None
+        else None
+    )
+    profit_difference = (
+        realized_total_profit - expected_total_profit
+        if realized_total_profit is not None and expected_total_profit is not None
+        else None
+    )
+
+    row = {column: "" for column in EXPECTED_REALIZED_REPORT_COLUMNS}
+    row.update(
+        {
+            "Date Created": str(date_created or ""),
+            "Date Completed": str(date_completed or ""),
+            "Status": str(status or "Planned"),
+            "Category": str(category or ""),
+            "Location to Post Order": str(location_to_post_order or ""),
+            "Order Type": str(order_type or ""),
+            "Item Name": str(item_name or ""),
+            "Quantity": expected_realized_report_number(quantity_number),
+            "Price Per Item": expected_realized_report_number(price_number),
+            "Expected Return Per Item": expected_realized_report_number(expected_return_number),
+            "Realized Return Per Item": expected_realized_report_number(realized_return_number),
+            "Expected Total Cost": expected_realized_report_number(expected_total_cost),
+            "Expected Total Return": expected_realized_report_number(expected_total_return),
+            "Realized Total Return": expected_realized_report_number(realized_total_return),
+            "Expected Total Profit": expected_realized_report_number(expected_total_profit),
+            "Realized Total Profit": expected_realized_report_number(realized_total_profit),
+            "Profit Difference": expected_realized_report_number(profit_difference),
+            "Notes": str(notes or ""),
+        }
+    )
+    return row
+
+
+def spreadsheet_report_csv(rows: Iterable[Mapping[str, Any]]) -> str:
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=list(EXPECTED_REALIZED_REPORT_COLUMNS),
+        extrasaction="ignore",
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({column: row.get(column, "") for column in EXPECTED_REALIZED_REPORT_COLUMNS})
+    return output.getvalue()
+
+
+def haul_report_pickup_system_label(line: Mapping[str, Any], stops: Iterable[Mapping[str, Any]]) -> str:
+    type_id = clean_optional_int(line.get("type_id"))
+    item_name_key = str(line.get("item_name") or "").strip().casefold()
+    system_names: list[str] = []
+    seen: set[str] = set()
+    for stop in stops:
+        system_name = str(stop.get("system_name") or "").strip()
+        if not system_name:
+            continue
+        for item in stop.get("items") or []:
+            item_type_id = clean_optional_int(item.get("type_id"))
+            item_name = str(item.get("item_name") or "").strip().casefold()
+            if (type_id is not None and item_type_id == type_id) or (item_name_key and item_name == item_name_key):
+                key = system_name.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    system_names.append(system_name)
+                break
+    return "; ".join(system_names) if system_names else "Route pickup corridor"
+
+
+def haul_report_opportunity_pickup_system_label(opportunity: Mapping[str, Any]) -> str:
+    system_names: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for system in opportunity.get("matched_pickup_systems") or ():
+        system_name = str(system.get("system_name") or "").strip()
+        if not system_name:
+            continue
+        key = system_name.casefold()
+        if key not in seen:
+            seen.add(key)
+            jumps = clean_optional_int(system.get("jumps"))
+            system_names.append((jumps if jumps is not None else 999, system_name))
+    if system_names:
+        return "; ".join(system_name for _jumps, system_name in sorted(system_names, key=lambda item: (item[0], item[1])))
+    pickup_order = opportunity.get("pickup_order") if isinstance(opportunity.get("pickup_order"), Mapping) else {}
+    pickup_system_name = str(pickup_order.get("system_name") or "").strip()
+    return pickup_system_name or "Route pickup corridor"
+
+
+def haul_report_load_plan_keys(load_plan: Mapping[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for line in load_plan.get("lines") or ():
+        type_id = clean_optional_int(line.get("type_id"))
+        if type_id is not None:
+            keys.add(f"type:{type_id}")
+        item_name = str(line.get("item_name") or "").strip().casefold()
+        if item_name:
+            keys.add(f"name:{item_name}")
+    return keys
+
+
+def haul_report_opportunity_key(opportunity: Mapping[str, Any]) -> str:
+    type_id = clean_optional_int(opportunity.get("type_id"))
+    if type_id is not None:
+        return f"type:{type_id}"
+    item_name = str(opportunity.get("item_name") or "").strip().casefold()
+    return f"name:{item_name}" if item_name else ""
+
+
+def build_haul_expected_realized_report_rows(
+    *,
+    generated_at: str,
+    route: Mapping[str, Any],
+    hauling: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    load_plan = hauling.get("load_plan") if isinstance(hauling.get("load_plan"), Mapping) else {}
+    opportunities = list(hauling.get("opportunities") or []) if isinstance(hauling.get("opportunities"), list) else []
+    fallback_lines = list(load_plan.get("lines") or []) if isinstance(load_plan, Mapping) else []
+    if not opportunities and not fallback_lines:
+        return []
+    origin = route.get("origin") if isinstance(route.get("origin"), Mapping) else {}
+    destination = route.get("destination") if isinstance(route.get("destination"), Mapping) else {}
+    origin_name = str(origin.get("name") or route.get("origin_query") or "origin")
+    destination_name = str(destination.get("name") or route.get("destination_query") or "destination")
+    rows: list[dict[str, Any]] = []
+    load_plan_keys = haul_report_load_plan_keys(load_plan)
+    if opportunities:
+        for opportunity in opportunities:
+            units = clean_optional_float(opportunity.get("units"))
+            if units is None or units <= 0:
+                continue
+            pickup_cost = clean_optional_float(opportunity.get("pickup_cost"))
+            net_destination_revenue = clean_optional_float(opportunity.get("net_destination_revenue"))
+            average_pickup_price = clean_optional_float(opportunity.get("average_pickup_price"))
+            average_net_destination_price = clean_optional_float(opportunity.get("average_net_destination_price"))
+            price_per_item = average_pickup_price if average_pickup_price is not None else (
+                pickup_cost / units if pickup_cost is not None else None
+            )
+            expected_return_per_item = average_net_destination_price if average_net_destination_price is not None else (
+                net_destination_revenue / units if net_destination_revenue is not None else None
+            )
+            risk_level = str(opportunity.get("risk_level") or "clear")
+            matched_pickup_count = clean_optional_int(opportunity.get("matched_pickup_system_count")) or 0
+            in_load_plan = bool(haul_report_opportunity_key(opportunity) in load_plan_keys)
+            status = "Planned" if in_load_plan else "Candidate"
+            notes = (
+                f"Hauler visible opportunity from {origin_name} to {destination_name}; "
+                f"{matched_pickup_count} pickup system(s); risk {risk_level}; "
+                f"{'included in the current manual load plan' if in_load_plan else 'not selected into the current manual load plan'}; "
+                "verify live orders, docking access, and route in EVE before buying."
+            )
+            rows.append(
+                build_expected_realized_report_row(
+                    date_created=generated_at,
+                    category="Haul",
+                    location_to_post_order=haul_report_opportunity_pickup_system_label(opportunity),
+                    order_type="Trade",
+                    item_name=str(opportunity.get("item_name") or ""),
+                    quantity=units,
+                    price_per_item=price_per_item,
+                    expected_return_per_item=expected_return_per_item,
+                    status=status,
+                    notes=notes,
+                )
+            )
+        return rows
+
+    stops = list(load_plan.get("stops") or []) if isinstance(load_plan, Mapping) else []
+    for line in fallback_lines:
+        units = clean_optional_float(line.get("units"))
+        if units is None or units <= 0:
+            continue
+        pickup_cost = clean_optional_float(line.get("pickup_cost"))
+        net_destination_revenue = clean_optional_float(line.get("net_destination_revenue"))
+        average_pickup_price = clean_optional_float(line.get("average_pickup_price"))
+        price_per_item = average_pickup_price if average_pickup_price is not None else (
+            pickup_cost / units if pickup_cost is not None else None
+        )
+        expected_return_per_item = (
+            net_destination_revenue / units if net_destination_revenue is not None else None
+        )
+        risk_level = str(line.get("risk_level") or "clear")
+        pickup_system_count = clean_optional_int(line.get("pickup_system_count")) or 0
+        notes = (
+            f"Hauler load-plan row from {origin_name} to {destination_name}; "
+            f"{pickup_system_count} pickup system(s); risk {risk_level}; "
+            "verify live orders, docking access, and route in EVE before buying."
+        )
+        rows.append(
+            build_expected_realized_report_row(
+                date_created=generated_at,
+                category="Haul",
+                location_to_post_order=haul_report_pickup_system_label(line, stops),
+                order_type="Trade",
+                item_name=str(line.get("item_name") or ""),
+                quantity=units,
+                price_per_item=price_per_item,
+                expected_return_per_item=expected_return_per_item,
+                notes=notes,
+            )
+        )
+    return rows
+
+
+def build_acquisition_expected_realized_report_rows(
+    *,
+    generated_at: str,
+    route: Mapping[str, Any],
+    acquisition: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    portfolio = acquisition.get("portfolio") if isinstance(acquisition.get("portfolio"), Mapping) else {}
+    lines = list(portfolio.get("lines") or []) if isinstance(portfolio, Mapping) else []
+    if not lines:
+        return []
+    origin = route.get("origin") if isinstance(route.get("origin"), Mapping) else {}
+    destination = route.get("destination") if isinstance(route.get("destination"), Mapping) else {}
+    origin_name = str(origin.get("name") or acquisition.get("origin_system", {}).get("name") or "source")
+    destination_name = str(destination.get("name") or acquisition.get("destination_system", {}).get("name") or "destination")
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        units = clean_optional_float(line.get("recommended_units"))
+        if units is None or units <= 0:
+            continue
+        estimated_committed = clean_optional_float(line.get("estimated_isk_committed"))
+        estimated_net_revenue = clean_optional_float(line.get("estimated_net_revenue"))
+        price_per_item = (
+            estimated_committed / units if estimated_committed is not None else line.get("suggested_bid")
+        )
+        expected_return_per_item = (
+            estimated_net_revenue / units if estimated_net_revenue is not None else None
+        )
+        placement_system = str(line.get("placement_system") or origin_name)
+        notes = (
+            f"Investment portfolio line toward {destination_name}; category {line.get('category') or 'Selected scope'}; "
+            f"suggested bid {format_isk(clean_optional_float(line.get('suggested_bid')))}; "
+            f"safe ceiling {format_isk(clean_optional_float(line.get('max_safe_bid')))}; "
+            f"risk {line.get('risk_level') or 'clear'}; Price Per Item includes estimated broker fee."
+        )
+        rows.append(
+            build_expected_realized_report_row(
+                date_created=generated_at,
+                category="Investment",
+                location_to_post_order=placement_system,
+                order_type="Buy",
+                item_name=str(line.get("item_name") or ""),
+                quantity=units,
+                price_per_item=price_per_item,
+                expected_return_per_item=expected_return_per_item,
+                notes=notes,
+            )
+        )
+    return rows
+
+
 def fetch_haul_destination_buy_batch(
     *,
     config: EveSsoConfig,
@@ -8191,6 +8510,7 @@ def acquisition_portfolio_line(
         "risk_level": opportunity.get("risk_level"),
         "decision": opportunity.get("decision"),
         "range_recommendation": opportunity.get("range_recommendation"),
+        "placement_system": opportunity.get("placement_system") or "",
         "estimated_collection_jumps": estimated_collection_jumps,
         "recommended_units": clean_units,
         "original_recommended_units": original_units,
@@ -17033,6 +17353,56 @@ def _render_flight_attendant_dashboard() -> str:
     .quickbar-copy-panel button { flex: 0 0 auto; }
     .quickbar-copy-status { min-height: 18px; }
     .quickbar-copy-status.error { color: var(--red); }
+    .spreadsheet-report-panel {
+      display: grid;
+      gap: 9px;
+      border-top: 1px solid rgba(97, 199, 217, .28);
+      padding-top: 10px;
+      margin: 10px 0 12px;
+    }
+    .spreadsheet-report-panel[hidden] { display: none; }
+    .spreadsheet-report-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .spreadsheet-report-head strong { color: var(--text); display: block; }
+    .spreadsheet-report-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .spreadsheet-report-preview {
+      overflow: auto;
+      max-height: 230px;
+      border: 1px solid rgba(63, 85, 80, .5);
+      border-radius: 7px;
+      background: rgba(5, 9, 11, .52);
+    }
+    .spreadsheet-report-preview table {
+      width: 100%;
+      min-width: 900px;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .spreadsheet-report-preview th,
+    .spreadsheet-report-preview td {
+      padding: 7px 8px;
+      border-bottom: 1px solid rgba(63, 85, 80, .38);
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    .spreadsheet-report-preview th {
+      color: var(--amber);
+      font-weight: 900;
+      background: rgba(17, 24, 25, .78);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .spreadsheet-report-preview td:last-child {
+      white-space: normal;
+      min-width: 260px;
+    }
     .cache-preflight-panel .profit-summary { margin-bottom: 10px; }
     .cache-list { display: grid; gap: 8px; }
     .cache-row {
@@ -17908,6 +18278,20 @@ help</textarea>
                   </div>
                   <button class="secondary" type="button" data-copy-quickbar="hauling">Copy Quickbar Items</button>
                 </div>
+                <div id="haul-report-panel" class="spreadsheet-report-panel" hidden>
+                  <div class="spreadsheet-report-head">
+                    <div>
+                      <strong>Expected vs Realized Report</strong>
+                      <div class="meta">CSV rows for visible hauler opportunities. Realized columns are blank for later review.</div>
+                      <div id="haul-report-status" class="meta quickbar-copy-status" aria-live="polite"></div>
+                    </div>
+                    <div class="spreadsheet-report-actions">
+                      <button class="secondary" type="button" data-copy-report="hauling">Copy CSV</button>
+                      <button class="secondary" type="button" data-download-report="hauling">Download CSV</button>
+                    </div>
+                  </div>
+                  <div id="haul-report-preview" class="spreadsheet-report-preview"></div>
+                </div>
                 <div id="haul-opportunity-top" class="decision-output"></div>
               </div>
             </details>
@@ -18032,6 +18416,20 @@ help</textarea>
                     <div id="acq-quickbar-status" class="meta quickbar-copy-status" aria-live="polite"></div>
                   </div>
                   <button class="secondary" type="button" data-copy-quickbar="acquisition">Copy Quickbar Items</button>
+                </div>
+                <div id="acq-report-panel" class="spreadsheet-report-panel" hidden>
+                  <div class="spreadsheet-report-head">
+                    <div>
+                      <strong>Expected vs Realized Report</strong>
+                      <div class="meta">CSV rows for portfolio tracking. Realized columns are blank for later review.</div>
+                      <div id="acq-report-status" class="meta quickbar-copy-status" aria-live="polite"></div>
+                    </div>
+                    <div class="spreadsheet-report-actions">
+                      <button class="secondary" type="button" data-copy-report="acquisition">Copy CSV</button>
+                      <button class="secondary" type="button" data-download-report="acquisition">Download CSV</button>
+                    </div>
+                  </div>
+                  <div id="acq-report-preview" class="spreadsheet-report-preview"></div>
                 </div>
                 <div id="acq-results" class="decision-output"></div>
               </div>
@@ -18699,6 +19097,9 @@ help</textarea>
     const haulLoadPlan = document.querySelector("#haul-load-plan");
     const haulQuickbarPanel = document.querySelector("#haul-quickbar-panel");
     const haulQuickbarStatus = document.querySelector("#haul-quickbar-status");
+    const haulReportPanel = document.querySelector("#haul-report-panel");
+    const haulReportStatus = document.querySelector("#haul-report-status");
+    const haulReportPreview = document.querySelector("#haul-report-preview");
     const haulOpportunityTop = document.querySelector("#haul-opportunity-top");
     const acquisitionForm = document.querySelector("#acquisition-form");
     const acqOrigin = document.querySelector("#acq-origin");
@@ -18722,6 +19123,9 @@ help</textarea>
     const acqProgressLog = document.querySelector("#acq-progress-log");
     const acqQuickbarPanel = document.querySelector("#acq-quickbar-panel");
     const acqQuickbarStatus = document.querySelector("#acq-quickbar-status");
+    const acqReportPanel = document.querySelector("#acq-report-panel");
+    const acqReportStatus = document.querySelector("#acq-report-status");
+    const acqReportPreview = document.querySelector("#acq-report-preview");
     const acqResults = document.querySelector("#acq-results");
     const tradePnlForm = document.querySelector("#trade-pnl-form");
     const tradePnlWindowHours = document.querySelector("#trade-pnl-window-hours");
@@ -18864,6 +19268,7 @@ help</textarea>
     let haulProgressTimer = null;
     let haulProgressStartedAt = 0;
     let haulQuickbarItems = [];
+    let haulReportRows = [];
     let acquisitionEventSource = null;
     let acquisitionScanFinished = false;
     let acquisitionProgressTimer = null;
@@ -18872,6 +19277,7 @@ help</textarea>
     let acquisitionProgressMessage = "";
     let acquisitionProgressSettings = null;
     let acquisitionQuickbarItems = [];
+    let acquisitionReportRows = [];
     let planetaryShoppingQuickbarItems = [];
     let planetarySellQuickbarItems = [];
     let planetaryExtractedQuickbarItems = [];
@@ -19206,6 +19612,176 @@ help</textarea>
         );
       } catch (error) {
         setQuickbarStatus(source.status, error.message || "Clipboard copy failed.", true);
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = previousText;
+        }
+      }
+    }
+
+    const expectedRealizedReportColumns = [
+      "Date Created",
+      "Date Completed",
+      "Status",
+      "Category",
+      "Location to Post Order",
+      "Order Type",
+      "Item Name",
+      "Quantity",
+      "Price Per Item",
+      "Expected Return Per Item",
+      "Realized Return Per Item",
+      "Expected Total Cost",
+      "Expected Total Return",
+      "Realized Total Return",
+      "Expected Total Profit",
+      "Realized Total Profit",
+      "Profit Difference",
+      "Notes",
+    ];
+
+    function reportSourceForKind(kind) {
+      const sources = {
+        hauling: {
+          rows: haulReportRows,
+          panel: haulReportPanel,
+          status: haulReportStatus,
+          preview: haulReportPreview,
+          label: "hauler opportunity",
+          fileStem: "hauler-routes",
+        },
+        acquisition: {
+          rows: acquisitionReportRows,
+          panel: acqReportPanel,
+          status: acqReportStatus,
+          preview: acqReportPreview,
+          label: "investment portfolio",
+          fileStem: "investment-portfolio",
+        },
+      };
+      return sources[kind] || null;
+    }
+
+    function reportCsvCell(value) {
+      const text = value == null ? "" : String(value);
+      if (text.includes('"') || text.includes(",") || text.includes("\\r") || text.includes("\\n")) {
+        return `"${text.replace(/"/g, '""')}"`;
+      }
+      return text;
+    }
+
+    function reportRowsToCsv(rows) {
+      const header = expectedRealizedReportColumns.map(reportCsvCell).join(",");
+      const body = (rows || []).map((row) => (
+        expectedRealizedReportColumns.map((column) => reportCsvCell(row?.[column])).join(",")
+      ));
+      return [header, ...body].join("\\n");
+    }
+
+    function setReportStatus(statusEl, message, isError = false) {
+      if (!statusEl) return;
+      statusEl.textContent = message;
+      statusEl.classList.toggle("error", Boolean(isError));
+    }
+
+    function renderReportPreview(rows) {
+      const safeRows = Array.isArray(rows) ? rows : [];
+      if (!safeRows.length) return "";
+      const previewRows = safeRows.slice(0, 8);
+      return `
+        <table aria-label="Expected vs Realized CSV preview">
+          <thead>
+            <tr>${expectedRealizedReportColumns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>
+          </thead>
+          <tbody>
+            ${previewRows.map((row) => `
+              <tr>
+                ${expectedRealizedReportColumns.map((column) => `<td>${escapeHtml(row?.[column] == null ? "" : row[column])}</td>`).join("")}
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function updateReportPanel(kind, rows) {
+      const source = reportSourceForKind(kind);
+      if (!source) return;
+      const cleanRows = Array.isArray(rows) ? rows : [];
+      if (kind === "hauling") haulReportRows = cleanRows;
+      if (kind === "acquisition") acquisitionReportRows = cleanRows;
+      if (source.panel) source.panel.hidden = cleanRows.length === 0;
+      if (source.preview) source.preview.innerHTML = renderReportPreview(cleanRows);
+      if (!cleanRows.length) {
+        setReportStatus(source.status, "");
+        return;
+      }
+      const previewNote = cleanRows.length > 8 ? ` Previewing first 8.` : "";
+      setReportStatus(
+        source.status,
+        `${formatNumber(cleanRows.length)} ${source.label} row${cleanRows.length === 1 ? "" : "s"} ready for CSV export.${previewNote}`,
+      );
+    }
+
+    function resetReportPanel(kind) {
+      updateReportPanel(kind, []);
+    }
+
+    async function copyReportCsv(kind, button) {
+      const source = reportSourceForKind(kind);
+      if (!source) return;
+      const rows = source.rows || [];
+      if (!rows.length) {
+        setReportStatus(source.status, "No report rows are ready to copy yet.", true);
+        return;
+      }
+      const previousText = button ? button.textContent : "";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Copying...";
+      }
+      try {
+        await writeTextToClipboard(reportRowsToCsv(rows));
+        setReportStatus(source.status, `Copied ${formatNumber(rows.length)} ${source.label} CSV row${rows.length === 1 ? "" : "s"}.`);
+      } catch (error) {
+        setReportStatus(source.status, error.message || "CSV copy failed.", true);
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = previousText;
+        }
+      }
+    }
+
+    function downloadReportCsv(kind, button) {
+      const source = reportSourceForKind(kind);
+      if (!source) return;
+      const rows = source.rows || [];
+      if (!rows.length) {
+        setReportStatus(source.status, "No report rows are ready to download yet.", true);
+        return;
+      }
+      const previousText = button ? button.textContent : "";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Preparing...";
+      }
+      try {
+        const csvText = reportRowsToCsv(rows);
+        const blob = new Blob([csvText], {type: "text/csv;charset=utf-8"});
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        const dateStamp = new Date().toISOString().slice(0, 10);
+        link.href = url;
+        link.download = `corp-market-${source.fileStem}-expected-realized-${dateStamp}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        setReportStatus(source.status, `Downloaded ${formatNumber(rows.length)} ${source.label} CSV row${rows.length === 1 ? "" : "s"}.`);
+      } catch (error) {
+        setReportStatus(source.status, error.message || "CSV download failed.", true);
       } finally {
         if (button) {
           button.disabled = false;
@@ -21054,6 +21630,7 @@ help</textarea>
       haulOpportunitySummary.textContent = "No route scan has run yet.";
       haulLoadPlan.textContent = "";
       resetQuickbarList(haulQuickbarPanel, haulQuickbarStatus, "hauling");
+      resetReportPanel("hauling");
       haulOpportunityTop.textContent = "";
       haulScanButton.disabled = false;
     }
@@ -21192,6 +21769,7 @@ help</textarea>
       haulProgressLog.hidden = false;
       haulProgressLog.innerHTML = "";
       resetQuickbarList(haulQuickbarPanel, haulQuickbarStatus, "hauling");
+      resetReportPanel("hauling");
       startHaulProgressTimer(settings, routeRule, podRule);
       haulLoadPlan.innerHTML = renderHaulCargoLoader({cargo_capacity_m3: settings.cargoM3}, {scanning: true, cargoM3: settings.cargoM3});
       haulOpportunityTop.innerHTML = `<div class="decision-empty">Route opportunities will appear here when the scan finishes.</div>`;
@@ -21336,6 +21914,7 @@ help</textarea>
       haulLoadPlan.innerHTML = renderHaulLoadPlan(hauling.load_plan || {});
       haulQuickbarItems = Array.isArray(hauling.opportunities) ? hauling.opportunities : [];
       updateQuickbarPanel(haulQuickbarPanel, haulQuickbarStatus, haulQuickbarItems, "route item");
+      updateReportPanel("hauling", hauling.report_rows || []);
       haulOpportunitySummary.innerHTML = `
         <div class="profit-stats">
           <div class="profit-stat"><span>Profitable</span><b>${formatNumber(hauling.profitable_opportunities)}</b></div>
@@ -21680,6 +22259,7 @@ help</textarea>
       acqProgressLog.hidden = true;
       acqProgressLog.innerHTML = "";
       resetQuickbarList(acqQuickbarPanel, acqQuickbarStatus, "acquisition");
+      resetReportPanel("acquisition");
       acqResults.innerHTML = "";
       acqScanButton.disabled = false;
     }
@@ -21759,6 +22339,7 @@ help</textarea>
       acqProgressLog.hidden = false;
       acqProgressLog.innerHTML = "";
       resetQuickbarList(acqQuickbarPanel, acqQuickbarStatus, "acquisition");
+      resetReportPanel("acquisition");
       startAcquisitionProgressTimer(settings);
       acqResults.innerHTML = `<div class="decision-empty">Recommendations will appear here when the scan finishes.</div>`;
       const params = new URLSearchParams({
@@ -21972,6 +22553,7 @@ help</textarea>
         ? portfolio.lines
         : (Array.isArray(acquisition.opportunities) ? acquisition.opportunities : []);
       updateQuickbarPanel(acqQuickbarPanel, acqQuickbarStatus, acquisitionQuickbarItems, "portfolio item");
+      updateReportPanel("acquisition", acquisition.report_rows || []);
       acqResults.innerHTML = renderAcquisitionPortfolio(portfolio, acquisition.opportunities || []);
     }
 
@@ -25208,6 +25790,17 @@ help</textarea>
       const button = event.target.closest("button[data-copy-quickbar]");
       if (!button) return;
       copyQuickbarItems(button.dataset.copyQuickbar, button);
+    });
+    document.addEventListener("click", (event) => {
+      const copyButton = event.target.closest("button[data-copy-report]");
+      if (copyButton) {
+        copyReportCsv(copyButton.dataset.copyReport, copyButton);
+        return;
+      }
+      const downloadButton = event.target.closest("button[data-download-report]");
+      if (downloadButton) {
+        downloadReportCsv(downloadButton.dataset.downloadReport, downloadButton);
+      }
     });
 
     function updateTradePnlAndReset() {

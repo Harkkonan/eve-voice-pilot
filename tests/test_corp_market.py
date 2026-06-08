@@ -433,6 +433,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "no reachable destination buy orders" in page
     assert "id=\"haul-quickbar-panel\" class=\"quickbar-copy-panel\" hidden" in page
     assert "data-copy-quickbar=\"hauling\"" in page
+    assert "id=\"haul-report-panel\" class=\"spreadsheet-report-panel\" hidden" in page
+    assert "data-copy-report=\"hauling\"" in page
+    assert "data-download-report=\"hauling\"" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
     assert "Profit per m3" in page
     assert "Profit per extra jump" in page
@@ -451,6 +454,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"acq-progress-log\"" in page
     assert "id=\"acq-quickbar-panel\" class=\"quickbar-copy-panel\" hidden" in page
     assert "data-copy-quickbar=\"acquisition\"" in page
+    assert "id=\"acq-report-panel\" class=\"spreadsheet-report-panel\" hidden" in page
+    assert "data-copy-report=\"acquisition\"" in page
+    assert "data-download-report=\"acquisition\"" in page
     assert "id=\"acq-results\" class=\"decision-output\"" in page
     assert "Market Investment Portfolio" in page
     assert "Possible trap" in page
@@ -529,6 +535,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "renderPlanetaryPlanList" in page
     assert "renderPlanetaryOpportunities" in page
     assert "quickbarImportText" in page
+    assert "expectedRealizedReportColumns" in page
+    assert "reportRowsToCsv" in page
+    assert "updateReportPanel" in page
     assert "Market &gt; Quickbar &gt; Import Quickbar" in page
     assert page.count("id=\"tab-reprocessing\"") == 1
     assert "https://images.evetech.net/types/" in page
@@ -1805,6 +1814,168 @@ def test_acquisition_investment_portfolio_diversifies_budget_and_excludes_traps(
     assert {line["category"] for line in portfolio["lines"]} == {"Common materials", "Modules"}
     assert all(line["risk_level"] != "possible-trap" for line in portfolio["lines"])
     assert any(line["recommended_units"] < line["original_recommended_units"] for line in portfolio["lines"])
+
+
+def test_expected_realized_report_row_calculates_and_quotes_csv():
+    row = corp_market.build_expected_realized_report_row(
+        date_created="2026-06-08",
+        category="Haul",
+        location_to_post_order="Amarr, Emperor Family Academy",
+        order_type="Trade",
+        item_name='Widget "A"',
+        quantity=10,
+        price_per_item=4.1,
+        expected_return_per_item=5.2,
+        notes='verify, then "sell"',
+    )
+
+    assert row["Realized Return Per Item"] == ""
+    assert row["Realized Total Return"] == ""
+    assert row["Realized Total Profit"] == ""
+    assert row["Profit Difference"] == ""
+    assert row["Expected Total Cost"] == pytest.approx(41.0)
+    assert row["Expected Total Return"] == pytest.approx(52.0)
+    assert row["Expected Total Profit"] == pytest.approx(11.0)
+
+    csv_text = corp_market.spreadsheet_report_csv([row])
+
+    assert csv_text.startswith("Date Created,Date Completed,Status,Category,Location to Post Order")
+    assert '"Amarr, Emperor Family Academy"' in csv_text
+    assert '"Widget ""A"""' in csv_text
+    assert '"verify, then ""sell"""' in csv_text
+
+
+def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
+    route = {
+        "origin": {"name": "Start"},
+        "destination": {"name": "Jita"},
+    }
+    hauling = {
+        "opportunities": [
+            {
+                "type_id": 34,
+                "item_name": "Tritanium",
+                "units": 1000,
+                "pickup_cost": 2200.0,
+                "net_destination_revenue": 7488.4375,
+                "average_pickup_price": 2.2,
+                "average_net_destination_price": 7.4884375,
+                "risk_level": "clear",
+                "matched_pickup_system_count": 2,
+                "matched_pickup_systems": [
+                    {"system_name": "Middle"},
+                    {"system_name": "Side Pickup"},
+                ],
+            },
+            {
+                "type_id": 35,
+                "item_name": "Pyerite",
+                "units": 250,
+                "pickup_cost": 1000.0,
+                "net_destination_revenue": 1300.0,
+                "average_pickup_price": 4.0,
+                "average_net_destination_price": 5.2,
+                "risk_level": "caution",
+                "matched_pickup_system_count": 1,
+                "matched_pickup_systems": [{"system_name": "Amarr"}],
+            },
+        ],
+        "load_plan": {
+            "available": True,
+            "lines": [
+                {
+                    "type_id": 34,
+                    "item_name": "Tritanium",
+                    "units": 1000,
+                    "pickup_cost": 2200.0,
+                    "net_destination_revenue": 7488.4375,
+                    "average_pickup_price": 2.2,
+                    "risk_level": "clear",
+                    "pickup_system_count": 2,
+                }
+            ],
+            "stops": [
+                {
+                    "system_name": "Middle",
+                    "items": [{"type_id": 34, "item_name": "Tritanium", "units": 400}],
+                },
+                {
+                    "system_name": "Side Pickup",
+                    "items": [{"type_id": 34, "item_name": "Tritanium", "units": 600}],
+                },
+            ],
+        }
+    }
+
+    rows = corp_market.build_haul_expected_realized_report_rows(
+        generated_at="2026-06-08T12:00:00Z",
+        route=route,
+        hauling=hauling,
+    )
+
+    assert len(rows) == 2
+    row = rows[0]
+    candidate_row = rows[1]
+    assert row["Category"] == "Haul"
+    assert row["Status"] == "Planned"
+    assert row["Order Type"] == "Trade"
+    assert row["Location to Post Order"] == "Middle; Side Pickup"
+    assert row["Item Name"] == "Tritanium"
+    assert row["Quantity"] == 1000
+    assert row["Price Per Item"] == pytest.approx(2.2)
+    assert row["Expected Return Per Item"] == pytest.approx(7.4884375)
+    assert row["Expected Total Cost"] == pytest.approx(2200.0)
+    assert row["Expected Total Profit"] == pytest.approx(5288.4375)
+    assert row["Realized Return Per Item"] == ""
+    assert candidate_row["Status"] == "Candidate"
+    assert candidate_row["Item Name"] == "Pyerite"
+    assert candidate_row["Location to Post Order"] == "Amarr"
+    assert candidate_row["Expected Total Profit"] == pytest.approx(300.0)
+    assert "not selected into the current manual load plan" in candidate_row["Notes"]
+
+
+def test_acquisition_report_rows_use_committed_cost_basis():
+    route = {
+        "origin": {"name": "Amarr"},
+        "destination": {"name": "Jita"},
+    }
+    acquisition = {
+        "portfolio": {
+            "available": True,
+            "lines": [
+                {
+                    "item_name": "Scourge Fury Heavy Missile",
+                    "category": "Ammunition & Charges",
+                    "placement_system": "Amarr",
+                    "recommended_units": 50_000,
+                    "suggested_bid": 11.5,
+                    "max_safe_bid": 12.0,
+                    "estimated_isk_committed": 600_000.0,
+                    "estimated_net_revenue": 750_000.0,
+                    "risk_level": "caution",
+                }
+            ],
+        }
+    }
+
+    rows = corp_market.build_acquisition_expected_realized_report_rows(
+        generated_at="2026-06-08T12:00:00Z",
+        route=route,
+        acquisition=acquisition,
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["Category"] == "Investment"
+    assert row["Order Type"] == "Buy"
+    assert row["Location to Post Order"] == "Amarr"
+    assert row["Item Name"] == "Scourge Fury Heavy Missile"
+    assert row["Quantity"] == 50_000
+    assert row["Price Per Item"] == pytest.approx(12.0)
+    assert row["Expected Return Per Item"] == pytest.approx(15.0)
+    assert row["Expected Total Profit"] == pytest.approx(150_000.0)
+    assert row["Realized Total Profit"] == ""
+    assert "Price Per Item includes estimated broker fee" in row["Notes"]
 
 
 def test_haul_route_preference_normalizes_eve_route_terms():
@@ -3987,6 +4158,7 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
     assert "possible trap" in acquisition["pricing_note"]
     assert acquisition["portfolio"]["available"] is False
     assert acquisition["portfolio"]["possible_trap_excluded_count"] == 1
+    assert acquisition["report_rows"] == []
     event_names = [event for event, _payload in progress_events]
     assert event_names[:4] == ["scan_start", "location", "route_step", "skills"]
     assert {"scan_scope", "item_start", "orders", "history", "item_done", "portfolio"} <= set(event_names)
@@ -4299,6 +4471,13 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert load_plan["stops"][0]["pickup_cost"] == pytest.approx(1000.0)
     assert load_plan["stops"][1]["system_name"] == "Side Pickup"
     assert load_plan["stops"][1]["pickup_cost"] == pytest.approx(1200.0)
+    report_rows = hauling["report_rows"]
+    assert len(report_rows) == 1
+    assert report_rows[0]["Category"] == "Haul"
+    assert report_rows[0]["Order Type"] == "Trade"
+    assert report_rows[0]["Location to Post Order"] == "Middle; Side Pickup"
+    assert report_rows[0]["Expected Total Profit"] == pytest.approx(5288.4375)
+    assert report_rows[0]["Realized Total Profit"] == ""
     opportunity = hauling["opportunities"][0]
     assert "load_plan_depth" not in opportunity
     assert opportunity["item_name"] == "Tritanium"
