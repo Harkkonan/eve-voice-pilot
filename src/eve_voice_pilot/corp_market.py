@@ -22751,6 +22751,10 @@ help</textarea>
         if (metrics.opportunities != null) metricParts.push(`${formatNumber(metrics.opportunities)} opportunities`);
         if (metrics.history_requests != null) metricParts.push(`${formatNumber(metrics.history_requests)} histories`);
         if (metrics.history_regions != null) metricParts.push(`${formatNumber(metrics.history_regions)} history regions`);
+        if (metrics.order_fetch_seconds != null) metricParts.push(`order fetch ${formatStageSeconds(metrics.order_fetch_seconds)}`);
+        if (metrics.order_filter_seconds != null) metricParts.push(`order filter ${formatStageSeconds(metrics.order_filter_seconds)}`);
+        if (metrics.history_fetch_seconds != null) metricParts.push(`history fetch ${formatStageSeconds(metrics.history_fetch_seconds)}`);
+        if (metrics.opportunity_score_seconds != null) metricParts.push(`score ${formatStageSeconds(metrics.opportunity_score_seconds)}`);
         const metricText = metricParts.length ? ` · ${metricParts.join(", ")}` : "";
         return `
           <div class="stage-timing-row">

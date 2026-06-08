@@ -434,6 +434,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "renderHaulStageTiming" in page
     assert "renderScanStageTiming" in page
     assert "Portfolio stage timing" in page
+    assert "order fetch" in page
+    assert "history fetch" in page
     assert "renderHaulAccessGuardrails" in page
     assert "Access check" in page
     assert "Pickup access" in page
