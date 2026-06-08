@@ -386,6 +386,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "ESI Status" in page
     assert "Open Routes" in page
     assert "Open Portfolio" in page
+    assert "Run This Hauling Test" in page
+    assert "Route scan rehearsal" in page
+    assert "Run This Portfolio Test" in page
+    assert "Buy-order rehearsal" in page
     assert "id=\"haul-route-form\"" in page
     assert "id=\"haul-origin\"" in page
     assert "id=\"haul-origin-suggestions\"" in page

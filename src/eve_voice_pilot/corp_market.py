@@ -14808,6 +14808,82 @@ def _render_flight_attendant_dashboard() -> str:
     .checkline span { color: var(--muted); }
     .checkline small { display: block; color: var(--amber); font-size: 12px; line-height: 1.35; margin-top: 3px; }
     .input-note { color: var(--amber); font-size: 12px; line-height: 1.35; }
+    .tester-run-panel {
+      display: grid;
+      gap: 9px;
+      margin: 0 0 14px;
+      padding: 11px 12px;
+      border-left: 3px solid var(--cyan);
+      border-top: 1px solid rgba(63, 85, 80, .58);
+      border-bottom: 1px solid rgba(63, 85, 80, .58);
+      background:
+        linear-gradient(90deg, rgba(97, 199, 217, .1), rgba(5, 9, 11, .34) 42%, transparent);
+    }
+    .tester-run-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .tester-run-head strong {
+      color: var(--text);
+      font-size: 14px;
+    }
+    .tester-run-head span {
+      color: var(--amber);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .tester-run-steps {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .tester-run-steps li {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 7px;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .tester-run-steps b {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border: 1px solid rgba(97, 199, 217, .42);
+      border-radius: 50%;
+      color: var(--cyan);
+      font-size: 11px;
+    }
+    .tester-run-steps strong {
+      display: block;
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .tester-run-steps small {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .tester-run-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .tester-run-actions .meta {
+      margin-left: auto;
+      font-size: 12px;
+    }
     .system-suggest-list {
       display: grid;
       gap: 4px;
@@ -17730,6 +17806,9 @@ def _render_flight_attendant_dashboard() -> str:
       .ops-launcher-actions button { flex: 1 1 140px; }
       .tabbar { flex-wrap: wrap; overflow: visible; }
       .tabbar button { flex: 1 1 138px; }
+      .tester-run-head { display: grid; }
+      .tester-run-steps { grid-template-columns: 1fr; }
+      .tester-run-actions .meta { margin-left: 0; }
       .panel-header { display: block; }
       .panel-header .pill { margin-top: 8px; }
       .panel-header .meta { max-width: 100%; }
@@ -18387,6 +18466,22 @@ help</textarea>
               <span class="pill reserved">Manual Hauling</span>
             </div>
 @@TAB_SCOPE_HAULING@@
+            <section class="tester-run-panel" aria-labelledby="haul-test-run-title">
+              <div class="tester-run-head">
+                <strong id="haul-test-run-title">Run This Hauling Test</strong>
+                <span>Route scan rehearsal</span>
+              </div>
+              <ol class="tester-run-steps">
+                <li><b>1</b><span><strong>Confirm the route</strong><small>Leave Start system blank for live ESI, then choose the hub your tester expects to haul toward.</small></span></li>
+                <li><b>2</b><span><strong>Keep the scope small</strong><small>Use pasted items only for a quick test, or keep Common materials for a broader scan.</small></span></li>
+                <li><b>3</b><span><strong>Verify in EVE</strong><small>After Scan Route, compare pickup access, cargo size, order depth, and destination buy orders manually.</small></span></li>
+              </ol>
+              <div class="tester-run-actions">
+                <a class="button-link ghost-link" href="#haul-scan">Go To Scan Route</a>
+                <a class="button-link ghost-link" href="#haul-opportunity-title">View Results Area</a>
+                <span class="meta">Expected output: route summary, opportunity list, Quickbar items, and CSV handoff.</span>
+              </div>
+            </section>
             <form id="haul-route-form" class="note-form">
               <div class="row">
                 <div class="field system-suggest-field">
@@ -18594,6 +18689,22 @@ help</textarea>
               <span class="pill reserved">Advisory Only</span>
             </div>
 @@TAB_SCOPE_ACQUISITION@@
+            <section class="tester-run-panel" aria-labelledby="acq-test-run-title">
+              <div class="tester-run-head">
+                <strong id="acq-test-run-title">Run This Portfolio Test</strong>
+                <span>Buy-order rehearsal</span>
+              </div>
+              <ol class="tester-run-steps">
+                <li><b>1</b><span><strong>Pick the budget</strong><small>Start with a small Total investment ISK so any recommendation is easy to sanity-check.</small></span></li>
+                <li><b>2</b><span><strong>Choose item scope</strong><small>Search pasted items only is the fast default; turn it off only when you mean to scan Common materials too.</small></span></li>
+                <li><b>3</b><span><strong>Read the warnings</strong><small>After Build Portfolio, check Possible trap, history volume, bid ceiling, and manual order size before placing anything.</small></span></li>
+              </ol>
+              <div class="tester-run-actions">
+                <a class="button-link ghost-link" href="#acq-scan">Go To Build Portfolio</a>
+                <a class="button-link ghost-link" href="#acq-results-title">View Results Area</a>
+                <span class="meta">Expected output: stage timing, portfolio lines, market-history warnings, Quickbar items, and CSV handoff.</span>
+              </div>
+            </section>
             <form id="acquisition-form" class="note-form">
               <div class="row">
                 <label>Buy order system
@@ -20375,7 +20486,9 @@ help</textarea>
     }
 
     function showTabFromHash() {
-      const tabName = initialTab();
+      const requested = window.location.hash.replace("#", "");
+      if (!validTabs.has(requested)) return;
+      const tabName = requested;
       showTab(tabName);
       scrollTabIntoView(tabName);
     }
