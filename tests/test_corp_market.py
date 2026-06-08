@@ -391,6 +391,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-item-search\"" in page
     assert "id=\"haul-item-search-status\"" in page
     assert "Search opens matching categories and reveals exact item checkboxes." in page
+    assert "id=\"haul-pasted-items\" name=\"market_type_names\"" in page
+    assert "id=\"haul-pasted-items-status\"" in page
+    assert "parseHaulPastedItemNames" in page
     assert "applyMarketItemSearch" in page
     assert "id=\"haul-market-groups\"" in page
     assert "Items to search" in page
@@ -421,6 +424,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Route diagnostics" in page
     assert "renderHaulRouteDiagnostics" in page
     assert "route-diagnostic-steps" in page
+    assert "Scan stage timing" in page
+    assert "renderHaulStageTiming" in page
     assert "renderHaulAccessGuardrails" in page
     assert "Access check" in page
     assert "Pickup access" in page
@@ -1962,6 +1967,17 @@ def test_haul_market_type_ids_parse_dedupe_and_limit():
     )
 
 
+def test_haul_market_type_names_parse_dedupe_and_limit():
+    assert corp_market.clean_haul_market_type_names(
+        [" Tritanium\nPLEX, Nanite Repair Paste ; tritanium | # ignored\nMexallon "],
+        limit=3,
+    ) == (
+        "Tritanium",
+        "PLEX",
+        "Nanite Repair Paste",
+    )
+
+
 def test_haul_compare_destinations_parse_dedupe_and_limit():
     assert corp_market.clean_haul_compare_destinations(["Jita, Hek", "jita|Dodixie", "", "  Rens  "]) == (
         "Jita",
@@ -2165,6 +2181,49 @@ def test_haul_item_targets_include_exact_market_types(monkeypatch, tmp_path):
     assert scope["selected_market_type_ids"] == [27912, 27913]
     assert scope["selected_market_type_count"] == 2
     assert scope["market_type_item_types"] == 2
+    assert scope["total_item_types"] == 2
+
+
+def test_haul_item_targets_include_pasted_market_type_names(monkeypatch, tmp_path):
+    recipe_cache = IndustryRecipeCache(path=tmp_path / "recipes.json", available=True, recipes={})
+    static_data = corp_market.StaticMarketData(
+        path=tmp_path / "sde.zip",
+        groups={
+            20: {"market_group_id": 20, "name": "Industrial Goods", "parent_group_id": None},
+            1923: {"market_group_id": 1923, "name": "PLEX", "parent_group_id": None},
+        },
+        children={},
+        types_by_group={
+            20: (
+                {"type_id": 34, "name": "Tritanium", "volume_m3": 0.01, "market_group_id": 20},
+            ),
+            1923: (
+                {"type_id": 44992, "name": "PLEX", "volume_m3": 0.01, "market_group_id": 1923},
+            ),
+        },
+    )
+    monkeypatch.setattr(corp_market, "load_static_market_data", lambda: static_data)
+
+    targets, scope = corp_market.build_haul_item_targets(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        recipe_cache=recipe_cache,
+        include_common_materials=False,
+        market_group_ids=(),
+        market_type_ids=(),
+        market_type_names=("Tritanium\nPLEX\ntritanium\nMissing Item",),
+    )
+
+    assert [target["type_id"] for target in targets] == [44992, 34]
+    assert {target["type_id"]: target["source_labels"] for target in targets} == {
+        34: ["Pasted items"],
+        44992: ["Pasted items"],
+    }
+    assert scope["pasted_market_type_names"] == ["Tritanium", "PLEX", "Missing Item"]
+    assert scope["resolved_pasted_market_type_ids"] == [34, 44992]
+    assert scope["resolved_pasted_market_type_count"] == 2
+    assert scope["unresolved_pasted_market_type_names"] == ["Missing Item"]
+    assert scope["selected_market_type_ids"] == [34, 44992]
+    assert scope["selected_market_type_count"] == 2
     assert scope["total_item_types"] == 2
 
 
@@ -4183,6 +4242,11 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert diagnostics["pod_kill_status"] == "not-requested"
     assert "Requested rule: Safer" in diagnostics["steps"]
     assert "recent pod-kill avoidance was not requested" in diagnostics["summary"]
+    server_timing = payload["server_timing"]
+    assert server_timing["total_seconds"] >= 0
+    assert {"location", "static_caches", "route_plan", "tax_profile", "opportunity_scan"} <= {
+        stage["key"] for stage in server_timing["stages"]
+    }
     assert route_calls[0] == (1, 3, "safer", ())
     assert sorted(sell_calls) == [(100, 34), (100, 35)]
     assert sorted(buy_calls) == [(200, 34), (200, 35)]
@@ -4203,6 +4267,18 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert hauling["history_region_count"] == 2
     assert hauling["possible_trap_count"] == 0
     assert hauling["caution_count"] == 0
+    scan_timing = hauling["stage_timing"]
+    assert scan_timing["total_seconds"] >= 0
+    assert {
+        "route_scope",
+        "item_targets",
+        "destination_buy_fetch",
+        "pickup_sell_fetch",
+        "order_matching",
+        "market_history_fetch",
+        "history_scoring",
+        "ranking_load_plan",
+    } <= {stage["key"] for stage in scan_timing["stages"]}
     assert sorted(history_calls) == [(100, 34), (200, 34)]
     load_plan = hauling["load_plan"]
     assert load_plan["available"] is True

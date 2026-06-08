@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from dataclasses import dataclass, field
@@ -8,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
+import io
 import json
 import os
 from pathlib import Path
@@ -90,8 +92,29 @@ MAX_FLIGHT_ACQUISITION_FETCH_WORKERS = 6
 MAX_FLIGHT_HAUL_FETCH_WORKERS = 6
 MAX_HAUL_MARKET_GROUP_IDS = 32
 MAX_HAUL_MARKET_TYPE_IDS = MAX_FLIGHT_HAUL_SCAN_TYPES
+MAX_HAUL_PASTED_ITEM_NAME_CHARS = 6000
 MAX_FLIGHT_HAUL_OPPORTUNITIES = 20
 MAX_FLIGHT_ACQUISITION_OPPORTUNITIES = 20
+EXPECTED_REALIZED_REPORT_COLUMNS = (
+    "Date Created",
+    "Date Completed",
+    "Status",
+    "Category",
+    "Location to Post Order",
+    "Order Type",
+    "Item Name",
+    "Quantity",
+    "Price Per Item",
+    "Expected Return Per Item",
+    "Realized Return Per Item",
+    "Expected Total Cost",
+    "Expected Total Return",
+    "Realized Total Return",
+    "Expected Total Profit",
+    "Realized Total Profit",
+    "Profit Difference",
+    "Notes",
+)
 DEFAULT_FLIGHT_TRADE_PNL_DAYS = 30
 MAX_FLIGHT_TRADE_PNL_DAYS = 30
 DEFAULT_FLIGHT_TRADE_PNL_WINDOW_HOURS = 720
@@ -4302,6 +4325,37 @@ def clean_haul_market_type_ids(
     return tuple(type_ids)
 
 
+def clean_haul_market_type_names(
+    raw_values: Iterable[Any],
+    *,
+    limit: int = MAX_HAUL_MARKET_TYPE_IDS,
+) -> tuple[str, ...]:
+    names: list[str] = []
+    seen: set[str] = set()
+    clean_limit = max(0, int(limit))
+    if clean_limit <= 0:
+        return ()
+    for raw_value in raw_values:
+        if raw_value is None:
+            continue
+        text = str(raw_value)[:MAX_HAUL_PASTED_ITEM_NAME_CHARS]
+        for part in re.split(r"[\r\n,;|]+", text):
+            name = " ".join(str(part or "").strip().strip("\"'`").split())
+            if not name or name.startswith("#"):
+                continue
+            key = normalize_market_type_name_key(name)
+            if key and key not in seen:
+                seen.add(key)
+                names.append(name)
+            if len(names) >= clean_limit:
+                return tuple(names)
+    return tuple(names)
+
+
+def normalize_market_type_name_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().casefold())
+
+
 def clean_haul_compare_destinations(raw_values: Iterable[Any]) -> tuple[str, ...]:
     destinations: list[str] = []
     seen: set[str] = set()
@@ -4561,11 +4615,7 @@ def build_market_group_targets(config: EveSsoConfig, group_ids: Iterable[int]) -
     return build_market_group_targets_from_esi(config, group_ids, detail_limit=MAX_FLIGHT_HAUL_SCAN_TYPES)
 
 
-def build_market_type_targets_from_static(type_ids: Iterable[int]) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
-    static_data = load_static_market_data()
-    if static_data is None:
-        return None
-    clean_type_ids = clean_haul_market_type_ids(type_ids)
+def static_market_type_infos_by_id(static_data: StaticMarketData) -> dict[int, dict[str, Any]]:
     type_infos_by_id: dict[int, dict[str, Any]] = {}
     for group_id, type_infos in static_data.types_by_group.items():
         group_name = market_group_display_name(static_data, group_id)
@@ -4581,6 +4631,102 @@ def build_market_type_targets_from_static(type_ids: Iterable[int]) -> tuple[list
                 "market_group_id": group_id,
                 "market_group_name": group_name,
             }
+    return type_infos_by_id
+
+
+def static_market_type_infos_by_name(static_data: StaticMarketData) -> dict[str, list[dict[str, Any]]]:
+    type_infos_by_name: dict[str, list[dict[str, Any]]] = {}
+    for type_info in static_market_type_infos_by_id(static_data).values():
+        key = normalize_market_type_name_key(type_info.get("name"))
+        if not key:
+            continue
+        type_infos_by_name.setdefault(key, []).append(type_info)
+    return type_infos_by_name
+
+
+def resolve_haul_market_type_names(
+    raw_values: Iterable[Any],
+    *,
+    limit: int = MAX_HAUL_MARKET_TYPE_IDS,
+) -> tuple[tuple[int, ...], dict[str, Any]]:
+    clean_names = clean_haul_market_type_names(raw_values, limit=limit)
+    if not clean_names:
+        return (
+            (),
+            {
+                "pasted_market_type_names": [],
+                "resolved_pasted_market_types": [],
+                "resolved_pasted_market_type_ids": [],
+                "resolved_pasted_market_type_count": 0,
+                "unresolved_pasted_market_type_names": [],
+                "ambiguous_pasted_market_type_names": [],
+                "pasted_market_type_count": 0,
+                "pasted_market_type_source": "",
+            },
+        )
+    static_data = load_static_market_data()
+    if static_data is None:
+        return (
+            (),
+            {
+                "pasted_market_type_names": list(clean_names),
+                "resolved_pasted_market_types": [],
+                "resolved_pasted_market_type_ids": [],
+                "resolved_pasted_market_type_count": 0,
+                "unresolved_pasted_market_type_names": list(clean_names),
+                "ambiguous_pasted_market_type_names": [],
+                "pasted_market_type_count": len(clean_names),
+                "pasted_market_type_source": "static-sde-missing",
+            },
+        )
+    type_infos_by_name = static_market_type_infos_by_name(static_data)
+    resolved_type_ids: list[int] = []
+    resolved_types: list[dict[str, Any]] = []
+    unresolved_names: list[str] = []
+    ambiguous_names: list[str] = []
+    for name in clean_names:
+        matches = type_infos_by_name.get(normalize_market_type_name_key(name), [])
+        if len(matches) != 1:
+            if matches:
+                ambiguous_names.append(name)
+            else:
+                unresolved_names.append(name)
+            continue
+        match = matches[0]
+        type_id = int(match["type_id"])
+        if type_id not in resolved_type_ids:
+            resolved_type_ids.append(type_id)
+            resolved_types.append(
+                {
+                    "type_id": type_id,
+                    "name": str(match.get("name") or name),
+                    "market_group_id": match.get("market_group_id"),
+                    "market_group_name": match.get("market_group_name") or "",
+                }
+            )
+        if len(resolved_type_ids) >= max(0, int(limit)):
+            break
+    return (
+        tuple(resolved_type_ids),
+        {
+            "pasted_market_type_names": list(clean_names),
+            "resolved_pasted_market_types": resolved_types,
+            "resolved_pasted_market_type_ids": list(resolved_type_ids),
+            "resolved_pasted_market_type_count": len(resolved_type_ids),
+            "unresolved_pasted_market_type_names": unresolved_names,
+            "ambiguous_pasted_market_type_names": ambiguous_names,
+            "pasted_market_type_count": len(clean_names),
+            "pasted_market_type_source": "static-sde",
+        },
+    )
+
+
+def build_market_type_targets_from_static(type_ids: Iterable[int]) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    static_data = load_static_market_data()
+    if static_data is None:
+        return None
+    clean_type_ids = clean_haul_market_type_ids(type_ids)
+    type_infos_by_id = static_market_type_infos_by_id(static_data)
 
     targets = []
     selected_types = []
@@ -5679,13 +5825,16 @@ def build_flight_hauling_payload(
     include_common_materials: bool = True,
     market_group_ids: Iterable[int] = (),
     market_type_ids: Iterable[int] = (),
+    market_type_names: Iterable[Any] = (),
     sort_by: str = DEFAULT_HAUL_SORT_BY,
     min_profit_per_m3: float = 0.0,
     min_profit_per_extra_jump: float = 0.0,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    server_timer = StageTimer()
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
     location = fetch_flight_location(config, session)
+    server_timer.mark("location", "Read ESI location")
     current_solar_system_id = int(location.get("solar_system_id") or 0)
     route_cache = load_route_graph_cache()
     if not route_cache.available:
@@ -5693,6 +5842,7 @@ def build_flight_hauling_payload(
     recipe_cache = load_industry_recipe_cache()
     if not recipe_cache.available:
         raise CorpMarketError(recipe_cache.error or "Recipe cache is not available.")
+    server_timer.mark("static_caches", "Load route and recipe caches")
     systems = route_cache.systems or {}
     adjacency = route_cache.adjacency or {}
     clean_origin_name = str(origin_name or "").strip()
@@ -5720,8 +5870,14 @@ def build_flight_hauling_payload(
     route_path = route_plan["path"]
     if not route_path:
         raise CorpMarketError(f"No stargate route from {origin.name} to {destination.name} was found.")
+    server_timer.mark("route_plan", "Build route plan", route_jumps=max(0, len(route_path) - 1))
     skills = fetch_flight_skills(config, session)
     sales_tax = build_sales_tax_profile(skills)
+    server_timer.mark(
+        "tax_profile",
+        "Read skills and sales tax profile",
+        accounting_level=sales_tax.get("accounting_level"),
+    )
     opportunities = scan_route_hauling_opportunities(
         config=config,
         recipe_cache=recipe_cache,
@@ -5737,16 +5893,25 @@ def build_flight_hauling_payload(
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
         market_type_ids=market_type_ids,
+        market_type_names=market_type_names,
         sort_by=sort_by,
         min_profit_per_m3=min_profit_per_m3,
         min_profit_per_extra_jump=min_profit_per_extra_jump,
         progress=progress,
     )
+    server_timer.mark(
+        "opportunity_scan",
+        "Scan route hauling opportunities",
+        scanned_item_types=opportunities.get("scanned_item_types"),
+        profitable_opportunities=opportunities.get("profitable_opportunities"),
+    )
     route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
     route_jumps = max(0, len(route_path) - 1)
+    server_timing = server_timer.to_public_dict()
     return {
         "ok": True,
         "generated_at": now_iso(),
+        "server_timing": server_timing,
         "character": session.to_public_dict(),
         "location": location,
         "route": {
@@ -5820,6 +5985,7 @@ def build_flight_hauling_comparison_payload(
     include_common_materials: bool = True,
     market_group_ids: Iterable[int] = (),
     market_type_ids: Iterable[int] = (),
+    market_type_names: Iterable[Any] = (),
     sort_by: str = DEFAULT_HAUL_SORT_BY,
     min_profit_per_m3: float = 0.0,
     min_profit_per_extra_jump: float = 0.0,
@@ -5842,6 +6008,7 @@ def build_flight_hauling_comparison_payload(
                 include_common_materials=include_common_materials,
                 market_group_ids=market_group_ids,
                 market_type_ids=market_type_ids,
+                market_type_names=market_type_names,
                 sort_by=sort_by,
                 min_profit_per_m3=min_profit_per_m3,
                 min_profit_per_extra_jump=min_profit_per_extra_jump,
@@ -6495,11 +6662,13 @@ def scan_route_hauling_opportunities(
     include_common_materials: bool,
     market_group_ids: Iterable[int],
     market_type_ids: Iterable[int],
+    market_type_names: Iterable[Any] = (),
     sort_by: str = DEFAULT_HAUL_SORT_BY,
     min_profit_per_m3: float = 0.0,
     min_profit_per_extra_jump: float = 0.0,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    scan_timer = StageTimer()
     systems = route_cache.systems or {}
     adjacency = route_cache.adjacency or {}
     clean_detour_jumps = clamp_haul_detour_jumps(detour_jumps)
@@ -6548,6 +6717,13 @@ def scan_route_hauling_opportunities(
     destination = systems.get(destination_solar_system_id)
     if destination is None or destination.region_id is None:
         raise CorpMarketError("Destination system does not have a usable market region in the route graph cache.")
+    scan_timer.mark(
+        "route_scope",
+        "Build route corridor scope",
+        pickup_systems=len(pickup_jump_distances),
+        pickup_regions=len(scan_pickup_region_ids),
+        route_jumps=route_jumps,
+    )
 
     item_targets, item_scope = build_haul_item_targets(
         config=config,
@@ -6555,11 +6731,26 @@ def scan_route_hauling_opportunities(
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
         market_type_ids=market_type_ids,
+        market_type_names=market_type_names,
     )
     item_truncated = len(item_targets) > MAX_FLIGHT_HAUL_SCAN_TYPES
     scan_targets = item_targets[:MAX_FLIGHT_HAUL_SCAN_TYPES]
     if not scan_targets:
+        unresolved_pasted_names = item_scope.get("unresolved_pasted_market_type_names") or []
+        if unresolved_pasted_names:
+            preview = ", ".join(str(name) for name in unresolved_pasted_names[:5])
+            extra = "..." if len(unresolved_pasted_names) > 5 else ""
+            raise CorpMarketError(f"No pasted item names matched the static market cache: {preview}{extra}.")
         raise CorpMarketError("Choose Common materials, a market category, or at least one exact item before scanning hauler routes.")
+    scan_timer.mark(
+        "item_targets",
+        "Resolve item scan targets",
+        scanned_item_types=len(scan_targets),
+        total_item_types=len(item_targets),
+        pasted_item_names=item_scope.get("pasted_market_type_count"),
+        resolved_pasted_item_names=item_scope.get("resolved_pasted_market_type_count"),
+        unresolved_pasted_item_names=len(item_scope.get("unresolved_pasted_market_type_names") or []),
+    )
     sales_tax_rate = clean_optional_float(sales_tax.get("rate")) or 0.0
 
     opportunities = []
@@ -6600,6 +6791,12 @@ def scan_route_hauling_opportunities(
         destination_region_id=destination.region_id,
     )
     errors.extend(batch_errors)
+    scan_timer.mark(
+        "destination_buy_fetch",
+        "Fetch destination buy orders",
+        item_types=len(scan_targets),
+        batch_errors=len(batch_errors),
+    )
     buy_orders_by_type: dict[int, list[dict[str, Any]]] = {}
     destination_demand_type_ids: list[int] = []
     for target in scan_targets:
@@ -6620,6 +6817,13 @@ def scan_route_hauling_opportunities(
         buy_orders_by_type[type_id] = buy_orders
         if buy_orders:
             destination_demand_type_ids.append(type_id)
+    scan_timer.mark(
+        "destination_buy_filter",
+        "Filter reachable destination buy orders",
+        buy_orders=total_buy_order_count,
+        destination_demand_item_types=len(destination_demand_type_ids),
+        no_destination_buy_item_types=len(scan_targets) - len(destination_demand_type_ids),
+    )
     if progress is not None:
         progress(
             "orders",
@@ -6639,6 +6843,13 @@ def scan_route_hauling_opportunities(
         pickup_region_ids=scan_pickup_region_ids,
     )
     errors.extend(batch_errors)
+    scan_timer.mark(
+        "pickup_sell_fetch",
+        "Fetch pickup sell orders",
+        item_types=len(destination_demand_type_ids),
+        pickup_regions=len(scan_pickup_region_ids),
+        batch_errors=len(batch_errors),
+    )
     for target_index, target in enumerate(scan_targets, start=1):
         type_id = int(target["type_id"])
         if progress is not None:
@@ -6788,6 +6999,14 @@ def scan_route_hauling_opportunities(
             }
         )
 
+    scan_timer.mark(
+        "order_matching",
+        "Match order depth and candidate profitability",
+        sell_orders=total_sell_order_count,
+        profitable_candidates=len(history_candidates),
+        no_pickup_sell_item_types=no_pickup_sell_order_count,
+        detour_rejected=detour_margin_rejected_count,
+    )
     history_requests = []
     for candidate in history_candidates:
         type_id = int(candidate["type_id"])
@@ -6805,6 +7024,13 @@ def scan_route_hauling_opportunities(
         )
     history_by_type_region, batch_errors = fetch_haul_history_batch(config=config, requests=history_requests)
     errors.extend(batch_errors)
+    scan_timer.mark(
+        "market_history_fetch",
+        "Fetch market history for profitable candidates",
+        profitable_candidates=len(history_candidates),
+        history_requests=len(set(history_requests)),
+        batch_errors=len(batch_errors),
+    )
     for candidate_index, candidate in enumerate(history_candidates, start=1):
         type_id = int(candidate["type_id"])
         if progress is not None:
@@ -6853,6 +7079,13 @@ def scan_route_hauling_opportunities(
             }
         )
 
+    scan_timer.mark(
+        "history_scoring",
+        "Score history risk labels",
+        scored_opportunities=len(opportunities),
+        possible_traps=trap_signal_count,
+        cautions=caution_signal_count,
+    )
     total_profitable_opportunities = len(opportunities)
     opportunities, efficiency_filter_rejected_count = filter_and_sort_haul_opportunities(
         opportunities=opportunities,
@@ -6869,6 +7102,14 @@ def scan_route_hauling_opportunities(
         {key: value for key, value in opportunity.items() if key != "load_plan_depth"}
         for opportunity in opportunities[:MAX_FLIGHT_HAUL_OPPORTUNITIES]
     ]
+    scan_timer.mark(
+        "ranking_load_plan",
+        "Rank results and build load plan",
+        visible_opportunities=len(visible_opportunities),
+        filtered_opportunities=len(opportunities),
+        load_plan_available=load_plan.get("available"),
+    )
+    stage_timing = scan_timer.to_public_dict()
     return {
         "route_jumps": route_jumps,
         "detour_jumps": clean_detour_jumps,
@@ -6910,6 +7151,7 @@ def scan_route_hauling_opportunities(
         "profitable_opportunities": len(opportunities),
         "load_plan": load_plan,
         "opportunities": visible_opportunities,
+        "stage_timing": stage_timing,
         "errors": errors[:12],
         "sales_tax": sales_tax,
         "market_cache": market_order_cache_status(),
@@ -9227,11 +9469,23 @@ def build_haul_item_targets(
     include_common_materials: bool,
     market_group_ids: Iterable[int],
     market_type_ids: Iterable[int] = (),
+    market_type_names: Iterable[Any] = (),
     common_material_limit: int = MAX_FLIGHT_HAUL_MATERIAL_TYPES,
     scan_type_limit: int = MAX_FLIGHT_HAUL_SCAN_TYPES,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     selected_market_group_ids = clean_haul_market_group_ids(market_group_ids)
-    selected_market_type_ids = clean_haul_market_type_ids(market_type_ids)
+    explicit_market_type_ids = clean_haul_market_type_ids(market_type_ids)
+    pasted_type_limit = max(0, MAX_HAUL_MARKET_TYPE_IDS - len(explicit_market_type_ids))
+    pasted_market_type_ids, pasted_market_type_meta = resolve_haul_market_type_names(
+        market_type_names,
+        limit=pasted_type_limit,
+    )
+    selected_market_type_ids = clean_haul_market_type_ids(
+        (*explicit_market_type_ids, *pasted_market_type_ids),
+        limit=MAX_HAUL_MARKET_TYPE_IDS,
+    )
+    pasted_market_type_id_set = set(pasted_market_type_ids)
+    explicit_market_type_id_set = set(explicit_market_type_ids)
     common_targets = []
     common_candidate_count = 0
     clean_common_material_limit = max(0, int(common_material_limit))
@@ -9275,17 +9529,25 @@ def build_haul_item_targets(
         }
     for target in market_type_targets:
         type_id = int(target["type_id"])
+        exact_source_labels = []
+        if type_id in explicit_market_type_id_set:
+            exact_source_labels.append("Selected items")
+        if type_id in pasted_market_type_id_set:
+            exact_source_labels.append("Pasted items")
+        if not exact_source_labels:
+            exact_source_labels.append("Selected items")
         existing = targets_by_type_id.get(type_id)
         if existing is None:
             targets_by_type_id[type_id] = {
                 **target,
                 "recipe_count": int(target.get("recipe_count") or 0),
                 "source_rank": 1,
-                "source_labels": ["Selected items"],
+                "source_labels": exact_source_labels,
             }
             continue
-        if "Selected items" not in existing["source_labels"]:
-            existing["source_labels"].append("Selected items")
+        for source_label in exact_source_labels:
+            if source_label not in existing["source_labels"]:
+                existing["source_labels"].append(source_label)
         if not existing.get("volume_m3") and target.get("volume_m3"):
             existing["volume_m3"] = target.get("volume_m3")
         existing["market_group_id"] = target.get("market_group_id")
@@ -9332,6 +9594,8 @@ def build_haul_item_targets(
         "selected_market_type_count": int(market_type_meta.get("selected_market_type_count") or 0),
         "market_type_source": market_type_meta.get("source") or "",
         "market_type_item_types": int(market_type_meta.get("market_type_item_types") or 0),
+        "explicit_market_type_ids": list(explicit_market_type_ids),
+        **pasted_market_type_meta,
         "total_item_types": len(targets),
         "scan_type_limit": clean_scan_type_limit,
     }
@@ -9863,6 +10127,33 @@ def query_bool(value: Any, *, default: bool = False) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+class StageTimer:
+    def __init__(self) -> None:
+        self.started_at = time.monotonic()
+        self.stage_started_at = self.started_at
+        self.stages: list[dict[str, Any]] = []
+
+    def mark(self, key: str, label: str, **metrics: Any) -> None:
+        now = time.monotonic()
+        stage = {
+            "key": key,
+            "label": label,
+            "seconds": round(max(0.0, now - self.stage_started_at), 3),
+            "elapsed_seconds": round(max(0.0, now - self.started_at), 3),
+        }
+        clean_metrics = {name: value for name, value in metrics.items() if value is not None}
+        if clean_metrics:
+            stage["metrics"] = clean_metrics
+        self.stages.append(stage)
+        self.stage_started_at = now
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "total_seconds": round(max(0.0, time.monotonic() - self.started_at), 3),
+            "stages": list(self.stages),
+        }
 
 
 def clean_optional_int(value: Any) -> int | None:
@@ -12490,6 +12781,7 @@ def build_http_server(
             )
             market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
             market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
+            market_type_names = query.get("market_type_names") or query.get("item_names") or []
             sort_by = normalize_haul_sort_by((query.get("sort_by") or [DEFAULT_HAUL_SORT_BY])[0])
             min_profit_per_m3 = clamp_haul_efficiency_floor_isk((query.get("min_profit_per_m3") or [0])[0])
             min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(
@@ -12510,6 +12802,7 @@ def build_http_server(
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
                     market_type_ids=market_type_ids,
+                    market_type_names=market_type_names,
                     sort_by=sort_by,
                     min_profit_per_m3=min_profit_per_m3,
                     min_profit_per_extra_jump=min_profit_per_extra_jump,
@@ -12547,6 +12840,7 @@ def build_http_server(
             )
             market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
             market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
+            market_type_names = query.get("market_type_names") or query.get("item_names") or []
             sort_by = normalize_haul_sort_by((query.get("sort_by") or [DEFAULT_HAUL_SORT_BY])[0])
             min_profit_per_m3 = clamp_haul_efficiency_floor_isk((query.get("min_profit_per_m3") or [0])[0])
             min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(
@@ -12567,6 +12861,7 @@ def build_http_server(
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
                     market_type_ids=market_type_ids,
+                    market_type_names=market_type_names,
                     sort_by=sort_by,
                     min_profit_per_m3=min_profit_per_m3,
                     min_profit_per_extra_jump=min_profit_per_extra_jump,
@@ -12578,9 +12873,12 @@ def build_http_server(
 
         def _handle_flight_hauling_progress(self) -> None:
             self._send_sse_headers()
+            started_at = time.monotonic()
 
             def emit(event: str, payload: dict[str, Any]) -> None:
-                self._send_sse_event(event, payload)
+                timed_payload = dict(payload)
+                timed_payload.setdefault("elapsed_seconds", round(time.monotonic() - started_at, 1))
+                self._send_sse_event(event, timed_payload)
 
             if not sso_config.enabled:
                 emit("scan_error", {"ok": False, "error": "EVE SSO is not configured."})
@@ -12617,6 +12915,7 @@ def build_http_server(
             )
             market_group_ids = clean_haul_market_group_ids(query.get("market_group_ids") or [])
             market_type_ids = clean_haul_market_type_ids(query.get("market_type_ids") or [])
+            market_type_names = query.get("market_type_names") or query.get("item_names") or []
             sort_by = normalize_haul_sort_by((query.get("sort_by") or [DEFAULT_HAUL_SORT_BY])[0])
             min_profit_per_m3 = clamp_haul_efficiency_floor_isk((query.get("min_profit_per_m3") or [0])[0])
             min_profit_per_extra_jump = clamp_haul_efficiency_floor_isk(
@@ -12637,6 +12936,7 @@ def build_http_server(
                     include_common_materials=include_common_materials,
                     market_group_ids=market_group_ids,
                     market_type_ids=market_type_ids,
+                    market_type_names=market_type_names,
                     sort_by=sort_by,
                     min_profit_per_m3=min_profit_per_m3,
                     min_profit_per_extra_jump=min_profit_per_extra_jump,
@@ -14518,12 +14818,19 @@ def _render_flight_attendant_dashboard() -> str:
       padding: 0 8px 8px;
     }
     .market-show-more { padding: 6px 8px; font-size: 12px; }
-    .market-item-search {
+    .market-item-search,
+    .market-item-paste {
       display: grid;
       gap: 4px;
       margin: 8px 0;
     }
     .market-item-search input { min-height: 38px; }
+    .market-item-paste textarea {
+      min-height: 82px;
+      max-height: 170px;
+      font-size: 13px;
+      line-height: 1.35;
+    }
     .market-search-status { min-height: 18px; }
     .haul-compare-controls {
       margin: 10px 0;
@@ -16099,6 +16406,39 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .route-diagnostics strong { color: var(--text); }
     .route-diagnostic-steps { display: flex; flex-wrap: wrap; gap: 5px; }
+    .stage-timing {
+      display: grid;
+      gap: 7px;
+      margin-top: 8px;
+      padding-left: 10px;
+      border-left: 3px solid rgba(224, 168, 74, .45);
+    }
+    .stage-timing strong { color: var(--text); }
+    .stage-timing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      gap: 6px;
+    }
+    .stage-timing-row {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+      border: 1px solid rgba(63, 85, 80, .48);
+      border-radius: 6px;
+      background: rgba(17, 24, 25, .52);
+      padding: 7px;
+    }
+    .stage-timing-row span {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .stage-timing-row b {
+      color: var(--amber);
+      font-size: 13px;
+      line-height: 1.25;
+    }
     .cargo-loader-scene {
       display: grid;
       gap: 8px;
@@ -17481,6 +17821,11 @@ help</textarea>
                   <small class="input-note">Search opens matching categories and reveals exact item checkboxes.</small>
                 </label>
                 <div id="haul-item-search-status" class="meta market-search-status">Exact item search is idle.</div>
+                <label class="market-item-paste">Paste item names
+                  <textarea id="haul-pasted-items" name="market_type_names" rows="3" spellcheck="false" placeholder="Tritanium&#10;PLEX&#10;Nanite Repair Paste"></textarea>
+                  <small class="input-note">One item per line. Commas and semicolons also work.</small>
+                </label>
+                <div id="haul-pasted-items-status" class="meta market-search-status">No pasted items.</div>
                 <details>
                   <summary>Market categories</summary>
                   <div id="haul-market-groups" class="haul-market-groups">
@@ -18334,6 +18679,8 @@ help</textarea>
     const haulCommonMaterials = document.querySelector("#haul-common-materials");
     const haulItemSearch = document.querySelector("#haul-item-search");
     const haulItemSearchStatus = document.querySelector("#haul-item-search-status");
+    const haulPastedItems = document.querySelector("#haul-pasted-items");
+    const haulPastedItemsStatus = document.querySelector("#haul-pasted-items-status");
     const haulMarketGroups = document.querySelector("#haul-market-groups");
     const haulMarketGroupInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-group]"));
     const haulMarketTypeInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-type]"));
@@ -18458,6 +18805,7 @@ help</textarea>
     const haulCommonMaterialsKey = "eve-flight-haul-common-materials-v1";
     const haulMarketGroupIdsKey = "eve-flight-haul-market-group-ids-v1";
     const haulMarketTypeIdsKey = "eve-flight-haul-market-type-ids-v1";
+    const haulPastedItemsKey = "eve-flight-haul-pasted-items-v1";
     const haulCompareDestinationsKey = "eve-flight-haul-compare-destinations-v1";
     const acqOriginKey = "eve-flight-acq-origin-v1";
     const acqDestinationKey = "eve-flight-acq-destination-v1";
@@ -19278,6 +19626,12 @@ help</textarea>
       return `${secs}s`;
     }
 
+    function formatStageSeconds(seconds) {
+      const value = Math.max(0, Number(seconds || 0));
+      if (value >= 10) return `${value.toFixed(1)}s`;
+      return `${value.toFixed(2)}s`;
+    }
+
     function formatIskPerHour(value) {
       if (value == null) return "unknown";
       return `${formatSignedIsk(value)}/h`;
@@ -19646,6 +20000,27 @@ help</textarea>
       });
     }
 
+    function parseHaulPastedItemNames(text) {
+      const seen = new Set();
+      const names = [];
+      String(text || "").split(/[\\r\\n,;|]+/).forEach((part) => {
+        const name = String(part || "").trim().replace(/\\s+/g, " ");
+        const key = name.toLocaleLowerCase();
+        if (!name || name.startsWith("#") || seen.has(key)) return;
+        seen.add(key);
+        names.push(name);
+      });
+      return names;
+    }
+
+    function updateHaulPastedItemsStatus(text) {
+      if (!haulPastedItemsStatus) return;
+      const names = parseHaulPastedItemNames(text);
+      haulPastedItemsStatus.textContent = names.length
+        ? `${formatNumber(names.length)} pasted item name${names.length === 1 ? "" : "s"} will be resolved from the static cache when the scan starts.`
+        : "No pasted items.";
+    }
+
     function haulItemScopeLabel(settings) {
       const parts = [];
       if (settings.includeCommonMaterials) parts.push("common materials");
@@ -19653,6 +20028,8 @@ help</textarea>
       if (groupCount) parts.push(`${formatNumber(groupCount)} market categor${groupCount === 1 ? "y" : "ies"}`);
       const typeCount = (settings.marketTypeIds || []).length;
       if (typeCount) parts.push(`${formatNumber(typeCount)} exact item${typeCount === 1 ? "" : "s"}`);
+      const pastedCount = parseHaulPastedItemNames(settings.pastedItemNames || "").length;
+      if (pastedCount) parts.push(`${formatNumber(pastedCount)} pasted item${pastedCount === 1 ? "" : "s"}`);
       return parts.length ? parts.join(" + ") : "no item scope selected";
     }
 
@@ -19669,8 +20046,10 @@ help</textarea>
         includeCommonMaterials: haulCommonMaterials.checked,
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
+        pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
       };
       const scopeLabel = haulItemScopeLabel(activeSettings);
+      updateHaulPastedItemsStatus(activeSettings.pastedItemNames || "");
       haulItemScopeSummary.textContent = `${scopeLabel}. More item types means a longer route calculation.`;
     }
 
@@ -19811,6 +20190,7 @@ help</textarea>
       const minProfitPerExtraJump = Number(window.localStorage.getItem(haulMinProfitPerExtraJumpKey) || haulMinProfitPerExtraJump.value || 0);
       const avoidStored = window.localStorage.getItem(haulAvoidPodKillsKey);
       const commonStored = window.localStorage.getItem(haulCommonMaterialsKey);
+      const pastedItemNames = String(window.localStorage.getItem(haulPastedItemsKey) || (haulPastedItems ? haulPastedItems.value : "") || "").trim();
       return {
         originName,
         destination,
@@ -19826,6 +20206,7 @@ help</textarea>
         includeCommonMaterials: commonStored == null ? haulCommonMaterials.checked : commonStored !== "0",
         marketGroupIds: readStoredHaulMarketGroupIds(),
         marketTypeIds: readStoredHaulMarketTypeIds(),
+        pastedItemNames,
       };
     }
 
@@ -19844,6 +20225,7 @@ help</textarea>
       const includeCommonMaterials = settings.includeCommonMaterials == null ? haulCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
       const marketGroupIds = Array.isArray(settings.marketGroupIds) ? settings.marketGroupIds : readHaulMarketGroupIdsFromInputs();
       const marketTypeIds = Array.isArray(settings.marketTypeIds) ? settings.marketTypeIds : readHaulMarketTypeIdsFromInputs();
+      const pastedItemNames = String(settings.pastedItemNames == null ? (haulPastedItems ? haulPastedItems.value : "") : settings.pastedItemNames).trim();
       haulOrigin.value = originName;
       haulDestination.value = destination;
       haulCargoM3.value = String(cargoM3);
@@ -19856,10 +20238,11 @@ help</textarea>
       haulMinProfitPerExtraJump.value = String(minProfitPerExtraJump);
       haulAvoidPodKills.checked = avoidRecentPodKills;
       haulCommonMaterials.checked = includeCommonMaterials;
+      if (haulPastedItems) haulPastedItems.value = pastedItemNames;
       applyHaulMarketGroupIds(marketGroupIds);
       applyHaulMarketTypeIds(marketTypeIds);
       haulMinMarginValue.textContent = `${formatNumber(minDetourMarginPercent)}%`;
-      updateHaulItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds});
+      updateHaulItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames});
       window.localStorage.setItem(haulOriginKey, originName);
       window.localStorage.setItem(haulDestinationKey, destination);
       window.localStorage.setItem(haulCargoKey, String(cargoM3));
@@ -19874,7 +20257,8 @@ help</textarea>
       window.localStorage.setItem(haulCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
       window.localStorage.setItem(haulMarketGroupIdsKey, JSON.stringify(marketGroupIds));
       window.localStorage.setItem(haulMarketTypeIdsKey, JSON.stringify(marketTypeIds));
-      return {originName, destination, cargoM3, purchaseBudgetIsk, detourJumps, minDetourMarginPercent, routePreference, sortBy, minProfitPerM3, minProfitPerExtraJump, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds};
+      window.localStorage.setItem(haulPastedItemsKey, pastedItemNames);
+      return {originName, destination, cargoM3, purchaseBudgetIsk, detourJumps, minDetourMarginPercent, routePreference, sortBy, minProfitPerM3, minProfitPerExtraJump, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames};
     }
 
     function clampAcquisitionBudget(value) {
@@ -20743,6 +21127,7 @@ help</textarea>
         includeCommonMaterials: haulCommonMaterials.checked,
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
+        pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
       });
       haulCompareButton.disabled = true;
       haulCompareSummary.textContent = `Comparing ${formatNumber(destinations.length)} hub${destinations.length === 1 ? "" : "s"} with ${haulItemScopeLabel(settings)}...`;
@@ -20757,6 +21142,7 @@ help</textarea>
         common_materials: settings.includeCommonMaterials ? "1" : "0",
         market_group_ids: settings.marketGroupIds.join(","),
         market_type_ids: settings.marketTypeIds.join(","),
+        market_type_names: settings.pastedItemNames,
         sort_by: settings.sortBy,
         min_profit_per_m3: String(settings.minProfitPerM3),
         min_profit_per_extra_jump: String(settings.minProfitPerExtraJump),
@@ -20791,6 +21177,7 @@ help</textarea>
         includeCommonMaterials: haulCommonMaterials.checked,
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
+        pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
       });
       closeHaulEventSource();
       stopHaulProgressTimer();
@@ -20818,6 +21205,7 @@ help</textarea>
         common_materials: settings.includeCommonMaterials ? "1" : "0",
         market_group_ids: settings.marketGroupIds.join(","),
         market_type_ids: settings.marketTypeIds.join(","),
+        market_type_names: settings.pastedItemNames,
         sort_by: settings.sortBy,
         min_profit_per_m3: String(settings.minProfitPerM3),
         min_profit_per_extra_jump: String(settings.minProfitPerExtraJump),
@@ -20911,6 +21299,14 @@ help</textarea>
       const groupText = selectedGroups.length ? ` Market categories: ${selectedGroups.slice(0, 4).map((name) => escapeHtml(name)).join(", ")}${selectedGroups.length > 4 ? `, +${formatNumber(selectedGroups.length - 4)} more` : ""}.` : "";
       const selectedTypes = (itemScope.selected_market_types || []).map((item) => item.name).filter(Boolean);
       const typeText = selectedTypes.length ? ` Exact items: ${selectedTypes.slice(0, 4).map((name) => escapeHtml(name)).join(", ")}${selectedTypes.length > 4 ? `, +${formatNumber(selectedTypes.length - 4)} more` : ""}.` : "";
+      const unresolvedPasted = Array.isArray(itemScope.unresolved_pasted_market_type_names) ? itemScope.unresolved_pasted_market_type_names : [];
+      const ambiguousPasted = Array.isArray(itemScope.ambiguous_pasted_market_type_names) ? itemScope.ambiguous_pasted_market_type_names : [];
+      const pastedWarningParts = [];
+      if (unresolvedPasted.length) pastedWarningParts.push(`${formatNumber(unresolvedPasted.length)} pasted item name${unresolvedPasted.length === 1 ? "" : "s"} not found`);
+      if (ambiguousPasted.length) pastedWarningParts.push(`${formatNumber(ambiguousPasted.length)} pasted item name${ambiguousPasted.length === 1 ? "" : "s"} ambiguous`);
+      const pastedWarning = pastedWarningParts.length
+        ? `<div class="meta"><span class="pill decision-watch">Paste check</span> ${escapeHtml(pastedWarningParts.join("; "))}: ${escapeHtml([...unresolvedPasted, ...ambiguousPasted].slice(0, 5).join(", "))}${unresolvedPasted.length + ambiguousPasted.length > 5 ? "..." : ""}.</div>`
+        : "";
       const commonText = itemScope.include_common_materials ? "Common materials included." : "Common materials not included.";
       const sortLabel = hauling.sort_label || haulSortLabel(hauling.sort_by || "total_profit");
       const efficiencyFilters = [];
@@ -20923,6 +21319,7 @@ help</textarea>
       const originSourceLabel = route.origin_source === "manual" ? "manual start override" : "live ESI start";
       const routeWarning = route.route_warning ? `<div class="meta">${escapeHtml(route.route_warning)}</div>` : "";
       const routeDiagnostics = renderHaulRouteDiagnostics(route.diagnostics || {});
+      const stageTiming = renderHaulStageTiming(data.server_timing || {}, hauling.stage_timing || {});
       const scanDuration = elapsedSeconds == null ? "" : `<div class="meta">Scan duration: ${escapeHtml(formatElapsedDuration(elapsedSeconds))}.</div>`;
       haulRouteSummary.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> to
@@ -20933,6 +21330,7 @@ help</textarea>
         ${scanDuration}
         ${routeWarning}
         ${routeDiagnostics}
+        ${stageTiming}
       `;
       haulRoutePath.innerHTML = renderHaulRoutePath(route.systems || []);
       haulLoadPlan.innerHTML = renderHaulLoadPlan(hauling.load_plan || {});
@@ -20952,6 +21350,7 @@ help</textarea>
           pickup regions; detour threshold ${formatNumber(hauling.min_detour_margin_percent)}%.${escapeHtml(materialLimit + regionLimit)}
         </div>
         <div class="meta">${escapeHtml(commonText)}${groupText}${typeText}</div>
+        ${pastedWarning}
         <div class="meta">Ranked by ${escapeHtml(sortLabel)}.${escapeHtml(efficiencyText)} ${formatNumber(hauling.efficiency_filter_rejected_count)} profitable candidate${Number(hauling.efficiency_filter_rejected_count || 0) === 1 ? "" : "s"} were hidden by efficiency filters.</div>
         <div class="meta">${formatNumber(hauling.no_destination_buy_order_count)} item type${Number(hauling.no_destination_buy_order_count || 0) === 1 ? "" : "s"} had no reachable destination buy orders; skipped ${formatNumber(hauling.destination_demand_gated_count)} pickup region sell-order lookup${Number(hauling.destination_demand_gated_count || 0) === 1 ? "" : "s"}.</div>
         <div class="meta">Purchase budget ${formatIsk(hauling.purchase_budget_isk)} caps pickup cost before cargo and history checks.</div>
@@ -21050,6 +21449,38 @@ help</textarea>
           <strong>Route diagnostics</strong>
           <div class="meta">${escapeHtml(diagnostics.summary)}</div>
           <div class="route-diagnostic-steps">${steps}</div>
+        </div>
+      `;
+    }
+
+    function renderHaulStageTiming(serverTiming, scanTiming) {
+      const scanStages = Array.isArray(scanTiming?.stages) ? scanTiming.stages : [];
+      if (!scanStages.length && !serverTiming?.total_seconds) return "";
+      const serverTotal = serverTiming?.total_seconds == null ? "" : `Server total ${formatStageSeconds(serverTiming.total_seconds)}.`;
+      const scanTotal = scanTiming?.total_seconds == null ? "" : `Scan work ${formatStageSeconds(scanTiming.total_seconds)}.`;
+      const rows = scanStages.slice(0, 12).map((stage) => {
+        const metricParts = [];
+        const metrics = stage.metrics || {};
+        if (metrics.scanned_item_types != null) metricParts.push(`${formatNumber(metrics.scanned_item_types)} types`);
+        if (metrics.item_types != null) metricParts.push(`${formatNumber(metrics.item_types)} types`);
+        if (metrics.pickup_regions != null) metricParts.push(`${formatNumber(metrics.pickup_regions)} regions`);
+        if (metrics.buy_orders != null) metricParts.push(`${formatNumber(metrics.buy_orders)} buys`);
+        if (metrics.sell_orders != null) metricParts.push(`${formatNumber(metrics.sell_orders)} sells`);
+        if (metrics.profitable_candidates != null) metricParts.push(`${formatNumber(metrics.profitable_candidates)} candidates`);
+        if (metrics.history_requests != null) metricParts.push(`${formatNumber(metrics.history_requests)} histories`);
+        const metricText = metricParts.length ? ` · ${metricParts.join(", ")}` : "";
+        return `
+          <div class="stage-timing-row">
+            <span>${escapeHtml(stage.label || stage.key || "Stage")}${escapeHtml(metricText)}</span>
+            <b>${escapeHtml(formatStageSeconds(stage.seconds))}</b>
+          </div>
+        `;
+      }).join("");
+      return `
+        <div class="stage-timing">
+          <strong>Scan stage timing</strong>
+          <div class="meta">${escapeHtml([serverTotal, scanTotal].filter(Boolean).join(" "))}</div>
+          <div class="stage-timing-grid">${rows || `<div class="meta">No stage rows returned.</div>`}</div>
         </div>
       `;
     }
@@ -24677,6 +25108,7 @@ help</textarea>
         includeCommonMaterials: haulCommonMaterials.checked,
         marketGroupIds: readHaulMarketGroupIdsFromInputs(),
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
+        pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
       });
       const settings = readHaulSettings();
       resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(settings)} to ${settings.destination}.`);
@@ -24700,6 +25132,13 @@ help</textarea>
     haulItemSearch.addEventListener("input", () => {
       applyMarketItemSearch(haulMarketGroups, haulItemSearch.value, haulItemSearchStatus);
     });
+    if (haulPastedItems) {
+      haulPastedItems.addEventListener("input", () => {
+        window.localStorage.setItem(haulPastedItemsKey, String(haulPastedItems.value || "").trim());
+        updateHaulItemScopeSummary();
+      });
+      haulPastedItems.addEventListener("change", updateHaulScopeAndReset);
+    }
     haulMarketGroups.addEventListener("click", (event) => {
       if (handleMarketGroupShowMore(haulMarketGroups, event)) return;
       if (event.target.closest("input[data-haul-market-group], input[data-haul-market-type], .mini-check, .market-item-check")) {
