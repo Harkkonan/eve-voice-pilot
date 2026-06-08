@@ -1982,7 +1982,7 @@ def test_market_order_location_guardrail_labels_station_structure_and_unknown():
     assert unknown["location_kind"] == "unknown"
 
 
-def test_market_group_picker_renders_sde_counts_items_and_show_more(tmp_path):
+def test_market_group_picker_renders_sde_counts_items_and_preview_note(tmp_path):
     static_data = corp_market.StaticMarketData(
         path=tmp_path / "sde.zip",
         groups={
@@ -2012,8 +2012,8 @@ def test_market_group_picker_renders_sde_counts_items_and_show_more(tmp_path):
     assert "Orbital Data Fragment" in html_options
     assert "data-haul-market-type=\"1\"" in html_options
     assert "class=\"market-item-check\"" in html_options
-    assert "data-market-extra-item" in html_options
-    assert "Show 1 more item" in html_options
+    assert "data-market-extra-item" not in html_options
+    assert "Use the category checkbox to scan the full category." in html_options
     assert "data-haul-market-group=\"100\"" in html_options
 
 

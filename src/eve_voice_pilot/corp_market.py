@@ -13322,8 +13322,7 @@ def render_market_group_item_list(
     total_count = len(item_list)
     visible_count = min(total_count, preview_limit)
     item_rows = []
-    for index, item in enumerate(item_list):
-        hidden_attr = ' hidden data-market-extra-item="1"' if index >= preview_limit else ""
+    for item in item_list[:preview_limit]:
         type_id = int(item.get("type_id") or 0)
         item_name = html.escape(str(item.get("name") or f"Type {item.get('type_id', '')}"))
         group_name = str(item.get("market_group_name") or "")
@@ -13331,23 +13330,16 @@ def render_market_group_item_list(
         if group_name and group_name != context_name:
             source_html = f' <span class="market-group-item-source">{html.escape(group_name)}</span>'
         item_rows.append(
-            f"""                          <li{hidden_attr}>
+            f"""                          <li>
                             <label class="market-item-check" title="Scan this exact item type">
                               <input type="checkbox" data-haul-market-type="{type_id}" data-haul-market-type-name="{item_name}">
                               <span><span class="market-group-item-name">{item_name}</span>{source_html}</span>
                             </label>
                           </li>"""
         )
-    hidden_count = total_count - visible_count
-    show_more = ""
-    if hidden_count > 0:
-        show_more = f"""
-                        <button
-                          type="button"
-                          class="secondary market-show-more"
-                          data-market-show-more="1"
-                          data-market-total-items="{total_count}"
-                        >Show {format_market_group_more_count(hidden_count)}</button>"""
+    preview_note = ""
+    if total_count > visible_count:
+        preview_note = " Use the category checkbox to scan the full category."
     return f"""
                       <details class="market-group-items" data-market-group-items>
                         <summary>Items <span class="market-group-count">{format_market_group_item_count(total_count)}</span></summary>
@@ -13355,8 +13347,7 @@ def render_market_group_item_list(
 {chr(10).join(item_rows)}
                         </ul>
                         <div class="market-group-item-actions">
-                          <span class="meta" data-market-showing-status="1">Showing {visible_count:,} of {format_market_group_item_count(total_count)}.</span>
-{show_more}
+                          <span class="meta" data-market-showing-status="1">Showing {visible_count:,} preview {format_market_group_item_count(visible_count)} of {format_market_group_item_count(total_count)}.{preview_note}</span>
                         </div>
                       </details>"""
 
