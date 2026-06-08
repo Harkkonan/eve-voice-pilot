@@ -380,6 +380,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-buyer-scan\"" not in flight_section
     assert "data-tab-target=\"hauling\"" in page
     assert "data-tab-target=\"acquisition\"" in page
+    assert "class=\"ops-launcher\"" in page
+    assert "Tester operations launcher" in page
+    assert "Test Session" in page
+    assert "Open Routes" in page
+    assert "Open Portfolio" in page
     assert "id=\"haul-route-form\"" in page
     assert "id=\"haul-origin\"" in page
     assert "id=\"haul-origin-suggestions\"" in page

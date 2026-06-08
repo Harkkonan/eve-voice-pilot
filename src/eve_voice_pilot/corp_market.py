@@ -14444,6 +14444,74 @@ def _render_flight_attendant_dashboard() -> str:
       padding: 9px 11px;
       min-width: 148px;
     }
+    .ops-launcher {
+      display: grid;
+      grid-template-columns: minmax(240px, .9fr) repeat(3, minmax(180px, 1fr));
+      gap: 10px;
+      margin: 0 0 14px;
+      min-width: 0;
+    }
+    .ops-launcher-card {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+      min-height: 116px;
+      border: 1px solid rgba(63, 85, 80, .72);
+      border-radius: 8px;
+      padding: 12px;
+      background: linear-gradient(180deg, rgba(17, 24, 25, .92), rgba(7, 12, 14, .78));
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+    }
+    .ops-launcher-card.primary {
+      border-color: rgba(97, 199, 217, .48);
+      background:
+        linear-gradient(135deg, rgba(97, 199, 217, .13), transparent 42%),
+        linear-gradient(180deg, rgba(17, 24, 25, .95), rgba(7, 12, 14, .84));
+    }
+    .ops-launcher-card strong {
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .ops-launcher-card .meta {
+      line-height: 1.35;
+      margin: 0;
+    }
+    .ops-launcher-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      align-items: center;
+      margin-top: auto;
+    }
+    .ops-launcher-actions a,
+    .ops-launcher-actions button {
+      min-height: 32px;
+      padding: 6px 9px;
+      font-size: 12px;
+      border-radius: 7px;
+      text-decoration: none;
+    }
+    .ops-launcher-stat {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.25;
+    }
+    .ops-launcher-stat b {
+      color: var(--amber);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .button-link.ghost-link {
+      border: 1px solid rgba(97, 199, 217, .34);
+      background: rgba(5, 9, 11, .58);
+      color: var(--text);
+    }
     .tabbar {
       display: flex;
       gap: 6px;
@@ -14452,6 +14520,7 @@ def _render_flight_attendant_dashboard() -> str:
       padding: 10px 0;
       margin-bottom: 16px;
       overflow-x: auto;
+      scrollbar-width: thin;
     }
     .tabbar button {
       min-height: 36px;
@@ -17621,7 +17690,8 @@ def _render_flight_attendant_dashboard() -> str:
       .progress-bar span { width: 100%; opacity: .72; }
     }
     @media (max-width: 1040px) {
-      .market-grid, .fitting-grid, .flight-grid, .briefing, .industry-library-grid { grid-template-columns: 1fr; }
+      .ops-launcher { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .market-grid, #tab-market > .market-grid, .fitting-grid, .flight-grid, .briefing, .industry-library-grid { grid-template-columns: 1fr; }
       .reprocess-page {
         grid-template-columns: 1fr;
         grid-template-areas:
@@ -17654,13 +17724,19 @@ def _render_flight_attendant_dashboard() -> str:
       .status { text-align: left; }
       .brand { align-items: start; display: grid; grid-template-columns: 42px minmax(0, 1fr); }
       .deck { display: none; }
+      .ops-launcher { grid-template-columns: 1fr; }
+      .ops-launcher-card { min-height: 0; }
+      .ops-launcher-actions a,
+      .ops-launcher-actions button { flex: 1 1 140px; }
+      .tabbar { flex-wrap: wrap; overflow: visible; }
+      .tabbar button { flex: 1 1 138px; }
       .panel-header { display: block; }
       .panel-header .pill { margin-top: 8px; }
       .panel-header .meta { max-width: 100%; }
       h1 { font-size: 24px; }
       .scope-panel { grid-template-columns: 1fr; }
       .scope-chip-row { justify-content: flex-start; }
-      .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
+      .row, .discord-alert-section .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
       .haul-opportunity-layout { grid-template-columns: 1fr; }
       .haul-opportunity-detail-region { display: none; }
       .haul-opportunity-summary-panel { padding: 10px; }
@@ -17748,6 +17824,42 @@ def _render_flight_attendant_dashboard() -> str:
       </div>
       <div id="status" class="status">Loading offers...</div>
     </header>
+
+    <section class="ops-launcher" aria-label="Tester operations launcher">
+      <div class="ops-launcher-card primary">
+        <strong>Test Session</strong>
+        <div class="meta">Connect ESI once, then compare a route scan against an investment portfolio scan.</div>
+        <div class="ops-launcher-stat"><span>Mode</span><b>Read-only</b></div>
+        <div class="ops-launcher-actions">
+          <a class="button-link" href="/flight/login">Connect ESI</a>
+          <a class="button-link ghost-link" href="#flight">Status</a>
+        </div>
+      </div>
+      <div class="ops-launcher-card">
+        <strong>Hauler Routes</strong>
+        <div class="meta">Route profit, cargo limits, pickup access, and export rows.</div>
+        <div class="ops-launcher-stat"><span>Best for</span><b>Buy / haul / sell</b></div>
+        <div class="ops-launcher-actions">
+          <a class="button-link ghost-link" href="#hauling">Open Routes</a>
+        </div>
+      </div>
+      <div class="ops-launcher-card">
+        <strong>Investment Portfolio</strong>
+        <div class="meta">Buy-order spread, market-history warnings, and Quickbar handoff.</div>
+        <div class="ops-launcher-stat"><span>Default scan</span><b>Balanced</b></div>
+        <div class="ops-launcher-actions">
+          <a class="button-link ghost-link" href="#acquisition">Open Portfolio</a>
+        </div>
+      </div>
+      <div class="ops-launcher-card">
+        <strong>Tester Handoff</strong>
+        <div class="meta">Keep every recommendation advisory and verify orders in EVE before moving ISK.</div>
+        <div class="ops-launcher-stat"><span>Exports</span><b>CSV + Quickbar</b></div>
+        <div class="ops-launcher-actions">
+          <a class="button-link ghost-link" href="#trade-pnl">Trade P&amp;L</a>
+        </div>
+      </div>
+    </section>
 
     <nav class="tabbar" aria-label="Dashboard tabs">
       <button type="button" data-tab-target="market" aria-selected="true">Discord Alerts</button>
@@ -20248,6 +20360,10 @@ help</textarea>
     function initialTab() {
       const requested = window.location.hash.replace("#", "");
       return validTabs.has(requested) ? requested : "market";
+    }
+
+    function showTabFromHash() {
+      showTab(initialTab());
     }
 
     function updateFilterButtons() {
@@ -26267,6 +26383,18 @@ help</textarea>
         window.history.replaceState(null, "", `#${tabName}`);
       });
     });
+
+    document.querySelectorAll(".ops-launcher a[href^='#']").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        const tabName = link.getAttribute("href").slice(1);
+        if (!validTabs.has(tabName)) return;
+        event.preventDefault();
+        showTab(tabName);
+        window.history.replaceState(null, "", `#${tabName}`);
+      });
+    });
+
+    window.addEventListener("hashchange", showTabFromHash);
 
     document.querySelector("#offer-form").addEventListener("submit", async (event) => {
       event.preventDefault();
