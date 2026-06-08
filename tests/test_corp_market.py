@@ -175,6 +175,24 @@ def test_market_store_creates_and_lists_offer(tmp_path):
     assert store.list_listings()[0].listing_id == listing.listing_id
 
 
+def test_market_store_rejects_invalid_caller_supplied_listing_id(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+
+    with pytest.raises(ValueError, match="listing_id is invalid"):
+        store.create_listing(
+            {
+                "id": "../../bad",
+                "listing_type": "sell",
+                "item_name": "Venture",
+                "quantity": "1",
+                "location": "Amarr",
+                "owner": "Seller Example",
+            }
+        )
+
+    assert store.list_listings() == []
+
+
 def test_market_store_migrates_existing_database_without_category(tmp_path):
     db_path = tmp_path / "market.sqlite3"
     with sqlite3.connect(db_path) as connection:
@@ -1492,10 +1510,24 @@ def test_public_hosting_helpers_tighten_callbacks_cookies_and_writes():
         trusted_member=True,
     )
     assert corp_market.market_write_access_allowed(
+        is_loopback=True,
+        public_hosting_mode=False,
+        admin_token="",
+        auth_header="",
+        token_header="",
+    )
+    assert not corp_market.market_write_access_allowed(
         is_loopback=False,
         public_hosting_mode=False,
         admin_token="",
         auth_header="",
+        token_header="",
+    )
+    assert corp_market.market_write_access_allowed(
+        is_loopback=False,
+        public_hosting_mode=False,
+        admin_token="secret",
+        auth_header="Bearer secret",
         token_header="",
     )
 

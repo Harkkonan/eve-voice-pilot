@@ -7,6 +7,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from eve_voice_pilot.commands import (
     CommandProfile,
+    DEFAULT_PRESS_COUNT,
+    DEFAULT_REPEAT_GAP_SECONDS,
     VoiceCommand,
     find_command_match,
     find_exact_phrase_match,
@@ -46,12 +48,12 @@ def test_voice_command_round_trips_response_fields():
         "response_suffix": "Aura",
         "response_text": "Map open.",
     })
-    assert command.press_count == 2
-    assert command.repeat_gap_seconds == 0.1
-    assert command.action_summary == "F10 x2, hold 0.10s, gap 0.10s"
+    assert command.press_count == DEFAULT_PRESS_COUNT
+    assert command.repeat_gap_seconds == DEFAULT_REPEAT_GAP_SECONDS
+    assert command.action_summary == "F10 for 0.10s"
     assert command.response_suffix == "Aura"
     assert command.response_text == "Map open."
-    assert command.to_dict()["press_count"] == 2
+    assert "press_count" not in command.to_dict()
     assert command.to_dict()["response_suffix"] == "Aura"
 
 
@@ -143,11 +145,13 @@ def test_parse_key_chord_allows_catalog_special_keys():
     assert parse_key_chord("Sys Req").key_name == "SYS REQ"
 
 
-def test_parse_key_chord_allows_mouse_side_button():
-    parsed = parse_key_chord("MOUSE4")
-    assert parsed.key_name == "MOUSE4"
-    assert parsed.trigger_key is not None
-    assert parsed.trigger_key.kind == "mouse"
+def test_parse_key_chord_rejects_mouse_side_button():
+    try:
+        parse_key_chord("MOUSE4")
+    except ValueError as exc:
+        assert "Mouse buttons are not supported" in str(exc)
+    else:
+        raise AssertionError("Voice commands should not send mouse buttons")
 
 
 def test_parse_key_chord_allows_pause_hotkey():
@@ -183,7 +187,7 @@ def test_block_size_for_rate_has_reasonable_minimum():
 
 def test_voice_standard_profile_keys_parse():
     profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
-    assert len(profile.commands) == 178
+    assert len(profile.commands) == 176
     for command in profile.commands:
         parse_key_chord(command.key)
 
@@ -248,12 +252,13 @@ def test_voice_standard_includes_added_catalog_shortcuts():
     assert shortcuts["Open Fighter Bay Of Active Ship"] == "ALT+SHIFT+F"
 
 
-def test_voice_standard_orbit_uses_double_press():
+def test_voice_standard_orbit_sends_one_keypress():
     profile = CommandProfile.load(ROOT / "profiles" / "eve_voice_standard.json")
     orbit = next(command for command in profile.commands if command.name == "Orbit")
     assert orbit.key == "W"
-    assert orbit.press_count == 2
-    assert orbit.repeat_gap_seconds == 0.1
+    assert orbit.press_count == DEFAULT_PRESS_COUNT
+    assert orbit.repeat_gap_seconds == DEFAULT_REPEAT_GAP_SECONDS
+    assert "press_count" not in orbit.to_dict()
 
 
 def test_local_grammar_uses_normalized_unique_phrases():

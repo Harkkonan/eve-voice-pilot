@@ -493,7 +493,7 @@ def test_voice_command_from_fields_validates_and_cleans_values():
         phrases=" orbit, circle them ",
         key=" alt + q ",
         hold_seconds="0.25",
-        press_count="2",
+        press_count="1",
         repeat_gap_seconds="0.30",
         response_suffix="Ballad",
         response_text="Spinning up.",
@@ -503,10 +503,19 @@ def test_voice_command_from_fields_validates_and_cleans_values():
     assert command.phrases == ["orbit", "circle them"]
     assert command.key == "ALT + Q"
     assert command.hold_seconds == 0.25
-    assert command.press_count == 2
+    assert command.press_count == 1
     assert command.repeat_gap_seconds == 0.30
     assert command.response_suffix == "Ballad"
     assert command.response_text == "Spinning up."
+
+
+def test_voice_command_from_fields_rejects_repeated_sends():
+    try:
+        voice_command_from_fields(name="Orbit", phrases="orbit", key="W", press_count="2")
+    except ValueError as exc:
+        assert "one key or key chord one time" in str(exc)
+    else:
+        raise AssertionError("Voice Lab should reject repeated key sends")
 
 
 def test_voice_command_from_fields_rejects_bad_keybind():
@@ -1031,11 +1040,13 @@ def test_fetch_pet_location_uses_read_only_esi_scope(monkeypatch):
         expires_at=9999999999,
     )
 
-    location = fetch_pet_location(EveSsoConfig(esi_base_url="https://esi.test/latest"), session)
+    location = fetch_pet_location(EveSsoConfig(), session)
 
     assert location.solar_system_id == 30000142
     assert location.solar_system_name == "Jita"
-    assert calls[0][0] == "https://esi.test/latest/characters/123456789/location/?datasource=tranquility"
+    assert calls[0][0] == (
+        f"{intel_pet_module.DEFAULT_ESI_BASE_URL}/characters/123456789/location/?datasource=tranquility"
+    )
     assert calls[0][1]["Authorization"] == "Bearer access-token"
     assert "Authorization" not in calls[1][1]
 
@@ -1050,11 +1061,32 @@ def test_fetch_pet_location_requires_location_scope():
     )
 
     try:
-        fetch_pet_location(EveSsoConfig(esi_base_url="https://esi.test/latest"), session)
+        fetch_pet_location(EveSsoConfig(), session)
     except Exception as exc:
         assert LOCATION_SCOPE in str(exc)
     else:
         raise AssertionError("expected missing location scope to fail")
+
+
+def test_fetch_pet_location_rejects_nonofficial_esi_base(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr("eve_voice_pilot.intel_pet.get_json", lambda *args, **kwargs: calls.append(args))
+    session = IntelPetLocationSession(
+        character_id=123456789,
+        character_name="Scout Pilot",
+        scopes=(LOCATION_SCOPE,),
+        access_token="access-token",
+        expires_at=9999999999,
+    )
+
+    try:
+        fetch_pet_location(EveSsoConfig(esi_base_url="https://esi.test/latest"), session)
+    except Exception as exc:
+        assert "official ESI host" in str(exc)
+    else:
+        raise AssertionError("expected nonofficial ESI base URL to fail")
+    assert calls == []
 
 
 def test_listener_filter_defaults_to_location_sso_character():

@@ -60,6 +60,7 @@ STATIC_ASSET_ROOT = ROOT / "src" / "eve_voice_pilot" / "static"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_MAX_FITTING_TEXT_LENGTH = 12000
+MAX_JSON_BODY_BYTES = 256 * 1024
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
 DEFAULT_DISCORD_ALERT_SENDER_NAME = "IntelPet"
 DEFAULT_DISCORD_ALERT_ROUTE_NAME = "IntelPet server webhook"
@@ -1451,6 +1452,7 @@ class MarketStore:
             )
 
     def create_listing(self, payload: dict[str, Any]) -> MarketListing:
+        listing_id = clean_listing_id(payload.get("id") or uuid.uuid4().hex[:12])
         listing_type = clean_choice(payload.get("listing_type") or payload.get("type") or "sell", LISTING_TYPES, "listing_type")
         category = clean_choice(payload.get("category") or "general", set(LISTING_CATEGORIES), "category")
         item_name = clean_text(payload.get("item_name") or payload.get("item"), "item_name", max_length=120, required=True)
@@ -1463,7 +1465,7 @@ class MarketStore:
         fit_image_url = clean_optional_url(payload.get("fit_image_url") or payload.get("image_url") or payload.get("screenshot_url"), "fit_image_url")
         timestamp = now_iso()
         listing = MarketListing(
-            listing_id=str(payload.get("id") or uuid.uuid4().hex[:12]),
+            listing_id=listing_id,
             listing_type=listing_type,
             status="open",
             category=category,
@@ -11267,7 +11269,7 @@ def market_write_access_allowed(
         return auth_header == f"Bearer {admin_token}" or token_header == admin_token or (is_loopback and not public_hosting_mode)
     if public_hosting_mode:
         return False
-    return True
+    return is_loopback
 
 
 def build_flight_status_payload(
@@ -11601,12 +11603,18 @@ def build_http_server(
                 self._handle_static_asset(path)
                 return
             if path == "/api/offers":
+                if not self._require_public_read_access():
+                    return
                 self._handle_offer_list()
                 return
             if path == "/api/discord-alerts/settings":
+                if not self._require_public_read_access():
+                    return
                 self._handle_discord_alert_settings()
                 return
             if path == "/api/fittings":
+                if not self._require_public_read_access():
+                    return
                 self._handle_fitting_list()
                 return
             if path == "/api/flight/status":
@@ -11664,15 +11672,23 @@ def build_http_server(
                 self._handle_flight_logout()
                 return
             if path.startswith("/api/offers/") and path.endswith("/mail"):
+                if not self._require_public_read_access():
+                    return
                 self._handle_mail_api(path)
                 return
             if path.startswith("/api/offers/"):
+                if not self._require_public_read_access():
+                    return
                 self._handle_offer_api(path)
                 return
             if path.startswith("/api/fittings/"):
+                if not self._require_public_read_access():
+                    return
                 self._handle_fitting_api(path)
                 return
             if path.startswith("/offers/"):
+                if not self._require_public_read_access():
+                    return
                 self._handle_offer_page(path)
                 return
             if path == "/api/health":
@@ -12459,6 +12475,14 @@ def build_http_server(
                 return None
             return session
 
+        def _require_public_read_access(self) -> bool:
+            if not public_hosting_mode:
+                return True
+            if flight_session_has_member_access(sso_config, self._flight_session()):
+                return True
+            self.send_error(403, "Public hosting mode requires an allowlisted EVE SSO session.")
+            return False
+
         def _handle_offer_api(self, path: str) -> None:
             listing_id = path.removeprefix("/api/offers/").split("/", 1)[0]
             try:
@@ -12644,7 +12668,13 @@ def build_http_server(
             self._send_json({"ok": True, "fitting": fitting.to_dict()})
 
         def _read_json_body(self) -> Any:
-            body = self.rfile.read(int(self.headers.get("Content-Length") or "0"))
+            content_type = self.headers.get("Content-Type", "")
+            if "application/json" not in content_type.lower():
+                raise ValueError("Content-Type must be application/json.")
+            content_length = int(self.headers.get("Content-Length") or "0")
+            if content_length > MAX_JSON_BODY_BYTES:
+                raise ValueError(f"Request body is too large; limit is {MAX_JSON_BODY_BYTES} bytes.")
+            body = self.rfile.read(content_length)
             if not body:
                 raise ValueError("Request body is empty.")
             return json.loads(body.decode("utf-8"))

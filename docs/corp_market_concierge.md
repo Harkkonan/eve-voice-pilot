@@ -378,7 +378,7 @@ For remote offer creation and status changes, add an admin token:
 .\scripts\run_corp_market.ps1 serve --host 0.0.0.0 --public-base-url "http://HOST-LAN-IP:8770" --admin-token "change-this-token" --discord-webhook-url "https://discord.com/api/webhooks/..."
 ```
 
-Loopback browser requests from the host computer can create and edit offers in local/LAN mode. In public hosting mode, remote writes require the market admin token or trusted allowlisted SSO member write access.
+Loopback browser requests from the host computer can create and edit offers in local/LAN mode. Remote LAN writes need the market admin token. In public hosting mode, market/fitting read APIs require an allowlisted EVE SSO session, and remote writes require the market admin token or trusted allowlisted SSO member write access.
 
 ## First-Version Workflow
 

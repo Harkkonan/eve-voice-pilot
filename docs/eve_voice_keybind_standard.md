@@ -33,7 +33,7 @@ Enter or verify the rows below in EVE Settings > Shortcuts. Rows marked `Add thi
 | High | Combat | Align to | `A` | align, align to |  |  | Keep default. |
 | High | Combat | Approach | `Q` | approach, approach target |  |  | Keep default. |
 | High | Combat | Keep at Range | `E` | keep range, keep at range |  |  | Keep default. |
-| High | Combat | Orbit | `W` | orbit, orbit target | 2x, 0.10s gap |  | Keep default. |
+| High | Combat | Orbit | `W` | orbit, orbit target |  |  | Keep default. |
 | High | Navigation | Set Full Speed | `CTRL+ALT+SPACE` | full speed, go full speed |  |  | Keep default. |
 | Medium | Navigation | Autopilot | `CTRL+S` | autopilot, toggle autopilot, auto pilot |  | Aura: I have the helm. | Verify this shortcut in EVE. |
 | Low | Navigation | Accelerate | `NUMPLUS` | accelerate |  |  | Verify this shortcut in EVE. |
@@ -275,14 +275,12 @@ Enter or verify the rows below in EVE Settings > Shortcuts. Rows marked `Add thi
 
 | Priority | EVE category | EVE command | Standard shortcut | Voice phrases | Presses | Voice response | Action |
 |---|---|---|---|---|---|---|---|
-| Low | General | Back | `MOUSE4` | back |  |  | Verify this shortcut in EVE. |
 | Low | General | Browse Window Menu | `CTRL+TAB` | browse window menu |  |  | Verify this shortcut in EVE. |
 | Low | General | Browse Window Menu Upwards | `CTRL+SHIFT+TAB` | browse window menu upwards |  |  | Verify this shortcut in EVE. |
 | Low | General | Close modal windows and open config menu | `ESC` | close modal windows and open config menu |  |  | Verify this shortcut in EVE. |
 | Low | General | Confirm | `ENTER` | confirm |  |  | Verify this shortcut in EVE. |
 | Low | General | Copy | `CTRL+C` | copy |  |  | Verify this shortcut in EVE. |
 | Low | General | Cut | `CTRL+X` | cut |  |  | Verify this shortcut in EVE. |
-| Low | General | Forward | `MOUSE5` | forward |  |  | Verify this shortcut in EVE. |
 | Low | General | Next Tab | `CTRL+PAGE DOWN` | next tab |  |  | Verify this shortcut in EVE. |
 | Low | General | Next stacked window | `CTRL+SHIFT+PAGE DOWN` | next stacked window |  |  | Verify this shortcut in EVE. |
 | Low | General | Paste | `CTRL+V` | paste |  |  | Verify this shortcut in EVE. |

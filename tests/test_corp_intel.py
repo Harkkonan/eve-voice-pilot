@@ -31,6 +31,7 @@ from eve_voice_pilot.corp_intel import (
     eve_timestamp_to_iso,
     fetch_remote_watchlist,
     hash_agent_token,
+    host_is_loopback_bind,
     ingest_payload,
     membership_allowed,
     parse_channel_name_from_text,
@@ -121,6 +122,15 @@ def test_channel_filter_allows_exact_and_wildcard_names():
     assert channel_filter.allows("Corp")
     assert channel_filter.allows("Standing Intel")
     assert not channel_filter.allows("Private Chat")
+
+
+def test_host_is_loopback_bind_rejects_lan_all_interfaces():
+    assert host_is_loopback_bind("")
+    assert host_is_loopback_bind("127.0.0.1")
+    assert host_is_loopback_bind("localhost")
+    assert host_is_loopback_bind("::1")
+    assert not host_is_loopback_bind("0.0.0.0")
+    assert not host_is_loopback_bind("192.168.1.50")
 
 
 def test_discover_chat_log_files_can_filter_by_listener(tmp_path):

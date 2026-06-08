@@ -157,12 +157,7 @@ EXTENDED_VKS = {
     0xA5,
 }
 
-MOUSE_BUTTONS = {
-    "MOUSE4": XBUTTON1,
-    "XBUTTON1": XBUTTON1,
-    "MOUSE5": XBUTTON2,
-    "XBUTTON2": XBUTTON2,
-}
+UNSUPPORTED_MOUSE_BUTTONS = {"MOUSE4", "XBUTTON1", "MOUSE5", "XBUTTON2"}
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -263,12 +258,8 @@ def parse_key_chord(chord: str, require_trigger_key: bool = False) -> ParsedKeyC
     seen: set[str] = set()
     for part in parts:
         canonical = _canonical_key_name(part)
-        if canonical in MOUSE_BUTTONS:
-            if canonical in seen:
-                continue
-            seen.add(canonical)
-            keys.append(ParsedKey(canonical, 0, False, "mouse"))
-            continue
+        if canonical in UNSUPPORTED_MOUSE_BUTTONS:
+            raise ValueError("Mouse buttons are not supported for voice commands. Use one keyboard key or key chord.")
         key_vk = VK_CODES.get(canonical)
         if key_vk is None:
             raise ValueError(f"Unsupported key '{canonical}'. Try F1, CTRL-S, LEFT SHIFT+P, SPACE, ENTER, or similar.")
@@ -289,7 +280,7 @@ def _split_chord(chord: str) -> list[str]:
         return []
 
     canonical = _canonical_key_name(chord)
-    if canonical in VK_CODES or canonical in MOUSE_BUTTONS:
+    if canonical in VK_CODES or canonical in UNSUPPORTED_MOUSE_BUTTONS:
         return [chord]
 
     chord = CHORD_AND_RE.sub("+", chord)
@@ -338,22 +329,7 @@ def _send_vk(vk: int, keyup: bool = False) -> None:
         raise OSError(ctypes.get_last_error(), "SendInput failed")
 
 
-def _send_mouse_button(name: str, keyup: bool = False) -> None:
-    button = MOUSE_BUTTONS[name]
-    flags = MOUSEEVENTF_XUP if keyup else MOUSEEVENTF_XDOWN
-    event = INPUT(
-        type=INPUT_MOUSE,
-        union=INPUT_UNION(mi=MOUSEINPUT(0, 0, button, flags, 0, 0)),
-    )
-    sent = user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(event))
-    if sent != 1:
-        raise OSError(ctypes.get_last_error(), "SendInput failed")
-
-
 def _send_parsed_key(key: ParsedKey, keyup: bool = False) -> None:
-    if key.kind == "mouse":
-        _send_mouse_button(key.name, keyup=keyup)
-        return
     _send_vk(key.vk, keyup=keyup)
 
 

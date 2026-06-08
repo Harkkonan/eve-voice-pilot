@@ -52,8 +52,6 @@ SHORTCUT_ALIASES = {
     "SYSREQ": "PRINTSCREEN",
     "PRINT SCREEN": "PRINTSCREEN",
     "PRINTSCREEN": "PRINTSCREEN",
-    "MOUSE4": "MOUSE4",
-    "MOUSE5": "MOUSE5",
 }
 
 
@@ -220,8 +218,6 @@ STANDARD_ROWS = [
         "standard_shortcut": "W",
         "voice_phrases": "orbit|orbit target",
         "action": "Keep default.",
-        "press_count": 2,
-        "repeat_gap_seconds": 0.10,
     },
     {
         "priority": "High",
@@ -565,7 +561,7 @@ def profile_name(command: str) -> str:
 
 def profile_commands() -> list[dict]:
     commands = []
-    for row in ordered_rows():
+    for row in voice_standard_rows():
         if row.get("profile") is False:
             continue
         phrases = [phrase.strip() for phrase in row["voice_phrases"].split("|") if phrase.strip()]
@@ -577,9 +573,6 @@ def profile_commands() -> list[dict]:
             "key": row["standard_shortcut"],
             "hold_seconds": HOLD_SECONDS,
         }
-        if int(row.get("press_count", 1)) > 1:
-            command["press_count"] = int(row["press_count"])
-            command["repeat_gap_seconds"] = float(row.get("repeat_gap_seconds", 0.10))
         if row.get("response_suffix"):
             command["response_suffix"] = row["response_suffix"]
         if row.get("response_text"):
@@ -605,7 +598,7 @@ def write_csv(path: Path) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        for row in ordered_rows():
+        for row in voice_standard_rows():
             writer.writerow({field: row.get(field, "") for field in fieldnames})
 
 
@@ -621,6 +614,14 @@ def ordered_rows() -> list[dict]:
             row["eve_command"],
         ),
     )
+
+
+def voice_standard_rows() -> list[dict]:
+    return [
+        row
+        for row in ordered_rows()
+        if not str(row["standard_shortcut"]).upper().startswith("MOUSE")
+    ]
 
 
 def write_profile(path: Path) -> None:
@@ -647,7 +648,7 @@ def write_docs(path: Path) -> None:
         "Enter or verify the rows below in EVE Settings > Shortcuts. Rows marked `Add this shortcut in EVE` or `Change in EVE` are the important manual edits.",
         "",
     ]
-    rows = ordered_rows()
+    rows = voice_standard_rows()
     extra_groups = sorted({row["group"] for row in rows if row["group"] not in GROUP_ORDER})
     for group in [*GROUP_ORDER, *extra_groups]:
         group_rows = [row for row in rows if row["group"] == group]

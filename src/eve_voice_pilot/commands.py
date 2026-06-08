@@ -65,16 +65,8 @@ class VoiceCommand:
         except (TypeError, ValueError):
             hold_seconds = DEFAULT_HOLD_SECONDS
         hold_seconds = min(max(hold_seconds, 0.01), 2.0)
-        try:
-            press_count = int(data.get("press_count", DEFAULT_PRESS_COUNT))
-        except (TypeError, ValueError):
-            press_count = DEFAULT_PRESS_COUNT
-        press_count = min(max(press_count, 1), 10)
-        try:
-            repeat_gap_seconds = float(data.get("repeat_gap_seconds", DEFAULT_REPEAT_GAP_SECONDS))
-        except (TypeError, ValueError):
-            repeat_gap_seconds = DEFAULT_REPEAT_GAP_SECONDS
-        repeat_gap_seconds = min(max(repeat_gap_seconds, 0.0), 2.0)
+        press_count = DEFAULT_PRESS_COUNT
+        repeat_gap_seconds = DEFAULT_REPEAT_GAP_SECONDS
         return cls(
             name=str(data.get("name", "")).strip(),
             phrases=[str(item).strip() for item in data.get("phrases", []) if str(item).strip()],

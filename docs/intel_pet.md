@@ -280,7 +280,7 @@ This mode is opt-in. It asks EVE SSO for only:
 esi-location.read_location.v1
 ```
 
-The pet keeps the ESI access token in memory only while it is running. It does not write token files, store refresh tokens, send your location to Discord, share it with the corp intel board, or control the EVE client.
+The pet keeps the ESI access token in memory only while it is running. It sends that token only to the official ESI host, does not write token files, store refresh tokens, send your location to Discord, share it with the corp intel board, or control the EVE client.
 
 Register this local callback URL in your EVE Developers application:
 
@@ -288,21 +288,19 @@ Register this local callback URL in your EVE Developers application:
 http://127.0.0.1:8788/intel-pet/callback
 ```
 
-Then start the pet with your local SSO app values:
-
-```powershell
-.\scripts\run_intel_pet.ps1 `
-  --enable-location-cheer `
-  --sso-client-id "client-id" `
-  --sso-client-secret "client-secret"
-```
-
-You can also keep the SSO values in your local PowerShell environment:
+Keep the SSO values in your local PowerShell environment, then start the pet:
 
 ```powershell
 $env:INTEL_PET_SSO_CLIENT_ID = "client-id"
 $env:INTEL_PET_SSO_CLIENT_SECRET = "client-secret"
 .\scripts\run_intel_pet.ps1 --enable-location-cheer
+```
+
+You can also pass the SSO client id on the command line while keeping the secret in the environment:
+
+```powershell
+$env:INTEL_PET_SSO_CLIENT_SECRET = "client-secret"
+.\scripts\run_intel_pet.ps1 --enable-location-cheer --sso-client-id "client-id"
 ```
 
 To choose different happy systems:

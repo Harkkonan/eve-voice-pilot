@@ -676,8 +676,8 @@ function loadMarketToolTableForSheet_(sheet, showAlert) {
     const visibleStartCol = getMarketVisibleStartColumn_(sheet);
     const rawStartCol = getMarketRawStartColumn_(sheet);
     const visibleValues = orders.map(order => [
-      systemNames.get(String(order.system_id)) || order.system_id,
-      locationNames.get(String(order.location_id)) || order.location_id,
+      safeSheetText_(systemNames.get(String(order.system_id)) || order.system_id),
+      safeSheetText_(locationNames.get(String(order.location_id)) || order.location_id),
       order.price,
       order.volume_remain,
     ]);
@@ -695,8 +695,8 @@ function loadMarketToolTableForSheet_(sheet, showAlert) {
       order.volume_remain,
       order.volume_total,
       '',
-      systemNames.get(String(order.system_id)) || order.system_id,
-      locationNames.get(String(order.location_id)) || order.location_id,
+      safeSheetText_(systemNames.get(String(order.system_id)) || order.system_id),
+      safeSheetText_(locationNames.get(String(order.location_id)) || order.location_id),
     ]);
 
     sheet.getRange(outputRow, 1, Math.max(sheet.getMaxRows() - outputRow + 1, 1), rawStartCol + rawHeaders.length - 1).clearContent().clearFormat();
@@ -1171,8 +1171,8 @@ function buildTradeOpportunityFromMarket_(inputs) {
     quantity: inputs.quantity,
     buyRegion: inputs.buyRegion,
     sellRegion: inputs.sellRegion,
-    buyLocation: names.get(String(buyOrder.location_id)) || names.get(String(buyOrder.system_id)) || buyOrder.location_id,
-    sellLocation: names.get(String(sellOrder.location_id)) || names.get(String(sellOrder.system_id)) || sellOrder.location_id,
+    buyLocation: safeSheetText_(names.get(String(buyOrder.location_id)) || names.get(String(buyOrder.system_id)) || buyOrder.location_id),
+    sellLocation: safeSheetText_(names.get(String(sellOrder.location_id)) || names.get(String(sellOrder.system_id)) || sellOrder.location_id),
     buyPrice,
     sellPrice,
     bestValue: sellPrice,
@@ -1808,6 +1808,11 @@ function numberValue_(value) {
   if (typeof value === 'number') return value;
   const parsed = Number(String(value || '').replace(/,/g, '').trim());
   return isNaN(parsed) ? 0 : parsed;
+}
+
+function safeSheetText_(value) {
+  if (typeof value !== 'string') return value;
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
 }
 
 function setDropdown_(range, values) {

@@ -44,7 +44,7 @@ BUTTON_GUIDE: tuple[tuple[str, str], ...] = (
     ("Validate Settings", "Checks the region, hotkey, numeric fields, regex, and Tesseract path."),
     ("Read Once", "Runs one OCR read and prints the raw text plus the watched value."),
     ("Start Dry Run", "Watches for stable changes and logs the hotkey without sending it."),
-    ("Start Live Watch", "Watches for stable changes and sends the hotkey when the value changes."),
+    ("Start Live Watch", "Asks for confirmation, then watches for stable changes and sends the hotkey when the value changes."),
     ("Stop", "Stops the current watch loop after the current OCR read finishes."),
     ("Test Hotkey", "Checks the active-window guard, then sends or dry-runs the current hotkey."),
     ("Show Region", "Draws a temporary overlay exactly where the OCR watcher will look."),
@@ -649,14 +649,16 @@ class OcrWatcherGui:
             self._set_status("Settings need attention")
             return
 
-        if not settings.dry_run and settings.window_title_contains == "":
-            confirmed = messagebox.askyesno(
-                "Start without window guard?",
-                "Window guard is disabled. Start live hotkey sending anyway?",
-                parent=self.root,
+        if not settings.dry_run:
+            warning = (
+                f"Start live OCR hotkey sending for {settings.hotkey}? "
+                "Use this only for narrow manual tests after dry-run proof."
             )
+            if settings.window_title_contains == "":
+                warning += " The active-window guard is disabled."
+            confirmed = messagebox.askyesno("Start live OCR watch?", warning, parent=self.root)
             if not confirmed:
-                self._log("Live watch canceled because the window guard is disabled.")
+                self._log("Live watch canceled.")
                 return
 
         def worker() -> None:

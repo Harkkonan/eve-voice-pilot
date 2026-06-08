@@ -84,9 +84,7 @@
         "orbit target"
       ],
       "key": "W",
-      "hold_seconds": 0.1,
-      "press_count": 2,
-      "repeat_gap_seconds": 0.1
+      "hold_seconds": 0.1
     },
     {
       "name": "Set Full Speed",
@@ -1172,14 +1170,6 @@
       "hold_seconds": 0.1
     },
     {
-      "name": "Back",
-      "phrases": [
-        "back"
-      ],
-      "key": "MOUSE4",
-      "hold_seconds": 0.1
-    },
-    {
       "name": "Browse Window Menu",
       "phrases": [
         "browse window menu"
@@ -1257,14 +1247,6 @@
         "force fade from black"
       ],
       "key": "SHIFT+BACKSPACE",
-      "hold_seconds": 0.1
-    },
-    {
-      "name": "Forward",
-      "phrases": [
-        "forward"
-      ],
-      "key": "MOUSE5",
       "hold_seconds": 0.1
     },
     {

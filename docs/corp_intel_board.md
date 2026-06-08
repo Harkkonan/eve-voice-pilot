@@ -33,10 +33,10 @@ It starts at the end of existing log files, so only new chat lines are processed
 On the computer hosting the dashboard, run:
 
 ```powershell
-.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --ingest-token "change-this-token"
+.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --require-sso-dashboard --sso-client-id "client-id" --sso-client-secret "client-secret" --sso-callback-url "http://HOST-LAN-IP:8765/auth/callback" --allowed-corporation-ids "123456789" --ingest-token "change-this-token"
 ```
 
-Share the host computer's LAN IP address and the token only with corp members who should send intel.
+Non-loopback serving refuses to start unless the dashboard requires EVE SSO, SSO access is restricted to configured corporation or alliance IDs, and uploads require either a shared ingest token or verified SSO-created agent tokens. Share the host computer's LAN IP address and the token only with corp members who should send intel.
 
 On each opted-in corp member PC, run:
 
@@ -91,10 +91,10 @@ To run memory-only during a test:
 .\scripts\run_corp_intel_board.ps1 serve --no-event-db
 ```
 
-The host browser can edit the watchlist without a token. Remote browsers need an admin token:
+The host browser can edit the watchlist without a token during localhost-only testing. Shared non-loopback servers should use SSO dashboard access and either an admin token for remote watchlist edits or a trusted SSO session:
 
 ```powershell
-.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --ingest-token "change-this-token" --admin-token "change-this-admin-token"
+.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --require-sso-dashboard --sso-client-id "client-id" --sso-client-secret "client-secret" --sso-callback-url "http://HOST-LAN-IP:8765/auth/callback" --allowed-corporation-ids "123456789" --ingest-token "change-this-token" --admin-token "change-this-admin-token"
 ```
 
 ## EVE SSO Identity
@@ -110,7 +110,7 @@ http://HOST-LAN-IP:8765/auth/callback
 Then run the server with the SSO application values and the corp or alliance ids that should count as trusted:
 
 ```powershell
-.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --ingest-token "change-this-token" --sso-client-id "client-id" --sso-client-secret "client-secret" --sso-callback-url "http://HOST-LAN-IP:8765/auth/callback" --allowed-corporation-ids "123456789"
+.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --require-sso-dashboard --sso-client-id "client-id" --sso-client-secret "client-secret" --sso-callback-url "http://HOST-LAN-IP:8765/auth/callback" --allowed-corporation-ids "123456789" --ingest-token "change-this-token"
 ```
 
 You can also use environment variables instead of putting SSO values in the command:
@@ -131,10 +131,10 @@ profiles/corp_intel_pilots.sqlite3
 
 This SSO layer uses SSO only to prove character ownership and check current public corporation/alliance identity. The returned access token is signature-verified against EVE's JWKS before the board trusts the character claim. It does not store EVE access tokens or refresh tokens.
 
-By default, SSO is available but the dashboard remains visible to anyone who can reach the web host. For a shared corp deployment, require a signed-in SSO member session for the dashboard and JSON APIs:
+In localhost mode, SSO can be available while the dashboard remains visible to the local browser. For a shared corp deployment, require a signed-in SSO member session for the dashboard and JSON APIs:
 
 ```powershell
-.\scripts\run_corp_intel_board.ps1 serve --require-sso-dashboard --sso-client-id "client-id" --sso-client-secret "client-secret" --sso-callback-url "http://HOST-LAN-IP:8765/auth/callback" --allowed-corporation-ids "123456789"
+.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --require-sso-dashboard --sso-client-id "client-id" --sso-client-secret "client-secret" --sso-callback-url "http://HOST-LAN-IP:8765/auth/callback" --allowed-corporation-ids "123456789" --ingest-token "change-this-token"
 ```
 
 Use `--allowed-corporation-ids` or `--allowed-alliance-ids` with `--require-sso-dashboard` for a real member-only board. Without an allowlist, any EVE-authenticated character can pass the SSO check.

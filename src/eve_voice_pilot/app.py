@@ -125,8 +125,12 @@ class CommandDialog(simpledialog.Dialog):
         except ValueError:
             messagebox.showerror("Press count problem", "Press count should be a whole number, like 1 or 2.", parent=self)
             return False
-        if not 1 <= press_count <= 10:
-            messagebox.showerror("Press count problem", "Press count should be between 1 and 10.", parent=self)
+        if press_count != 1:
+            messagebox.showerror(
+                "Press count problem",
+                "Voice commands must send one key or key chord one time. Use 1.",
+                parent=self,
+            )
             return False
         try:
             repeat_gap_seconds = float(self.repeat_gap_var.get())

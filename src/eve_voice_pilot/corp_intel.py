@@ -42,6 +42,7 @@ DEFAULT_PILOT_REGISTRY_PATH = ROOT / "profiles" / "corp_intel_pilots.sqlite3"
 DEFAULT_EVE_SSO_WELL_KNOWN_URL = "https://login.eveonline.com/.well-known/oauth-authorization-server"
 DEFAULT_WATCHLIST_REFRESH_SECONDS = 60.0
 DEFAULT_EVENT_RETENTION_DAYS = 7
+MAX_JSON_BODY_BYTES = 256 * 1024
 EXPECTED_EVE_SSO_AUDIENCE = "EVE Online"
 EVE_SSO_CLOCK_SKEW_LEEWAY_SECONDS = 120
 ACCEPTED_EVE_SSO_ISSUERS = {
@@ -2010,6 +2011,26 @@ def run_server(args: argparse.Namespace) -> int:
     auth_state_store = AuthStateStore()
     session_store = SessionStore()
 
+    if not host_is_loopback_bind(args.host):
+        if not args.require_sso_dashboard:
+            print(
+                "Refusing non-loopback corp intel server without --require-sso-dashboard.",
+                file=sys.stderr,
+            )
+            return 1
+        if not sso_config.membership_restricted:
+            print(
+                "Refusing non-loopback corp intel server without --allowed-corporation-ids or --allowed-alliance-ids.",
+                file=sys.stderr,
+            )
+            return 1
+        if not (args.ingest_token or args.require_verified_ingest):
+            print(
+                "Refusing non-loopback corp intel server without --ingest-token or --require-verified-ingest.",
+                file=sys.stderr,
+            )
+            return 1
+
     if args.watch_local:
         start_local_watcher_thread(
             log_dir=args.log_dir,
@@ -2353,7 +2374,15 @@ def build_http_server(
             self.end_headers()
 
         def _read_json_body(self) -> Any:
-            body = self.rfile.read(int(self.headers.get("Content-Length") or "0"))
+            content_type = self.headers.get("Content-Type", "")
+            if "application/json" not in content_type.lower():
+                raise ValueError("Content-Type must be application/json.")
+            content_length = int(self.headers.get("Content-Length") or "0")
+            if content_length > MAX_JSON_BODY_BYTES:
+                raise ValueError(f"Request body is too large; limit is {MAX_JSON_BODY_BYTES} bytes.")
+            body = self.rfile.read(content_length)
+            if not body:
+                raise ValueError("Request body is empty.")
             return json.loads(body.decode("utf-8"))
 
         def _dashboard_access(self) -> tuple[DashboardAccess, VerifiedPilot | None]:
@@ -2692,6 +2721,10 @@ def parse_int_csv(value: str | None) -> tuple[int, ...]:
 
 def url_host_for_bind(host: str) -> str:
     return "127.0.0.1" if host in {"0.0.0.0", ""} else host
+
+
+def host_is_loopback_bind(host: str) -> bool:
+    return host in {"", "127.0.0.1", "localhost", "::1"}
 
 
 def build_parser() -> argparse.ArgumentParser:

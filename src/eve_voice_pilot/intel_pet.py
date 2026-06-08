@@ -601,8 +601,8 @@ def voice_command_from_fields(
         clean_press_count = int(press_count)
     except (TypeError, ValueError) as exc:
         raise ValueError("Press count should be a whole number, like 1 or 2.") from exc
-    if not 1 <= clean_press_count <= 10:
-        raise ValueError("Press count should be between 1 and 10.")
+    if clean_press_count != 1:
+        raise ValueError("Voice commands must send one key or key chord one time. Use 1.")
     try:
         clean_repeat_gap_seconds = float(repeat_gap_seconds)
     except (TypeError, ValueError) as exc:
@@ -2126,6 +2126,7 @@ def validate_location_sso_config(config: EveSsoConfig) -> None:
         raise CorpIntelError(
             "Location cheer needs EVE SSO client values. Start with --sso-client-id and --sso-client-secret."
         )
+    validate_location_esi_base_url(config.esi_base_url)
     callback = urlparse(config.callback_url)
     if callback.scheme != "http" or callback.hostname not in {"127.0.0.1", "localhost"}:
         raise CorpIntelError(
@@ -2134,6 +2135,13 @@ def validate_location_sso_config(config: EveSsoConfig) -> None:
         )
     if not callback.port:
         raise CorpIntelError("Intel Pet location cheer callback URL must include a localhost port.")
+
+
+def validate_location_esi_base_url(base_url: str) -> None:
+    expected = urlparse(DEFAULT_ESI_BASE_URL)
+    parsed = urlparse(str(base_url or ""))
+    if parsed.scheme != expected.scheme or parsed.netloc.lower() != expected.netloc.lower():
+        raise CorpIntelError("Intel Pet location cheer only sends SSO bearer tokens to the official ESI host.")
 
 
 def login_location_session(
@@ -2215,6 +2223,7 @@ def login_location_session(
 
 
 def fetch_pet_location(config: EveSsoConfig, session: IntelPetLocationSession) -> IntelPetLocation:
+    validate_location_esi_base_url(config.esi_base_url)
     if session.expired:
         raise CorpIntelError("EVE SSO location token expired. Restart location cheer to reconnect.")
     if LOCATION_SCOPE not in session.scopes:

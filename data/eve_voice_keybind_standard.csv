@@ -7,7 +7,7 @@ Critical,Emergency and Survival,Combat,Warp to,S,warp|warp to|warp now,,,Aura,Wa
 High,Ship Movement,Combat,Align to,A,align|align to,,,,,Keep default.
 High,Ship Movement,Combat,Approach,Q,approach|approach target,,,,,Keep default.
 High,Ship Movement,Combat,Keep at Range,E,keep range|keep at range,,,,,Keep default.
-High,Ship Movement,Combat,Orbit,W,orbit|orbit target,2,0.1,,,Keep default.
+High,Ship Movement,Combat,Orbit,W,orbit|orbit target,,,,,Keep default.
 High,Ship Movement,Navigation,Set Full Speed,CTRL+ALT+SPACE,full speed|go full speed,,,,,Keep default.
 Medium,Ship Movement,Navigation,Autopilot,CTRL+S,autopilot|toggle autopilot|auto pilot,,,Aura,I have the helm.,Verify this shortcut in EVE.
 Low,Ship Movement,Navigation,Accelerate,NUMPLUS,accelerate,,,,,Verify this shortcut in EVE.
@@ -129,7 +129,6 @@ Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 5,ALT+S
 Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 6,ALT+SHIFT+6,toggle overload on medium power slot 6,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
 Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 7,ALT+SHIFT+7,toggle overload on medium power slot 7,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
 Medium,Modules and Overheat,Modules,Toggle Overload on Medium Power Slot 8,ALT+SHIFT+8,toggle overload on medium power slot 8,,,,,Change in EVE. This avoids the Alt-F4 style overheat pattern.
-Low,Text and Window Controls,General,Back,MOUSE4,back,,,,,Verify this shortcut in EVE.
 Low,Text and Window Controls,General,Browse Window Menu,CTRL+TAB,browse window menu,,,,,Verify this shortcut in EVE.
 Low,Text and Window Controls,General,Browse Window Menu Upwards,CTRL+SHIFT+TAB,browse window menu upwards,,,,,Verify this shortcut in EVE.
 Low,Text and Window Controls,General,Close modal windows and open config menu,ESC,close modal windows and open config menu,,,,,Verify this shortcut in EVE.
@@ -140,7 +139,6 @@ Low,Text and Window Controls,General,Cut,CTRL+X,cut,,,,,Verify this shortcut in 
 Low,Settings and System,Window,EVE Help,F12,eve help,,,,,Verify this shortcut in EVE.
 Low,Camera and View,Navigation,First Person Camera,ALT+3,first person camera,,,,,Verify this shortcut in EVE.
 Low,Settings and System,Window,Force fade from black,SHIFT+BACKSPACE,force fade from black,,,,,Verify this shortcut in EVE.
-Low,Text and Window Controls,General,Forward,MOUSE5,forward,,,,,Verify this shortcut in EVE.
 Low,Settings and System,General,Hide Mouse Cursor,ALT+F9,hide mouse cursor,,,,,Verify this shortcut in EVE.
 Low,Core UI Windows,Window,New Eden Store,ALT+4,new eden store,,,,,Verify this shortcut in EVE.
 Low,Text and Window Controls,General,Next Tab,CTRL+PAGE DOWN,next tab,,,,,Verify this shortcut in EVE.

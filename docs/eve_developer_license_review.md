@@ -1,6 +1,6 @@
 # EVE Developer License Review
 
-Last verified: 2026-06-07
+Last verified: 2026-06-08
 
 Authoritative source:
 
@@ -103,3 +103,4 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - 2026-06-07: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding the Shared Fittings tab. The change stores user-pasted EVE fitting clipboard blocks and optional website fitting links in ignored local SQLite data, adds no ESI scope, does not read the EVE client, and preserves manual copy/import behavior for pilots.
 - 2026-06-07: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before enabling persisted Discord alert-router settings and manual test sends from the Corp Market first tab. The feature saves only cleaned route/rule settings in ignored local JSON, uses the existing private webhook configuration for the default IntelPet sender, disables Discord mentions, keeps matched text opt-in, adds no ESI scope, does not automatically forward Intel Pet chat yet, and does not control the EVE client.
 - 2026-06-07: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding Intel Pet Discord voice notes. The feature sends only deliberate voice-note text after an explicit note phrase, stores the notes-channel webhook in ignored local settings, disables Discord mentions, adds no ESI scope, does not automatically forward chat alerts, and does not control the EVE client.
+- 2026-06-08: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page during a security/privacy release audit. The hardening removes stored repeated key sends and mouse-button voice sends, keeps OCR-triggered hotkeys dry-run unless explicitly allowed, refuses non-loopback corp intel serving without SSO membership and ingest gates, keeps public Corp Market/Flight Attendant reads member-gated, and pins Intel Pet location bearer tokens to the official ESI host. The project remains non-commercial, read-only/advisory where ESI is involved, opt-in for local data sharing, and manual for all gameplay actions.

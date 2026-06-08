@@ -89,7 +89,7 @@ For easier setup, double-click `Start-EveOcrWatcherGui.bat` or run:
 .\scripts\run_ocr_watcher_gui.ps1
 ```
 
-The GUI has settings fields, preset buttons, test buttons, live mouse coordinates, and an output log. Use `Select Region` to drag a rectangle around the text on screen. Use `Show Region` to draw a temporary overlay on the screen area being watched, and `Preview Region` to open the actual screen crop. Start with `Read Once` to see what OCR returns, then use `Start Dry Run` to confirm changes are detected before using `Start Live Watch`. The `Set Top Left` and `Set Bottom Right` buttons capture your mouse position after 3 seconds to help tune the screen region.
+The GUI has settings fields, preset buttons, test buttons, live mouse coordinates, and an output log. Use `Select Region` to drag a rectangle around the text on screen. Use `Show Region` to draw a temporary overlay on the screen area being watched, and `Preview Region` to open the actual screen crop. Start with `Read Once` to see what OCR returns, then use `Start Dry Run` to confirm changes are detected before using `Start Live Watch`. Live watch asks for confirmation before sending keys. The `Set Top Left` and `Set Bottom Right` buttons capture your mouse position after 3 seconds to help tune the screen region.
 
 Dry-run a region first:
 
@@ -106,10 +106,10 @@ Read once without watching:
 Send for real after the value changes:
 
 ```powershell
-.\scripts\run_ocr_watcher.ps1 --region "100,200,260,40" --hotkey "CTRL+SHIFT+F9" --pattern "([0-9,]+)" --stable-samples 2 --cooldown 1.5
+.\scripts\run_ocr_watcher.ps1 --region "100,200,260,40" --hotkey "CTRL+SHIFT+F9" --pattern "([0-9,]+)" --stable-samples 2 --cooldown 1.5 --allow-live-send
 ```
 
-By default, key sending is blocked unless the active window title contains `EVE`. Use `--window-title-contains ""` only if you intentionally want to disable that guard.
+CLI watch mode stays dry-run unless `--allow-live-send` is present. By default, key sending is blocked unless the active window title contains `EVE`. Use `--window-title-contains ""` only if you intentionally want to disable that guard.
 
 ## Corp Intel Board
 
@@ -120,8 +120,10 @@ Double-click `Start-EveCorpIntelBoard.bat` for the local board. It watches `Corp
 Run the shared server on a trusted host:
 
 ```powershell
-.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --ingest-token "change-this-token"
+.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --require-sso-dashboard --sso-client-id "client-id" --sso-client-secret "client-secret" --sso-callback-url "http://HOST-LAN-IP:8765/auth/callback" --allowed-corporation-ids "123456789" --ingest-token "change-this-token"
 ```
+
+Non-loopback serving refuses to start unless the dashboard requires allowlisted EVE SSO and uploads require either an ingest token or verified SSO agent tokens.
 
 Run an opt-in corp member agent:
 
@@ -227,7 +229,7 @@ For a shared LAN test, set the public link base that Discord members should open
 .\scripts\run_corp_market.ps1 serve --host 0.0.0.0 --public-base-url "http://HOST-LAN-IP:8770" --discord-webhook-url "https://discord.com/api/webhooks/..."
 ```
 
-For an Internet-accessible Flight Attendant link, use `--public-hosting-mode` with an HTTPS public base URL, EVE SSO credentials, and `--allowed-corporation-ids` or `--allowed-alliance-ids`. This keeps hosted Flight Attendant access member-only and tightens remote market writes.
+For an Internet-accessible Flight Attendant link, use `--public-hosting-mode` with an HTTPS public base URL, EVE SSO credentials, and `--allowed-corporation-ids` or `--allowed-alliance-ids`. This keeps hosted Flight Attendant and market/fitting read APIs member-only and tightens remote market writes.
 
 Listings are stored in ignored local SQLite data at `profiles/corp_market.sqlite3`. More detail is in `docs/corp_market_concierge.md`.
 

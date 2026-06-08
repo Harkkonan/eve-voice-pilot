@@ -4,6 +4,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import eve_voice_pilot.screen_ocr_watcher as ocr_watcher
 from eve_voice_pilot.screen_ocr_watcher import (
     StableValueTracker,
     build_tesseract_config,
@@ -69,3 +70,32 @@ def test_build_tesseract_config_includes_extra_flags():
     assert build_tesseract_config(7, "-c tessedit_char_whitelist=0123456789") == (
         "--psm 7 -c tessedit_char_whitelist=0123456789"
     )
+
+
+def test_main_defaults_watch_mode_to_dry_run(monkeypatch):
+    seen = {}
+
+    def fake_run_watch(args):
+        seen["dry_run"] = args.dry_run
+        return 0
+
+    monkeypatch.setattr(ocr_watcher, "run_watch", fake_run_watch)
+
+    assert ocr_watcher.main(["--region", "1,2,3,4", "--hotkey", "CTRL+SHIFT+F9"]) == 0
+    assert seen["dry_run"] is True
+
+
+def test_main_requires_allow_live_send_for_hotkey_sends(monkeypatch):
+    seen = {}
+
+    def fake_run_watch(args):
+        seen["dry_run"] = args.dry_run
+        return 0
+
+    monkeypatch.setattr(ocr_watcher, "run_watch", fake_run_watch)
+
+    assert (
+        ocr_watcher.main(["--region", "1,2,3,4", "--hotkey", "CTRL+SHIFT+F9", "--allow-live-send"])
+        == 0
+    )
+    assert seen["dry_run"] is False

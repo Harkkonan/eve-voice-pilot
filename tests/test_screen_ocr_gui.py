@@ -32,6 +32,7 @@ def test_button_guide_explains_core_buttons():
     assert "Mouse Position:" in guide
     assert "Start Dry Run:" in guide
     assert "Start Live Watch:" in guide
+    assert "confirmation" in guide
     assert "Set Top Left:" in guide
 
 

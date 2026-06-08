@@ -313,6 +313,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--keep-case", action="store_true", help="Compare OCR values with case preserved.")
     parser.add_argument("--dry-run", action="store_true", help="Log changes without sending the hotkey.")
+    parser.add_argument(
+        "--allow-live-send",
+        action="store_true",
+        help="Allow OCR changes to send the hotkey. Without this, watch mode stays in dry-run.",
+    )
     parser.add_argument("--once", action="store_true", help="Read the region once, print the OCR result, and exit.")
     parser.add_argument("--verbose", action="store_true", help="Print every accepted OCR sample.")
     return parser
@@ -325,6 +330,8 @@ def main(argv: list[str] | None = None) -> int:
         parse_key_chord(args.hotkey)
         if args.once:
             return run_once(args)
+        if not args.allow_live_send:
+            args.dry_run = True
         return run_watch(args)
     except (OcrWatcherError, OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
