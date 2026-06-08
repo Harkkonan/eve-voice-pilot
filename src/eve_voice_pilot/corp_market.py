@@ -87,6 +87,7 @@ MAX_FLIGHT_HAUL_SCAN_TYPES = 240
 MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES = 30
 MAX_FLIGHT_ACQUISITION_SCAN_TYPES = 50
 MAX_FLIGHT_ACQUISITION_FETCH_WORKERS = 6
+MAX_FLIGHT_HAUL_FETCH_WORKERS = 6
 MAX_HAUL_MARKET_GROUP_IDS = 32
 MAX_HAUL_MARKET_TYPE_IDS = MAX_FLIGHT_HAUL_SCAN_TYPES
 MAX_FLIGHT_HAUL_OPPORTUNITIES = 20
@@ -6584,6 +6585,59 @@ def scan_route_hauling_opportunities(
         scanned_materials=len(scan_targets),
         min_detour_margin_percent=clean_min_detour_margin_percent,
     )
+    if progress is not None:
+        progress(
+            "orders",
+            {
+                "scanned_materials": len(scan_targets),
+                "message": f"Fetching destination buy orders for {len(scan_targets)} item types.",
+            },
+        )
+    raw_destination_buys_by_type, batch_errors = fetch_haul_destination_buy_batch(
+        config=config,
+        targets=scan_targets,
+        destination_region_id=destination.region_id,
+    )
+    errors.extend(batch_errors)
+    buy_orders_by_type: dict[int, list[dict[str, Any]]] = {}
+    destination_demand_type_ids: list[int] = []
+    for target in scan_targets:
+        type_id = int(target["type_id"])
+        buy_orders = []
+        for order in raw_destination_buys_by_type.get(type_id, []):
+            record = build_reachable_market_order_record(
+                order,
+                systems=systems,
+                jump_distances={destination_solar_system_id: route_jumps},
+                region_id=destination.region_id,
+                order_type="buy",
+            )
+            if record is not None:
+                buy_orders.append(record)
+        buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
+        total_buy_order_count += len(buy_orders)
+        buy_orders_by_type[type_id] = buy_orders
+        if buy_orders:
+            destination_demand_type_ids.append(type_id)
+    if progress is not None:
+        progress(
+            "orders",
+            {
+                "scanned_materials": len(scan_targets),
+                "destination_demand_item_types": len(destination_demand_type_ids),
+                "pickup_region_count": len(scan_pickup_region_ids),
+                "message": (
+                    f"Fetching pickup sell orders for {len(destination_demand_type_ids)} item types "
+                    f"across {len(scan_pickup_region_ids)} pickup regions."
+                ),
+            },
+        )
+    pickup_sells_by_type_region, batch_errors = fetch_haul_pickup_sell_batch(
+        config=config,
+        type_ids=destination_demand_type_ids,
+        pickup_region_ids=scan_pickup_region_ids,
+    )
+    errors.extend(batch_errors)
     for target_index, target in enumerate(scan_targets, start=1):
         type_id = int(target["type_id"])
         if progress is not None:
@@ -6597,26 +6651,7 @@ def scan_route_hauling_opportunities(
                     "message": f"Pricing {target['name']}",
                 },
             )
-        try:
-            raw_buy_orders = fetch_market_buy_orders(config, region_id=destination.region_id, type_id=type_id)
-        except CorpMarketError as exc:
-            errors.append(
-                {"order_type": "buy", "type_id": type_id, "region_id": destination.region_id, "error": str(exc)}
-            )
-            raw_buy_orders = []
-        buy_orders = []
-        for order in raw_buy_orders:
-            record = build_reachable_market_order_record(
-                order,
-                systems=systems,
-                jump_distances={destination_solar_system_id: route_jumps},
-                region_id=destination.region_id,
-                order_type="buy",
-            )
-            if record is not None:
-                buy_orders.append(record)
-        buy_orders.sort(key=lambda item: market_order_sort_key(item, order_type="buy"))
-        total_buy_order_count += len(buy_orders)
+        buy_orders = buy_orders_by_type.get(type_id, [])
         if not buy_orders:
             no_destination_buy_order_count += 1
             destination_demand_gated_count += max(0, len(scan_pickup_region_ids))
@@ -6635,11 +6670,7 @@ def scan_route_hauling_opportunities(
 
         sell_orders = []
         for region_id in scan_pickup_region_ids:
-            try:
-                raw_orders = fetch_market_sell_orders(config, region_id=region_id, type_id=type_id)
-            except CorpMarketError as exc:
-                errors.append({"order_type": "sell", "type_id": type_id, "region_id": region_id, "error": str(exc)})
-                continue
+            raw_orders = pickup_sells_by_type_region.get((type_id, int(region_id)), [])
             for order in raw_orders:
                 record = build_reachable_market_order_record(
                     order,
@@ -7117,6 +7148,88 @@ def build_haul_load_plan(
         "skipped_low_profit_count": skipped_low_profit_count,
         "source_depth_truncated": source_depth_truncated,
     }
+
+
+def fetch_haul_destination_buy_batch(
+    *,
+    config: EveSsoConfig,
+    targets: Iterable[Mapping[str, Any]],
+    destination_region_id: int,
+) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    buys_by_type_id: dict[int, list[dict[str, Any]]] = {}
+    errors: list[dict[str, Any]] = []
+    type_ids: list[int] = []
+    seen_type_ids: set[int] = set()
+    for target in targets:
+        type_id = clean_optional_int(target.get("type_id"))
+        if type_id is None or type_id in seen_type_ids:
+            continue
+        seen_type_ids.add(type_id)
+        type_ids.append(type_id)
+    if not type_ids:
+        return buys_by_type_id, errors
+
+    clean_destination_region_id = int(destination_region_id)
+    worker_count = max(1, min(MAX_FLIGHT_HAUL_FETCH_WORKERS, len(type_ids)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(
+                fetch_market_buy_orders,
+                config,
+                region_id=clean_destination_region_id,
+                type_id=type_id,
+            ): type_id
+            for type_id in type_ids
+        }
+        for future in as_completed(futures):
+            type_id = futures[future]
+            try:
+                buys_by_type_id[type_id] = future.result()
+            except CorpMarketError as exc:
+                errors.append(
+                    {
+                        "order_type": "buy",
+                        "type_id": type_id,
+                        "region_id": clean_destination_region_id,
+                        "error": str(exc),
+                    }
+                )
+                buys_by_type_id[type_id] = []
+    return buys_by_type_id, errors
+
+
+def fetch_haul_pickup_sell_batch(
+    *,
+    config: EveSsoConfig,
+    type_ids: Iterable[int],
+    pickup_region_ids: Iterable[int],
+) -> tuple[dict[tuple[int, int], list[dict[str, Any]]], list[dict[str, Any]]]:
+    sells_by_type_region: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    errors: list[dict[str, Any]] = []
+    clean_type_ids = tuple(
+        sorted({type_id for value in type_ids for type_id in [clean_optional_int(value)] if type_id is not None})
+    )
+    clean_region_ids = tuple(
+        sorted({region_id for value in pickup_region_ids for region_id in [clean_optional_int(value)] if region_id is not None})
+    )
+    tasks = [(type_id, region_id) for type_id in clean_type_ids for region_id in clean_region_ids]
+    if not tasks:
+        return sells_by_type_region, errors
+
+    worker_count = max(1, min(MAX_FLIGHT_HAUL_FETCH_WORKERS, len(tasks)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(fetch_market_sell_orders, config, region_id=region_id, type_id=type_id): (type_id, region_id)
+            for type_id, region_id in tasks
+        }
+        for future in as_completed(futures):
+            type_id, region_id = futures[future]
+            try:
+                sells_by_type_region[(type_id, region_id)] = future.result()
+            except CorpMarketError as exc:
+                errors.append({"order_type": "sell", "type_id": type_id, "region_id": region_id, "error": str(exc)})
+                sells_by_type_region[(type_id, region_id)] = []
+    return sells_by_type_region, errors
 
 
 def fetch_acquisition_order_batch(
