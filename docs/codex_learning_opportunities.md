@@ -32,6 +32,16 @@ For every useful teaching prompt that is skipped or deferred, capture:
 
 The context should be enough to teach from without the transcript. The transcript pointer is only a bonus.
 
+## Agent Update Rule
+
+When an agent offers Brian a teaching question or learning opportunity in this project, the agent should append it to the ignored local ledger:
+
+```text
+local_archives/codex_learning_opportunities.md
+```
+
+Do this at the time the question is asked or when Brian asks to preserve it. The entry should be useful even if the Codex transcript is missing, so include the work context and search hints instead of only the question text.
+
 ## Codex Chat Log Lookup Notes
 
 Codex chat/session records may exist locally, but they should not be treated as guaranteed source material. If they exist, likely places to check are:

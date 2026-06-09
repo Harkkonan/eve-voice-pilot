@@ -55,6 +55,7 @@ This project should stay on the conservative side of EVE third-party-tool rules.
 - Keep user-facing text beginner-friendly and practical.
 - Keep code comments sparse and useful.
 - Stay inside the current checkout unless the user explicitly names another path.
+- When offering Brian a teaching question or learning opportunity in this project, append it to the ignored local ledger at `local_archives/codex_learning_opportunities.md` with the question, work context, why it matters, relevant files or commands, and transcript lookup hints. Keep tracked docs public-safe.
 
 ## Common Commands
 
