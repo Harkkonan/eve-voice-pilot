@@ -122,10 +122,13 @@ EXPECTED_REALIZED_REPORT_COLUMNS = (
     "Expected Total Cost",
     "Estimated Total ISK Needed",
     "Expected Total Return",
+    "Expected Sales Tax ISK",
     "Realized Total Return",
     "Expected Total Profit",
     "Realized Total Profit",
     "Profit Difference",
+    "Expected Route Jumps",
+    "Actual Route Jumps",
     "Actual Buy Order Total",
     "Actual Broker Fee Paid",
     "Actual Total Cost",
@@ -8082,6 +8085,7 @@ def build_haul_expected_realized_report_rows(
     destination_name = str(destination.get("name") or route.get("destination_query") or "destination")
     rows: list[dict[str, Any]] = []
     load_plan_keys = haul_report_load_plan_keys(load_plan)
+    route_jumps = clean_optional_int(route.get("route_jumps"))
     if opportunities:
         for opportunity in opportunities:
             units = clean_optional_float(opportunity.get("units"))
@@ -8099,28 +8103,45 @@ def build_haul_expected_realized_report_rows(
             )
             risk_level = str(opportunity.get("risk_level") or "clear")
             matched_pickup_count = clean_optional_int(opportunity.get("matched_pickup_system_count")) or 0
+            expected_sales_tax = clean_optional_float(opportunity.get("sales_tax_total"))
+            extra_route_jumps = clean_optional_int(opportunity.get("extra_route_jumps"))
+            expected_route_jumps = clean_optional_int(opportunity.get("matched_pickup_route_jumps"))
+            if expected_route_jumps is None and route_jumps is not None and extra_route_jumps is not None:
+                expected_route_jumps = route_jumps + extra_route_jumps
             in_load_plan = bool(haul_report_opportunity_key(opportunity) in load_plan_keys)
             status = "Planned" if in_load_plan else "Candidate"
             notes = (
                 f"Hauler visible opportunity from {origin_name} to {destination_name}; "
                 f"{matched_pickup_count} pickup system(s); risk {risk_level}; "
                 f"{'included in the current manual load plan' if in_load_plan else 'not selected into the current manual load plan'}; "
+                f"expected sales tax {format_isk(expected_sales_tax) if expected_sales_tax is not None else 'unknown'}; "
+                f"expected route {expected_route_jumps if expected_route_jumps is not None else 'unknown'} jumps; "
                 "verify live orders, docking access, and route in EVE before buying."
             )
-            rows.append(
-                build_expected_realized_report_row(
-                    date_created=generated_at,
-                    category="Haul",
-                    location_to_post_order=haul_report_opportunity_pickup_system_label(opportunity),
-                    order_type="Trade",
-                    item_name=str(opportunity.get("item_name") or ""),
-                    quantity=units,
-                    price_per_item=price_per_item,
-                    expected_return_per_item=expected_return_per_item,
-                    status=status,
-                    notes=notes,
-                )
+            row = build_expected_realized_report_row(
+                date_created=generated_at,
+                category="Haul",
+                location_to_post_order=haul_report_opportunity_pickup_system_label(opportunity),
+                order_type="Trade",
+                item_name=str(opportunity.get("item_name") or ""),
+                quantity=units,
+                price_per_item=price_per_item,
+                expected_return_per_item=expected_return_per_item,
+                status=status,
+                reason_for_entry=(
+                    f"Manual hauling arbitrage: buy at pickup sell orders, haul from {origin_name} "
+                    f"toward {destination_name}, then sell into destination buy orders if still available."
+                ),
+                verification_notes=(
+                    "Before buying, verify pickup price, quantity, min volume, docking access, route safety, "
+                    "destination buy price, destination demand quantity, and your sales tax. After the run, fill "
+                    "actual buy/order cost, actual filled quantity, realized return, actual route jumps, and lesson learned."
+                ),
+                notes=notes,
             )
+            row["Expected Sales Tax ISK"] = expected_realized_report_number(expected_sales_tax)
+            row["Expected Route Jumps"] = expected_realized_report_number(expected_route_jumps)
+            rows.append(row)
         return rows
 
     stops = list(load_plan.get("stops") or []) if isinstance(load_plan, Mapping) else []
@@ -8139,24 +8160,39 @@ def build_haul_expected_realized_report_rows(
         )
         risk_level = str(line.get("risk_level") or "clear")
         pickup_system_count = clean_optional_int(line.get("pickup_system_count")) or 0
+        expected_sales_tax = clean_optional_float(line.get("sales_tax_total"))
+        extra_route_jumps = clean_optional_int(line.get("extra_route_jumps"))
+        expected_route_jumps = route_jumps + extra_route_jumps if route_jumps is not None and extra_route_jumps is not None else None
         notes = (
             f"Hauler load-plan row from {origin_name} to {destination_name}; "
             f"{pickup_system_count} pickup system(s); risk {risk_level}; "
+            f"expected sales tax {format_isk(expected_sales_tax) if expected_sales_tax is not None else 'unknown'}; "
+            f"expected route {expected_route_jumps if expected_route_jumps is not None else 'unknown'} jumps; "
             "verify live orders, docking access, and route in EVE before buying."
         )
-        rows.append(
-            build_expected_realized_report_row(
-                date_created=generated_at,
-                category="Haul",
-                location_to_post_order=haul_report_pickup_system_label(line, stops),
-                order_type="Trade",
-                item_name=str(line.get("item_name") or ""),
-                quantity=units,
-                price_per_item=price_per_item,
-                expected_return_per_item=expected_return_per_item,
-                notes=notes,
-            )
+        row = build_expected_realized_report_row(
+            date_created=generated_at,
+            category="Haul",
+            location_to_post_order=haul_report_pickup_system_label(line, stops),
+            order_type="Trade",
+            item_name=str(line.get("item_name") or ""),
+            quantity=units,
+            price_per_item=price_per_item,
+            expected_return_per_item=expected_return_per_item,
+            reason_for_entry=(
+                f"Manual hauling load plan: buy at pickup sell orders, haul from {origin_name} "
+                f"toward {destination_name}, then sell into destination buy orders if still available."
+            ),
+            verification_notes=(
+                "Before buying, verify pickup price, quantity, min volume, docking access, route safety, "
+                "destination buy price, destination demand quantity, and your sales tax. After the run, fill "
+                "actual buy/order cost, actual filled quantity, realized return, actual route jumps, and lesson learned."
+            ),
+            notes=notes,
         )
+        row["Expected Sales Tax ISK"] = expected_realized_report_number(expected_sales_tax)
+        row["Expected Route Jumps"] = expected_realized_report_number(expected_route_jumps)
+        rows.append(row)
     return rows
 
 
@@ -21318,10 +21354,13 @@ help</textarea>
       "Expected Total Cost",
       "Estimated Total ISK Needed",
       "Expected Total Return",
+      "Expected Sales Tax ISK",
       "Realized Total Return",
       "Expected Total Profit",
       "Realized Total Profit",
       "Profit Difference",
+      "Expected Route Jumps",
+      "Actual Route Jumps",
       "Actual Buy Order Total",
       "Actual Broker Fee Paid",
       "Actual Total Cost",

@@ -1996,6 +1996,7 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
     route = {
         "origin": {"name": "Start"},
         "destination": {"name": "Jita"},
+        "route_jumps": 2,
     }
     hauling = {
         "opportunities": [
@@ -2007,6 +2008,9 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
                 "net_destination_revenue": 7488.4375,
                 "average_pickup_price": 2.2,
                 "average_net_destination_price": 7.4884375,
+                "sales_tax_total": 261.5625,
+                "matched_pickup_route_jumps": 4,
+                "extra_route_jumps": 2,
                 "risk_level": "clear",
                 "matched_pickup_system_count": 2,
                 "matched_pickup_systems": [
@@ -2022,6 +2026,9 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
                 "net_destination_revenue": 1300.0,
                 "average_pickup_price": 4.0,
                 "average_net_destination_price": 5.2,
+                "sales_tax_total": 25.0,
+                "matched_pickup_route_jumps": 3,
+                "extra_route_jumps": 1,
                 "risk_level": "caution",
                 "matched_pickup_system_count": 1,
                 "matched_pickup_systems": [{"system_name": "Amarr"}],
@@ -2072,11 +2079,18 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
     assert row["Price Per Item"] == pytest.approx(2.2)
     assert row["Expected Return Per Item"] == pytest.approx(7.4884375)
     assert row["Expected Total Cost"] == pytest.approx(2200.0)
+    assert row["Expected Sales Tax ISK"] == pytest.approx(261.5625)
+    assert row["Expected Route Jumps"] == 4
     assert row["Expected Total Profit"] == pytest.approx(5288.4375)
     assert row["Realized Return Per Item"] == ""
+    assert row["Actual Route Jumps"] == ""
+    assert "Manual hauling arbitrage" in row["Reason For Entry"]
+    assert "verify pickup price" in row["Verification Notes"]
     assert candidate_row["Status"] == "Candidate"
     assert candidate_row["Item Name"] == "Pyerite"
     assert candidate_row["Location to Post Order"] == "Amarr"
+    assert candidate_row["Expected Sales Tax ISK"] == pytest.approx(25.0)
+    assert candidate_row["Expected Route Jumps"] == 3
     assert candidate_row["Expected Total Profit"] == pytest.approx(300.0)
     assert "not selected into the current manual load plan" in candidate_row["Notes"]
 
