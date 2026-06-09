@@ -6990,9 +6990,20 @@ def scan_route_hauling_opportunities(
         pickup_system_id = int(sell_order["system_id"])
         origin_to_pickup = origin_distances.get(pickup_system_id)
         pickup_to_destination = destination_distances.get(pickup_system_id)
+        matched_pickup_system_ids = [
+            int(system.get("system_id") or 0)
+            for system in depth_match.get("matched_pickup_systems", [])
+            if int(system.get("system_id") or 0) > 0
+        ]
+        matched_pickup_route_jumps = shortest_route_jumps_via_systems(
+            start_system_id=origin_solar_system_id,
+            destination_system_id=destination_solar_system_id,
+            pickup_system_ids=matched_pickup_system_ids,
+            adjacency=adjacency,
+        )
         extra_route_jumps = None
-        if origin_to_pickup is not None and pickup_to_destination is not None:
-            extra_route_jumps = max(0, origin_to_pickup + pickup_to_destination - route_jumps)
+        if matched_pickup_route_jumps is not None:
+            extra_route_jumps = max(0, matched_pickup_route_jumps - route_jumps)
         margin_percent = profit_margin_percent(
             float(depth_match["net_profit_per_unit"]),
             float(depth_match["average_pickup_price"]),
@@ -7059,6 +7070,7 @@ def scan_route_hauling_opportunities(
                 "primary_pickup_detour_jumps": primary_pickup_detour_jumps,
                 "origin_to_pickup_jumps": origin_to_pickup,
                 "pickup_to_destination_jumps": pickup_to_destination,
+                "matched_pickup_route_jumps": matched_pickup_route_jumps,
                 "extra_route_jumps": extra_route_jumps,
                 "matched_sell_order_count": depth_match["matched_sell_order_count"],
                 "matched_buy_order_count": depth_match["matched_buy_order_count"],
@@ -10111,6 +10123,99 @@ def shortest_route_path(
                 return list(reversed(path))
             frontier.append(neighbor_id)
     return []
+
+
+def shortest_route_jumps_via_systems(
+    *,
+    start_system_id: int,
+    destination_system_id: int,
+    pickup_system_ids: Iterable[int],
+    adjacency: dict[int, tuple[int, ...]],
+) -> int | None:
+    if start_system_id <= 0 or destination_system_id <= 0:
+        return None
+    required_system_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_system_id in pickup_system_ids:
+        system_id = int(raw_system_id or 0)
+        if system_id <= 0 or system_id in {start_system_id, destination_system_id} or system_id in seen:
+            continue
+        seen.add(system_id)
+        required_system_ids.append(system_id)
+    if not required_system_ids:
+        path = shortest_route_path(
+            start_system_id=start_system_id,
+            destination_system_id=destination_system_id,
+            adjacency=adjacency,
+        )
+        return max(0, len(path) - 1) if path else None
+
+    nodes = [start_system_id, destination_system_id, *required_system_ids]
+    distances_by_node = {
+        node: jump_distances_from(start_system_id=node, adjacency=adjacency)
+        for node in nodes
+    }
+
+    if len(required_system_ids) > 10:
+        unvisited = set(required_system_ids)
+        current_system_id = start_system_id
+        route_jumps = 0
+        while unvisited:
+            distances = distances_by_node.get(current_system_id) or {}
+            reachable = [
+                (int(distances[system_id]), system_id)
+                for system_id in unvisited
+                if system_id in distances
+            ]
+            if not reachable:
+                return None
+            next_distance, next_system_id = min(reachable, key=lambda item: (item[0], item[1]))
+            route_jumps += next_distance
+            current_system_id = next_system_id
+            unvisited.remove(next_system_id)
+        destination_distance = distances_by_node.get(current_system_id, {}).get(destination_system_id)
+        if destination_distance is None:
+            return None
+        return route_jumps + int(destination_distance)
+
+    best_by_state: dict[tuple[int, int], int] = {}
+    for index, system_id in enumerate(required_system_ids):
+        distance = distances_by_node[start_system_id].get(system_id)
+        if distance is not None:
+            best_by_state[(1 << index, index)] = int(distance)
+
+    full_mask = (1 << len(required_system_ids)) - 1
+    for mask in range(1, full_mask + 1):
+        for last_index, last_system_id in enumerate(required_system_ids):
+            current_distance = best_by_state.get((mask, last_index))
+            if current_distance is None:
+                continue
+            distances = distances_by_node[last_system_id]
+            for next_index, next_system_id in enumerate(required_system_ids):
+                next_bit = 1 << next_index
+                if mask & next_bit:
+                    continue
+                leg_distance = distances.get(next_system_id)
+                if leg_distance is None:
+                    continue
+                next_state = (mask | next_bit, next_index)
+                next_distance = current_distance + int(leg_distance)
+                previous = best_by_state.get(next_state)
+                if previous is None or next_distance < previous:
+                    best_by_state[next_state] = next_distance
+
+    best_total: int | None = None
+    for last_index, last_system_id in enumerate(required_system_ids):
+        current_distance = best_by_state.get((full_mask, last_index))
+        if current_distance is None:
+            continue
+        destination_distance = distances_by_node[last_system_id].get(destination_system_id)
+        if destination_distance is None:
+            continue
+        total_distance = current_distance + int(destination_distance)
+        if best_total is None or total_distance < best_total:
+            best_total = total_distance
+    return best_total
 
 
 def route_corridor_systems(

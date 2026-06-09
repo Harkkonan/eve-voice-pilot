@@ -2267,6 +2267,23 @@ def test_haul_order_depth_skips_orders_that_cannot_meet_min_volume():
     assert "_depth_key" not in result["order_depth"][0]["destination_order"]
 
 
+def test_haul_pickup_route_jumps_visit_all_matched_pickup_systems():
+    route_jumps = corp_market.shortest_route_jumps_via_systems(
+        start_system_id=1,
+        destination_system_id=3,
+        pickup_system_ids=[4, 7],
+        adjacency={
+            1: (2, 7),
+            2: (1, 3, 4),
+            3: (2,),
+            4: (2,),
+            7: (1,),
+        },
+    )
+
+    assert route_jumps == 6
+
+
 def test_haul_scan_skips_pickup_regions_without_destination_demand(monkeypatch, tmp_path):
     route_cache = RouteGraphCache(
         path=tmp_path / "route.json",
@@ -4887,6 +4904,7 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert opportunity["order_depth"][2]["units"] == 400
     assert opportunity["pickup_detour_jumps"] == 1
     assert opportunity["primary_pickup_detour_jumps"] == 1
+    assert opportunity["matched_pickup_route_jumps"] == 4
     assert opportunity["extra_route_jumps"] == 2
     assert opportunity["average_pickup_price"] == pytest.approx(2.2)
     assert opportunity["average_destination_price"] == pytest.approx(7.75)
