@@ -150,6 +150,47 @@ def market_write_access_allowed(
     return is_loopback
 
 
+def admin_token_write_access_allowed(*, admin_token: str, auth_header: str, token_header: str) -> bool:
+    if not admin_token:
+        return False
+    return auth_header == f"Bearer {admin_token}" or token_header == admin_token
+
+
+def same_origin_write_allowed(
+    *,
+    origin_header: str,
+    referer_header: str,
+    host_header: str,
+    public_base_url: str,
+) -> bool:
+    allowed_hosts = {normalize_host_header(host_header)}
+    public_host = url_host(public_base_url)
+    if public_host:
+        allowed_hosts.add(public_host)
+    allowed_hosts.discard("")
+    if not allowed_hosts:
+        return False
+
+    origin_host = url_host(origin_header)
+    if origin_host:
+        return origin_host in allowed_hosts
+    referer_host = url_host(referer_header)
+    if referer_host:
+        return referer_host in allowed_hosts
+    return False
+
+
+def normalize_host_header(host_header: str) -> str:
+    return str(host_header or "").split(",", 1)[0].strip().lower()
+
+
+def url_host(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return ""
+    return parsed.netloc.lower()
+
+
 def request_cookie(handler: BaseHTTPRequestHandler, name: str) -> str:
     raw_cookie = handler.headers.get("Cookie", "")
     for part in raw_cookie.split(";"):

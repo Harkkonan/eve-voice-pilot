@@ -1122,6 +1122,21 @@ def clean_discord_webhook_destinations(
     return tuple(destinations)
 
 
+def discord_settings_payload_has_webhook_override(payload: Mapping[str, Any]) -> bool:
+    if clean_text(payload.get("webhook_url") or "", "Discord webhook URL", max_length=600):
+        return True
+    raw_destinations = payload.get("webhook_destinations")
+    if isinstance(raw_destinations, Iterable) and not isinstance(raw_destinations, (str, bytes, bytearray, Mapping)):
+        for raw_destination in raw_destinations:
+            if isinstance(raw_destination, Mapping) and clean_text(
+                raw_destination.get("webhook_url") or "",
+                "Discord webhook URL",
+                max_length=600,
+            ):
+                return True
+    return False
+
+
 def clean_discord_forum_tag_ids(value: Any) -> tuple[str, ...]:
     raw_values: Iterable[Any]
     if isinstance(value, str):

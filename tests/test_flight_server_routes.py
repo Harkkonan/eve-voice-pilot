@@ -14,9 +14,11 @@ from eve_voice_pilot.flight_server_routes import (
     flight_member_access_error,
     flight_session_cookie_header,
     flight_session_has_member_access,
+    admin_token_write_access_allowed,
     market_write_access_allowed,
     public_hosting_config_errors,
     request_path,
+    same_origin_write_allowed,
 )
 
 
@@ -91,4 +93,47 @@ def test_public_hosting_helpers_keep_https_sso_and_cookie_rules():
         admin_token="",
         auth_header="",
         token_header="",
+    )
+
+
+def test_admin_token_and_same_origin_helpers_cover_public_writes():
+    assert admin_token_write_access_allowed(
+        admin_token="secret",
+        auth_header="Bearer secret",
+        token_header="",
+    )
+    assert admin_token_write_access_allowed(
+        admin_token="secret",
+        auth_header="",
+        token_header="secret",
+    )
+    assert not admin_token_write_access_allowed(
+        admin_token="secret",
+        auth_header="",
+        token_header="wrong",
+    )
+
+    assert same_origin_write_allowed(
+        origin_header="http://127.0.0.1:8770",
+        referer_header="",
+        host_header="127.0.0.1:8770",
+        public_base_url="https://flight.example.test",
+    )
+    assert same_origin_write_allowed(
+        origin_header="https://flight.example.test",
+        referer_header="",
+        host_header="127.0.0.1:8770",
+        public_base_url="https://flight.example.test",
+    )
+    assert not same_origin_write_allowed(
+        origin_header="https://attacker.example.test",
+        referer_header="",
+        host_header="127.0.0.1:8770",
+        public_base_url="https://flight.example.test",
+    )
+    assert not same_origin_write_allowed(
+        origin_header="",
+        referer_header="",
+        host_header="127.0.0.1:8770",
+        public_base_url="https://flight.example.test",
     )

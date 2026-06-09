@@ -47,6 +47,7 @@ from eve_voice_pilot.corp_intel import (
 )
 from eve_voice_pilot.flight_server_routes import (
     FLIGHT_SESSION_COOKIE_NAME,
+    admin_token_write_access_allowed,
     clear_flight_session_cookie_header,
     default_flight_callback_url,
     dispatch_flight_get_route,
@@ -60,6 +61,7 @@ from eve_voice_pilot.flight_server_routes import (
     public_hosting_config_errors,
     request_cookie,
     request_path,
+    same_origin_write_allowed,
     should_secure_flight_cookie,
     verified_pilot_has_member_access,
 )
@@ -1625,6 +1627,7 @@ default_discord_post_settings = discord_posting.default_discord_post_settings
 default_discord_fitting_post_settings = discord_posting.default_discord_fitting_post_settings
 clean_discord_post_settings_payload = discord_posting.clean_discord_post_settings_payload
 clean_discord_fitting_post_settings_payload = discord_posting.clean_discord_fitting_post_settings_payload
+discord_settings_payload_has_webhook_override = discord_posting.discord_settings_payload_has_webhook_override
 save_discord_fitting_post_settings = discord_posting.save_discord_fitting_post_settings
 redacted_discord_webhook_url = discord_posting.redacted_discord_webhook_url
 effective_discord_post_settings = discord_posting.effective_discord_post_settings
@@ -11985,9 +11988,16 @@ def build_http_server(
                     return
                 self._handle_fitting_list()
                 return
+            if path == "/api/flight/diagnostics":
+                if not self._require_public_read_access():
+                    return
+                self._handle_flight_diagnostics()
+                return
             if dispatch_flight_get_route(self, path):
                 return
             if path == "/api/ui-performance":
+                if not self._require_public_read_access():
+                    return
                 self._handle_ui_performance_snapshot()
                 return
             if path.startswith("/api/offers/") and path.endswith("/mail"):
@@ -12028,22 +12038,22 @@ def build_http_server(
                 self._handle_fitting_create()
                 return
             if path == "/api/discord-alerts/settings":
-                if not self._require_write_access():
+                if not self._require_admin_write_access("Discord alert settings"):
                     return
                 self._handle_discord_alert_settings_save()
                 return
             if path == "/api/discord-alerts/test":
-                if not self._require_write_access():
+                if not self._require_admin_write_access("Discord alert test"):
                     return
                 self._handle_discord_alert_test()
                 return
             if path == "/api/discord-post/settings":
-                if not self._require_write_access():
+                if not self._require_admin_write_access("Discord post settings"):
                     return
                 self._handle_discord_post_settings_save()
                 return
             if path == "/api/fitting-discord/settings":
-                if not self._require_write_access():
+                if not self._require_admin_write_access("Fittings Discord settings"):
                     return
                 self._handle_fitting_discord_settings_save()
                 return
@@ -12080,6 +12090,8 @@ def build_http_server(
                 self._handle_fitting_status(path)
                 return
             if path == "/api/ui-performance":
+                if not self._require_public_read_access():
+                    return
                 self._handle_ui_performance_record()
                 return
             self.send_error(404, "Not found")
@@ -12325,6 +12337,19 @@ def build_http_server(
             try:
                 existing_settings, effective_settings = self._load_effective_discord_post_settings()
                 raw_settings = payload.get("settings")
+                send = query_bool(payload.get("send"), default=False)
+                if send and not self._require_write_access():
+                    return
+                if (
+                    send
+                    and public_hosting_mode
+                    and isinstance(raw_settings, Mapping)
+                    and not self._request_has_admin_token()
+                    and discord_settings_payload_has_webhook_override(raw_settings)
+                ):
+                    raise CorpMarketError(
+                        "Public hosting mode requires the market admin token for per-request Discord webhook overrides."
+                    )
                 if isinstance(raw_settings, Mapping):
                     effective_settings = clean_discord_post_settings_payload(raw_settings, existing=effective_settings)
                 raw_post = payload.get("post", payload)
@@ -12332,11 +12357,8 @@ def build_http_server(
                     raise ValueError("Direct Discord post must be a JSON object.")
                 post = clean_direct_discord_post_payload(raw_post)
                 preview_payload = build_direct_discord_post_payload(post, effective_settings)
-                send = query_bool(payload.get("send"), default=False)
                 result = None
                 if send:
-                    if not self._require_write_access():
-                        return
                     if not effective_settings.webhook_url:
                         raise CorpMarketError("Discord webhook is not configured for direct posts.")
                     result = post_discord_webhook(
@@ -13055,6 +13077,15 @@ def build_http_server(
                 fitting = store.get_shared_fitting(fitting_id)
                 _settings, effective_settings = self._load_effective_discord_fitting_post_settings()
                 raw_settings = payload.get("settings") if isinstance(payload, Mapping) else None
+                if (
+                    public_hosting_mode
+                    and isinstance(raw_settings, Mapping)
+                    and not self._request_has_admin_token()
+                    and discord_settings_payload_has_webhook_override(raw_settings)
+                ):
+                    raise CorpMarketError(
+                        "Public hosting mode requires the market admin token for per-request Discord webhook overrides."
+                    )
                 if isinstance(raw_settings, Mapping):
                     effective_settings = clean_discord_fitting_post_settings_payload(raw_settings, existing=effective_settings)
                 if not effective_settings.webhook_url:
@@ -13170,6 +13201,8 @@ def build_http_server(
             if "application/json" not in content_type.lower():
                 raise ValueError("Content-Type must be application/json.")
             content_length = int(self.headers.get("Content-Length") or "0")
+            if content_length < 0:
+                raise ValueError("Content-Length cannot be negative.")
             if content_length > MAX_JSON_BODY_BYTES:
                 raise ValueError(f"Request body is too large; limit is {MAX_JSON_BODY_BYTES} bytes.")
             body = self.rfile.read(content_length)
@@ -13180,11 +13213,29 @@ def build_http_server(
         def _require_write_access(self) -> bool:
             auth = self.headers.get("Authorization", "")
             token = self.headers.get("X-Admin-Token", "") or self.headers.get("X-Market-Token", "")
+            admin_authenticated = self._request_has_admin_token()
             trusted_member = (
                 sso_config.trusted_members_can_edit
                 and sso_config.membership_restricted
                 and flight_session_has_member_access(sso_config, self._flight_session())
             )
+            if (
+                public_hosting_mode
+                and trusted_member
+                and not admin_authenticated
+                and not self._has_same_origin_write_context()
+            ):
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": (
+                            "Public hosting mode requires same-origin browser context for SSO-member writes. "
+                            "Refresh the public Flight Attendant page and try again."
+                        ),
+                    },
+                    status=403,
+                )
+                return False
             if market_write_access_allowed(
                 is_loopback=request_is_loopback(self),
                 public_hosting_mode=public_hosting_mode,
@@ -13209,6 +13260,38 @@ def build_http_server(
             self._send_json({"ok": False, "error": error}, status=403)
             return False
 
+        def _require_admin_write_access(self, action: str) -> bool:
+            if not public_hosting_mode:
+                return self._require_write_access()
+            if self._request_has_admin_token():
+                return True
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": (
+                        f"Public hosting mode requires the market admin token for {action}. "
+                        "Trusted member market write access cannot change Discord webhooks or server settings."
+                    ),
+                },
+                status=403,
+            )
+            return False
+
+        def _request_has_admin_token(self) -> bool:
+            return admin_token_write_access_allowed(
+                admin_token=admin_token,
+                auth_header=self.headers.get("Authorization", ""),
+                token_header=self.headers.get("X-Admin-Token", "") or self.headers.get("X-Market-Token", ""),
+            )
+
+        def _has_same_origin_write_context(self) -> bool:
+            return same_origin_write_allowed(
+                origin_header=self.headers.get("Origin", ""),
+                referer_header=self.headers.get("Referer", ""),
+                host_header=self.headers.get("Host", ""),
+                public_base_url=public_base_url,
+            )
+
         def log_message(self, format: str, *args: Any) -> None:
             print(f"{self.address_string()} - {format % args}")
 
@@ -13217,6 +13300,7 @@ def build_http_server(
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
@@ -13225,6 +13309,7 @@ def build_http_server(
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
+            self._send_security_headers()
             self.end_headers()
 
         def _send_sse_event(self, event: str, payload: dict[str, Any]) -> None:
@@ -13243,6 +13328,7 @@ def build_http_server(
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
@@ -13257,13 +13343,21 @@ def build_http_server(
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "public, max-age=3600")
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
         def _redirect(self, url: str) -> None:
             self.send_response(302)
             self.send_header("Location", url)
+            self._send_security_headers()
             self.end_headers()
+
+        def _send_security_headers(self) -> None:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "same-origin")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 
     return ThreadingHTTPServer((host, port), CorpMarketHandler)
 

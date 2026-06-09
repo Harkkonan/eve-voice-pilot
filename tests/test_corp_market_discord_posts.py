@@ -18,7 +18,7 @@ WTS_TAG_ID = "333333333333333333"
 MINERALS_TAG_ID = "444444444444444444"
 
 
-def _start_public_discord_post_server(tmp_path):
+def _start_public_discord_post_server(tmp_path, *, trusted_members_can_edit=False, admin_token=""):
     store = MarketStore(tmp_path / "market.sqlite3")
     session_store = corp_market.FlightEsiSessionStore()
     pilot = corp_market.VerifiedPilot(
@@ -40,19 +40,26 @@ def _start_public_discord_post_server(tmp_path):
             client_secret="client-secret",
             callback_url="https://market.example.test/flight/callback",
             allowed_corporation_ids=(98811080,),
+            trusted_members_can_edit=trusted_members_can_edit,
         ),
         flight_session_store=session_store,
+        admin_token=admin_token,
+        discord_alert_settings_path=tmp_path / "corp_discord_alert_settings.json",
+        discord_post_settings_path=tmp_path / "corp_discord_post_settings.json",
+        discord_fitting_post_settings_path=tmp_path / "corp_fitting_discord_post_settings.json",
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread, session_id
 
 
-def _post_json(server, path, payload, *, session_id=""):
+def _post_json(server, path, payload, *, session_id="", extra_headers=None):
     host, port = server.server_address
     headers = {"Content-Type": "application/json"}
     if session_id:
         headers["Cookie"] = f"{corp_market.FLIGHT_SESSION_COOKIE_NAME}={session_id}"
+    if extra_headers:
+        headers.update(extra_headers)
     connection = http.client.HTTPConnection(host, port, timeout=5)
     try:
         connection.request("POST", path, body=json.dumps(payload), headers=headers)
@@ -65,6 +72,21 @@ def _post_json(server, path, payload, *, session_id=""):
     except json.JSONDecodeError:
         data = {}
     return response.status, data, body
+
+
+def _get(server, path, *, session_id=""):
+    host, port = server.server_address
+    headers = {}
+    if session_id:
+        headers["Cookie"] = f"{corp_market.FLIGHT_SESSION_COOKIE_NAME}={session_id}"
+    connection = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        connection.request("GET", path, headers=headers)
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+    finally:
+        connection.close()
+    return response.status, body
 
 
 def test_discord_post_settings_round_trip_redacts_webhook_from_response(tmp_path):
@@ -299,6 +321,142 @@ def test_direct_discord_post_send_still_requires_write_access_in_public_mode(tmp
     assert status == 403, body
     assert data["ok"] is False
     assert "--trusted-members-can-write-market" in data["error"]
+
+
+def test_public_trusted_member_cannot_change_discord_settings_without_admin_token(tmp_path):
+    server, thread, session_id = _start_public_discord_post_server(
+        tmp_path,
+        trusted_members_can_edit=True,
+    )
+    host, port = server.server_address
+    try:
+        status, data, body = _post_json(
+            server,
+            "/api/discord-post/settings",
+            {"settings": {"webhook_url": WEBHOOK_URL}},
+            session_id=session_id,
+            extra_headers={"Origin": f"http://{host}:{port}"},
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert status == 403, body
+    assert data["ok"] is False
+    assert "market admin token" in data["error"]
+    assert "Trusted member market write access cannot change Discord webhooks" in data["error"]
+
+
+def test_public_admin_token_can_change_discord_settings_without_member_cookie(tmp_path):
+    server, thread, _session_id = _start_public_discord_post_server(
+        tmp_path,
+        admin_token="admin-secret",
+    )
+    try:
+        status, data, body = _post_json(
+            server,
+            "/api/discord-post/settings",
+            {"settings": {"webhook_url": WEBHOOK_URL}},
+            extra_headers={"X-Admin-Token": "admin-secret"},
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert status == 200, body
+    assert data["ok"] is True
+    assert data["webhook_url_preview"] == "https://discord.com/api/webhooks/111111111111111111/..."
+    assert "test-token-value" not in json.dumps(data)
+
+
+def test_public_trusted_member_write_requires_same_origin_context(tmp_path):
+    server, thread, session_id = _start_public_discord_post_server(
+        tmp_path,
+        trusted_members_can_edit=True,
+    )
+    host, port = server.server_address
+    payload = {
+        "listing_type": "sell",
+        "item_name": "Venture",
+        "category": "ships",
+        "quantity": "1",
+        "unit_price": "1m",
+        "location": "Amarr",
+        "owner": "Dandin Ridderston",
+    }
+    try:
+        blocked_status, blocked_data, blocked_body = _post_json(
+            server,
+            "/api/offers",
+            payload,
+            session_id=session_id,
+        )
+        allowed_status, allowed_data, allowed_body = _post_json(
+            server,
+            "/api/offers",
+            payload,
+            session_id=session_id,
+            extra_headers={"Origin": f"http://{host}:{port}"},
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert blocked_status == 403, blocked_body
+    assert "same-origin" in blocked_data["error"]
+    assert allowed_status == 201, allowed_body
+    assert allowed_data["ok"] is True
+
+
+def test_public_diagnostics_require_member_read_access(tmp_path):
+    server, thread, session_id = _start_public_discord_post_server(tmp_path)
+    try:
+        blocked_status, blocked_body = _get(server, "/api/flight/diagnostics")
+        allowed_status, allowed_body = _get(server, "/api/flight/diagnostics", session_id=session_id)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert blocked_status == 403, blocked_body
+    assert allowed_status == 200, allowed_body
+
+
+def test_public_trusted_member_cannot_override_direct_post_webhook(tmp_path):
+    server, thread, session_id = _start_public_discord_post_server(
+        tmp_path,
+        trusted_members_can_edit=True,
+    )
+    host, port = server.server_address
+    try:
+        status, data, body = _post_json(
+            server,
+            "/api/discord-post/direct",
+            {
+                "send": True,
+                "settings": {"webhook_url": WEBHOOK_URL},
+                "post": {
+                    "post_type": "wtb",
+                    "category": "minerals",
+                    "item_name": "Isogen",
+                    "quantity": "1,000,000",
+                    "price_text": "290 ISK per unit",
+                },
+            },
+            session_id=session_id,
+            extra_headers={"Origin": f"http://{host}:{port}"},
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert status == 400, body
+    assert data["ok"] is False
+    assert "per-request Discord webhook overrides" in data["error"]
 
 
 def test_discord_market_listing_payload_accepts_sender_name(tmp_path):
