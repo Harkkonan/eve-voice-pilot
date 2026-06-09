@@ -1976,13 +1976,17 @@ def test_expected_realized_report_row_calculates_and_quotes_csv():
     assert row["Expected Total Return"] == pytest.approx(52.0)
     assert row["Expected Total Profit"] == pytest.approx(11.0)
     assert row["Buy Order Price To Enter"] == ""
+    assert row["Actual Buy Order Total"] == ""
     assert row["Actual Broker Fee Paid"] == ""
+    assert row["Actual Total Cost"] == ""
 
     csv_text = corp_market.spreadsheet_report_csv([row])
 
     assert csv_text.startswith("Date Created,Date Completed,Status,Category,Location to Post Order")
     assert "Buy Order Price To Enter" in csv_text
+    assert "Actual Buy Order Total" in csv_text
     assert "Actual Broker Fee Paid" in csv_text
+    assert "Actual Total Cost" in csv_text
     assert '"Amarr, Emperor Family Academy"' in csv_text
     assert '"Widget ""A"""' in csv_text
     assert '"verify, then ""sell"""' in csv_text
@@ -2084,6 +2088,7 @@ def test_acquisition_report_rows_use_committed_cost_basis():
     }
     acquisition = {
         "order_duration_days": 90,
+        "broker_fee_percent": 3.0,
         "portfolio": {
             "available": True,
             "lines": [
@@ -2097,7 +2102,6 @@ def test_acquisition_report_rows_use_committed_cost_basis():
                     "estimated_broker_fee": 17_250.0,
                     "estimated_isk_committed": 592_250.0,
                     "estimated_net_revenue": 750_000.0,
-                    "broker_fee_rate": 0.03,
                     "risk_level": "caution",
                 }
             ],

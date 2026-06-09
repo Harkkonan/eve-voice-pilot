@@ -121,8 +121,9 @@ EXPECTED_REALIZED_REPORT_COLUMNS = (
     "Expected Total Profit",
     "Realized Total Profit",
     "Profit Difference",
-    "Actual Buy Order Price",
+    "Actual Buy Order Total",
     "Actual Broker Fee Paid",
+    "Actual Total Cost",
     "Actual Filled Quantity",
     "Reason For Entry",
     "Verification Notes",
@@ -7510,8 +7511,9 @@ def build_expected_realized_report_row(
     buy_order_price_to_enter: Any = None,
     estimated_broker_fee_percent: Any = None,
     estimated_broker_fee_isk: Any = None,
-    actual_buy_order_price: Any = None,
+    actual_buy_order_total: Any = None,
     actual_broker_fee_paid: Any = None,
+    actual_total_cost: Any = None,
     actual_filled_quantity: Any = None,
     reason_for_entry: str = "",
     verification_notes: str = "",
@@ -7586,8 +7588,9 @@ def build_expected_realized_report_row(
             "Expected Total Profit": expected_realized_report_number(expected_total_profit),
             "Realized Total Profit": expected_realized_report_number(realized_total_profit),
             "Profit Difference": expected_realized_report_number(profit_difference),
-            "Actual Buy Order Price": expected_realized_report_number(actual_buy_order_price),
+            "Actual Buy Order Total": expected_realized_report_number(actual_buy_order_total),
             "Actual Broker Fee Paid": expected_realized_report_number(actual_broker_fee_paid),
+            "Actual Total Cost": expected_realized_report_number(actual_total_cost),
             "Actual Filled Quantity": expected_realized_report_number(actual_filled_quantity),
             "Reason For Entry": str(reason_for_entry or ""),
             "Verification Notes": str(verification_notes or ""),
@@ -7798,6 +7801,10 @@ def build_acquisition_expected_realized_report_rows(
         )
         placement_system = str(line.get("placement_system") or origin_name)
         broker_fee_rate = clean_optional_float(line.get("broker_fee_rate"))
+        if broker_fee_rate is None:
+            broker_fee_percent = clean_optional_float(acquisition.get("broker_fee_percent"))
+            if broker_fee_percent is not None:
+                broker_fee_rate = broker_fee_percent / 100.0
         estimated_broker_fee = clean_optional_float(line.get("estimated_broker_fee"))
         broker_fee_note = (
             f"{broker_fee_rate * 100.0:g}% estimated broker fee"
@@ -20276,8 +20283,9 @@ help</textarea>
       "Expected Total Profit",
       "Realized Total Profit",
       "Profit Difference",
-      "Actual Buy Order Price",
+      "Actual Buy Order Total",
       "Actual Broker Fee Paid",
+      "Actual Total Cost",
       "Actual Filled Quantity",
       "Reason For Entry",
       "Verification Notes",
