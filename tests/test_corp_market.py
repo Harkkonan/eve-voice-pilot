@@ -466,6 +466,23 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Buy Order Price To Enter" in page
     assert "Estimated Broker Fee ISK" in page
     assert "Reason For Entry" in page
+    assert "id=\"acq-post-test-review\" class=\"completed-run-review\"" in page
+    assert "Post-Test Review" in page
+    assert "id=\"acq-post-test-csv\"" in page
+    assert "id=\"acq-review-post-test\" class=\"secondary\" type=\"button\"" in page
+    assert "Review Portfolio Test" in page
+    assert "buildAcquisitionPostTestReview" in page
+    assert "renderAcquisitionPostTestReview" in page
+    assert "renderAcquisitionBeforeOrderChecklist" in page
+    assert "Before Placing Buy Orders" in page
+    assert "renderAcquisitionWhySelected" in page
+    assert "Why selected" in page
+    assert "renderAcquisitionExclusionLedger" in page
+    assert "Why excluded" in page
+    assert "Margin too low" in page
+    assert "Budget cap" in page
+    assert "Jump cap" in page
+    assert "History weakness" in page
     assert "id=\"haul-route-form\"" in page
     assert "id=\"haul-origin\"" in page
     assert "id=\"haul-origin-suggestions\"" in page
@@ -2029,6 +2046,39 @@ def test_acquisition_investment_portfolio_diversifies_budget_and_excludes_traps(
             "net_profit": 20_000_000.0,
             "margin_percent": 60.0,
         },
+        {
+            "type_id": 1000,
+            "item_name": "Too Far Away",
+            "source_labels": ["Speculation"],
+            "risk_level": "clear",
+            "range_recommendation": {"range": "5 jumps", "reason": "too wide"},
+            "recommended_units": 1,
+            "estimated_isk_committed": 1_000_000.0,
+            "net_profit": 500_000.0,
+            "margin_percent": 50.0,
+        },
+        {
+            "type_id": 1001,
+            "item_name": "Too Expensive",
+            "source_labels": ["Speculation"],
+            "risk_level": "clear",
+            "range_recommendation": {"range": "station", "reason": "expensive single unit"},
+            "recommended_units": 1,
+            "estimated_isk_committed": 200_000_000.0,
+            "net_profit": 50_000_000.0,
+            "margin_percent": 25.0,
+        },
+        {
+            "type_id": 1002,
+            "item_name": "Too Thin",
+            "source_labels": ["Speculation"],
+            "risk_level": "clear",
+            "range_recommendation": {"range": "station", "reason": "weak margin"},
+            "recommended_units": 1,
+            "estimated_isk_committed": 10_000_000.0,
+            "net_profit": -1.0,
+            "margin_percent": -1.0,
+        },
     ]
 
     portfolio = corp_market.build_acquisition_investment_portfolio(
@@ -2045,6 +2095,17 @@ def test_acquisition_investment_portfolio_diversifies_budget_and_excludes_traps(
     assert {line["category"] for line in portfolio["lines"]} == {"Common materials", "Modules"}
     assert all(line["risk_level"] != "possible-trap" for line in portfolio["lines"])
     assert any(line["recommended_units"] < line["original_recommended_units"] for line in portfolio["lines"])
+    assert {row["reason_key"] for row in portfolio["excluded_rows"]} >= {
+        "possible_trap",
+        "jump_cap",
+        "budget_cap",
+        "margin_too_low",
+    }
+    assert portfolio["excluded_reason_counts"]["possible_trap"] == 1
+    assert any(
+        row["item_name"] == "Too Far Away" and row["reason_label"] == "Jump cap"
+        for row in portfolio["excluded_rows"]
+    )
 
 
 def test_expected_realized_report_row_calculates_and_quotes_csv():

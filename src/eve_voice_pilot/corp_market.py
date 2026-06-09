@@ -9103,6 +9103,7 @@ def acquisition_portfolio_line(
         "original_recommended_units": original_units,
         "suggested_bid": opportunity.get("suggested_bid"),
         "max_safe_bid": opportunity.get("max_safe_bid"),
+        "broker_fee_rate": opportunity.get("broker_fee_rate"),
         "estimated_bid_total": scaled_value("estimated_bid_total"),
         "estimated_broker_fee": scaled_value("estimated_broker_fee"),
         "estimated_isk_committed": estimated_isk_committed,
@@ -9122,6 +9123,36 @@ def acquisition_portfolio_line(
     }
 
 
+def acquisition_portfolio_exclusion_row(
+    opportunity: Mapping[str, Any],
+    *,
+    reason_key: str,
+    reason_label: str,
+    detail: str,
+    category: str | None = None,
+    jump_cost: int | None = None,
+    unit_commitment: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "type_id": opportunity.get("type_id"),
+        "item_name": opportunity.get("item_name"),
+        "category": category or acquisition_portfolio_category(opportunity),
+        "reason_key": reason_key,
+        "reason_label": reason_label,
+        "detail": detail,
+        "risk_level": opportunity.get("risk_level"),
+        "suggested_bid": opportunity.get("suggested_bid"),
+        "max_safe_bid": opportunity.get("max_safe_bid"),
+        "recommended_units": opportunity.get("recommended_units"),
+        "estimated_isk_committed": opportunity.get("estimated_isk_committed"),
+        "unit_commitment": unit_commitment,
+        "net_profit": opportunity.get("net_profit"),
+        "margin_percent": opportunity.get("margin_percent"),
+        "estimated_collection_jumps": jump_cost,
+        "history_flags": opportunity.get("history_flags"),
+    }
+
+
 def build_acquisition_investment_portfolio(
     *,
     opportunities: Iterable[dict[str, Any]],
@@ -9136,21 +9167,78 @@ def build_acquisition_investment_portfolio(
         1 for opportunity in ranked_opportunities if str(opportunity.get("risk_level") or "") == "possible-trap"
     )
     candidates = []
+    excluded_rows: list[dict[str, Any]] = []
     for index, opportunity in enumerate(ranked_opportunities):
         risk_level = str(opportunity.get("risk_level") or "")
         if risk_level == "possible-trap":
+            excluded_rows.append(
+                acquisition_portfolio_exclusion_row(
+                    opportunity,
+                    reason_key="possible_trap",
+                    reason_label="Possible trap",
+                    detail="Market history or price shape looked trap-like, so this row is not funded until manually verified.",
+                )
+            )
             continue
         recommended_units = clean_optional_int(opportunity.get("recommended_units")) or 0
         estimated_isk_committed = clean_optional_float(opportunity.get("estimated_isk_committed")) or 0.0
         net_profit = clean_optional_float(opportunity.get("net_profit")) or 0.0
-        if recommended_units <= 0 or estimated_isk_committed <= 0 or net_profit <= 0:
+        if recommended_units <= 0:
+            excluded_rows.append(
+                acquisition_portfolio_exclusion_row(
+                    opportunity,
+                    reason_key="history_weakness",
+                    reason_label="History weakness",
+                    detail="Recent market history did not support a first-order size.",
+                )
+            )
+            continue
+        if estimated_isk_committed <= 0:
+            excluded_rows.append(
+                acquisition_portfolio_exclusion_row(
+                    opportunity,
+                    reason_key="budget_cap",
+                    reason_label="Budget cap",
+                    detail="The planner could not calculate a positive committed cost for this order.",
+                )
+            )
+            continue
+        if net_profit <= 0:
+            excluded_rows.append(
+                acquisition_portfolio_exclusion_row(
+                    opportunity,
+                    reason_key="margin_too_low",
+                    reason_label="Margin too low",
+                    detail="After broker fee and sales tax, expected profit did not clear the required margin.",
+                )
+            )
             continue
         unit_commitment = estimated_isk_committed / recommended_units
         if unit_commitment <= 0 or unit_commitment > clean_budget:
+            excluded_rows.append(
+                acquisition_portfolio_exclusion_row(
+                    opportunity,
+                    reason_key="budget_cap",
+                    reason_label="Budget cap",
+                    detail="Even one filled unit would exceed the total investment budget.",
+                    unit_commitment=unit_commitment,
+                )
+            )
             continue
         category = acquisition_portfolio_category(opportunity)
         jump_cost = acquisition_portfolio_jump_cost(opportunity, fallback_pickup_jumps=pickup_jumps)
         if jump_cost > clean_max_jumps:
+            excluded_rows.append(
+                acquisition_portfolio_exclusion_row(
+                    opportunity,
+                    reason_key="jump_cap",
+                    reason_label="Jump cap",
+                    detail="The recommended collection range would exceed the total portfolio jump budget.",
+                    category=category,
+                    jump_cost=jump_cost,
+                    unit_commitment=unit_commitment,
+                )
+            )
             continue
         candidates.append(
             {
@@ -9180,6 +9268,8 @@ def build_acquisition_investment_portfolio(
             "possible_trap_excluded_count": possible_trap_excluded_count,
             "caution_line_count": 0,
             "category_allocations": [],
+            "excluded_rows": excluded_rows,
+            "excluded_reason_counts": acquisition_exclusion_reason_counts(excluded_rows),
             "lines": [],
             "manual_note": (
                 "No clear or caution opportunities fit the portfolio budget and jump budget. Possible trap rows are "
@@ -9268,6 +9358,49 @@ def build_acquisition_investment_portfolio(
             if len(lines) >= MAX_ACQUISITION_PORTFOLIO_LINES:
                 break
 
+    for candidate in candidates:
+        if int(candidate["index"]) in selected_indexes:
+            continue
+        opportunity = candidate["opportunity"]
+        category = str(candidate["category"])
+        jump_cost = int(candidate["jump_cost"])
+        unit_commitment = float(candidate["unit_commitment"])
+        if len(lines) >= MAX_ACQUISITION_PORTFOLIO_LINES:
+            reason_key = "line_cap"
+            reason_label = "Line cap"
+            detail = "The diversified portfolio hit the maximum number of funded lines."
+        elif used_jumps + jump_cost > clean_max_jumps:
+            reason_key = "jump_cap"
+            reason_label = "Jump cap"
+            detail = "Adding this row would exceed the remaining portfolio jump budget."
+        elif unit_commitment > remaining_budget:
+            reason_key = "budget_cap"
+            reason_label = "Budget cap"
+            detail = "The remaining investment budget could not fund even one more unit."
+        elif target_category_count > 1 and category_spend.get(category, 0.0) >= category_budget_cap:
+            reason_key = "budget_cap"
+            reason_label = "Budget cap"
+            detail = "This category already reached its diversification budget cap."
+        elif str(opportunity.get("risk_level") or "") == "caution":
+            reason_key = "history_weakness"
+            reason_label = "History weakness"
+            detail = "A caution-level history signal made this lower priority than clearer funded rows."
+        else:
+            reason_key = "margin_too_low"
+            reason_label = "Margin too low"
+            detail = "This row ranked below funded alternatives on expected profit, margin, or risk."
+        excluded_rows.append(
+            acquisition_portfolio_exclusion_row(
+                opportunity,
+                reason_key=reason_key,
+                reason_label=reason_label,
+                detail=detail,
+                category=category,
+                jump_cost=jump_cost,
+                unit_commitment=unit_commitment,
+            )
+        )
+
     invested_isk = sum(float(line["estimated_isk_committed"]) for line in lines)
     estimated_net_profit = sum(float(line["net_profit"]) for line in lines)
     category_allocations = []
@@ -9303,6 +9436,8 @@ def build_acquisition_investment_portfolio(
         "possible_trap_excluded_count": possible_trap_excluded_count,
         "caution_line_count": sum(1 for line in lines if str(line.get("risk_level") or "") == "caution"),
         "category_allocations": category_allocations,
+        "excluded_rows": excluded_rows,
+        "excluded_reason_counts": acquisition_exclusion_reason_counts(excluded_rows),
         "lines": lines,
         "manual_note": (
             "Portfolio lines spread the total ISK budget across item families and exclude Possible trap rows from "
@@ -9310,6 +9445,14 @@ def build_acquisition_investment_portfolio(
             "depend on where future buy-order fills land."
         ),
     }
+
+
+def acquisition_exclusion_reason_counts(rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("reason_key") or "other")
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def market_history_stats(history: Iterable[dict[str, Any]], *, days: int = 30) -> dict[str, Any]:
@@ -20830,6 +20973,21 @@ help</textarea>
                     </div>
                   </div>
                   <div id="acq-report-preview" class="spreadsheet-report-preview"></div>
+                  <div id="acq-post-test-review" class="completed-run-review">
+                    <div>
+                      <strong>Post-Test Review</strong>
+                      <div class="meta">After placing buy orders, fill actual cost, broker fee, filled quantity, and realized profit in the CSV, then paste it here to see where the estimate was off.</div>
+                    </div>
+                    <label>Paste completed portfolio CSV
+                      <textarea id="acq-post-test-csv" rows="4" spellcheck="false" placeholder="Paste the completed CSV after filling Actual Buy Order Total, Actual Broker Fee Paid, Actual Total Cost, Actual Filled Quantity, and Realized Total Profit"></textarea>
+                    </label>
+                    <div class="completed-run-actions">
+                      <button id="acq-review-post-test" class="secondary" type="button">Review Portfolio Test</button>
+                      <button id="acq-clear-post-test" class="ghost" type="button">Clear Review</button>
+                      <span id="acq-post-test-status" class="meta quickbar-copy-status" aria-live="polite">No portfolio test reviewed yet.</span>
+                    </div>
+                    <div id="acq-post-test-results" class="decision-output"></div>
+                  </div>
                 </div>
                 <div id="acq-results" class="decision-output"></div>
               </div>
@@ -21601,6 +21759,11 @@ help</textarea>
     const acqReportPanel = document.querySelector("#acq-report-panel");
     const acqReportStatus = document.querySelector("#acq-report-status");
     const acqReportPreview = document.querySelector("#acq-report-preview");
+    const acqPostTestCsv = document.querySelector("#acq-post-test-csv");
+    const acqReviewPostTestButton = document.querySelector("#acq-review-post-test");
+    const acqClearPostTestButton = document.querySelector("#acq-clear-post-test");
+    const acqPostTestStatus = document.querySelector("#acq-post-test-status");
+    const acqPostTestResults = document.querySelector("#acq-post-test-results");
     const acqResults = document.querySelector("#acq-results");
     const tradePnlForm = document.querySelector("#trade-pnl-form");
     const tradePnlWindowHours = document.querySelector("#trade-pnl-window-hours");
@@ -22915,6 +23078,7 @@ help</textarea>
       if (source.panel) source.panel.hidden = cleanRows.length === 0;
       if (source.preview) source.preview.innerHTML = renderReportPreview(cleanRows);
       if (kind === "hauling") resetHaulCompletedRunReview(false);
+      if (kind === "acquisition") resetAcquisitionPostTestReview(false);
       if (!cleanRows.length) {
         setReportStatus(source.status, "");
         return;
@@ -23134,6 +23298,149 @@ help</textarea>
       setReportStatus(
         haulCompletedRunStatus,
         `Reviewed ${formatNumber(summary.rows.length)} completed hauler row${summary.rows.length === 1 ? "" : "s"}; ${formatNumber(summary.actualProfitRows)} had actual profit.${missingNote}`,
+      );
+    }
+
+    function buildAcquisitionPostTestReview(completedRows, expectedRows) {
+      const expectedLookup = expectedRowLookup(expectedRows);
+      const rowReviews = completedRows.map((completed, index) => {
+        const expected = expectedLookup.get(haulCompletedRunKey(completed)) || expectedRows[index] || completed;
+        const expectedCost = parseReportNumber(expected?.["Expected Total Cost"]) ?? parseReportNumber(completed?.["Expected Total Cost"]);
+        const actualBuyTotal = parseReportNumber(completed?.["Actual Buy Order Total"])
+          ?? parseReportNumber(completed?.["Actual Buy Order Price"]);
+        const actualBrokerFee = parseReportNumber(completed?.["Actual Broker Fee Paid"]);
+        const actualTotalCost = parseReportNumber(completed?.["Actual Total Cost"])
+          ?? parseReportNumber(completed?.["Actual total cost 2.4% broker"])
+          ?? (actualBuyTotal == null && actualBrokerFee == null ? null : (actualBuyTotal || 0) + (actualBrokerFee || 0));
+        const expectedBrokerFee = parseReportNumber(expected?.["Estimated Broker Fee ISK"]) ?? parseReportNumber(completed?.["Estimated Broker Fee ISK"]);
+        const expectedQuantity = parseReportNumber(expected?.["Quantity"]) ?? parseReportNumber(completed?.["Quantity"]);
+        const actualQuantity = parseReportNumber(completed?.["Actual Filled Quantity"]);
+        const expectedProfit = parseReportNumber(expected?.["Expected Total Profit"]) ?? parseReportNumber(completed?.["Expected Total Profit"]);
+        const actualProfit = derivedActualProfit(completed);
+        const costDelta = expectedCost == null || actualTotalCost == null ? null : actualTotalCost - expectedCost;
+        const feeDelta = expectedBrokerFee == null || actualBrokerFee == null ? null : actualBrokerFee - expectedBrokerFee;
+        const fillDelta = expectedQuantity == null || actualQuantity == null ? null : actualQuantity - expectedQuantity;
+        const profitDelta = expectedProfit == null || actualProfit == null ? null : actualProfit - expectedProfit;
+        const actualFieldGroups = [
+          ["Actual Buy Order Total", "Actual Buy Order Price"],
+          ["Actual Broker Fee Paid"],
+          ["Actual Total Cost", "Actual total cost 2.4% broker"],
+          ["Actual Filled Quantity"],
+          ["Realized Total Profit"],
+        ];
+        const missingActuals = actualFieldGroups
+          .filter((columns) => !columns.some((column) => String(completed?.[column] || "").trim()))
+          .map((columns) => columns[0]);
+        return {
+          itemName: completed?.["Item Name"] || expected?.["Item Name"] || `Row ${index + 1}`,
+          expectedCost,
+          actualTotalCost,
+          costDelta,
+          expectedBrokerFee,
+          actualBrokerFee,
+          feeDelta,
+          expectedQuantity,
+          actualQuantity,
+          fillDelta,
+          expectedProfit,
+          actualProfit,
+          profitDelta,
+          missingActuals,
+        };
+      });
+      return rowReviews.reduce((summary, row) => {
+        summary.expectedCost += row.expectedCost == null ? 0 : row.expectedCost;
+        if (row.actualTotalCost != null) summary.actualCost += row.actualTotalCost;
+        summary.expectedFee += row.expectedBrokerFee == null ? 0 : row.expectedBrokerFee;
+        if (row.actualBrokerFee != null) summary.actualFee += row.actualBrokerFee;
+        summary.expectedQuantity += row.expectedQuantity == null ? 0 : row.expectedQuantity;
+        if (row.actualQuantity != null) summary.actualQuantity += row.actualQuantity;
+        summary.expectedProfit += row.expectedProfit == null ? 0 : row.expectedProfit;
+        if (row.actualProfit != null) summary.actualProfit += row.actualProfit;
+        summary.actualProfitRows += row.actualProfit == null ? 0 : 1;
+        summary.missingActualRows += row.missingActuals.length ? 1 : 0;
+        summary.rows.push(row);
+        return summary;
+      }, {
+        rows: [],
+        expectedCost: 0,
+        actualCost: 0,
+        expectedFee: 0,
+        actualFee: 0,
+        expectedQuantity: 0,
+        actualQuantity: 0,
+        expectedProfit: 0,
+        actualProfit: 0,
+        actualProfitRows: 0,
+        missingActualRows: 0,
+      });
+    }
+
+    function renderAcquisitionPostTestReview(summary) {
+      const costDelta = summary.actualCost - summary.expectedCost;
+      const feeDelta = summary.actualFee - summary.expectedFee;
+      const profitDelta = summary.actualProfit - summary.expectedProfit;
+      const fillRate = summary.expectedQuantity > 0 ? (summary.actualQuantity / summary.expectedQuantity) * 100 : null;
+      const rowList = summary.rows.slice(0, 20).map((row) => {
+        const costText = row.costDelta == null ? "Cost pending" : `${formatSignedIsk(row.costDelta)} cost delta`;
+        const feeText = row.feeDelta == null ? "Fee pending" : `${formatSignedIsk(row.feeDelta)} fee delta`;
+        const fillText = row.fillDelta == null
+          ? "Fill pending"
+          : `${formatNumber(row.actualQuantity)} filled (${row.fillDelta >= 0 ? "+" : ""}${formatNumber(row.fillDelta)} vs plan)`;
+        const profitText = row.profitDelta == null ? "Profit pending" : formatSignedIsk(row.profitDelta);
+        const missingText = row.missingActuals.length
+          ? `<div class="meta">Missing actuals: ${escapeHtml(row.missingActuals.join(", "))}.</div>`
+          : "";
+        return `
+          <div class="completed-run-row">
+            <div>
+              <strong>${escapeHtml(row.itemName)}</strong>
+              <div class="meta">${escapeHtml(costText)}; ${escapeHtml(feeText)}; ${escapeHtml(fillText)}.</div>
+              ${missingText}
+            </div>
+            <b>${escapeHtml(profitText)}</b>
+          </div>
+        `;
+      }).join("");
+      const hiddenRows = Math.max(0, summary.rows.length - 20);
+      return `
+        <div class="completed-run-summary">
+          <div class="haul-route-cost"><span>Rows Reviewed</span><b>${formatNumber(summary.rows.length)}</b><small>Completed portfolio rows compared.</small></div>
+          <div class="haul-route-cost"><span>Cost Delta</span><b>${formatSignedIsk(costDelta)}</b><small>Actual total cost minus expected cost.</small></div>
+          <div class="haul-route-cost"><span>Broker Fee Delta</span><b>${formatSignedIsk(feeDelta)}</b><small>Actual broker fee minus estimate.</small></div>
+          <div class="haul-route-cost"><span>Fill Rate</span><b>${fillRate == null ? "unknown" : formatPercent(fillRate)}</b><small>Actual filled quantity vs planned quantity.</small></div>
+          <div class="haul-route-cost"><span>Profit Delta</span><b>${formatSignedIsk(profitDelta)}</b><small>Actual realized profit minus expected profit.</small></div>
+        </div>
+        <div class="completed-run-row-list">${rowList || '<div class="decision-empty">No completed portfolio rows found.</div>'}</div>
+        ${hiddenRows ? `<div class="meta">Showing first 20 reviewed rows; ${formatNumber(hiddenRows)} more row${hiddenRows === 1 ? "" : "s"} are included in totals.</div>` : ""}
+      `;
+    }
+
+    function resetAcquisitionPostTestReview(clearInput = true) {
+      if (clearInput && acqPostTestCsv) acqPostTestCsv.value = "";
+      if (acqPostTestStatus) {
+        acqPostTestStatus.textContent = "No portfolio test reviewed yet.";
+        acqPostTestStatus.classList.remove("error");
+      }
+      if (acqPostTestResults) acqPostTestResults.textContent = "";
+    }
+
+    function reviewAcquisitionPostTest() {
+      const completedRows = parseReportCsvRows(acqPostTestCsv ? acqPostTestCsv.value : "");
+      if (!completedRows.length) {
+        setReportStatus(acqPostTestStatus, "Paste the completed portfolio CSV first.", true);
+        if (acqPostTestResults) acqPostTestResults.textContent = "";
+        return;
+      }
+      const expectedRows = acquisitionReportRows.length ? acquisitionReportRows : completedRows;
+      const summary = buildAcquisitionPostTestReview(completedRows, expectedRows);
+      if (acqPostTestResults) acqPostTestResults.innerHTML = renderAcquisitionPostTestReview(summary);
+      const missingNote = summary.missingActualRows
+        ? ` ${formatNumber(summary.missingActualRows)} row${summary.missingActualRows === 1 ? "" : "s"} still need actual tracking fields.`
+        : "";
+      setReportStatus(
+        acqPostTestStatus,
+        `Reviewed ${formatNumber(summary.rows.length)} portfolio row${summary.rows.length === 1 ? "" : "s"}; ${formatNumber(summary.actualProfitRows)} had realized profit.${missingNote}`,
       );
     }
 
@@ -26666,12 +26973,105 @@ help</textarea>
       `;
     }
 
+    function renderAcquisitionBeforeOrderChecklist(item) {
+      const range = item.range_recommendation || {};
+      const destinationBuy = item.best_destination_buy || {};
+      const sourceBuy = item.best_source_buy || {};
+      const sourceSell = item.best_source_sell || {};
+      const brokerRate = item.broker_fee_rate == null ? null : Number(item.broker_fee_rate) * 100;
+      return `
+        <div class="decision-lede">Before Placing Buy Orders: check the exact EVE order window before committing ISK.</div>
+        <div class="haul-checklist">
+          ${renderHaulCheckItem("Buy Price To Enter", formatIsk(item.suggested_bid), `Do not exceed safe ceiling ${formatIsk(item.max_safe_bid)}.`)}
+          ${renderHaulCheckItem("Order Range", range.range || "station", range.reason || "Keep the first order easy to monitor.")}
+          ${renderHaulCheckItem("Broker Fee", brokerRate == null ? "manual" : `${formatNumber(brokerRate)}%`, `Spreadsheet expects ${formatIsk(item.estimated_broker_fee)} broker fee.`)}
+          ${renderHaulCheckItem("Order Size", `${formatNumber(item.recommended_units)} units`, `History window caps the first test order; original recommendation ${formatNumber(item.original_recommended_units || item.recommended_units)}.`)}
+          ${renderHaulCheckItem("Total ISK Needed", formatIsk(item.estimated_isk_committed), "Bid escrow plus broker fee estimate.")}
+          ${renderHaulCheckItem("Destination Demand", `${formatIsk(destinationBuy.price)} buy`, `${formatNumber(destinationBuy.volume_remain)} visible units in ${destinationBuy.system_name || "destination"}.`)}
+          ${renderHaulCheckItem("Competing Source Buy", sourceBuy.price == null ? "none nearby" : formatIsk(sourceBuy.price), sourceBuy.system_name || "Check local buy competition.")}
+          ${renderHaulCheckItem("Nearby Sell Floor", sourceSell.price == null ? "none nearby" : formatIsk(sourceSell.price), sourceSell.system_name || "Check whether sell orders undercut your bid logic.")}
+          ${renderHaulCheckItem("Market History", acquisitionRiskLabel(item.risk_level), "Read every Possible trap or Caution badge before posting.")}
+          ${renderHaulCheckItem("Spreadsheet", "Fill actuals later", "Record actual buy total, broker fee, filled quantity, realized return, and lesson learned.")}
+        </div>
+      `;
+    }
+
+    function renderAcquisitionWhySelected(item) {
+      const range = item.range_recommendation || {};
+      const destinationBuy = item.best_destination_buy || {};
+      const scaled = Number(item.original_recommended_units || 0) > Number(item.recommended_units || 0);
+      return `
+        <div class="decision-lede">Why selected: this row fit the budget, jump cap, risk filter, and category spread better than excluded alternatives.</div>
+        <div class="profit-detail-grid">
+          <div class="profit-detail-row"><span>Category role</span><b>${escapeHtml(item.category || "Selected scope")}</b><small>Used to avoid one-item concentration.</small></div>
+          <div class="profit-detail-row"><span>Risk filter</span><b>${escapeHtml(acquisitionRiskLabel(item.risk_level))}</b><small>Possible trap rows are excluded from funded plans.</small></div>
+          <div class="profit-detail-row"><span>Budget fit</span><b>${formatIsk(item.estimated_isk_committed)}</b><small>${formatPercent(item.portfolio_weight_percent)} of total portfolio budget.</small></div>
+          <div class="profit-detail-row"><span>Jump fit</span><b>${formatNumber(item.estimated_collection_jumps)}</b><small>Inside the portfolio jump budget.</small></div>
+          <div class="profit-detail-row"><span>Demand signal</span><b>${formatNumber(destinationBuy.volume_remain)} units</b><small>${formatIsk(destinationBuy.price)} destination buy price.</small></div>
+          <div class="profit-detail-row"><span>Size logic</span><b>${scaled ? "scaled" : "full first order"}</b><small>${scaled ? `Reduced from ${formatNumber(item.original_recommended_units)} units to fit the budget.` : "Fits history, budget, and destination demand."}</small></div>
+          <div class="profit-detail-row"><span>Range logic</span><b>${escapeHtml(range.range || "station")}</b><small>${escapeHtml(range.reason || "Keep the order easy to monitor.")}</small></div>
+          <div class="profit-detail-row"><span>Profit logic</span><b>${formatSignedIsk(item.net_profit)}</b><small>${formatPercent(item.margin_percent)} estimated margin after fee assumptions.</small></div>
+        </div>
+      `;
+    }
+
+    function renderAcquisitionExclusionLedger(portfolio) {
+      const rows = Array.isArray(portfolio.excluded_rows) ? portfolio.excluded_rows : [];
+      if (!rows.length) return "";
+      const counts = portfolio.excluded_reason_counts || {};
+      const countChips = Object.entries(counts).map(([key, value]) => {
+        const label = key === "possible_trap" ? "Possible trap"
+          : key === "margin_too_low" ? "Margin too low"
+          : key === "budget_cap" ? "Budget cap"
+          : key === "jump_cap" ? "Jump cap"
+          : key === "history_weakness" ? "History weakness"
+          : key === "line_cap" ? "Line cap"
+          : "Other";
+        return `<span class="pill decision-watch">${escapeHtml(label)}: ${formatNumber(value)}</span>`;
+      }).join("");
+      const rowHtml = rows.slice(0, 18).map((row) => {
+        const reasonClass = row.reason_key === "possible_trap" ? "decision-price" : "decision-watch";
+        const flags = renderAcquisitionHistoryFlags(row.history_flags || []);
+        return `
+          <div class="decision-row portfolio-excluded-row">
+            <div class="decision-head">
+              <strong>${escapeHtml(row.item_name || "Unknown item")}</strong>
+              <span class="pill ${reasonClass}">${escapeHtml(row.reason_label || "Excluded")}</span>
+              <span class="pill decision-source">${escapeHtml(row.category || "Selected scope")}</span>
+            </div>
+            <div class="decision-lede">${escapeHtml(row.detail || "Excluded from the funded portfolio.")}</div>
+            <div class="profit-detail-grid">
+              <div class="profit-detail-row"><span>Suggested bid</span><b>${formatIsk(row.suggested_bid)}</b></div>
+              <div class="profit-detail-row"><span>Safe ceiling</span><b>${formatIsk(row.max_safe_bid)}</b></div>
+              <div class="profit-detail-row"><span>Planned cost</span><b>${formatIsk(row.estimated_isk_committed)}</b></div>
+              <div class="profit-detail-row"><span>Expected profit</span><b>${formatSignedIsk(row.net_profit)}</b></div>
+              <div class="profit-detail-row"><span>Margin</span><b>${formatPercent(row.margin_percent)}</b></div>
+              <div class="profit-detail-row"><span>Planning jumps</span><b>${row.estimated_collection_jumps == null ? "unknown" : formatNumber(row.estimated_collection_jumps)}</b></div>
+            </div>
+            ${flags}
+          </div>
+        `;
+      }).join("");
+      const hiddenRows = Math.max(0, rows.length - 18);
+      return `
+        <details class="profit-details" open>
+          <summary>Why excluded</summary>
+          <div class="decision-lede">These rows were not funded in the portfolio. Use them as a review list, not as buy-order instructions.</div>
+          <div class="decision-counts">${countChips}</div>
+          <div class="decision-list">${rowHtml}</div>
+          ${hiddenRows ? `<div class="meta">Showing first 18 excluded rows; ${formatNumber(hiddenRows)} more were counted.</div>` : ""}
+        </details>
+      `;
+    }
+
     function renderAcquisitionPortfolio(portfolio, opportunities) {
       const lines = Array.isArray(portfolio.lines) ? portfolio.lines : [];
+      const exclusions = renderAcquisitionExclusionLedger(portfolio);
       if (!lines.length) {
         const fallback = renderAcquisitionOpportunities(opportunities || []);
         return `
           <div class="decision-empty">No diversified portfolio cleared the current investment and jump budget. Review single-item opportunities below as watchlist leads.</div>
+          ${exclusions}
           ${fallback}
         `;
       }
@@ -26702,6 +27102,14 @@ help</textarea>
               </div>
               <div class="decision-lede">${escapeHtml(decision.reason || "Verify current orders in EVE before posting.")}</div>
               ${renderAcquisitionHistoryFlags(item.history_flags || [])}
+              <details class="profit-details" open>
+                <summary>Before Placing Buy Orders</summary>
+                ${renderAcquisitionBeforeOrderChecklist(item)}
+              </details>
+              <details class="profit-details">
+                <summary>Why selected</summary>
+                ${renderAcquisitionWhySelected(item)}
+              </details>
               <details class="profit-details">
                 <summary>Portfolio math details</summary>
                 <div class="profit-detail-grid">
@@ -26722,6 +27130,7 @@ help</textarea>
             </div>
           `;
         }).join("")}</div>
+        ${exclusions}
         <div class="meta">${escapeHtml(portfolio.manual_note || "Portfolio is advisory only; verify in EVE before committing ISK.")}</div>
       `;
     }
@@ -29953,6 +30362,12 @@ help</textarea>
     }
     if (haulClearCompletedRunButton) {
       haulClearCompletedRunButton.addEventListener("click", () => resetHaulCompletedRunReview(true));
+    }
+    if (acqReviewPostTestButton) {
+      acqReviewPostTestButton.addEventListener("click", reviewAcquisitionPostTest);
+    }
+    if (acqClearPostTestButton) {
+      acqClearPostTestButton.addEventListener("click", () => resetAcquisitionPostTestReview(true));
     }
     haulOpportunityTop.addEventListener("click", (event) => {
       if (event.target.closest("button[data-haul-detail-close]")) {
