@@ -28,6 +28,7 @@ import webbrowser
 import zipfile
 
 from eve_voice_pilot import corp_market_bulk_appraisal as bulk_appraisal
+from eve_voice_pilot import discord_posting
 from eve_voice_pilot import market_store
 from eve_voice_pilot.corp_market_acquisition import AcquisitionItemScanResult
 from eve_voice_pilot.corp_market_bulk_appraisal import (
@@ -622,7 +623,6 @@ STATIC_CONTENT_TYPES = {
 }
 SPACE_RE = re.compile(r"\s+")
 ISK_AMOUNT_RE = re.compile(r"^\s*(?P<number>\d+(?:\.\d+)?)\s*(?P<suffix>[kKmMbB]?)\s*$")
-DISCORD_WEBHOOK_PATH_RE = re.compile(r"^/api/(?:v\d+/)?webhooks/\d+/[^/]+/?$")
 DISCORD_SNOWFLAKE_RE = re.compile(r"^\d{5,25}$")
 FIT_HEADER_RE = re.compile(r"^\[(?P<hull>[^,\]]+),\s*(?P<name>[^\]]+)\]\s*$")
 FIT_QUANTITY_RE = re.compile(r"\sx[\d,]+\s*$", re.IGNORECASE)
@@ -672,14 +672,7 @@ class FitNoteSummary:
         return f"{self.hull} - {self.fit_name}"
 
 
-@dataclass(frozen=True)
-class DiscordPostResult:
-    message_id: str = ""
-    channel_id: str = ""
-    thread_id: str = ""
-
-    def to_dict(self) -> dict[str, str]:
-        return {"message_id": self.message_id, "channel_id": self.channel_id, "thread_id": self.thread_id}
+DiscordPostResult = discord_posting.DiscordPostResult
 
 
 @dataclass(frozen=True)
@@ -2826,31 +2819,27 @@ def build_discord_fitting_webhook_payload(
     return payload
 
 
+def discord_posting_dependencies() -> discord_posting.DiscordPostingDependencies:
+    return discord_posting.DiscordPostingDependencies(
+        market_error=CorpMarketError,
+        clean_discord_snowflake=clean_discord_snowflake,
+        request_factory=Request,
+        urlopen=urlopen,
+    )
+
+
 def post_discord_webhook(
     webhook_url: str,
     payload: dict[str, Any],
     *,
     timeout_seconds: float,
 ) -> DiscordPostResult | None:
-    if not webhook_url:
-        return None
-    validate_discord_webhook_url(webhook_url)
-    request = Request(
-        add_query_params(webhook_url, {"wait": "true"}),
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "EveVoicePilot-CorpMarket/0.1"},
-        method="POST",
+    return discord_posting.post_discord_webhook(
+        webhook_url,
+        payload,
+        timeout_seconds=timeout_seconds,
+        deps=discord_posting_dependencies(),
     )
-    try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            if response.status >= 400:
-                raise CorpMarketError(f"Discord webhook returned HTTP {response.status}.")
-            return parse_discord_message_response(response.read())
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise CorpMarketError(f"Discord webhook returned HTTP {exc.code}: {detail}") from exc
-    except URLError as exc:
-        raise CorpMarketError(f"Discord webhook failed: {exc.reason}") from exc
 
 
 def edit_discord_webhook_message(
@@ -2861,53 +2850,31 @@ def edit_discord_webhook_message(
     timeout_seconds: float,
     thread_id: str = "",
 ) -> DiscordPostResult | None:
-    validate_discord_webhook_url(webhook_url)
-    url = build_discord_message_edit_url(webhook_url, message_id, thread_id=thread_id)
-    request = Request(
-        url,
-        data=json.dumps(discord_message_edit_payload(payload)).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "EveVoicePilot-CorpMarket/0.1"},
-        method="PATCH",
+    return discord_posting.edit_discord_webhook_message(
+        webhook_url,
+        message_id,
+        payload,
+        timeout_seconds=timeout_seconds,
+        thread_id=thread_id,
+        deps=discord_posting_dependencies(),
     )
-    try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            if response.status >= 400:
-                raise CorpMarketError(f"Discord webhook edit returned HTTP {response.status}.")
-            return parse_discord_message_response(response.read())
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise CorpMarketError(f"Discord webhook edit returned HTTP {exc.code}: {detail}") from exc
-    except URLError as exc:
-        raise CorpMarketError(f"Discord webhook edit failed: {exc.reason}") from exc
 
 
 def build_discord_message_edit_url(webhook_url: str, message_id: str, *, thread_id: str = "") -> str:
-    validate_discord_webhook_url(webhook_url)
-    message_id = clean_discord_snowflake(message_id, "discord_message_id")
-    parsed = urlparse(webhook_url)
-    base_url = parsed._replace(path=f"{parsed.path.rstrip('/')}/messages/{message_id}", query="", fragment="").geturl()
-    if thread_id:
-        base_url = add_query_params(base_url, {"thread_id": clean_discord_snowflake(thread_id, "discord_thread_id")})
-    return base_url
+    return discord_posting.build_discord_message_edit_url(
+        webhook_url,
+        message_id,
+        thread_id=thread_id,
+        deps=discord_posting_dependencies(),
+    )
 
 
 def discord_message_edit_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: payload[key] for key in ("content", "embeds", "allowed_mentions") if key in payload}
+    return discord_posting.discord_message_edit_payload(payload)
 
 
 def parse_discord_message_response(body: bytes) -> DiscordPostResult:
-    if not body.strip():
-        return DiscordPostResult()
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise CorpMarketError(f"Discord returned an unreadable message response: {exc}") from exc
-    if not isinstance(payload, dict):
-        return DiscordPostResult()
-    message_id = clean_discord_snowflake(payload.get("id", ""), "discord_message_id")
-    channel_id = clean_discord_snowflake(payload.get("channel_id", ""), "discord_channel_id")
-    thread_id = clean_discord_snowflake(payload.get("thread_id", ""), "discord_thread_id")
-    return DiscordPostResult(message_id=message_id, channel_id=channel_id, thread_id=thread_id)
+    return discord_posting.parse_discord_message_response(body, deps=discord_posting_dependencies())
 
 
 def add_query_params(url: str, params: dict[str, str]) -> str:
@@ -2919,14 +2886,7 @@ def add_query_params(url: str, params: dict[str, str]) -> str:
 
 
 def validate_discord_webhook_url(webhook_url: str) -> None:
-    parsed = urlparse(webhook_url)
-    if parsed.scheme != "https" or parsed.netloc not in {"discord.com", "discordapp.com"}:
-        raise CorpMarketError("Discord webhook URL must start with https://discord.com/api/webhooks/...")
-    if not DISCORD_WEBHOOK_PATH_RE.match(parsed.path):
-        raise CorpMarketError(
-            "Discord webhook URL looks wrong. Copy it from Channel Settings > Integrations > Webhooks > Copy "
-            "Webhook URL; do not use the Discord channel or forum post link."
-        )
+    discord_posting.validate_discord_webhook_url(webhook_url, deps=discord_posting_dependencies())
 
 
 def parse_fit_note(notes: str) -> FitNoteSummary | None:
