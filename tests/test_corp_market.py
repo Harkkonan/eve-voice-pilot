@@ -391,6 +391,12 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Run This Portfolio Test" in page
     assert "Buy-order rehearsal" in page
     assert "To avoid requesting wallet scopes, enter this manually" in page
+    assert "id=\"acq-order-duration\"" in page
+    assert "Planned order duration" in page
+    assert "Tracking field only" in page
+    assert "Buy Order Price To Enter" in page
+    assert "Estimated Broker Fee ISK" in page
+    assert "Reason For Entry" in page
     assert "id=\"haul-route-form\"" in page
     assert "id=\"haul-origin\"" in page
     assert "id=\"haul-origin-suggestions\"" in page
@@ -1966,12 +1972,17 @@ def test_expected_realized_report_row_calculates_and_quotes_csv():
     assert row["Realized Total Profit"] == ""
     assert row["Profit Difference"] == ""
     assert row["Expected Total Cost"] == pytest.approx(41.0)
+    assert row["Estimated Total ISK Needed"] == pytest.approx(41.0)
     assert row["Expected Total Return"] == pytest.approx(52.0)
     assert row["Expected Total Profit"] == pytest.approx(11.0)
+    assert row["Buy Order Price To Enter"] == ""
+    assert row["Actual Broker Fee Paid"] == ""
 
     csv_text = corp_market.spreadsheet_report_csv([row])
 
     assert csv_text.startswith("Date Created,Date Completed,Status,Category,Location to Post Order")
+    assert "Buy Order Price To Enter" in csv_text
+    assert "Actual Broker Fee Paid" in csv_text
     assert '"Amarr, Emperor Family Academy"' in csv_text
     assert '"Widget ""A"""' in csv_text
     assert '"verify, then ""sell"""' in csv_text
@@ -2072,6 +2083,7 @@ def test_acquisition_report_rows_use_committed_cost_basis():
         "destination": {"name": "Jita"},
     }
     acquisition = {
+        "order_duration_days": 90,
         "portfolio": {
             "available": True,
             "lines": [
@@ -2082,7 +2094,8 @@ def test_acquisition_report_rows_use_committed_cost_basis():
                     "recommended_units": 50_000,
                     "suggested_bid": 11.5,
                     "max_safe_bid": 12.0,
-                    "estimated_isk_committed": 600_000.0,
+                    "estimated_broker_fee": 17_250.0,
+                    "estimated_isk_committed": 592_250.0,
                     "estimated_net_revenue": 750_000.0,
                     "broker_fee_rate": 0.03,
                     "risk_level": "caution",
@@ -2104,13 +2117,21 @@ def test_acquisition_report_rows_use_committed_cost_basis():
     assert row["Location to Post Order"] == "Amarr"
     assert row["Item Name"] == "Scourge Fury Heavy Missile"
     assert row["Quantity"] == 50_000
+    assert row["Planned Order Duration"] == "90 days"
     assert row["Price Per Item"] == pytest.approx(11.5)
+    assert row["Buy Order Price To Enter"] == pytest.approx(11.5)
+    assert row["Estimated Broker Fee %"] == pytest.approx(3.0)
+    assert row["Estimated Broker Fee ISK"] == pytest.approx(17_250.0)
     assert row["Expected Return Per Item"] == pytest.approx(15.0)
-    assert row["Expected Total Cost"] == pytest.approx(600_000.0)
-    assert row["Expected Total Profit"] == pytest.approx(150_000.0)
+    assert row["Expected Total Cost"] == pytest.approx(592_250.0)
+    assert row["Estimated Total ISK Needed"] == pytest.approx(592_250.0)
+    assert row["Expected Total Profit"] == pytest.approx(157_750.0)
     assert row["Realized Total Profit"] == ""
     assert "Price Per Item is the buy-order price to enter" in row["Notes"]
     assert "Expected Total Cost includes 3% estimated broker fee" in row["Notes"]
+    assert "planned order duration 90 days" in row["Notes"]
+    assert "Suggested buy order in Amarr toward Jita" in row["Reason For Entry"]
+    assert "verify buy-order duration" in row["Verification Notes"]
 
 
 def test_haul_route_preference_normalizes_eve_route_terms():
@@ -2328,7 +2349,7 @@ def test_acquisition_scan_request_parses_query_contract():
         parse_qs(
             "origin_name=Rens&destination=Amarr&budget_isk=75000000&pickup_jumps=5"
             "&portfolio_jumps=80&min_margin_percent=22&broker_fee_percent=4.5"
-            "&target_days=7&item_workers=6&route_preference=lesssecure&common_materials=0"
+            "&target_days=7&order_duration_days=90&item_workers=6&route_preference=lesssecure&common_materials=0"
             "&market_group_ids=20&market_type_ids=44992,34&market_type_names=Epithal%0APLEX"
         )
     )
@@ -2341,6 +2362,7 @@ def test_acquisition_scan_request_parses_query_contract():
     assert request.min_margin_percent == pytest.approx(22.0)
     assert request.broker_fee_percent == pytest.approx(4.5)
     assert request.target_days == 7
+    assert request.order_duration_days == 90
     assert request.item_workers == 6
     assert request.route_preference == "less_secure"
     assert request.include_common_materials is False
@@ -2348,6 +2370,7 @@ def test_acquisition_scan_request_parses_query_contract():
     assert request.market_type_ids == (44992, 34)
     assert request.market_type_names == ("Epithal", "PLEX")
     assert request.payload_kwargs()["destination_name"] == "Amarr"
+    assert request.payload_kwargs()["order_duration_days"] == 90
 
 
 def test_market_order_location_guardrail_labels_station_structure_and_unknown():

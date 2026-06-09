@@ -107,15 +107,26 @@ EXPECTED_REALIZED_REPORT_COLUMNS = (
     "Order Type",
     "Item Name",
     "Quantity",
+    "Planned Order Duration",
     "Price Per Item",
+    "Buy Order Price To Enter",
+    "Estimated Broker Fee %",
+    "Estimated Broker Fee ISK",
     "Expected Return Per Item",
     "Realized Return Per Item",
     "Expected Total Cost",
+    "Estimated Total ISK Needed",
     "Expected Total Return",
     "Realized Total Return",
     "Expected Total Profit",
     "Realized Total Profit",
     "Profit Difference",
+    "Actual Buy Order Price",
+    "Actual Broker Fee Paid",
+    "Actual Filled Quantity",
+    "Reason For Entry",
+    "Verification Notes",
+    "Lesson Learned",
     "Notes",
 )
 DEFAULT_FLIGHT_TRADE_PNL_DAYS = 30
@@ -177,6 +188,8 @@ DEFAULT_ACQUISITION_BROKER_FEE_PERCENT = 3.0
 MAX_ACQUISITION_BROKER_FEE_PERCENT = 20.0
 DEFAULT_ACQUISITION_TARGET_DAYS = 3
 MAX_ACQUISITION_TARGET_DAYS = 30
+DEFAULT_ACQUISITION_ORDER_DURATION_DAYS = 30
+ACQUISITION_ORDER_DURATION_DAYS = (1, 3, 7, 14, 30, 90)
 MARKET_GROUP_ITEM_PREVIEW_LIMIT = 8
 DEFAULT_HAUL_ROUTE_PREFERENCE = "safer"
 HAUL_ROUTE_PREFERENCES = {"shorter", "safer", "less_secure"}
@@ -6103,6 +6116,7 @@ def build_flight_acquisition_payload(
     min_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT,
     broker_fee_percent: float = DEFAULT_ACQUISITION_BROKER_FEE_PERCENT,
     target_days: int = DEFAULT_ACQUISITION_TARGET_DAYS,
+    order_duration_days: int = DEFAULT_ACQUISITION_ORDER_DURATION_DAYS,
     route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE,
     include_common_materials: bool = True,
     market_group_ids: Iterable[int] = (),
@@ -6184,6 +6198,8 @@ def build_flight_acquisition_payload(
         item_workers=item_workers,
         progress=progress,
     )
+    clean_order_duration_days = clamp_acquisition_order_duration_days(order_duration_days)
+    acquisition["order_duration_days"] = clean_order_duration_days
     route_path = route_plan["path"]
     route_systems = [systems[system_id].to_dict(jumps=index) for index, system_id in enumerate(route_path) if system_id in systems]
     generated_at = now_iso()
@@ -7490,6 +7506,16 @@ def build_expected_realized_report_row(
     expected_return_per_item: Any,
     realized_return_per_item: Any = None,
     expected_total_cost: Any = None,
+    planned_order_duration: str = "",
+    buy_order_price_to_enter: Any = None,
+    estimated_broker_fee_percent: Any = None,
+    estimated_broker_fee_isk: Any = None,
+    actual_buy_order_price: Any = None,
+    actual_broker_fee_paid: Any = None,
+    actual_filled_quantity: Any = None,
+    reason_for_entry: str = "",
+    verification_notes: str = "",
+    lesson_learned: str = "",
     date_completed: str = "",
     status: str = "Planned",
     notes: str = "",
@@ -7546,15 +7572,26 @@ def build_expected_realized_report_row(
             "Order Type": str(order_type or ""),
             "Item Name": str(item_name or ""),
             "Quantity": expected_realized_report_number(quantity_number),
+            "Planned Order Duration": str(planned_order_duration or ""),
             "Price Per Item": expected_realized_report_number(price_number),
+            "Buy Order Price To Enter": expected_realized_report_number(buy_order_price_to_enter),
+            "Estimated Broker Fee %": expected_realized_report_number(estimated_broker_fee_percent),
+            "Estimated Broker Fee ISK": expected_realized_report_number(estimated_broker_fee_isk),
             "Expected Return Per Item": expected_realized_report_number(expected_return_number),
             "Realized Return Per Item": expected_realized_report_number(realized_return_number),
             "Expected Total Cost": expected_realized_report_number(expected_total_cost),
+            "Estimated Total ISK Needed": expected_realized_report_number(expected_total_cost),
             "Expected Total Return": expected_realized_report_number(expected_total_return),
             "Realized Total Return": expected_realized_report_number(realized_total_return),
             "Expected Total Profit": expected_realized_report_number(expected_total_profit),
             "Realized Total Profit": expected_realized_report_number(realized_total_profit),
             "Profit Difference": expected_realized_report_number(profit_difference),
+            "Actual Buy Order Price": expected_realized_report_number(actual_buy_order_price),
+            "Actual Broker Fee Paid": expected_realized_report_number(actual_broker_fee_paid),
+            "Actual Filled Quantity": expected_realized_report_number(actual_filled_quantity),
+            "Reason For Entry": str(reason_for_entry or ""),
+            "Verification Notes": str(verification_notes or ""),
+            "Lesson Learned": str(lesson_learned or ""),
             "Notes": str(notes or ""),
         }
     )
@@ -7744,6 +7781,10 @@ def build_acquisition_expected_realized_report_rows(
     destination = route.get("destination") if isinstance(route.get("destination"), Mapping) else {}
     origin_name = str(origin.get("name") or acquisition.get("origin_system", {}).get("name") or "source")
     destination_name = str(destination.get("name") or acquisition.get("destination_system", {}).get("name") or "destination")
+    order_duration_days = clamp_acquisition_order_duration_days(
+        acquisition.get("order_duration_days", DEFAULT_ACQUISITION_ORDER_DURATION_DAYS)
+    )
+    order_duration_label = f"{order_duration_days} day{'s' if order_duration_days != 1 else ''}"
     rows: list[dict[str, Any]] = []
     for line in lines:
         units = clean_optional_float(line.get("recommended_units"))
@@ -7757,16 +7798,27 @@ def build_acquisition_expected_realized_report_rows(
         )
         placement_system = str(line.get("placement_system") or origin_name)
         broker_fee_rate = clean_optional_float(line.get("broker_fee_rate"))
+        estimated_broker_fee = clean_optional_float(line.get("estimated_broker_fee"))
         broker_fee_note = (
             f"{broker_fee_rate * 100.0:g}% estimated broker fee"
             if broker_fee_rate is not None
             else "estimated broker fee"
         )
+        risk_level = str(line.get("risk_level") or "clear")
+        reason_for_entry = (
+            f"Suggested buy order in {placement_system} toward {destination_name}; "
+            f"risk {risk_level}; target margin {format_isk(clean_optional_float(line.get('net_profit_per_unit')))} per unit."
+        )
+        verification_notes = (
+            "Before placing: verify buy-order duration, broker fee preview, order range, item volume, "
+            "market history warning, and current Jita buy order."
+        )
         notes = (
             f"Investment portfolio line toward {destination_name}; category {line.get('category') or 'Selected scope'}; "
             f"suggested bid {format_isk(clean_optional_float(line.get('suggested_bid')))}; "
             f"safe ceiling {format_isk(clean_optional_float(line.get('max_safe_bid')))}; "
-            f"risk {line.get('risk_level') or 'clear'}; Price Per Item is the buy-order price to enter; "
+            f"risk {risk_level}; planned order duration {order_duration_label}; "
+            f"Price Per Item is the buy-order price to enter; "
             f"Expected Total Cost includes {broker_fee_note}."
         )
         rows.append(
@@ -7777,9 +7829,15 @@ def build_acquisition_expected_realized_report_rows(
                 order_type="Buy",
                 item_name=str(line.get("item_name") or ""),
                 quantity=units,
+                planned_order_duration=order_duration_label,
                 price_per_item=price_per_item,
+                buy_order_price_to_enter=price_per_item,
+                estimated_broker_fee_percent=broker_fee_rate * 100.0 if broker_fee_rate is not None else None,
+                estimated_broker_fee_isk=estimated_broker_fee,
                 expected_return_per_item=expected_return_per_item,
                 expected_total_cost=estimated_committed,
+                reason_for_entry=reason_for_entry,
+                verification_notes=verification_notes,
                 notes=notes,
             )
         )
@@ -10134,6 +10192,16 @@ def clamp_acquisition_target_days(value: Any) -> int:
     return max(1, min(MAX_ACQUISITION_TARGET_DAYS, days))
 
 
+def clamp_acquisition_order_duration_days(value: Any) -> int:
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_ACQUISITION_ORDER_DURATION_DAYS
+    if days in ACQUISITION_ORDER_DURATION_DAYS:
+        return days
+    return DEFAULT_ACQUISITION_ORDER_DURATION_DAYS
+
+
 def clamp_acquisition_item_workers(value: Any) -> int:
     try:
         workers = int(value)
@@ -10315,6 +10383,7 @@ class AcquisitionScanRequest:
     min_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT
     broker_fee_percent: float = DEFAULT_ACQUISITION_BROKER_FEE_PERCENT
     target_days: int = DEFAULT_ACQUISITION_TARGET_DAYS
+    order_duration_days: int = DEFAULT_ACQUISITION_ORDER_DURATION_DAYS
     item_workers: int = DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS
     route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE
     include_common_materials: bool = True
@@ -10339,6 +10408,9 @@ class AcquisitionScanRequest:
                 query_first(query, "broker_fee_percent", DEFAULT_ACQUISITION_BROKER_FEE_PERCENT)
             ),
             target_days=clamp_acquisition_target_days(query_first(query, "target_days", DEFAULT_ACQUISITION_TARGET_DAYS)),
+            order_duration_days=clamp_acquisition_order_duration_days(
+                query_first(query, "order_duration_days", DEFAULT_ACQUISITION_ORDER_DURATION_DAYS)
+            ),
             item_workers=clamp_acquisition_item_workers(
                 query_first(query, "item_workers", DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS)
             ),
@@ -10361,6 +10433,7 @@ class AcquisitionScanRequest:
             "min_margin_percent": self.min_margin_percent,
             "broker_fee_percent": self.broker_fee_percent,
             "target_days": self.target_days,
+            "order_duration_days": self.order_duration_days,
             "item_workers": self.item_workers,
             "route_preference": self.route_preference,
             "include_common_materials": self.include_common_materials,
@@ -18750,6 +18823,17 @@ help</textarea>
                   <input id="acq-target-days" name="target_days" type="number" min="1" max="30" step="1" value="3">
                   <small class="input-note">History volume caps the first order size to this many days of recent volume.</small>
                 </label>
+                <label>Planned order duration
+                  <select id="acq-order-duration" name="order_duration_days">
+                    <option value="1">1 day</option>
+                    <option value="3">3 days</option>
+                    <option value="7">7 days</option>
+                    <option value="14">14 days</option>
+                    <option value="30" selected>30 days</option>
+                    <option value="90">90 days</option>
+                  </select>
+                  <small class="input-note">Tracking field only: choose the duration you will select in EVE so later results match the order you placed.</small>
+                </label>
                 <label>Scan speed
                   <select id="acq-item-workers" name="item_workers">
                     <option value="2">Conservative</option>
@@ -19548,6 +19632,7 @@ help</textarea>
     const acqPickupJumps = document.querySelector("#acq-pickup-jumps");
     const acqPortfolioJumps = document.querySelector("#acq-portfolio-jumps");
     const acqTargetDays = document.querySelector("#acq-target-days");
+    const acqOrderDuration = document.querySelector("#acq-order-duration");
     const acqItemWorkers = document.querySelector("#acq-item-workers");
     const acqMinMargin = document.querySelector("#acq-min-margin");
     const acqMinMarginValue = document.querySelector("#acq-min-margin-value");
@@ -19664,6 +19749,7 @@ help</textarea>
     const acqPickupJumpsKey = "eve-flight-acq-pickup-jumps-v1";
     const acqPortfolioJumpsKey = "eve-flight-acq-portfolio-jumps-v1";
     const acqTargetDaysKey = "eve-flight-acq-target-days-v1";
+    const acqOrderDurationKey = "eve-flight-acq-order-duration-v1";
     const acqItemWorkersKey = "eve-flight-acq-item-workers-v1";
     const acqMinMarginKey = "eve-flight-acq-min-margin-v1";
     const acqCommonMaterialsKey = "eve-flight-acq-common-materials-v1";
@@ -20176,15 +20262,26 @@ help</textarea>
       "Order Type",
       "Item Name",
       "Quantity",
+      "Planned Order Duration",
       "Price Per Item",
+      "Buy Order Price To Enter",
+      "Estimated Broker Fee %",
+      "Estimated Broker Fee ISK",
       "Expected Return Per Item",
       "Realized Return Per Item",
       "Expected Total Cost",
+      "Estimated Total ISK Needed",
       "Expected Total Return",
       "Realized Total Return",
       "Expected Total Profit",
       "Realized Total Profit",
       "Profit Difference",
+      "Actual Buy Order Price",
+      "Actual Broker Fee Paid",
+      "Actual Filled Quantity",
+      "Reason For Entry",
+      "Verification Notes",
+      "Lesson Learned",
       "Notes",
     ];
 
@@ -21466,6 +21563,11 @@ help</textarea>
       return Math.max(1, Math.min(30, Math.round(days)));
     }
 
+    function clampAcquisitionOrderDuration(value) {
+      const days = Math.round(Number(value));
+      return [1, 3, 7, 14, 30, 90].includes(days) ? days : 30;
+    }
+
     function clampAcquisitionItemWorkers(value) {
       const workers = Number(value);
       if (!Number.isFinite(workers)) return 4;
@@ -21588,6 +21690,7 @@ help</textarea>
       const pickupJumps = Number(window.localStorage.getItem(acqPickupJumpsKey) || acqPickupJumps.value || 2);
       const portfolioJumps = Number(window.localStorage.getItem(acqPortfolioJumpsKey) || acqPortfolioJumps.value || 50);
       const targetDays = Number(window.localStorage.getItem(acqTargetDaysKey) || acqTargetDays.value || 3);
+      const orderDurationDays = Number(window.localStorage.getItem(acqOrderDurationKey) || acqOrderDuration.value || 30);
       const itemWorkers = Number(window.localStorage.getItem(acqItemWorkersKey) || acqItemWorkers.value || 4);
       const minMargin = Number(window.localStorage.getItem(acqMinMarginKey) || acqMinMargin.value || 10);
       const commonStored = window.localStorage.getItem(acqCommonMaterialsKey);
@@ -21601,6 +21704,7 @@ help</textarea>
         pickupJumps: clampAcquisitionPickupJumps(Number.isFinite(pickupJumps) ? pickupJumps : 2),
         portfolioJumps: clampAcquisitionPortfolioJumps(Number.isFinite(portfolioJumps) ? portfolioJumps : 50),
         targetDays: clampAcquisitionTargetDays(Number.isFinite(targetDays) ? targetDays : 3),
+        orderDurationDays: clampAcquisitionOrderDuration(Number.isFinite(orderDurationDays) ? orderDurationDays : 30),
         itemWorkers: clampAcquisitionItemWorkers(Number.isFinite(itemWorkers) ? itemWorkers : 4),
         minMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
         includeCommonMaterials: commonStored == null ? acqCommonMaterials.checked : commonStored !== "0",
@@ -21619,6 +21723,7 @@ help</textarea>
       const pickupJumps = clampAcquisitionPickupJumps(settings.pickupJumps);
       const portfolioJumps = clampAcquisitionPortfolioJumps(settings.portfolioJumps);
       const targetDays = clampAcquisitionTargetDays(settings.targetDays);
+      const orderDurationDays = clampAcquisitionOrderDuration(settings.orderDurationDays);
       const itemWorkers = clampAcquisitionItemWorkers(settings.itemWorkers == null ? acqItemWorkers.value : settings.itemWorkers);
       const minMarginPercent = clampHaulMinMargin(settings.minMarginPercent);
       const includeCommonMaterials = settings.includeCommonMaterials == null ? acqCommonMaterials.checked : Boolean(settings.includeCommonMaterials);
@@ -21633,6 +21738,7 @@ help</textarea>
       acqPickupJumps.value = String(pickupJumps);
       acqPortfolioJumps.value = String(portfolioJumps);
       acqTargetDays.value = String(targetDays);
+      acqOrderDuration.value = String(orderDurationDays);
       acqItemWorkers.value = String(itemWorkers);
       acqMinMargin.value = String(minMarginPercent);
       acqCommonMaterials.checked = includeCommonMaterials;
@@ -21652,6 +21758,7 @@ help</textarea>
       window.localStorage.setItem(acqPickupJumpsKey, String(pickupJumps));
       window.localStorage.setItem(acqPortfolioJumpsKey, String(portfolioJumps));
       window.localStorage.setItem(acqTargetDaysKey, String(targetDays));
+      window.localStorage.setItem(acqOrderDurationKey, String(orderDurationDays));
       window.localStorage.setItem(acqItemWorkersKey, String(itemWorkers));
       window.localStorage.setItem(acqMinMarginKey, String(minMarginPercent));
       window.localStorage.setItem(acqCommonMaterialsKey, includeCommonMaterials ? "1" : "0");
@@ -21659,7 +21766,7 @@ help</textarea>
       window.localStorage.setItem(acqMarketTypeIdsKey, JSON.stringify(marketTypeIds));
       window.localStorage.setItem(acqPastedItemsKey, pastedItemNames);
       window.localStorage.setItem(acqPastedItemsOnlyKey, pastedItemsOnly ? "1" : "0");
-      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, itemWorkers, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly};
+      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, orderDurationDays, itemWorkers, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly};
     }
 
     async function loadFlightStatus() {
@@ -23333,6 +23440,7 @@ help</textarea>
         pickupJumps: acqPickupJumps.value,
         portfolioJumps: acqPortfolioJumps.value,
         targetDays: acqTargetDays.value,
+        orderDurationDays: acqOrderDuration.value,
         itemWorkers: acqItemWorkers.value,
         minMarginPercent: acqMinMargin.value,
         includeCommonMaterials: acqCommonMaterials.checked,
@@ -23362,6 +23470,7 @@ help</textarea>
         pickup_jumps: String(scanSettings.pickupJumps),
         portfolio_jumps: String(scanSettings.portfolioJumps),
         target_days: String(scanSettings.targetDays),
+        order_duration_days: String(scanSettings.orderDurationDays),
         item_workers: String(scanSettings.itemWorkers),
         min_margin_percent: String(scanSettings.minMarginPercent),
         common_materials: scanSettings.includeCommonMaterials ? "1" : "0",
@@ -23570,7 +23679,7 @@ help</textarea>
       acqRoute.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> buy-order area toward
         <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>.
-        <div class="meta">Total investment ${formatIsk(acquisition.budget_isk)}; collection range ${formatNumber(acquisition.pickup_jumps)} jumps; portfolio jump budget ${formatNumber(acquisition.portfolio_jumps)}; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days; scan speed ${formatNumber(acquisition.item_workers || 4)} workers.</div>
+        <div class="meta">Total investment ${formatIsk(acquisition.budget_isk)}; collection range ${formatNumber(acquisition.pickup_jumps)} jumps; portfolio jump budget ${formatNumber(acquisition.portfolio_jumps)}; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; planned order duration ${formatNumber(acquisition.order_duration_days || 30)} days; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days; scan speed ${formatNumber(acquisition.item_workers || 4)} workers.</div>
         ${routeWarning}
         ${stageTiming}
       `;
@@ -26919,6 +27028,7 @@ help</textarea>
         pickupJumps: acqPickupJumps.value,
         portfolioJumps: acqPortfolioJumps.value,
         targetDays: acqTargetDays.value,
+        orderDurationDays: acqOrderDuration.value,
         itemWorkers: acqItemWorkers.value,
         minMarginPercent: acqMinMargin.value,
         includeCommonMaterials: acqCommonMaterials.checked,
@@ -26942,6 +27052,7 @@ help</textarea>
     acqPickupJumps.addEventListener("change", updateAcquisitionScopeAndReset);
     acqPortfolioJumps.addEventListener("change", updateAcquisitionScopeAndReset);
     acqTargetDays.addEventListener("change", updateAcquisitionScopeAndReset);
+    acqOrderDuration.addEventListener("change", updateAcquisitionScopeAndReset);
     acqItemWorkers.addEventListener("change", updateAcquisitionScopeAndReset);
     acqMinMargin.addEventListener("input", () => {
       acqMinMarginValue.textContent = `${formatNumber(clampHaulMinMargin(acqMinMargin.value))}%`;
