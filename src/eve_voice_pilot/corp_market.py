@@ -2616,6 +2616,7 @@ def build_discord_alert_settings_response(
     *,
     settings_path: Path,
     webhook_configured: bool,
+    event_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     route = select_discord_alert_route(settings)
     rule = select_discord_alert_rule(settings)
@@ -2628,7 +2629,7 @@ def build_discord_alert_settings_response(
         "settings": settings.to_dict(),
         "active_route": route.to_dict(),
         "active_rule": rule.to_dict(),
-        "preview_payload": build_discord_alert_preview_payload(settings),
+        "preview_payload": build_discord_alert_preview_payload(settings, event_payload=event_payload),
         "safety": {
             "webhook_url_stored": False,
             "allowed_mentions": "disabled",
@@ -12952,6 +12953,7 @@ def build_http_server(
                     settings,
                     settings_path=discord_alert_settings_path,
                     webhook_configured=bool(discord_webhook_url),
+                    event_payload=payload.get("event") if isinstance(payload.get("event"), Mapping) else None,
                 )
             )
 
@@ -19870,6 +19872,11 @@ help</textarea>
       .filter((entry) => entry && entry.optional_reprocessing && entry.scope)
       .map((entry) => entry.scope));
     const validTabs = new Set(["market", "fittings", "flight", "industry", "hauling", "acquisition", "trade-pnl", "planetary", "reprocessing"]);
+    const tabAliases = new Map([
+      ["discord-alerts", "market"],
+      ["discord", "market"],
+      ["alerts", "market"],
+    ]);
     let filterType = "";
     let includeClosed = false;
     let includeArchivedFittings = false;
@@ -20173,7 +20180,10 @@ help</textarea>
         const response = await fetch("/api/discord-alerts/settings", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({settings: discordAlertSettingsFromForm()}),
+          body: JSON.stringify({
+            settings: discordAlertSettingsFromForm(),
+            event: discordAlertEventFromForm(),
+          }),
         });
         const data = await readJsonApiResponse(response, "Could not save Discord alert settings");
         applyDiscordAlertSettings(data.settings);
@@ -20644,8 +20654,14 @@ help</textarea>
       }
     }
 
+    function resolveTabName(tabName) {
+      const requested = String(tabName || "").trim();
+      const targetTab = tabAliases.get(requested) || requested;
+      return validTabs.has(targetTab) ? targetTab : "";
+    }
+
     function showTab(tabName) {
-      const targetTab = validTabs.has(tabName) ? tabName : "market";
+      const targetTab = resolveTabName(tabName) || "market";
       document.body.dataset.activeTab = targetTab;
       tabButtons.forEach((button) => {
         const selected = button.dataset.tabTarget === targetTab;
@@ -20657,7 +20673,7 @@ help</textarea>
     }
 
     function scrollTabIntoView(tabName) {
-      const targetTab = validTabs.has(tabName) ? tabName : "market";
+      const targetTab = resolveTabName(tabName) || "market";
       const panel = Array.from(tabPanels).find((candidate) => candidate.dataset.tabPanel === targetTab);
       if (!panel) return;
       window.requestAnimationFrame(() => {
@@ -20670,13 +20686,13 @@ help</textarea>
 
     function initialTab() {
       const requested = window.location.hash.replace("#", "");
-      return validTabs.has(requested) ? requested : "market";
+      return resolveTabName(requested) || "market";
     }
 
     function showTabFromHash() {
       const requested = window.location.hash.replace("#", "");
-      if (!validTabs.has(requested)) return;
-      const tabName = requested;
+      const tabName = resolveTabName(requested);
+      if (!tabName) return;
       showTab(tabName);
       scrollTabIntoView(tabName);
     }
@@ -26713,8 +26729,8 @@ help</textarea>
 
     document.querySelectorAll(".ops-launcher a[href^='#']").forEach((link) => {
       link.addEventListener("click", (event) => {
-        const tabName = link.getAttribute("href").slice(1);
-        if (!validTabs.has(tabName)) return;
+        const tabName = resolveTabName(link.getAttribute("href").slice(1));
+        if (!tabName) return;
         event.preventDefault();
         showTab(tabName);
         window.history.replaceState(null, "", `#${tabName}`);

@@ -5555,6 +5555,53 @@ def test_discord_alert_settings_response_exposes_preview_and_safety(tmp_path):
     assert payload["sender_modes"][1]["available"] is False
 
 
+def test_discord_alert_settings_response_can_preview_current_sample_event(tmp_path):
+    settings = corp_market.clean_discord_alert_settings_payload(
+        {
+            "routes": [
+                {
+                    "name": "Alliance alert channel",
+                    "destination": "#alliance-alerts",
+                    "webhook_env_var": "CORP_MARKET_DISCORD_WEBHOOK_URL",
+                    "enabled": True,
+                    "sender_name": "IntelPet",
+                }
+            ],
+            "rules": [
+                {
+                    "name": "War target report",
+                    "event_type": "intel",
+                    "severity": "high",
+                    "phrases": ["war target"],
+                    "route_name": "Alliance alert channel",
+                    "include_matched_text": True,
+                    "enabled": True,
+                }
+            ],
+        }
+    )
+
+    payload = corp_market.build_discord_alert_settings_response(
+        settings,
+        settings_path=tmp_path / "corp_discord_alert_settings.json",
+        webhook_configured=False,
+        event_payload={
+            "summary": "Codex QA hostile report near Amarr",
+            "source": "local Intel Pet",
+            "system_name": "Amarr",
+            "channel": "Corp",
+            "matched_text": "@here war target on undock",
+        },
+    )
+    preview_text = json.dumps(payload["preview_payload"])
+
+    assert "Codex QA hostile report near Amarr" in payload["preview_payload"]["content"]
+    assert "@here" not in preview_text
+    assert "@ here war target on undock" in preview_text
+    assert payload["preview_payload"]["allowed_mentions"] == {"parse": []}
+    assert payload["settings_file"] == "corp_discord_alert_settings.json"
+
+
 def test_dashboard_includes_discord_alert_settings_controls():
     page = render_dashboard()
 
@@ -5567,6 +5614,9 @@ def test_dashboard_includes_discord_alert_settings_controls():
     assert "User-owned sender - future" in page
     assert "The webhook URL is not saved in this settings file." in page
     assert "Manual tests live" in page
+    assert "\"discord-alerts\", \"market\"" in page
+    assert "resolveTabName" in page
+    assert "event: discordAlertEventFromForm()" in page
 
 
 def test_discord_payload_marks_reserved_listing_status(tmp_path):
