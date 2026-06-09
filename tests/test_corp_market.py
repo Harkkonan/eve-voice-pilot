@@ -2084,6 +2084,7 @@ def test_acquisition_report_rows_use_committed_cost_basis():
                     "max_safe_bid": 12.0,
                     "estimated_isk_committed": 600_000.0,
                     "estimated_net_revenue": 750_000.0,
+                    "broker_fee_rate": 0.03,
                     "risk_level": "caution",
                 }
             ],
@@ -2103,11 +2104,13 @@ def test_acquisition_report_rows_use_committed_cost_basis():
     assert row["Location to Post Order"] == "Amarr"
     assert row["Item Name"] == "Scourge Fury Heavy Missile"
     assert row["Quantity"] == 50_000
-    assert row["Price Per Item"] == pytest.approx(12.0)
+    assert row["Price Per Item"] == pytest.approx(11.5)
     assert row["Expected Return Per Item"] == pytest.approx(15.0)
+    assert row["Expected Total Cost"] == pytest.approx(600_000.0)
     assert row["Expected Total Profit"] == pytest.approx(150_000.0)
     assert row["Realized Total Profit"] == ""
-    assert "Price Per Item includes estimated broker fee" in row["Notes"]
+    assert "Price Per Item is the buy-order price to enter" in row["Notes"]
+    assert "Expected Total Cost includes 3% estimated broker fee" in row["Notes"]
 
 
 def test_haul_route_preference_normalizes_eve_route_terms():

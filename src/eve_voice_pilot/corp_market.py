@@ -7489,6 +7489,7 @@ def build_expected_realized_report_row(
     price_per_item: Any,
     expected_return_per_item: Any,
     realized_return_per_item: Any = None,
+    expected_total_cost: Any = None,
     date_completed: str = "",
     status: str = "Planned",
     notes: str = "",
@@ -7497,11 +7498,16 @@ def build_expected_realized_report_row(
     price_number = clean_optional_float(price_per_item)
     expected_return_number = clean_optional_float(expected_return_per_item)
     realized_return_number = clean_optional_float(realized_return_per_item)
+    expected_total_cost_override = clean_optional_float(expected_total_cost)
 
     expected_total_cost = (
-        quantity_number * price_number
-        if quantity_number is not None and price_number is not None
-        else None
+        expected_total_cost_override
+        if expected_total_cost_override is not None
+        else (
+            quantity_number * price_number
+            if quantity_number is not None and price_number is not None
+            else None
+        )
     )
     expected_total_return = (
         quantity_number * expected_return_number
@@ -7745,18 +7751,23 @@ def build_acquisition_expected_realized_report_rows(
             continue
         estimated_committed = clean_optional_float(line.get("estimated_isk_committed"))
         estimated_net_revenue = clean_optional_float(line.get("estimated_net_revenue"))
-        price_per_item = (
-            estimated_committed / units if estimated_committed is not None else line.get("suggested_bid")
-        )
+        price_per_item = line.get("suggested_bid")
         expected_return_per_item = (
             estimated_net_revenue / units if estimated_net_revenue is not None else None
         )
         placement_system = str(line.get("placement_system") or origin_name)
+        broker_fee_rate = clean_optional_float(line.get("broker_fee_rate"))
+        broker_fee_note = (
+            f"{broker_fee_rate * 100.0:g}% estimated broker fee"
+            if broker_fee_rate is not None
+            else "estimated broker fee"
+        )
         notes = (
             f"Investment portfolio line toward {destination_name}; category {line.get('category') or 'Selected scope'}; "
             f"suggested bid {format_isk(clean_optional_float(line.get('suggested_bid')))}; "
             f"safe ceiling {format_isk(clean_optional_float(line.get('max_safe_bid')))}; "
-            f"risk {line.get('risk_level') or 'clear'}; Price Per Item includes estimated broker fee."
+            f"risk {line.get('risk_level') or 'clear'}; Price Per Item is the buy-order price to enter; "
+            f"Expected Total Cost includes {broker_fee_note}."
         )
         rows.append(
             build_expected_realized_report_row(
@@ -7768,6 +7779,7 @@ def build_acquisition_expected_realized_report_rows(
                 quantity=units,
                 price_per_item=price_per_item,
                 expected_return_per_item=expected_return_per_item,
+                expected_total_cost=estimated_committed,
                 notes=notes,
             )
         )
