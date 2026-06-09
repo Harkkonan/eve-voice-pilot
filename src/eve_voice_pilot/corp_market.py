@@ -750,12 +750,34 @@ class DiscordAlertSettings:
 
 
 @dataclass(frozen=True)
+class DiscordWebhookDestination:
+    destination_id: str
+    label: str
+    webhook_url: str = ""
+    forum_posts: bool = False
+
+    def to_dict(self, *, include_webhook_url: bool = False) -> dict[str, Any]:
+        payload = {
+            "id": self.destination_id,
+            "label": self.label,
+            "forum_posts": self.forum_posts,
+            "webhook_configured": bool(self.webhook_url),
+            "webhook_url_preview": redacted_discord_webhook_url(self.webhook_url),
+        }
+        if include_webhook_url:
+            payload["webhook_url"] = self.webhook_url
+        return payload
+
+
+@dataclass(frozen=True)
 class DiscordPostSettings:
     webhook_url: str = ""
     destination_label: str = DEFAULT_DISCORD_POST_DESTINATION
     sender_name: str = DEFAULT_DISCORD_POST_SENDER_NAME
     public_base_url: str = ""
     forum_posts: bool = False
+    selected_webhook_id: str = ""
+    webhook_destinations: tuple[DiscordWebhookDestination, ...] = field(default_factory=tuple)
     forum_tag_ids: tuple[str, ...] = field(default_factory=tuple)
     forum_tag_map: dict[str, tuple[str, ...]] = field(default_factory=dict)
     updated_at: str = ""
@@ -763,9 +785,15 @@ class DiscordPostSettings:
     def to_dict(self, *, include_webhook_url: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "destination_label": self.destination_label,
+            "footer_label": self.destination_label,
             "sender_name": self.sender_name,
             "public_base_url": self.public_base_url,
             "forum_posts": self.forum_posts,
+            "selected_webhook_id": self.selected_webhook_id,
+            "webhook_destinations": [
+                destination.to_dict(include_webhook_url=include_webhook_url)
+                for destination in self.webhook_destinations
+            ],
             "forum_tag_ids": list(self.forum_tag_ids),
             "forum_tag_map": {key: list(values) for key, values in sorted(self.forum_tag_map.items())},
             "forum_tag_map_text": forum_tag_map_to_text(self.forum_tag_map),
@@ -2806,12 +2834,128 @@ def clean_discord_post_destination(value: Any) -> str:
     return clean_text(value or DEFAULT_DISCORD_POST_DESTINATION, "Discord post destination label", max_length=140) or DEFAULT_DISCORD_POST_DESTINATION
 
 
+def clean_discord_post_footer_label(value: Any) -> str:
+    return clean_text(value or DEFAULT_DISCORD_POST_DESTINATION, "Discord post footer label", max_length=140) or DEFAULT_DISCORD_POST_DESTINATION
+
+
 def clean_discord_webhook_url(value: Any) -> str:
     webhook_url = str(value or "").strip()
     if not webhook_url:
         return ""
     validate_discord_webhook_url(webhook_url)
     return webhook_url
+
+
+def clean_discord_webhook_destination_id(value: Any, *, fallback: str = "") -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_-]+", "-", text).strip("-_")
+    if not text:
+        text = fallback
+    text = text[:64].strip("-_")
+    return text or "default"
+
+
+def discord_webhook_destination_by_id(
+    settings: DiscordPostSettings,
+    destination_id: str,
+) -> DiscordWebhookDestination | None:
+    for destination in settings.webhook_destinations:
+        if destination.destination_id == destination_id:
+            return destination
+    return None
+
+
+def selected_discord_webhook_destination(settings: DiscordPostSettings) -> DiscordWebhookDestination | None:
+    if not settings.webhook_destinations:
+        return None
+    selected = discord_webhook_destination_by_id(settings, settings.selected_webhook_id)
+    return selected or settings.webhook_destinations[0]
+
+
+def discord_post_settings_with_selected_webhook(settings: DiscordPostSettings) -> DiscordPostSettings:
+    selected = selected_discord_webhook_destination(settings)
+    if selected is None:
+        return settings
+    return replace(
+        settings,
+        selected_webhook_id=selected.destination_id,
+        webhook_url=selected.webhook_url,
+        forum_posts=selected.forum_posts,
+    )
+
+
+def legacy_discord_webhook_destination(settings: DiscordPostSettings) -> DiscordWebhookDestination | None:
+    if not settings.webhook_url:
+        return None
+    label = clean_discord_post_destination(settings.destination_label)
+    destination_id = clean_discord_webhook_destination_id(settings.selected_webhook_id or label)
+    return DiscordWebhookDestination(
+        destination_id=destination_id,
+        label=label,
+        webhook_url=settings.webhook_url,
+        forum_posts=settings.forum_posts,
+    )
+
+
+def clean_discord_webhook_destinations(
+    value: Any,
+    *,
+    existing: DiscordPostSettings,
+) -> tuple[DiscordWebhookDestination, ...]:
+    existing_by_id = {destination.destination_id: destination for destination in existing.webhook_destinations}
+    if not existing_by_id:
+        legacy = legacy_discord_webhook_destination(existing)
+        if legacy is not None:
+            existing_by_id[legacy.destination_id] = legacy
+
+    raw_items: Iterable[Any]
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes, bytearray, Mapping)):
+        raw_items = value
+    else:
+        raw_items = ()
+
+    destinations: list[DiscordWebhookDestination] = []
+    seen_ids: set[str] = set()
+    for raw_item in raw_items:
+        if not isinstance(raw_item, Mapping):
+            continue
+        raw_label = raw_item.get("label") or raw_item.get("name") or raw_item.get("destination_label")
+        fallback_id = clean_discord_webhook_destination_id(raw_label or "destination")
+        destination_id = clean_discord_webhook_destination_id(raw_item.get("id") or raw_item.get("destination_id"), fallback=fallback_id)
+        existing_destination = existing_by_id.get(destination_id)
+        label = clean_discord_post_destination(
+            raw_label
+            or (existing_destination.label if existing_destination else "")
+            or destination_id
+        )
+        raw_webhook = raw_item.get("webhook_url")
+        webhook_url = existing_destination.webhook_url if existing_destination else ""
+        if raw_webhook is not None and str(raw_webhook).strip():
+            webhook_url = clean_discord_webhook_url(raw_webhook)
+        forum_posts = query_bool(
+            raw_item.get("forum_posts"),
+            default=existing_destination.forum_posts if existing_destination else False,
+        )
+        if not webhook_url:
+            continue
+        base_id = destination_id
+        suffix = 2
+        while destination_id in seen_ids:
+            destination_id = clean_discord_webhook_destination_id(f"{base_id}-{suffix}")
+            suffix += 1
+        seen_ids.add(destination_id)
+        destinations.append(
+            DiscordWebhookDestination(
+                destination_id=destination_id,
+                label=label,
+                webhook_url=webhook_url,
+                forum_posts=forum_posts,
+            )
+        )
+
+    if not destinations:
+        return tuple(existing_by_id.values())
+    return tuple(destinations)
 
 
 def clean_discord_forum_tag_ids(value: Any) -> tuple[str, ...]:
@@ -2876,21 +3020,65 @@ def clean_discord_post_settings_payload(
     existing = existing or default_discord_post_settings()
     clear_webhook = query_bool(payload.get("clear_webhook_url"), default=False)
     raw_webhook = payload.get("webhook_url")
-    webhook_url = "" if clear_webhook else existing.webhook_url
-    if raw_webhook is not None and str(raw_webhook).strip():
+    webhook_url = ""
+    if not clear_webhook and raw_webhook is not None and str(raw_webhook).strip():
         webhook_url = clean_discord_webhook_url(raw_webhook)
     raw_public_base_url = payload.get("public_base_url", existing.public_base_url)
     public_base_url = clean_optional_url(raw_public_base_url or "", "public_base_url")
-    return DiscordPostSettings(
+    footer_label = clean_discord_post_footer_label(
+        payload.get("footer_label") or payload.get("destination_label") or existing.destination_label
+    )
+    selected_webhook_id = clean_discord_webhook_destination_id(
+        payload.get("selected_webhook_id") or existing.selected_webhook_id
+    )
+    webhook_destinations = clean_discord_webhook_destinations(
+        payload.get("webhook_destinations") or payload.get("destinations"),
+        existing=existing,
+    )
+    selected_destination = None
+    if selected_webhook_id:
+        selected_destination = next(
+            (destination for destination in webhook_destinations if destination.destination_id == selected_webhook_id),
+            None,
+        )
+    webhook_label = clean_discord_post_destination(
+        payload.get("webhook_label")
+        or payload.get("destination_name")
+        or (selected_destination.label if selected_destination else "")
+        or footer_label
+    )
+    selected_webhook_id = selected_webhook_id or clean_discord_webhook_destination_id(webhook_label)
+    selected_forum_posts = query_bool(payload.get("forum_posts"), default=existing.forum_posts)
+    if webhook_url:
+        updated_destinations = [
+            destination for destination in webhook_destinations if destination.destination_id != selected_webhook_id
+        ]
+        updated_destinations.append(
+            DiscordWebhookDestination(
+                destination_id=selected_webhook_id,
+                label=webhook_label,
+                webhook_url=webhook_url,
+                forum_posts=selected_forum_posts,
+            )
+        )
+        webhook_destinations = tuple(updated_destinations)
+    elif clear_webhook and selected_webhook_id:
+        webhook_destinations = tuple(
+            destination for destination in webhook_destinations if destination.destination_id != selected_webhook_id
+        )
+    settings = DiscordPostSettings(
         webhook_url=webhook_url,
-        destination_label=clean_discord_post_destination(payload.get("destination_label") or existing.destination_label),
+        destination_label=footer_label,
         sender_name=clean_discord_post_sender_name(payload.get("sender_name") or existing.sender_name),
         public_base_url=public_base_url,
-        forum_posts=query_bool(payload.get("forum_posts"), default=existing.forum_posts),
+        forum_posts=selected_forum_posts,
+        selected_webhook_id=selected_webhook_id,
+        webhook_destinations=webhook_destinations,
         forum_tag_ids=clean_discord_forum_tag_ids(payload.get("forum_tag_ids", existing.forum_tag_ids)),
         forum_tag_map=clean_discord_forum_tag_map(payload.get("forum_tag_map", existing.forum_tag_map)),
         updated_at=clean_text(payload.get("updated_at") or existing.updated_at, "Discord post updated_at", max_length=60),
     )
+    return discord_post_settings_with_selected_webhook(settings)
 
 
 def clean_discord_fitting_post_settings_payload(
@@ -2971,16 +3159,36 @@ def effective_discord_post_settings(
     server_public_base_url: str,
 ) -> DiscordPostSettings:
     use_server_defaults = not saved_settings_exists and not settings.updated_at
-    return DiscordPostSettings(
-        webhook_url=settings.webhook_url or server_webhook_url,
+    destinations = list(settings.webhook_destinations)
+    if not destinations and settings.webhook_url:
+        legacy = legacy_discord_webhook_destination(settings)
+        if legacy is not None:
+            destinations.append(legacy)
+    if server_webhook_url and (use_server_defaults or not destinations):
+        destinations.append(
+            DiscordWebhookDestination(
+                destination_id="server-default",
+                label="Server configured webhook",
+                webhook_url=server_webhook_url,
+                forum_posts=server_forum_posts,
+            )
+        )
+    selected_webhook_id = settings.selected_webhook_id
+    if not selected_webhook_id and destinations:
+        selected_webhook_id = destinations[0].destination_id
+    effective = DiscordPostSettings(
+        webhook_url=settings.webhook_url,
         destination_label=settings.destination_label,
         sender_name=settings.sender_name,
         public_base_url=settings.public_base_url or server_public_base_url,
         forum_posts=server_forum_posts if use_server_defaults else settings.forum_posts,
+        selected_webhook_id=selected_webhook_id,
+        webhook_destinations=tuple(destinations),
         forum_tag_ids=settings.forum_tag_ids or (tuple(server_forum_tag_ids) if use_server_defaults else ()),
         forum_tag_map=settings.forum_tag_map or (server_forum_tag_map if use_server_defaults else {}),
         updated_at=settings.updated_at,
     )
+    return discord_post_settings_with_selected_webhook(effective)
 
 
 def build_discord_post_settings_response(
@@ -19418,11 +19626,20 @@ def _render_flight_attendant_dashboard() -> str:
                 </div>
                 <form id="discord-post-form" class="discord-alert-form">
                   <div class="discord-post-settings-grid">
+                    <label>Discord destination
+                      <select id="discord-post-webhook-select">
+                        <option value="">No saved webhooks</option>
+                      </select>
+                    </label>
+                    <label>Destination name
+                      <input id="discord-post-webhook-name" autocomplete="off" placeholder="#corp-market text or corp-market forum" maxlength="140">
+                    </label>
                     <label>Webhook URL
                       <input id="discord-post-webhook-url" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/...">
                     </label>
-                    <label>Destination label
+                    <label>Footer label
                       <input id="discord-post-destination" autocomplete="off" value="Corp buy-or-sell forum" maxlength="140">
+                      <small>Display text only. The selected webhook decides the real Discord channel.</small>
                     </label>
                     <label>Sender name
                       <input id="discord-post-sender" autocomplete="off" value="Market Desk" maxlength="80">
@@ -19438,7 +19655,7 @@ def _render_flight_attendant_dashboard() -> str:
                     <label class="checkline discord-field-full">
                       <input id="discord-post-forum-posts" type="checkbox">
                       <span>Create forum/media-channel post</span>
-                      <small>Adds thread_name and applied_tags for each market post when the webhook belongs to a Discord forum or media channel.</small>
+                      <small>Enable only for a Discord forum/media webhook. Leave off for a normal text-channel webhook.</small>
                     </label>
                     <div class="discord-tag-well discord-field-full">
                       <label>Default forum tag IDs
@@ -21041,6 +21258,8 @@ help</textarea>
     const discordAlertForwardingStatus = document.querySelector("#discord-alert-forwarding-status");
     const discordAlertTextStatus = document.querySelector("#discord-alert-text-status");
     const discordPostForm = document.querySelector("#discord-post-form");
+    const discordPostWebhookSelect = document.querySelector("#discord-post-webhook-select");
+    const discordPostWebhookName = document.querySelector("#discord-post-webhook-name");
     const discordPostWebhookUrl = document.querySelector("#discord-post-webhook-url");
     const discordPostClearWebhook = document.querySelector("#discord-post-clear-webhook");
     const discordPostDestination = document.querySelector("#discord-post-destination");
@@ -21344,6 +21563,7 @@ help</textarea>
     let filterType = "";
     let includeClosed = false;
     let includeArchivedFittings = false;
+    let discordPostSettingsState = null;
     let fittingSearchTimer = null;
     let flightProfitFilter = "all";
     let flightProfitProducts = [];
@@ -21688,10 +21908,108 @@ help</textarea>
         .filter(Boolean);
     }
 
+    function discordWebhookIdFromLabel(label) {
+      return String(label || "destination")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 64) || "default";
+    }
+
+    function discordPostDestinationsFromState() {
+      const settings = discordPostSettingsState?.settings || {};
+      const effective = discordPostSettingsState?.effective_settings || settings;
+      const destinations = Array.isArray(settings.webhook_destinations) && settings.webhook_destinations.length
+        ? settings.webhook_destinations
+        : (Array.isArray(effective.webhook_destinations) ? effective.webhook_destinations : []);
+      return destinations.map((destination) => ({
+        id: String(destination.id || destination.destination_id || "").trim(),
+        label: String(destination.label || destination.destination_label || "Discord webhook").trim(),
+        forum_posts: Boolean(destination.forum_posts),
+        webhook_url_preview: String(destination.webhook_url_preview || "").trim(),
+        webhook_configured: Boolean(destination.webhook_configured || destination.webhook_url_preview),
+      })).filter((destination) => destination.id);
+    }
+
+    function selectedDiscordPostDestination() {
+      const destinations = discordPostDestinationsFromState();
+      const selectedId = String(discordPostWebhookSelect?.value || "").trim();
+      if (selectedId === "__new__") return null;
+      return destinations.find((destination) => destination.id === selectedId) || destinations[0] || null;
+    }
+
+    function renderDiscordPostWebhookSelect(data) {
+      if (!discordPostWebhookSelect) return;
+      const settings = data?.settings || {};
+      const effective = data?.effective_settings || settings;
+      const selectedId = settings.selected_webhook_id || effective.selected_webhook_id || "";
+      const destinations = discordPostDestinationsFromState();
+      if (!destinations.length) {
+        discordPostWebhookSelect.innerHTML = '<option value="__new__">Add new destination...</option>';
+        discordPostWebhookSelect.value = "__new__";
+        return;
+      }
+      discordPostWebhookSelect.innerHTML = destinations.map((destination) => {
+        const mode = destination.forum_posts ? "forum/media" : "text";
+        const label = `${destination.label} (${mode})`;
+        return `<option value="${escapeHtml(destination.id)}">${escapeHtml(label)}</option>`;
+      }).join("") + '<option value="__new__">Add new destination...</option>';
+      discordPostWebhookSelect.value = destinations.some((destination) => destination.id === selectedId)
+        ? selectedId
+        : destinations[0].id;
+    }
+
+    function applySelectedDiscordPostDestination() {
+      const destination = selectedDiscordPostDestination();
+      if (discordPostWebhookName) discordPostWebhookName.value = destination?.label || "";
+      if (discordPostWebhookUrl) {
+        discordPostWebhookUrl.value = "";
+        discordPostWebhookUrl.placeholder = destination?.webhook_url_preview
+          ? `Configured: ${destination.webhook_url_preview}`
+          : "https://discord.com/api/webhooks/...";
+      }
+      if (discordPostForumPosts) discordPostForumPosts.checked = Boolean(destination?.forum_posts);
+    }
+
+    function discordPostDestinationsFromForm() {
+      const destinations = discordPostDestinationsFromState().map((destination) => ({...destination}));
+      const webhookUrl = String(discordPostWebhookUrl?.value || "").trim();
+      const label = String(discordPostWebhookName?.value || "").trim() || "Discord webhook";
+      const rawSelectedId = String(discordPostWebhookSelect?.value || "").trim();
+      const selectedId = rawSelectedId && rawSelectedId !== "__new__" ? rawSelectedId : discordWebhookIdFromLabel(label);
+      const forumPosts = Boolean(discordPostForumPosts?.checked);
+      const existingIndex = destinations.findIndex((destination) => destination.id === selectedId);
+      const updated = {
+        id: selectedId,
+        label,
+        forum_posts: forumPosts,
+      };
+      if (webhookUrl) updated.webhook_url = webhookUrl;
+      if (existingIndex >= 0) {
+        destinations[existingIndex] = {...destinations[existingIndex], ...updated};
+      } else if (webhookUrl || label) {
+        destinations.push(updated);
+      }
+      return destinations.map((destination) => ({
+        id: destination.id,
+        label: destination.label,
+        forum_posts: Boolean(destination.forum_posts),
+        ...(destination.webhook_url ? {webhook_url: destination.webhook_url} : {}),
+      }));
+    }
+
     function discordPostSettingsFromForm() {
+      const webhookLabel = String(discordPostWebhookName?.value || "").trim() || "Discord webhook";
+      const rawSelectedId = String(discordPostWebhookSelect?.value || "").trim();
+      const selectedWebhookId = rawSelectedId && rawSelectedId !== "__new__" ? rawSelectedId : discordWebhookIdFromLabel(webhookLabel);
       return {
         webhook_url: String(discordPostWebhookUrl?.value || "").trim(),
         clear_webhook_url: Boolean(discordPostClearWebhook?.checked),
+        selected_webhook_id: selectedWebhookId,
+        webhook_label: webhookLabel,
+        webhook_destinations: discordPostDestinationsFromForm(),
+        footer_label: String(discordPostDestination?.value || "Corp buy-or-sell channel").trim() || "Corp buy-or-sell channel",
         destination_label: String(discordPostDestination?.value || "Corp buy-or-sell channel").trim() || "Corp buy-or-sell channel",
         sender_name: String(discordPostSender?.value || "Corp Market Concierge").trim() || "Corp Market Concierge",
         public_base_url: String(discordPostPublicBaseUrl?.value || "").trim(),
@@ -21859,27 +22177,28 @@ help</textarea>
 
     function updateDiscordPostStatus(data) {
       const settings = data?.effective_settings || data?.settings || discordPostSettingsFromForm();
-      if (discordPostWebhookStatus) discordPostWebhookStatus.textContent = data?.webhook_configured ? "Configured" : "Missing";
-      if (discordPostModeStatus) discordPostModeStatus.textContent = settings.forum_posts ? "Forum Post" : "Text Channel";
+      const destination = selectedDiscordPostDestination();
+      const webhookConfigured = data?.webhook_configured || Boolean(destination?.webhook_configured);
+      if (discordPostWebhookStatus) discordPostWebhookStatus.textContent = webhookConfigured ? "Configured" : "Missing";
+      if (discordPostModeStatus) discordPostModeStatus.textContent = (destination?.forum_posts ?? settings.forum_posts) ? "Forum Post" : "Text Channel";
       if (discordPostSenderStatus) discordPostSenderStatus.textContent = settings.sender_name || "Corp Market Concierge";
       if (discordPostMentionStatus) discordPostMentionStatus.textContent = "Disabled";
-      if (directDiscordSend) directDiscordSend.disabled = !data?.webhook_configured;
-      if (discordPostWebhookUrl && data?.webhook_url_preview) {
-        discordPostWebhookUrl.placeholder = `Configured: ${data.webhook_url_preview}`;
-      }
+      if (directDiscordSend) directDiscordSend.disabled = !webhookConfigured;
       renderDiscordPostTagChips(data);
     }
 
     function applyDiscordPostSettings(data) {
       if (!discordPostForm || !data) return;
+      discordPostSettingsState = data;
       const settings = data.settings || {};
       const effective = data.effective_settings || settings;
+      renderDiscordPostWebhookSelect(data);
       if (discordPostWebhookUrl) discordPostWebhookUrl.value = "";
       if (discordPostClearWebhook) discordPostClearWebhook.checked = false;
       if (discordPostDestination) discordPostDestination.value = settings.destination_label || effective.destination_label || "Corp buy-or-sell channel";
       if (discordPostSender) discordPostSender.value = settings.sender_name || effective.sender_name || "Corp Market Concierge";
       if (discordPostPublicBaseUrl) discordPostPublicBaseUrl.value = settings.public_base_url || effective.public_base_url || "";
-      if (discordPostForumPosts) discordPostForumPosts.checked = Boolean(settings.forum_posts ?? effective.forum_posts);
+      applySelectedDiscordPostDestination();
       if (discordPostForumTagIds) discordPostForumTagIds.value = (settings.forum_tag_ids || effective.forum_tag_ids || []).join(", ");
       if (discordPostForumTagMap) discordPostForumTagMap.value = settings.forum_tag_map_text || effective.forum_tag_map_text || "";
       updateDiscordPostStatus(data);
@@ -29394,6 +29713,7 @@ help</textarea>
 
     if (discordPostForm) {
       [
+        discordPostWebhookName,
         discordPostWebhookUrl,
         discordPostClearWebhook,
         discordPostDestination,
@@ -29413,6 +29733,13 @@ help</textarea>
           scheduleDirectDiscordPreview();
         });
       });
+      if (discordPostWebhookSelect) {
+        discordPostWebhookSelect.addEventListener("change", () => {
+          applySelectedDiscordPostDestination();
+          renderDiscordPostTagChips();
+          scheduleDirectDiscordPreview();
+        });
+      }
       discordPostSave.addEventListener("click", saveDiscordPostSettings);
     }
 

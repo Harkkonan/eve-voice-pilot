@@ -12,6 +12,7 @@ from eve_voice_pilot.corp_market import MarketStore, build_discord_webhook_paylo
 
 
 WEBHOOK_URL = "https://discord.com/api/webhooks/111111111111111111/test-token-value"
+TEXT_WEBHOOK_URL = "https://discord.com/api/webhooks/555555555555555555/text-token-value"
 DEFAULT_TAG_ID = "222222222222222222"
 WTS_TAG_ID = "333333333333333333"
 MINERALS_TAG_ID = "444444444444444444"
@@ -124,6 +125,57 @@ def test_discord_post_settings_partial_update_preserves_existing_values():
     assert updated.forum_posts is True
     assert updated.forum_tag_ids == (DEFAULT_TAG_ID,)
     assert updated.sender_name == "Market Desk"
+
+
+def test_discord_post_settings_selects_named_webhook_destination():
+    settings = corp_market.clean_discord_post_settings_payload(
+        {
+            "selected_webhook_id": "text-corp-market",
+            "destination_label": "Corp-market footer",
+            "webhook_destinations": [
+                {
+                    "id": "forum-corp-market",
+                    "label": "corp-market forum",
+                    "webhook_url": WEBHOOK_URL,
+                    "forum_posts": True,
+                },
+                {
+                    "id": "text-corp-market",
+                    "label": "#corp-market text",
+                    "webhook_url": TEXT_WEBHOOK_URL,
+                    "forum_posts": False,
+                },
+            ],
+        }
+    )
+    response = corp_market.build_discord_post_settings_response(
+        settings,
+        effective_settings=settings,
+        settings_path=Path("corp_discord_post_settings.json"),
+    )
+    response_text = json.dumps(response)
+
+    assert settings.selected_webhook_id == "text-corp-market"
+    assert settings.webhook_url == TEXT_WEBHOOK_URL
+    assert settings.forum_posts is False
+    assert settings.destination_label == "Corp-market footer"
+    assert [destination.label for destination in settings.webhook_destinations] == [
+        "corp-market forum",
+        "#corp-market text",
+    ]
+    assert "test-token-value" not in response_text
+    assert "text-token-value" not in response_text
+    assert response["settings"]["webhook_destinations"][0]["webhook_url_preview"] == "https://discord.com/api/webhooks/111111111111111111/..."
+    assert response["settings"]["webhook_destinations"][1]["webhook_url_preview"] == "https://discord.com/api/webhooks/555555555555555555/..."
+
+    switched = corp_market.clean_discord_post_settings_payload(
+        {"selected_webhook_id": "forum-corp-market"},
+        existing=settings,
+    )
+
+    assert switched.webhook_url == WEBHOOK_URL
+    assert switched.forum_posts is True
+    assert switched.selected_webhook_id == "forum-corp-market"
 
 
 def test_direct_discord_post_payload_uses_forum_tags_and_blocks_mentions():
@@ -277,10 +329,14 @@ def test_dashboard_includes_discord_market_posting_controls():
     page = render_dashboard()
 
     assert "id=\"discord-post-form\"" in page
+    assert "id=\"discord-post-webhook-select\"" in page
+    assert "id=\"discord-post-webhook-name\"" in page
     assert "id=\"discord-post-webhook-url\"" in page
     assert "id=\"discord-post-forum-posts\"" in page
     assert "id=\"discord-post-forum-tag-map\"" in page
     assert "id=\"discord-post-tag-chips\"" in page
+    assert "Footer label" in page
+    assert "The selected webhook decides the real Discord channel." in page
     assert "id=\"direct-discord-post-form\"" in page
     assert "id=\"direct-discord-visual-preview\"" in page
     assert "id=\"direct-discord-send\"" in page
