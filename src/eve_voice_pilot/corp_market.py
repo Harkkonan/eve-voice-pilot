@@ -45,6 +45,24 @@ from eve_voice_pilot.corp_intel import (
     get_json,
     verify_sso_character,
 )
+from eve_voice_pilot.flight_server_routes import (
+    FLIGHT_SESSION_COOKIE_NAME,
+    clear_flight_session_cookie_header,
+    default_flight_callback_url,
+    dispatch_flight_get_route,
+    dispatch_flight_post_route,
+    flight_member_access_error,
+    flight_membership_status,
+    flight_session_cookie_header,
+    flight_session_has_member_access,
+    is_https_url,
+    market_write_access_allowed,
+    public_hosting_config_errors,
+    request_cookie,
+    request_path,
+    should_secure_flight_cookie,
+    verified_pilot_has_member_access,
+)
 from eve_voice_pilot.planetary_industry import (
     PlanetaryChainNode,
     PlanetaryChainPlan,
@@ -407,7 +425,6 @@ TRADE_PNL_CONSIDERATION_RULES = {"all", "materials", "custom", "materials_custom
 TRADE_PNL_TOKEN_ALIASES = {"pyrite": "pyerite"}
 TRADE_PNL_MATERIAL_MARKET_GROUP_IDS = (533,)
 TRADE_PNL_FALLBACK_MATERIAL_TYPE_IDS = frozenset({34, 35, 36, 37, 38, 39, 40, 11399})
-FLIGHT_SESSION_COOKIE_NAME = "corp_market_flight_session"
 DISCORD_THREAD_NAME_MAX_LENGTH = 100
 LISTING_TYPES = {"sell", "want"}
 LISTING_STATUSES = {"open", "reserved", "sold", "cancelled"}
@@ -11602,96 +11619,6 @@ def clamp_reprocessing_percent(value: Any, field: str, *, maximum: float) -> flo
     return min(percent, float(maximum))
 
 
-def flight_session_has_member_access(config: EveSsoConfig, session: FlightEsiSession | None) -> bool:
-    if session is None:
-        return False
-    if not config.membership_restricted:
-        return True
-    return bool(session.membership_ok)
-
-
-def verified_pilot_has_member_access(config: EveSsoConfig, pilot: VerifiedPilot) -> bool:
-    if not config.membership_restricted:
-        return True
-    return bool(pilot.membership_ok)
-
-
-def flight_membership_status(config: EveSsoConfig, session: FlightEsiSession | None) -> dict[str, Any]:
-    required = config.membership_restricted
-    allowed = flight_session_has_member_access(config, session) if session else None
-    if not required:
-        message = "No corp or alliance allowlist is configured."
-    elif session is None:
-        message = "Sign in with an allowlisted corporation or alliance character."
-    elif allowed:
-        message = "Signed-in character is in the configured corp/alliance allowlist."
-    else:
-        message = "Signed-in character is not in the configured corp/alliance allowlist."
-    return {
-        "required": required,
-        "allowed": allowed,
-        "corporation_allowlist_count": len(config.allowed_corporation_ids),
-        "alliance_allowlist_count": len(config.allowed_alliance_ids),
-        "trusted_members_can_write_market": bool(config.trusted_members_can_edit),
-        "message": message,
-    }
-
-
-def flight_member_access_error(config: EveSsoConfig, session: FlightEsiSession | None) -> str:
-    if session is None:
-        return "Connect ESI before using Flight Attendant."
-    if config.membership_restricted and not session.membership_ok:
-        return "This EVE character is not in the configured corp/alliance allowlist."
-    return ""
-
-
-def is_https_url(url: str) -> bool:
-    return urlparse(str(url or "")).scheme.lower() == "https"
-
-
-def should_secure_flight_cookie(public_base_url: str) -> bool:
-    return is_https_url(public_base_url)
-
-
-def default_flight_callback_url(*, public_base_url: str, url_host: str, port: int) -> str:
-    if public_base_url and urlparse(public_base_url).scheme.lower() in {"http", "https"}:
-        return f"{public_base_url.rstrip('/')}/flight/callback"
-    return f"http://{url_host}:{port}/flight/callback"
-
-
-def public_hosting_config_errors(*, public_base_url: str, sso_config: EveSsoConfig, public_hosting_mode: bool) -> list[str]:
-    if not public_hosting_mode:
-        return []
-    errors: list[str] = []
-    if not is_https_url(public_base_url):
-        errors.append("--public-base-url must be an https URL in public hosting mode")
-    if not sso_config.enabled:
-        errors.append("EVE SSO client id, client secret, and callback URL are required")
-    elif not is_https_url(sso_config.callback_url):
-        errors.append("--sso-callback-url must be an https URL in public hosting mode")
-    if not sso_config.membership_restricted:
-        errors.append("configure --allowed-corporation-ids or --allowed-alliance-ids for member-only access")
-    return errors
-
-
-def market_write_access_allowed(
-    *,
-    is_loopback: bool,
-    public_hosting_mode: bool,
-    admin_token: str,
-    auth_header: str,
-    token_header: str,
-    trusted_member: bool = False,
-) -> bool:
-    if trusted_member:
-        return True
-    if admin_token:
-        return auth_header == f"Bearer {admin_token}" or token_header == admin_token or (is_loopback and not public_hosting_mode)
-    if public_hosting_mode:
-        return False
-    return is_loopback
-
-
 def build_flight_status_payload(
     *,
     config: EveSsoConfig,
@@ -12026,7 +11953,7 @@ def build_http_server(
         server_version = "CorpMarketConcierge/0.1"
 
         def do_GET(self) -> None:
-            path = urlparse(self.path).path
+            path = request_path(self.path)
             if path in {"/", "/index.html"}:
                 self._send_html(render_dashboard())
                 return
@@ -12058,65 +11985,10 @@ def build_http_server(
                     return
                 self._handle_fitting_list()
                 return
-            if path == "/api/flight/status":
-                self._handle_flight_status()
-                return
-            if path == "/api/flight/diagnostics":
-                self._handle_flight_diagnostics()
-                return
-            if path == "/api/flight/systems":
-                self._handle_flight_systems()
-                return
-            if path == "/api/flight/industry":
-                self._handle_flight_industry()
-                return
-            if path == "/api/flight/buyers":
-                self._handle_flight_buyers()
-                return
-            if path == "/api/flight/buyers/progress":
-                self._handle_flight_buyers_progress()
-                return
-            if path == "/api/flight/profitability":
-                self._handle_flight_profitability()
-                return
-            if path == "/api/flight/hauling":
-                self._handle_flight_hauling()
-                return
-            if path == "/api/flight/hauling/compare":
-                self._handle_flight_hauling_compare()
-                return
-            if path == "/api/flight/hauling/progress":
-                self._handle_flight_hauling_progress()
-                return
-            if path == "/api/flight/acquisition":
-                self._handle_flight_acquisition()
-                return
-            if path == "/api/flight/acquisition/progress":
-                self._handle_flight_acquisition_progress()
-                return
-            if path == "/api/flight/trade-pnl":
-                self._handle_flight_trade_pnl()
-                return
-            if path == "/api/flight/planetary":
-                self._handle_flight_planetary()
-                return
-            if path == "/api/flight/reprocessing":
-                self._handle_flight_reprocessing()
-                return
-            if path == "/api/flight/reprocessing-locations":
-                self._handle_flight_reprocessing_locations()
+            if dispatch_flight_get_route(self, path):
                 return
             if path == "/api/ui-performance":
                 self._handle_ui_performance_snapshot()
-                return
-            if path == "/flight/login":
-                self._handle_flight_login()
-                return
-            if path == "/flight/callback":
-                self._handle_flight_callback()
-                return
-            if path == "/flight/logout":
-                self._handle_flight_logout()
                 return
             if path.startswith("/api/offers/") and path.endswith("/mail"):
                 if not self._require_public_read_access():
@@ -12144,7 +12016,7 @@ def build_http_server(
             self.send_error(404, "Not found")
 
         def do_POST(self) -> None:
-            path = urlparse(self.path).path
+            path = request_path(self.path)
             if path == "/api/offers":
                 if not self._require_write_access():
                     return
@@ -12180,6 +12052,8 @@ def build_http_server(
                     return
                 self._handle_direct_discord_post()
                 return
+            if dispatch_flight_post_route(self, path):
+                return
             if path == "/api/flight/appraisal":
                 if not self._require_public_read_access():
                     return
@@ -12204,9 +12078,6 @@ def build_http_server(
                 if not self._require_write_access():
                     return
                 self._handle_fitting_status(path)
-                return
-            if path == "/flight/logout":
-                self._handle_flight_logout()
                 return
             if path == "/api/ui-performance":
                 self._handle_ui_performance_record()
@@ -30210,30 +30081,6 @@ def future_iso(*, hours: float) -> str:
 def request_is_loopback(handler: BaseHTTPRequestHandler) -> bool:
     host = str(handler.client_address[0])
     return host == "::1" or host.startswith("127.")
-
-
-def request_cookie(handler: BaseHTTPRequestHandler, name: str) -> str:
-    raw_cookie = handler.headers.get("Cookie", "")
-    for part in raw_cookie.split(";"):
-        if "=" not in part:
-            continue
-        key, value = part.split("=", 1)
-        if key.strip() == name:
-            return value.strip()
-    return ""
-
-
-def flight_session_cookie_header(session_id: str, *, secure: bool = False) -> str:
-    header = (
-        f"{FLIGHT_SESSION_COOKIE_NAME}={session_id}; Path=/; HttpOnly; SameSite=Lax; "
-        f"Max-Age={60 * 60}"
-    )
-    return f"{header}; Secure" if secure else header
-
-
-def clear_flight_session_cookie_header(*, secure: bool = False) -> str:
-    header = f"{FLIGHT_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
-    return f"{header}; Secure" if secure else header
 
 
 def clean_token_ttl_seconds(value: Any) -> int:
