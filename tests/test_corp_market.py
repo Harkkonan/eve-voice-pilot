@@ -339,14 +339,16 @@ def test_dashboard_includes_flight_attendant_tab_and_safety_charter():
     assert "id=\"flight-buyer-scan\"" not in flight_section
 
 
-def test_dashboard_keeps_discord_alerts_as_primary_market_workflow():
+def test_dashboard_keeps_market_posts_as_primary_market_workflow():
     page = render_dashboard()
 
     assert "data-tab-target=\"market\"" in page
-    assert "Discord Alerts" in page
+    assert "Market Posts" in page
+    assert "Market Discord Destinations" in page
     assert "Advanced Intel Bot Routes" in page
     assert "Direct Discord Post" in page
     assert "id=\"direct-discord-post-form\"" in page
+    assert "id=\"direct-discord-webhook-select\"" in page
     assert "id=\"offer-form\"" not in page
     assert "Legacy Market Board" not in page
 
@@ -373,8 +375,13 @@ def test_dashboard_includes_shared_fittings_tab():
     assert "name=\"website_url\"" in page
     assert "id=\"fittings-list\"" in page
     assert "id=\"fitting-search\"" in page
+    assert "Fittings Discord Destination" in page
     assert "id=\"fitting-discord-form\"" in page
+    assert "id=\"fitting-discord-webhook-select\"" in page
+    assert "id=\"fitting-discord-webhook-name\"" in page
     assert "id=\"fitting-discord-webhook-url\"" in page
+    assert "Used by the Post Discord buttons on this Shared Fittings page." in page
+    assert "body: JSON.stringify({settings: fittingDiscordSettingsFromForm()})" in page
     assert "/api/fitting-discord/settings" in page
     assert "/discord" in page
     assert "/api/fittings" in page

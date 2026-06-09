@@ -337,9 +337,13 @@ def test_dashboard_includes_discord_market_posting_controls():
     assert "id=\"discord-post-tag-chips\"" in page
     assert "Footer label" in page
     assert "The selected webhook decides the real Discord channel." in page
+    assert "Market Discord Destinations" in page
     assert "id=\"direct-discord-post-form\"" in page
+    assert "id=\"direct-discord-webhook-select\"" in page
+    assert "id=\"direct-discord-destination-help\"" in page
     assert "id=\"direct-discord-visual-preview\"" in page
     assert "id=\"direct-discord-send\"" in page
+    assert "directDiscordPostSettingsFromForm" in page
     assert "data-direct-discord-type=\"market_order\"" in page
     assert "Advanced Intel Bot Routes" in page
     assert "Research Pattern Checklist" in page

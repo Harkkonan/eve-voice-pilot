@@ -14749,8 +14749,16 @@ def build_http_server(
         def _handle_fitting_discord_post(self, path: str) -> None:
             fitting_id = path.removeprefix("/api/fittings/").removesuffix("/discord")
             try:
+                payload: Any = {}
+                if int(self.headers.get("Content-Length") or "0") > 0:
+                    payload = self._read_json_body()
+                    if not isinstance(payload, Mapping):
+                        raise ValueError("Fittings Discord post payload must be a JSON object.")
                 fitting = store.get_shared_fitting(fitting_id)
                 _settings, effective_settings = self._load_effective_discord_fitting_post_settings()
+                raw_settings = payload.get("settings") if isinstance(payload, Mapping) else None
+                if isinstance(raw_settings, Mapping):
+                    effective_settings = clean_discord_fitting_post_settings_payload(raw_settings, existing=effective_settings)
                 if not effective_settings.webhook_url:
                     raise CorpMarketError("Save a Fittings Discord webhook URL before posting shared fittings.")
                 discord_payload = build_discord_fitting_webhook_payload(fitting, effective_settings)
@@ -15872,7 +15880,18 @@ def _render_flight_attendant_dashboard() -> str:
     #tab-market .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     #tab-market .scope-panel { grid-template-columns: 1fr; }
     #tab-market .scope-chip-row { justify-content: flex-start; }
-    .fitting-grid { display: grid; grid-template-columns: minmax(320px, 420px) minmax(0, 1fr); gap: 16px; min-width: 0; }
+    .fitting-grid {
+      display: grid;
+      grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+      grid-template-areas:
+        "fitting-discord fitting-discord"
+        "fitting-share fitting-list";
+      gap: 16px;
+      min-width: 0;
+    }
+    .fitting-discord-panel { grid-area: fitting-discord; }
+    .fitting-share-panel { grid-area: fitting-share; }
+    .fitting-list-panel { grid-area: fitting-list; }
     .flight-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; min-width: 0; }
     .reprocess-page {
       display: grid;
@@ -19317,6 +19336,20 @@ def _render_flight_attendant_dashboard() -> str:
       border-color: rgba(68, 207, 123, .58);
       color: var(--green);
     }
+    .workflow-discord-destination {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+      border: 1px solid rgba(97, 199, 217, .28);
+      border-radius: 7px;
+      background: rgba(5, 9, 11, .42);
+      padding: 10px;
+    }
+    .workflow-discord-destination .meta {
+      align-self: center;
+      margin: 0;
+    }
     .discord-hidden-select {
       position: absolute;
       left: -9999px;
@@ -19492,7 +19525,14 @@ def _render_flight_attendant_dashboard() -> str:
     }
     @media (max-width: 1040px) {
       .ops-launcher { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .market-grid, #tab-market > .market-grid, .fitting-grid, .flight-grid, .briefing, .industry-library-grid { grid-template-columns: 1fr; }
+      .market-grid, #tab-market > .market-grid, .flight-grid, .briefing, .industry-library-grid { grid-template-columns: 1fr; }
+      .fitting-grid {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "fitting-discord"
+          "fitting-share"
+          "fitting-list";
+      }
       .discord-workspace { grid-template-columns: 1fr; }
       .discord-left-column { min-height: 0; }
       .discord-advanced-panel { margin-top: 16px; }
@@ -19549,6 +19589,7 @@ def _render_flight_attendant_dashboard() -> str:
       .scope-chip-row { justify-content: flex-start; }
       .row, .discord-alert-section .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
       #tab-market .discord-page-status,
+      .workflow-discord-destination,
       .discord-post-settings-grid,
       .discord-direct-fields,
       .discord-preview-field-grid { grid-template-columns: 1fr; }
@@ -19693,7 +19734,7 @@ def _render_flight_attendant_dashboard() -> str:
     </section>
 
     <nav class="tabbar" aria-label="Dashboard tabs">
-      <button type="button" data-tab-target="market" aria-selected="true">Discord Alerts</button>
+      <button type="button" data-tab-target="market" aria-selected="true">Market Posts</button>
       <button type="button" data-tab-target="fittings" aria-selected="false">Shared Fittings</button>
       <button type="button" data-tab-target="flight" aria-selected="false">Flight Attendant</button>
       <button type="button" data-tab-target="industry" aria-selected="false">Industry Library</button>
@@ -19721,8 +19762,8 @@ def _render_flight_attendant_dashboard() -> str:
               <section class="panel">
                 <div class="panel-header">
                   <div>
-                    <h2>Discord Market Posting</h2>
-                    <div class="meta">Saved local posting settings for text channels or Discord forum/media posts.</div>
+                    <h2>Market Discord Destinations</h2>
+                    <div class="meta">Saved local webhooks for market posts. The direct post form chooses which one to use for that send.</div>
                   </div>
                   <span class="pill reserved">Manual</span>
                 </div>
@@ -19953,6 +19994,14 @@ help</textarea>
                   <span class="pill reserved">Manual</span>
                 </div>
                 <form id="direct-discord-post-form" class="discord-alert-form">
+                  <div class="workflow-discord-destination">
+                    <label>Post to
+                      <select id="direct-discord-webhook-select">
+                        <option value="">No saved market webhook</option>
+                      </select>
+                    </label>
+                    <div id="direct-discord-destination-help" class="meta">Market posts use this destination for this send.</div>
+                  </div>
                   <div id="direct-discord-type-segments" class="discord-segmented" role="group" aria-label="Discord post type">
                     <button type="button" data-direct-discord-type="wts" aria-pressed="true">WTS</button>
                     <button type="button" data-direct-discord-type="wtb" aria-pressed="false">WTB</button>
@@ -20039,7 +20088,7 @@ help</textarea>
 
       <section id="tab-fittings" class="tab-panel" data-tab-panel="fittings" hidden>
         <div class="fitting-grid">
-          <section class="panel">
+          <section class="panel fitting-share-panel">
             <div class="panel-header">
               <div>
                 <h2>Share Fitting</h2>
@@ -20066,45 +20115,54 @@ help</textarea>
             <p class="meta">The server validates the first line as standard EVE fitting format, stores the pasted text locally, and does not read the EVE client.</p>
           </section>
 
-          <section class="panel">
+          <section class="panel fitting-discord-panel">
             <div class="panel-header">
               <div>
-                <h2>Fittings Discord Channel</h2>
-                <div class="meta">Post saved fitting blocks to the Discord forum channel named Fittings.</div>
+                <h2>Fittings Discord Destination</h2>
+                <div class="meta">Used by the Post Discord buttons on this Shared Fittings page.</div>
               </div>
               <span id="fitting-discord-status" class="pill reserved">Checking</span>
             </div>
             <form id="fitting-discord-form" class="discord-alert-form">
-              <label>Fittings forum webhook URL
-                <input id="fitting-discord-webhook-url" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/...">
-              </label>
-              <div class="row">
-                <label>Destination label
+              <div class="discord-post-settings-grid">
+                <label>Discord destination
+                  <select id="fitting-discord-webhook-select">
+                    <option value="">No saved fittings webhook</option>
+                  </select>
+                </label>
+                <label>Destination name
+                  <input id="fitting-discord-webhook-name" autocomplete="off" placeholder="#fittings" maxlength="140">
+                </label>
+                <label>Fittings forum webhook URL
+                  <input id="fitting-discord-webhook-url" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/...">
+                </label>
+                <label>Footer label
                   <input id="fitting-discord-destination" autocomplete="off" value="Fittings" maxlength="140">
+                  <small>Display text only. The selected webhook decides the real Discord channel.</small>
                 </label>
                 <label>Sender name
                   <input id="fitting-discord-sender" autocomplete="off" value="Fittings Desk" maxlength="80">
                 </label>
-              </div>
-              <label class="checkline">
-                <input id="fitting-discord-clear-webhook" type="checkbox">
-                <span>Clear saved Fittings webhook URL</span>
-                <small>Stored only in an ignored local profile file.</small>
-              </label>
-              <label class="checkline">
-                <input id="fitting-discord-forum-posts" type="checkbox" checked>
-                <span>Create one forum post per fit</span>
-                <small>The webhook must belong to the Discord forum or media channel named Fittings.</small>
-              </label>
-              <div class="discord-tag-well">
-                <label>Default forum tag IDs
-                  <input id="fitting-discord-forum-tag-ids" autocomplete="off" placeholder="123456789012345678, 234567890123456789">
+                <label class="checkline discord-field-full">
+                  <input id="fitting-discord-clear-webhook" type="checkbox">
+                  <span>Clear saved Fittings webhook URL</span>
+                  <small>Stored only in an ignored local profile file.</small>
                 </label>
-                <label>Tag map
-                  <textarea id="fitting-discord-forum-tag-map" placeholder="fitting:123456789012345678&#10;hawk:234567890123456789&#10;abyss:345678901234567890"></textarea>
+                <label class="checkline discord-field-full">
+                  <input id="fitting-discord-forum-posts" type="checkbox" checked>
+                  <span>Create one forum post per fit</span>
+                  <small>Enable for Discord forum/media webhooks such as #fittings.</small>
                 </label>
-                <div id="fitting-discord-tag-chips" class="discord-chip-row" aria-label="Configured Fittings Discord tags">
-                  <span class="discord-chip muted">No tags configured</span>
+                <div class="discord-tag-well discord-field-full">
+                  <label>Default forum tag IDs
+                    <input id="fitting-discord-forum-tag-ids" autocomplete="off" placeholder="123456789012345678, 234567890123456789">
+                  </label>
+                  <label>Tag map
+                    <textarea id="fitting-discord-forum-tag-map" placeholder="fitting:123456789012345678&#10;hawk:234567890123456789&#10;abyss:345678901234567890"></textarea>
+                  </label>
+                  <div id="fitting-discord-tag-chips" class="discord-chip-row" aria-label="Configured Fittings Discord tags">
+                    <span class="discord-chip muted">No tags configured</span>
+                  </div>
                 </div>
               </div>
               <div id="fitting-discord-message" class="discord-alert-status-line" aria-live="polite"></div>
@@ -20114,7 +20172,7 @@ help</textarea>
             </form>
           </section>
 
-          <section class="panel">
+          <section class="panel fitting-list-panel">
             <div class="panel-header">
               <div>
                 <h2>Shared Fittings</h2>
@@ -21393,6 +21451,8 @@ help</textarea>
     const discordPostSenderStatus = document.querySelector("#discord-post-sender-status");
     const discordPostMentionStatus = document.querySelector("#discord-post-mention-status");
     const directDiscordPostForm = document.querySelector("#direct-discord-post-form");
+    const directDiscordWebhookSelect = document.querySelector("#direct-discord-webhook-select");
+    const directDiscordDestinationHelp = document.querySelector("#direct-discord-destination-help");
     const directDiscordTypeSegments = document.querySelector("#direct-discord-type-segments");
     const directDiscordPostType = document.querySelector("#direct-discord-post-type");
     const directDiscordCategory = document.querySelector("#direct-discord-category");
@@ -21412,6 +21472,8 @@ help</textarea>
     const fittingForm = document.querySelector("#fitting-form");
     const fittingErrorEl = document.querySelector("#fitting-form-error");
     const fittingDiscordForm = document.querySelector("#fitting-discord-form");
+    const fittingDiscordWebhookSelect = document.querySelector("#fitting-discord-webhook-select");
+    const fittingDiscordWebhookName = document.querySelector("#fitting-discord-webhook-name");
     const fittingDiscordWebhookUrl = document.querySelector("#fitting-discord-webhook-url");
     const fittingDiscordClearWebhook = document.querySelector("#fitting-discord-clear-webhook");
     const fittingDiscordDestination = document.querySelector("#fitting-discord-destination");
@@ -21686,6 +21748,7 @@ help</textarea>
     let includeClosed = false;
     let includeArchivedFittings = false;
     let discordPostSettingsState = null;
+    let fittingDiscordSettingsState = null;
     let fittingSearchTimer = null;
     let flightProfitFilter = "all";
     let flightProfitProducts = [];
@@ -22039,9 +22102,9 @@ help</textarea>
         .slice(0, 64) || "default";
     }
 
-    function discordPostDestinationsFromState() {
-      const settings = discordPostSettingsState?.settings || {};
-      const effective = discordPostSettingsState?.effective_settings || settings;
+    function discordDestinationsFromSettingsData(data) {
+      const settings = data?.settings || {};
+      const effective = data?.effective_settings || settings;
       const destinations = Array.isArray(settings.webhook_destinations) && settings.webhook_destinations.length
         ? settings.webhook_destinations
         : (Array.isArray(effective.webhook_destinations) ? effective.webhook_destinations : []);
@@ -22054,10 +22117,53 @@ help</textarea>
       })).filter((destination) => destination.id);
     }
 
+    function discordPostDestinationsFromState() {
+      return discordDestinationsFromSettingsData(discordPostSettingsState);
+    }
+
+    function fittingDiscordDestinationsFromState() {
+      return discordDestinationsFromSettingsData(fittingDiscordSettingsState);
+    }
+
+    function discordDestinationOptionLabel(destination) {
+      const mode = destination.forum_posts ? "forum/media" : "text";
+      return `${destination.label} (${mode})`;
+    }
+
+    function renderDiscordDestinationSelect(select, destinations, selectedId, emptyLabel) {
+      if (!select) return;
+      const currentValue = String(select.value || "").trim();
+      const chosenId = destinations.some((destination) => destination.id === currentValue)
+        ? currentValue
+        : (destinations.some((destination) => destination.id === selectedId) ? selectedId : "");
+      if (!destinations.length) {
+        select.innerHTML = `<option value="">${escapeHtml(emptyLabel)}</option>`;
+        select.value = "";
+        return;
+      }
+      select.innerHTML = destinations.map((destination) => {
+        return `<option value="${escapeHtml(destination.id)}">${escapeHtml(discordDestinationOptionLabel(destination))}</option>`;
+      }).join("");
+      select.value = chosenId || destinations[0].id;
+    }
+
     function selectedDiscordPostDestination() {
       const destinations = discordPostDestinationsFromState();
       const selectedId = String(discordPostWebhookSelect?.value || "").trim();
       if (selectedId === "__new__") return null;
+      return destinations.find((destination) => destination.id === selectedId) || destinations[0] || null;
+    }
+
+    function selectedDirectDiscordDestination() {
+      const destinations = discordPostDestinationsFromState();
+      const selectedId = String(directDiscordWebhookSelect?.value || "").trim();
+      if (!selectedId) return selectedDiscordPostDestination();
+      return destinations.find((destination) => destination.id === selectedId) || selectedDiscordPostDestination();
+    }
+
+    function selectedFittingDiscordDestination() {
+      const destinations = fittingDiscordDestinationsFromState();
+      const selectedId = String(fittingDiscordWebhookSelect?.value || "").trim();
       return destinations.find((destination) => destination.id === selectedId) || destinations[0] || null;
     }
 
@@ -22082,6 +22188,31 @@ help</textarea>
         : destinations[0].id;
     }
 
+    function renderDirectDiscordWebhookSelect(data) {
+      const settings = data?.settings || {};
+      const effective = data?.effective_settings || settings;
+      const selectedId = settings.selected_webhook_id || effective.selected_webhook_id || "";
+      renderDiscordDestinationSelect(
+        directDiscordWebhookSelect,
+        discordPostDestinationsFromState(),
+        selectedId,
+        "No saved market webhook",
+      );
+      updateDirectDiscordDestinationHelp();
+    }
+
+    function renderFittingDiscordWebhookSelect(data) {
+      const settings = data?.settings || {};
+      const effective = data?.effective_settings || settings;
+      const selectedId = settings.selected_webhook_id || effective.selected_webhook_id || "";
+      renderDiscordDestinationSelect(
+        fittingDiscordWebhookSelect,
+        fittingDiscordDestinationsFromState(),
+        selectedId,
+        "No saved fittings webhook",
+      );
+    }
+
     function applySelectedDiscordPostDestination() {
       const destination = selectedDiscordPostDestination();
       if (discordPostWebhookName) discordPostWebhookName.value = destination?.label || "";
@@ -22092,6 +22223,28 @@ help</textarea>
           : "https://discord.com/api/webhooks/...";
       }
       if (discordPostForumPosts) discordPostForumPosts.checked = Boolean(destination?.forum_posts);
+    }
+
+    function updateDirectDiscordDestinationHelp() {
+      if (!directDiscordDestinationHelp) return;
+      const destination = selectedDirectDiscordDestination();
+      if (!destination) {
+        directDiscordDestinationHelp.textContent = "Save a market Discord destination before sending.";
+        return;
+      }
+      directDiscordDestinationHelp.textContent = `Using ${discordDestinationOptionLabel(destination)} for this market post.`;
+    }
+
+    function applySelectedFittingDiscordDestination() {
+      const destination = selectedFittingDiscordDestination();
+      if (fittingDiscordWebhookName) fittingDiscordWebhookName.value = destination?.label || "";
+      if (fittingDiscordWebhookUrl) {
+        fittingDiscordWebhookUrl.value = "";
+        fittingDiscordWebhookUrl.placeholder = destination?.webhook_url_preview
+          ? `Configured: ${destination.webhook_url_preview}`
+          : "https://discord.com/api/webhooks/...";
+      }
+      if (fittingDiscordForumPosts) fittingDiscordForumPosts.checked = Boolean(destination?.forum_posts);
     }
 
     function discordPostDestinationsFromForm() {
@@ -22141,10 +22294,55 @@ help</textarea>
       };
     }
 
+    function directDiscordPostSettingsFromForm() {
+      const settings = discordPostSettingsFromForm();
+      const destination = selectedDirectDiscordDestination();
+      if (!destination) return settings;
+      return {
+        ...settings,
+        selected_webhook_id: destination.id,
+        webhook_label: destination.label,
+        forum_posts: Boolean(destination.forum_posts),
+      };
+    }
+
+    function fittingDiscordDestinationsFromForm() {
+      const destinations = fittingDiscordDestinationsFromState().map((destination) => ({...destination}));
+      const webhookUrl = String(fittingDiscordWebhookUrl?.value || "").trim();
+      const label = String(fittingDiscordWebhookName?.value || "").trim() || "Fittings";
+      const rawSelectedId = String(fittingDiscordWebhookSelect?.value || "").trim();
+      const selectedId = rawSelectedId || discordWebhookIdFromLabel(label);
+      const forumPosts = Boolean(fittingDiscordForumPosts?.checked);
+      const existingIndex = destinations.findIndex((destination) => destination.id === selectedId);
+      const updated = {
+        id: selectedId,
+        label,
+        forum_posts: forumPosts,
+      };
+      if (webhookUrl) updated.webhook_url = webhookUrl;
+      if (existingIndex >= 0) {
+        destinations[existingIndex] = {...destinations[existingIndex], ...updated};
+      } else if (webhookUrl || label) {
+        destinations.push(updated);
+      }
+      return destinations.map((destination) => ({
+        id: destination.id,
+        label: destination.label,
+        forum_posts: Boolean(destination.forum_posts),
+        ...(destination.webhook_url ? {webhook_url: destination.webhook_url} : {}),
+      }));
+    }
+
     function fittingDiscordSettingsFromForm() {
+      const webhookLabel = String(fittingDiscordWebhookName?.value || "").trim() || "Fittings";
+      const rawSelectedId = String(fittingDiscordWebhookSelect?.value || "").trim();
+      const selectedWebhookId = rawSelectedId || discordWebhookIdFromLabel(webhookLabel);
       return {
         webhook_url: String(fittingDiscordWebhookUrl?.value || "").trim(),
         clear_webhook_url: Boolean(fittingDiscordClearWebhook?.checked),
+        selected_webhook_id: selectedWebhookId,
+        webhook_label: webhookLabel,
+        webhook_destinations: fittingDiscordDestinationsFromForm(),
         destination_label: String(fittingDiscordDestination?.value || "Fittings").trim() || "Fittings",
         sender_name: String(fittingDiscordSender?.value || "Fittings Desk").trim() || "Fittings Desk",
         public_base_url: "",
@@ -22299,13 +22497,14 @@ help</textarea>
 
     function updateDiscordPostStatus(data) {
       const settings = data?.effective_settings || data?.settings || discordPostSettingsFromForm();
-      const destination = selectedDiscordPostDestination();
-      const webhookConfigured = data?.webhook_configured || Boolean(destination?.webhook_configured);
+      const destination = selectedDirectDiscordDestination() || selectedDiscordPostDestination();
+      const webhookConfigured = data?.webhook_configured || Boolean(destination?.webhook_configured || data?.webhook_url_preview);
       if (discordPostWebhookStatus) discordPostWebhookStatus.textContent = webhookConfigured ? "Configured" : "Missing";
       if (discordPostModeStatus) discordPostModeStatus.textContent = (destination?.forum_posts ?? settings.forum_posts) ? "Forum Post" : "Text Channel";
       if (discordPostSenderStatus) discordPostSenderStatus.textContent = settings.sender_name || "Corp Market Concierge";
       if (discordPostMentionStatus) discordPostMentionStatus.textContent = "Disabled";
       if (directDiscordSend) directDiscordSend.disabled = !webhookConfigured;
+      updateDirectDiscordDestinationHelp();
       renderDiscordPostTagChips(data);
     }
 
@@ -22315,6 +22514,7 @@ help</textarea>
       const settings = data.settings || {};
       const effective = data.effective_settings || settings;
       renderDiscordPostWebhookSelect(data);
+      renderDirectDiscordWebhookSelect(data);
       if (discordPostWebhookUrl) discordPostWebhookUrl.value = "";
       if (discordPostClearWebhook) discordPostClearWebhook.checked = false;
       if (discordPostDestination) discordPostDestination.value = settings.destination_label || effective.destination_label || "Corp buy-or-sell channel";
@@ -22328,23 +22528,29 @@ help</textarea>
 
     function updateFittingDiscordStatus(data) {
       const settings = data?.effective_settings || data?.settings || fittingDiscordSettingsFromForm();
-      if (fittingDiscordStatus) fittingDiscordStatus.textContent = data?.webhook_configured ? "Configured" : "Missing";
-      if (fittingDiscordWebhookUrl && data?.webhook_url_preview) {
+      const destination = selectedFittingDiscordDestination();
+      const webhookConfigured = data?.webhook_configured || Boolean(destination?.webhook_configured || data?.webhook_url_preview);
+      if (fittingDiscordStatus) fittingDiscordStatus.textContent = webhookConfigured ? "Configured" : "Missing";
+      if (fittingDiscordWebhookUrl && !destination && data?.webhook_url_preview) {
         fittingDiscordWebhookUrl.placeholder = `Configured: ${data.webhook_url_preview}`;
       }
-      if (fittingDiscordForumPosts) fittingDiscordForumPosts.checked = Boolean(settings.forum_posts);
+      if (fittingDiscordForumPosts && !destination) fittingDiscordForumPosts.checked = Boolean(settings.forum_posts);
       renderFittingDiscordTagChips(data);
     }
 
     function applyFittingDiscordSettings(data) {
       if (!fittingDiscordForm || !data) return;
+      fittingDiscordSettingsState = data;
       const settings = data.settings || {};
       const effective = data.effective_settings || settings;
+      renderFittingDiscordWebhookSelect(data);
       if (fittingDiscordWebhookUrl) fittingDiscordWebhookUrl.value = "";
       if (fittingDiscordClearWebhook) fittingDiscordClearWebhook.checked = false;
+      if (fittingDiscordWebhookName) fittingDiscordWebhookName.value = "";
       if (fittingDiscordDestination) fittingDiscordDestination.value = settings.destination_label || effective.destination_label || "Fittings";
       if (fittingDiscordSender) fittingDiscordSender.value = settings.sender_name || effective.sender_name || "Fittings Desk";
       if (fittingDiscordForumPosts) fittingDiscordForumPosts.checked = Boolean(settings.forum_posts ?? effective.forum_posts);
+      applySelectedFittingDiscordDestination();
       if (fittingDiscordForumTagIds) fittingDiscordForumTagIds.value = (settings.forum_tag_ids || effective.forum_tag_ids || []).join(", ");
       if (fittingDiscordForumTagMap) fittingDiscordForumTagMap.value = settings.forum_tag_map_text || effective.forum_tag_map_text || "";
       updateFittingDiscordStatus(data);
@@ -22441,7 +22647,7 @@ help</textarea>
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
             send: false,
-            settings: discordPostSettingsFromForm(),
+            settings: directDiscordPostSettingsFromForm(),
             post,
           }),
         });
@@ -22463,7 +22669,7 @@ help</textarea>
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
             send: true,
-            settings: discordPostSettingsFromForm(),
+            settings: directDiscordPostSettingsFromForm(),
             post: directDiscordPostFromForm(),
           }),
         });
@@ -29512,7 +29718,7 @@ help</textarea>
             const response = await fetch(`/api/fittings/${discordButton.dataset.postFittingDiscord}/discord`, {
               method: "POST",
               headers: {"Content-Type": "application/json"},
-              body: JSON.stringify({}),
+              body: JSON.stringify({settings: fittingDiscordSettingsFromForm()}),
             });
             const data = await readJsonApiResponse(response, "Could not post fitting to Discord");
             if (status) {
@@ -30110,6 +30316,7 @@ help</textarea>
       if (discordPostWebhookSelect) {
         discordPostWebhookSelect.addEventListener("change", () => {
           applySelectedDiscordPostDestination();
+          renderDirectDiscordWebhookSelect(discordPostSettingsState);
           renderDiscordPostTagChips();
           scheduleDirectDiscordPreview();
         });
@@ -30119,6 +30326,7 @@ help</textarea>
 
     if (fittingDiscordForm) {
       [
+        fittingDiscordWebhookName,
         fittingDiscordWebhookUrl,
         fittingDiscordClearWebhook,
         fittingDiscordDestination,
@@ -30131,11 +30339,24 @@ help</textarea>
         control.addEventListener("input", () => renderFittingDiscordTagChips());
         control.addEventListener("change", () => renderFittingDiscordTagChips());
       });
+      if (fittingDiscordWebhookSelect) {
+        fittingDiscordWebhookSelect.addEventListener("change", () => {
+          applySelectedFittingDiscordDestination();
+          renderFittingDiscordTagChips();
+          updateFittingDiscordStatus(fittingDiscordSettingsState);
+        });
+      }
       fittingDiscordSave.addEventListener("click", saveFittingDiscordSettings);
     }
 
     if (directDiscordPostForm) {
       syncDirectDiscordTypeSegments();
+      if (directDiscordWebhookSelect) {
+        directDiscordWebhookSelect.addEventListener("change", () => {
+          updateDiscordPostStatus(discordPostSettingsState);
+          scheduleDirectDiscordPreview();
+        });
+      }
       if (directDiscordTypeSegments) {
         directDiscordTypeSegments.addEventListener("click", (event) => {
           const button = event.target.closest("button[data-direct-discord-type]");
