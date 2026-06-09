@@ -511,6 +511,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-compare-results\" class=\"decision-output\"" in page
     assert "loadHaulHubComparison" in page
     assert "renderHaulHubComparison" in page
+    assert "haul-hub-comparison-summary" in page
+    assert "Best Profit Hub" in page
+    assert "Lowest Trap Count" in page
+    assert "Shortest Route" in page
+    assert "data-haul-compare-use" in page
     assert "Ships" in page
     assert "Blueprints &amp; Reactions" in page
     assert "Ammunition &amp; Charges" in page
@@ -553,6 +558,14 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-report-panel\" class=\"spreadsheet-report-panel\" hidden" in page
     assert "data-copy-report=\"hauling\"" in page
     assert "data-download-report=\"hauling\"" in page
+    assert "id=\"haul-completed-run-review\" class=\"completed-run-review\"" in page
+    assert "Completed Run Review" in page
+    assert "id=\"haul-completed-run-csv\"" in page
+    assert "id=\"haul-review-completed-run\" class=\"secondary\" type=\"button\"" in page
+    assert "Review Completed Run" in page
+    assert "parseReportCsvRows" in page
+    assert "buildHaulCompletedRunReview" in page
+    assert "renderHaulCompletedRunReview" in page
     assert "id=\"haul-opportunity-top\" class=\"decision-output\"" in page
     assert "haul-opportunity-layout" in page
     assert "haul-opportunity-summary-panel" in page

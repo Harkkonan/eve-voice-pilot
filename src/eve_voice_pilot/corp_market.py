@@ -16363,6 +16363,54 @@ def _render_flight_attendant_dashboard() -> str:
       border-radius: 6px;
       background: rgba(5, 9, 11, .34);
     }
+    .haul-hub-comparison-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 7px;
+      margin: 8px 0 10px;
+    }
+    .haul-hub-card {
+      border: 1px solid rgba(97, 199, 217, .38);
+      border-radius: 7px;
+      background: rgba(5, 10, 12, .58);
+      padding: 10px;
+      display: grid;
+      gap: 9px;
+    }
+    .haul-hub-card-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: start;
+    }
+    .haul-hub-card h3 { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+    .haul-hub-rank {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 42px;
+      padding: 4px 7px;
+      border-radius: 999px;
+      border: 1px solid rgba(224, 168, 74, .38);
+      color: var(--amber);
+      background: rgba(224, 168, 74, .09);
+      font-size: 12px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+    .haul-hub-route {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .haul-hub-route .haul-route-cost { min-height: 82px; }
+    .haul-hub-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
     .mini-check { display: inline-flex; align-items: center; gap: 5px; color: var(--amber); font-size: 12px; font-weight: 800; }
     .mini-check input { margin: 0; }
     .scope-warning { color: var(--amber); }
@@ -19047,6 +19095,48 @@ def _render_flight_attendant_dashboard() -> str:
       white-space: normal;
       min-width: 260px;
     }
+    .completed-run-review {
+      display: grid;
+      gap: 9px;
+      border: 1px solid rgba(224, 168, 74, .34);
+      border-radius: 7px;
+      background: rgba(224, 168, 74, .06);
+      padding: 10px;
+    }
+    .completed-run-review textarea {
+      min-height: 98px;
+      max-height: 210px;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .completed-run-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .completed-run-summary {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .completed-run-row-list {
+      display: grid;
+      gap: 6px;
+      max-height: 260px;
+      overflow: auto;
+    }
+    .completed-run-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      border: 1px solid rgba(63, 85, 80, .44);
+      border-radius: 6px;
+      padding: 8px;
+      background: rgba(8, 13, 15, .42);
+    }
+    .completed-run-row strong { color: var(--text); overflow-wrap: anywhere; }
+    .completed-run-row b { color: var(--amber); text-align: right; overflow-wrap: anywhere; }
     .cache-preflight-panel .profit-summary { margin-bottom: 10px; }
     .cache-list { display: grid; gap: 8px; }
     .cache-row {
@@ -19417,6 +19507,9 @@ def _render_flight_attendant_dashboard() -> str:
       }
       .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .profit-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .haul-hub-comparison-summary,
+      .haul-hub-route,
+      .completed-run-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .reprocess-field-desk {
         grid-template-columns: 1fr;
         grid-template-areas:
@@ -19464,6 +19557,15 @@ def _render_flight_attendant_dashboard() -> str:
       .discord-advanced-teaser { grid-template-columns: 1fr; }
       .haul-checklist { grid-template-columns: 1fr; }
       .haul-route-cost-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .haul-hub-comparison-summary,
+      .haul-hub-route,
+      .completed-run-summary { grid-template-columns: 1fr; }
+      .haul-hub-card-head,
+      .haul-hub-actions,
+      .completed-run-row { grid-template-columns: 1fr; display: grid; }
+      .haul-hub-actions { justify-content: stretch; }
+      .haul-hub-actions button { width: 100%; }
+      .completed-run-row b { text-align: left; }
       .haul-route-stop { grid-template-columns: 44px minmax(0, 1fr); }
       .haul-route-stop > b { grid-column: 2; text-align: left; }
       .haul-opportunity-layout { grid-template-columns: 1fr; }
@@ -20469,6 +20571,21 @@ help</textarea>
                     </div>
                   </div>
                   <div id="haul-report-preview" class="spreadsheet-report-preview"></div>
+                  <div id="haul-completed-run-review" class="completed-run-review">
+                    <div>
+                      <strong>Completed Run Review</strong>
+                      <div class="meta">After the haul, fill the actual columns in the exported CSV, paste it here, and compare actual profit back against the expected profit.</div>
+                    </div>
+                    <label>Paste completed hauler CSV
+                      <textarea id="haul-completed-run-csv" rows="4" spellcheck="false" placeholder="Paste the completed CSV after filling Realized Total Profit, Actual Total Cost, Actual Filled Quantity, and Actual Route Jumps"></textarea>
+                    </label>
+                    <div class="completed-run-actions">
+                      <button id="haul-review-completed-run" class="secondary" type="button">Review Completed Run</button>
+                      <button id="haul-clear-completed-run" class="ghost" type="button">Clear Review</button>
+                      <span id="haul-completed-run-status" class="meta quickbar-copy-status" aria-live="polite">No completed CSV reviewed yet.</span>
+                    </div>
+                    <div id="haul-completed-run-results" class="decision-output"></div>
+                  </div>
                 </div>
                 <div id="haul-opportunity-top" class="decision-output"></div>
               </div>
@@ -21386,6 +21503,11 @@ help</textarea>
     const haulReportPanel = document.querySelector("#haul-report-panel");
     const haulReportStatus = document.querySelector("#haul-report-status");
     const haulReportPreview = document.querySelector("#haul-report-preview");
+    const haulCompletedRunCsv = document.querySelector("#haul-completed-run-csv");
+    const haulReviewCompletedRunButton = document.querySelector("#haul-review-completed-run");
+    const haulClearCompletedRunButton = document.querySelector("#haul-clear-completed-run");
+    const haulCompletedRunStatus = document.querySelector("#haul-completed-run-status");
+    const haulCompletedRunResults = document.querySelector("#haul-completed-run-results");
     const haulOpportunityTop = document.querySelector("#haul-opportunity-top");
     const acquisitionForm = document.querySelector("#acquisition-form");
     const acqOrigin = document.querySelector("#acq-origin");
@@ -22586,6 +22708,7 @@ help</textarea>
       if (kind === "acquisition") acquisitionReportRows = cleanRows;
       if (source.panel) source.panel.hidden = cleanRows.length === 0;
       if (source.preview) source.preview.innerHTML = renderReportPreview(cleanRows);
+      if (kind === "hauling") resetHaulCompletedRunReview(false);
       if (!cleanRows.length) {
         setReportStatus(source.status, "");
         return;
@@ -22599,6 +22722,213 @@ help</textarea>
 
     function resetReportPanel(kind) {
       updateReportPanel(kind, []);
+    }
+
+    function parseReportNumber(value) {
+      const text = String(value == null ? "" : value).trim();
+      if (!text) return null;
+      const normalized = text.replace(/[,%]/g, "").replace(/isk/gi, "").trim();
+      if (!normalized) return null;
+      const number = Number(normalized);
+      return Number.isFinite(number) ? number : null;
+    }
+
+    function parseReportCsvRows(csvText) {
+      const newline = String.fromCharCode(10);
+      const carriageReturn = String.fromCharCode(13);
+      const text = String(csvText || "").split(carriageReturn + newline).join(newline).split(carriageReturn).join(newline);
+      if (!text.trim()) return [];
+      const rows = [];
+      let row = [];
+      let cell = "";
+      let inQuotes = false;
+      for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        const nextChar = text[index + 1];
+        if (inQuotes) {
+          if (char === '"' && nextChar === '"') {
+            cell += '"';
+            index += 1;
+          } else if (char === '"') {
+            inQuotes = false;
+          } else {
+            cell += char;
+          }
+        } else if (char === '"') {
+          inQuotes = true;
+        } else if (char === ",") {
+          row.push(cell);
+          cell = "";
+        } else if (char === newline) {
+          row.push(cell);
+          rows.push(row);
+          row = [];
+          cell = "";
+        } else {
+          cell += char;
+        }
+      }
+      row.push(cell);
+      rows.push(row);
+      const header = (rows.shift() || []).map((column) => String(column || "").trim());
+      if (!header.length) return [];
+      return rows
+        .filter((cells) => cells.some((value) => String(value || "").trim()))
+        .map((cells) => {
+          const parsed = {};
+          header.forEach((column, index) => {
+            parsed[column] = cells[index] == null ? "" : cells[index];
+          });
+          return parsed;
+        });
+    }
+
+    function haulCompletedRunKey(row) {
+      return [
+        normalizedReportText(row?.["Item Name"]),
+        normalizedReportText(row?.["Location to Post Order"]),
+        normalizedReportText(row?.["Order Type"]),
+      ].join("|");
+    }
+
+    function expectedRowLookup(rows) {
+      const lookup = new Map();
+      (rows || []).forEach((row) => {
+        const key = haulCompletedRunKey(row);
+        if (key.replace(/[|]/g, "")) lookup.set(key, row);
+      });
+      return lookup;
+    }
+
+    function derivedActualProfit(row) {
+      const realizedProfit = parseReportNumber(row?.["Realized Total Profit"]);
+      if (realizedProfit != null) return realizedProfit;
+      const realizedReturn = parseReportNumber(row?.["Realized Total Return"]);
+      const actualCost = parseReportNumber(row?.["Actual Total Cost"]);
+      if (realizedReturn != null && actualCost != null) return realizedReturn - actualCost;
+      const realizedPerItem = parseReportNumber(row?.["Realized Return Per Item"]);
+      const filledQuantity = parseReportNumber(row?.["Actual Filled Quantity"]);
+      if (realizedPerItem != null && filledQuantity != null && actualCost != null) {
+        return (realizedPerItem * filledQuantity) - actualCost;
+      }
+      const expectedProfit = parseReportNumber(row?.["Expected Total Profit"]);
+      const profitDifference = parseReportNumber(row?.["Profit Difference"]);
+      if (expectedProfit != null && profitDifference != null) return expectedProfit + profitDifference;
+      return null;
+    }
+
+    function buildHaulCompletedRunReview(completedRows, expectedRows) {
+      const expectedLookup = expectedRowLookup(expectedRows);
+      const rowReviews = completedRows.map((completed, index) => {
+        const expected = expectedLookup.get(haulCompletedRunKey(completed)) || expectedRows[index] || completed;
+        const expectedProfit = parseReportNumber(expected?.["Expected Total Profit"]) ?? parseReportNumber(completed?.["Expected Total Profit"]);
+        const actualProfit = derivedActualProfit(completed);
+        const profitDelta = expectedProfit == null || actualProfit == null ? null : actualProfit - expectedProfit;
+        const expectedJumps = parseReportNumber(expected?.["Expected Route Jumps"]) ?? parseReportNumber(completed?.["Expected Route Jumps"]);
+        const actualJumps = parseReportNumber(completed?.["Actual Route Jumps"]);
+        const jumpDelta = expectedJumps == null || actualJumps == null ? null : actualJumps - expectedJumps;
+        const expectedQuantity = parseReportNumber(expected?.["Quantity"]) ?? parseReportNumber(completed?.["Quantity"]);
+        const actualQuantity = parseReportNumber(completed?.["Actual Filled Quantity"]);
+        const missingActuals = [
+          "Realized Total Profit",
+          "Actual Total Cost",
+          "Actual Filled Quantity",
+          "Actual Route Jumps",
+        ].filter((column) => !String(completed?.[column] || "").trim());
+        return {
+          itemName: completed?.["Item Name"] || expected?.["Item Name"] || `Row ${index + 1}`,
+          expectedProfit,
+          actualProfit,
+          profitDelta,
+          expectedJumps,
+          actualJumps,
+          jumpDelta,
+          expectedQuantity,
+          actualQuantity,
+          missingActuals,
+        };
+      });
+      return rowReviews.reduce((summary, row) => {
+        summary.expectedProfit += row.expectedProfit == null ? 0 : row.expectedProfit;
+        if (row.actualProfit != null) summary.actualProfit += row.actualProfit;
+        summary.actualProfitRows += row.actualProfit == null ? 0 : 1;
+        summary.missingActualRows += row.missingActuals.length ? 1 : 0;
+        summary.rows.push(row);
+        return summary;
+      }, {
+        rows: [],
+        expectedProfit: 0,
+        actualProfit: 0,
+        actualProfitRows: 0,
+        missingActualRows: 0,
+      });
+    }
+
+    function renderHaulCompletedRunReview(summary) {
+      const profitDelta = summary.actualProfit - summary.expectedProfit;
+      const rowList = summary.rows.slice(0, 20).map((row) => {
+        const actualText = row.actualProfit == null ? "Actual missing" : formatSignedIsk(row.actualProfit);
+        const deltaText = row.profitDelta == null ? "Delta pending" : formatSignedIsk(row.profitDelta);
+        const jumpText = row.jumpDelta == null
+          ? "Route pending"
+          : `${formatNumber(row.actualJumps)} actual jumps (${row.jumpDelta >= 0 ? "+" : ""}${formatNumber(row.jumpDelta)} vs expected)`;
+        const quantityText = row.actualQuantity == null
+          ? "Fill quantity pending"
+          : `${formatNumber(row.actualQuantity)} filled${row.expectedQuantity == null ? "" : ` / ${formatNumber(row.expectedQuantity)} planned`}`;
+        const missingText = row.missingActuals.length
+          ? `<div class="meta">Missing actuals: ${escapeHtml(row.missingActuals.join(", "))}.</div>`
+          : "";
+        return `
+          <div class="completed-run-row">
+            <div>
+              <strong>${escapeHtml(row.itemName)}</strong>
+              <div class="meta">Expected ${formatSignedIsk(row.expectedProfit || 0)}; ${escapeHtml(actualText)}; ${escapeHtml(quantityText)}; ${escapeHtml(jumpText)}.</div>
+              ${missingText}
+            </div>
+            <b>${escapeHtml(deltaText)}</b>
+          </div>
+        `;
+      }).join("");
+      const hiddenRows = Math.max(0, summary.rows.length - 20);
+      return `
+        <div class="completed-run-summary">
+          <div class="haul-route-cost"><span>Rows Reviewed</span><b>${formatNumber(summary.rows.length)}</b><small>Completed CSV rows compared.</small></div>
+          <div class="haul-route-cost"><span>Expected Profit</span><b>${formatSignedIsk(summary.expectedProfit)}</b><small>Original planner estimate.</small></div>
+          <div class="haul-route-cost"><span>Actual Profit</span><b>${formatSignedIsk(summary.actualProfit)}</b><small>From realized or derived actuals.</small></div>
+          <div class="haul-route-cost"><span>Profit Delta</span><b>${formatSignedIsk(profitDelta)}</b><small>Actual minus expected.</small></div>
+          <div class="haul-route-cost"><span>Needs Actuals</span><b>${formatNumber(summary.missingActualRows)}</b><small>Rows with blank tracking fields.</small></div>
+        </div>
+        <div class="completed-run-row-list">${rowList || '<div class="decision-empty">No completed rows found.</div>'}</div>
+        ${hiddenRows ? `<div class="meta">Showing first 20 reviewed rows; ${formatNumber(hiddenRows)} more row${hiddenRows === 1 ? "" : "s"} are included in totals.</div>` : ""}
+      `;
+    }
+
+    function resetHaulCompletedRunReview(clearInput = true) {
+      if (clearInput && haulCompletedRunCsv) haulCompletedRunCsv.value = "";
+      if (haulCompletedRunStatus) {
+        haulCompletedRunStatus.textContent = "No completed CSV reviewed yet.";
+        haulCompletedRunStatus.classList.remove("error");
+      }
+      if (haulCompletedRunResults) haulCompletedRunResults.textContent = "";
+    }
+
+    function reviewHaulCompletedRun() {
+      const completedRows = parseReportCsvRows(haulCompletedRunCsv ? haulCompletedRunCsv.value : "");
+      if (!completedRows.length) {
+        setReportStatus(haulCompletedRunStatus, "Paste the completed hauler CSV first.", true);
+        if (haulCompletedRunResults) haulCompletedRunResults.textContent = "";
+        return;
+      }
+      const expectedRows = haulReportRows.length ? haulReportRows : completedRows;
+      const summary = buildHaulCompletedRunReview(completedRows, expectedRows);
+      if (haulCompletedRunResults) haulCompletedRunResults.innerHTML = renderHaulCompletedRunReview(summary);
+      const missingNote = summary.missingActualRows
+        ? ` ${formatNumber(summary.missingActualRows)} row${summary.missingActualRows === 1 ? "" : "s"} still need actual tracking fields.`
+        : "";
+      setReportStatus(
+        haulCompletedRunStatus,
+        `Reviewed ${formatNumber(summary.rows.length)} completed hauler row${summary.rows.length === 1 ? "" : "s"}; ${formatNumber(summary.actualProfitRows)} had actual profit.${missingNote}`,
+      );
     }
 
     async function copyReportCsv(kind, button) {
@@ -25084,6 +25414,13 @@ help</textarea>
       const comparison = data.comparison || {};
       const results = Array.isArray(comparison.results) ? comparison.results : [];
       const best = comparison.best || {};
+      const successfulResults = results.filter((result) => result.ok);
+      const lowestTrap = successfulResults
+        .slice()
+        .sort((left, right) => Number(left.possible_trap_count || 0) - Number(right.possible_trap_count || 0))[0];
+      const shortestRoute = successfulResults
+        .slice()
+        .sort((left, right) => Number(left.route_jumps || 0) - Number(right.route_jumps || 0))[0];
       const bestText = best.destination_name
         ? ` Best hub: ${escapeHtml(best.destination_name)} at ${formatSignedIsk(best.load_plan_net_profit)}.`
         : " No successful hub produced a load plan.";
@@ -25091,41 +25428,65 @@ help</textarea>
         Compared ${formatNumber(comparison.destination_count)} hub${Number(comparison.destination_count || 0) === 1 ? "" : "s"}:
         ${formatNumber(comparison.successful_count)} successful, ${formatNumber(comparison.failed_count)} failed.${bestText}
         <div class="meta">${escapeHtml(comparison.manual_note || "Verify route and prices in EVE.")}</div>
+        <div class="haul-hub-comparison-summary" aria-label="Hub comparison summary">
+          <div class="haul-route-cost"><span>Best Profit Hub</span><b>${escapeHtml(best.destination_name || "None")}</b><small>${best.destination_name ? formatSignedIsk(best.load_plan_net_profit) : "No load plan."}</small></div>
+          <div class="haul-route-cost"><span>Lowest Trap Count</span><b>${escapeHtml(lowestTrap?.destination_name || lowestTrap?.destination || "None")}</b><small>${lowestTrap ? `${formatNumber(lowestTrap.possible_trap_count)} possible trap${Number(lowestTrap.possible_trap_count || 0) === 1 ? "" : "s"}` : "No successful hubs."}</small></div>
+          <div class="haul-route-cost"><span>Shortest Route</span><b>${escapeHtml(shortestRoute?.destination_name || shortestRoute?.destination || "None")}</b><small>${shortestRoute ? `${formatNumber(shortestRoute.route_jumps)} jumps` : "No successful hubs."}</small></div>
+          <div class="haul-route-cost"><span>Successful Hubs</span><b>${formatNumber(comparison.successful_count)}</b><small>${formatNumber(comparison.failed_count)} failed comparison${Number(comparison.failed_count || 0) === 1 ? "" : "s"}.</small></div>
+        </div>
       `;
       haulCompareResults.innerHTML = renderHaulHubComparisonResults(results);
     }
 
     function renderHaulHubComparisonResults(results) {
       if (!results.length) return `<div class="decision-empty">No hub comparison rows returned.</div>`;
-      return `<div class="decision-list">${results.map((result) => {
+      return `<div class="decision-list">${results.map((result, index) => {
         if (!result.ok) {
           return `
-            <article class="decision-card">
-              <div>
-                <h3>${escapeHtml(result.destination_name || result.destination || "Hub")}</h3>
+            <article class="haul-hub-card">
+              <div class="haul-hub-card-head">
+                <div>
+                  <h3>${escapeHtml(result.destination_name || result.destination || "Hub")}</h3>
+                  <div class="meta">Hub comparison failed before a route card could be built.</div>
+                </div>
+                <span class="pill decision-skip">Failed</span>
+              </div>
+              <div class="decision-empty">
                 <div class="meta">${escapeHtml(result.error || "Comparison failed for this hub.")}</div>
               </div>
-              <span class="pill decision-skip">Failed</span>
             </article>
           `;
         }
-        const loadText = result.load_plan_available
-          ? `${formatSignedIsk(result.load_plan_net_profit)} load-plan profit; ${formatPercent(result.load_plan_cargo_percent)} cargo fill`
-          : "No load plan from filtered opportunities";
         const itemText = result.best_item_name
           ? `Best item: ${escapeHtml(result.best_item_name)} at ${formatSignedIsk(result.best_item_net_profit)}.`
           : "No best item returned.";
         const routeWarning = result.route_warning ? `<div class="meta">${escapeHtml(result.route_warning)}</div>` : "";
+        const planClass = result.load_plan_available ? "decision-build" : "decision-watch";
+        const planText = result.load_plan_available ? formatSignedIsk(result.load_plan_net_profit) : "No plan";
+        const destinationName = result.destination_name || result.destination || "Hub";
         return `
-          <article class="decision-card">
+          <article class="haul-hub-card">
+            <div class="haul-hub-card-head">
+              <div>
+                <span class="haul-hub-rank">#${formatNumber(index + 1)}</span>
+                <h3>${escapeHtml(destinationName)}</h3>
+                <div class="meta">${itemText}</div>
+              </div>
+              <span class="pill ${planClass}">${planText}</span>
+            </div>
+            <div class="haul-hub-route">
+              <div class="haul-route-cost"><span>Route</span><b>${formatNumber(result.route_jumps)} jumps</b><small>Current origin to this hub.</small></div>
+              <div class="haul-route-cost"><span>Opportunities</span><b>${formatNumber(result.profitable_opportunities)}</b><small>Visible profitable route candidates.</small></div>
+              <div class="haul-route-cost"><span>Load Plan</span><b>${planText}</b><small>${result.load_plan_available ? `${formatPercent(result.load_plan_cargo_percent)} cargo fill` : "Filtered out or no safe volume."}</small></div>
+              <div class="haul-route-cost"><span>Pickup Stops</span><b>${formatNumber(result.load_plan_stop_count)}</b><small>Stops in the compact load plan.</small></div>
+            </div>
+            <div class="haul-hub-actions">
+              <div class="meta">${formatNumber(result.possible_trap_count)} possible trap${Number(result.possible_trap_count || 0) === 1 ? "" : "s"}; verify route, docking access, and prices in EVE.</div>
+              <button class="secondary" type="button" data-haul-compare-use="${escapeHtml(destinationName)}">Use ${escapeHtml(destinationName)}</button>
+            </div>
             <div>
-              <h3>${escapeHtml(result.destination_name || result.destination || "Hub")}</h3>
-              <div class="meta">${formatNumber(result.route_jumps)} jumps; ${formatNumber(result.profitable_opportunities)} visible profitable opportunities; ${formatNumber(result.possible_trap_count)} possible traps.</div>
-              <div class="meta">${escapeHtml(loadText)}; ${formatNumber(result.load_plan_stop_count)} pickup stop${Number(result.load_plan_stop_count || 0) === 1 ? "" : "s"}.</div>
-              <div class="meta">${itemText}</div>
               ${routeWarning}
             </div>
-            <span class="pill decision-build">${result.load_plan_available ? formatSignedIsk(result.load_plan_net_profit) : "No plan"}</span>
           </article>
         `;
       }).join("")}</div>`;
@@ -29374,6 +29735,19 @@ help</textarea>
       haulCompareResults.textContent = "";
     });
     haulCompareButton.addEventListener("click", loadHaulHubComparison);
+    haulCompareResults.addEventListener("click", (event) => {
+      const useButton = event.target.closest("button[data-haul-compare-use]");
+      if (!useButton) return;
+      haulDestination.value = useButton.dataset.haulCompareUse || "";
+      updateHaulScopeAndReset();
+      haulCompareSummary.textContent = `Destination set to ${haulDestination.value}. Run Scan Route when ready.`;
+    });
+    if (haulReviewCompletedRunButton) {
+      haulReviewCompletedRunButton.addEventListener("click", reviewHaulCompletedRun);
+    }
+    if (haulClearCompletedRunButton) {
+      haulClearCompletedRunButton.addEventListener("click", () => resetHaulCompletedRunReview(true));
+    }
     haulOpportunityTop.addEventListener("click", (event) => {
       if (event.target.closest("button[data-haul-detail-close]")) {
         selectHaulOpportunity(-1);
