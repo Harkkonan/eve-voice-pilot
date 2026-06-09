@@ -40,6 +40,7 @@ profiles/my_eve_commands.json
 profiles/my_ocr_watcher_settings.json
 profiles/corp_intel_watchlist.json
 profiles/corp_discord_alert_settings*.json
+profiles/corp_discord_post_settings*.json
 profiles/intel_pet_settings.json
 profiles/intel_pet_discord_notes*.json
 profiles/chatlog_knowledge_link_review.md

@@ -351,6 +351,43 @@ Safe implementation rules for later slices:
 - User-controlled text must disable Discord mentions and use `allowed_mentions: {"parse": []}`.
 - Every route should have a dry-run preview before live sending is enabled.
 
+## Discord Posting Settings And Direct Market Posts
+
+The Discord Alerts tab also has a separate market-posting settings area for buy, sell, buyback, contract, hauling, service, and announcement posts.
+
+This is still a Discord/manual EVE workflow. It can create a Discord text-channel message or a Discord forum/media-channel post. It does not create, modify, cancel, or fulfill in-game market orders, contracts, trades, EVE mail, or hauling actions.
+
+The settings model is based on common EVE corporation market patterns:
+
+- `WTS` and `WTB` style post titles for ad hoc buy/sell entries;
+- optional appraisal or reference links, such as Janice/appraisal links;
+- category tags for item families such as minerals, ships, PI, ore, hauling, or services;
+- buyback-style terms that name accepted item types, location, and price basis such as a percentage of Jita Buy;
+- manual closeout, contract, trade, or EVE mail follow-up after humans verify the terms in EVE.
+
+Current behavior:
+
+- posting settings are saved in ignored local JSON at `profiles/corp_discord_post_settings.json`;
+- the full webhook URL can be saved locally for direct posts, but API responses and the UI only show a redacted preview;
+- the same settings can also fall back to the server's existing `--discord-webhook-url`, `--discord-forum-posts`, `--discord-forum-tag-ids`, `--discord-forum-tag-map`, and `--public-base-url` options when no saved posting settings file exists;
+- direct posts preview the exact Discord webhook payload before sending;
+- Discord mentions are disabled with `allowed_mentions: {"parse": []}` and user-entered `@here` / `@everyone` text is neutralized;
+- Discord forum/media channels can use `thread_name` plus `applied_tags` when forum mode is enabled.
+
+Start with a local saved posting-settings file:
+
+```powershell
+.\scripts\run_corp_market.ps1 serve --discord-post-settings-path ".\profiles\corp_discord_post_settings_test.json"
+```
+
+For forum/media channels, copy tag ids from Discord developer mode and enter either default tag ids or key-tag mappings in the tab. The tag map uses the same key format as the CLI:
+
+```text
+wts:WTS_TAG_ID,wtb:WTB_TAG_ID,buyback:BUYBACK_TAG_ID,minerals:MINERALS_TAG_ID,hauling:HAULING_TAG_ID
+```
+
+The direct post form is useful when the market entry should go straight to Discord without creating a local board listing first. Use it for one-off WTS/WTB posts, buyback announcements, hauling offers, service ads, or contract notices that will be completed manually in EVE.
+
 ## Legacy Discord Market Posting
 
 The first version uses a Discord channel webhook. A new offer created from the local board can post a Discord message with a link to the offer page. The offer page has a copyable EVE mail draft.

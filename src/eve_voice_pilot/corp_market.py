@@ -57,6 +57,7 @@ from eve_voice_pilot.ui_effects import inject_plex_button_effect
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
 DEFAULT_DISCORD_ALERT_SETTINGS_PATH = ROOT / "profiles" / "corp_discord_alert_settings.json"
+DEFAULT_DISCORD_POST_SETTINGS_PATH = ROOT / "profiles" / "corp_discord_post_settings.json"
 DEFAULT_INDUSTRY_RECIPE_CACHE_PATH = ROOT / "cache" / "eve_industry_recipes.json"
 DEFAULT_ROUTE_GRAPH_CACHE_PATH = ROOT / "cache" / "eve_route_graph.json"
 DEFAULT_REPROCESSING_CACHE_PATH = ROOT / "cache" / "eve_reprocessing.json"
@@ -73,13 +74,17 @@ DEFAULT_DISCORD_ALERT_SENDER_NAME = "IntelPet"
 DEFAULT_DISCORD_ALERT_ROUTE_NAME = "IntelPet server webhook"
 DEFAULT_DISCORD_ALERT_DESTINATION = "Configured Discord alert channel"
 DEFAULT_DISCORD_ALERT_WEBHOOK_ENV_VAR = "CORP_MARKET_DISCORD_WEBHOOK_URL"
+DEFAULT_DISCORD_POST_SENDER_NAME = "Corp Market Concierge"
+DEFAULT_DISCORD_POST_DESTINATION = "Corp buy-or-sell channel"
 DISCORD_ALERT_ROUTE_TYPES = frozenset({"webhook", "user_oauth_future"})
 DISCORD_ALERT_EVENT_TYPES = frozenset({"intel", "help", "market", "location", "combat", "custom"})
 DISCORD_ALERT_SEVERITIES = frozenset({"critical", "high", "medium", "info"})
+DISCORD_DIRECT_POST_TYPES = frozenset({"wts", "wtb", "buyback", "contract", "hauling", "service", "announcement"})
 MAX_DISCORD_ALERT_ROUTES = 6
 MAX_DISCORD_ALERT_RULES = 24
 MAX_DISCORD_ALERT_PHRASES = 24
 MAX_DISCORD_ALERT_EVENT_TEXT = 700
+MAX_DISCORD_DIRECT_POST_DETAILS = 1800
 DEFAULT_FLIGHT_MAX_JUMPS = 5
 MAX_FLIGHT_MAX_JUMPS = 25
 MAX_FLIGHT_BUYER_SCAN_PRODUCTS = 40
@@ -732,6 +737,80 @@ class DiscordAlertSettings:
             "routes": [route.to_dict() for route in self.routes],
             "rules": [rule.to_dict() for rule in self.rules],
             "updated_at": self.updated_at,
+        }
+
+
+@dataclass(frozen=True)
+class DiscordPostSettings:
+    webhook_url: str = ""
+    destination_label: str = DEFAULT_DISCORD_POST_DESTINATION
+    sender_name: str = DEFAULT_DISCORD_POST_SENDER_NAME
+    public_base_url: str = ""
+    forum_posts: bool = False
+    forum_tag_ids: tuple[str, ...] = field(default_factory=tuple)
+    forum_tag_map: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    updated_at: str = ""
+
+    def to_dict(self, *, include_webhook_url: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "destination_label": self.destination_label,
+            "sender_name": self.sender_name,
+            "public_base_url": self.public_base_url,
+            "forum_posts": self.forum_posts,
+            "forum_tag_ids": list(self.forum_tag_ids),
+            "forum_tag_map": {key: list(values) for key, values in sorted(self.forum_tag_map.items())},
+            "forum_tag_map_text": forum_tag_map_to_text(self.forum_tag_map),
+            "updated_at": self.updated_at,
+        }
+        if include_webhook_url:
+            payload["webhook_url"] = self.webhook_url
+        return payload
+
+
+@dataclass(frozen=True)
+class DirectDiscordPost:
+    post_type: str
+    category: str
+    title: str
+    item_name: str
+    quantity: str
+    price_text: str
+    location: str
+    contact: str
+    link_url: str
+    details: str
+
+    @property
+    def type_label(self) -> str:
+        labels = {
+            "wts": "WTS",
+            "wtb": "WTB",
+            "buyback": "Buyback",
+            "contract": "Contract",
+            "hauling": "Hauling",
+            "service": "Service",
+            "announcement": "Announcement",
+        }
+        return labels.get(self.post_type, self.post_type.upper())
+
+    @property
+    def category_label(self) -> str:
+        return LISTING_CATEGORIES.get(self.category, self.category.title())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "post_type": self.post_type,
+            "type_label": self.type_label,
+            "category": self.category,
+            "category_label": self.category_label,
+            "title": self.title,
+            "item_name": self.item_name,
+            "quantity": self.quantity,
+            "price_text": self.price_text,
+            "location": self.location,
+            "contact": self.contact,
+            "link_url": self.link_url,
+            "details": self.details,
         }
 
 
@@ -2266,6 +2345,7 @@ def build_discord_webhook_payload(
     forum_post: bool = False,
     forum_tag_ids: Iterable[str] = (),
     forum_tag_map: dict[str, tuple[str, ...]] | None = None,
+    sender_name: str = "",
 ) -> dict[str, Any]:
     url = listing_public_url(listing.listing_id, public_base_url)
     color = discord_embed_color(listing)
@@ -2314,6 +2394,8 @@ def build_discord_webhook_payload(
         "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
+    if sender_name:
+        payload["username"] = sanitize_discord_text(sender_name, max_length=80)
     if forum_post:
         payload["thread_name"] = discord_thread_name(listing)
         tag_ids = resolve_forum_tag_ids(
@@ -2334,10 +2416,14 @@ DISCORD_ALERT_COLORS = {
 }
 
 
-def sanitize_discord_alert_text(value: Any, *, max_length: int = 500) -> str:
+def sanitize_discord_text(value: Any, *, max_length: int = 500) -> str:
     text = " ".join(str(value or "").split())
     text = text.replace("@", "@ ")
     return shorten(text, max_length)
+
+
+def sanitize_discord_alert_text(value: Any, *, max_length: int = 500) -> str:
+    return sanitize_discord_text(value, max_length=max_length)
 
 
 def normalize_discord_alert_key(value: Any, *, default: str, allowed: frozenset[str]) -> str:
@@ -2700,6 +2786,297 @@ def build_discord_alert_webhook_payload(
         "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
+
+
+def clean_discord_post_sender_name(value: Any) -> str:
+    return clean_text(value or DEFAULT_DISCORD_POST_SENDER_NAME, "Discord post sender name", max_length=80) or DEFAULT_DISCORD_POST_SENDER_NAME
+
+
+def clean_discord_post_destination(value: Any) -> str:
+    return clean_text(value or DEFAULT_DISCORD_POST_DESTINATION, "Discord post destination label", max_length=140) or DEFAULT_DISCORD_POST_DESTINATION
+
+
+def clean_discord_webhook_url(value: Any) -> str:
+    webhook_url = str(value or "").strip()
+    if not webhook_url:
+        return ""
+    validate_discord_webhook_url(webhook_url)
+    return webhook_url
+
+
+def clean_discord_forum_tag_ids(value: Any) -> tuple[str, ...]:
+    raw_values: Iterable[Any]
+    if isinstance(value, str):
+        raw_values = parse_csv(value)
+    elif isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, dict)):
+        raw_values = value
+    else:
+        raw_values = ()
+    tag_ids: list[str] = []
+    for raw_tag_id in raw_values:
+        tag_id = clean_discord_snowflake(raw_tag_id, "discord_forum_tag_id")
+        if tag_id and tag_id not in tag_ids:
+            tag_ids.append(tag_id)
+    return tuple(tag_ids)
+
+
+def clean_discord_forum_tag_map(value: Any) -> dict[str, tuple[str, ...]]:
+    if isinstance(value, str):
+        return {
+            key: clean_discord_forum_tag_ids(values)
+            for key, values in parse_forum_tag_map(value).items()
+        }
+    if not isinstance(value, Mapping):
+        return {}
+    tag_map: dict[str, tuple[str, ...]] = {}
+    for raw_key, raw_values in value.items():
+        key = str(raw_key or "").strip().lower()
+        if not key:
+            continue
+        tag_map[key] = clean_discord_forum_tag_ids(raw_values)
+    return {key: values for key, values in tag_map.items() if values}
+
+
+def forum_tag_map_to_text(tag_map: Mapping[str, Iterable[str]]) -> str:
+    entries: list[str] = []
+    for key in sorted(tag_map):
+        for tag_id in tag_map.get(key, ()):
+            if tag_id:
+                entries.append(f"{key}:{tag_id}")
+    return ",".join(entries)
+
+
+def default_discord_post_settings() -> DiscordPostSettings:
+    return DiscordPostSettings()
+
+
+def clean_discord_post_settings_payload(
+    payload: Mapping[str, Any],
+    *,
+    existing: DiscordPostSettings | None = None,
+) -> DiscordPostSettings:
+    existing = existing or default_discord_post_settings()
+    clear_webhook = query_bool(payload.get("clear_webhook_url"), default=False)
+    raw_webhook = payload.get("webhook_url")
+    webhook_url = "" if clear_webhook else existing.webhook_url
+    if raw_webhook is not None and str(raw_webhook).strip():
+        webhook_url = clean_discord_webhook_url(raw_webhook)
+    raw_public_base_url = payload.get("public_base_url", existing.public_base_url)
+    public_base_url = clean_optional_url(raw_public_base_url or "", "public_base_url")
+    return DiscordPostSettings(
+        webhook_url=webhook_url,
+        destination_label=clean_discord_post_destination(payload.get("destination_label") or existing.destination_label),
+        sender_name=clean_discord_post_sender_name(payload.get("sender_name") or existing.sender_name),
+        public_base_url=public_base_url,
+        forum_posts=query_bool(payload.get("forum_posts"), default=existing.forum_posts),
+        forum_tag_ids=clean_discord_forum_tag_ids(payload.get("forum_tag_ids", existing.forum_tag_ids)),
+        forum_tag_map=clean_discord_forum_tag_map(payload.get("forum_tag_map", existing.forum_tag_map)),
+        updated_at=clean_text(payload.get("updated_at") or existing.updated_at, "Discord post updated_at", max_length=60),
+    )
+
+
+def load_discord_post_settings(path: Path = DEFAULT_DISCORD_POST_SETTINGS_PATH) -> DiscordPostSettings:
+    if not path.exists():
+        return default_discord_post_settings()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CorpMarketError(f"Could not read Discord posting settings: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise CorpMarketError("Discord posting settings file must contain a JSON object.")
+    return clean_discord_post_settings_payload(payload)
+
+
+def save_discord_post_settings(
+    settings: DiscordPostSettings,
+    path: Path = DEFAULT_DISCORD_POST_SETTINGS_PATH,
+) -> DiscordPostSettings:
+    saved = replace(settings, updated_at=now_iso())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f"{path.name}.tmp")
+    temporary_path.write_text(json.dumps(saved.to_dict(include_webhook_url=True), indent=2, sort_keys=True), encoding="utf-8")
+    temporary_path.replace(path)
+    return saved
+
+
+def redacted_discord_webhook_url(webhook_url: str) -> str:
+    if not webhook_url:
+        return ""
+    parsed = urlparse(webhook_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    webhook_id = parts[-2] if len(parts) >= 2 else ""
+    if not webhook_id:
+        return "configured webhook"
+    return f"https://{parsed.netloc}/api/webhooks/{webhook_id}/..."
+
+
+def effective_discord_post_settings(
+    settings: DiscordPostSettings,
+    *,
+    saved_settings_exists: bool,
+    server_webhook_url: str,
+    server_forum_posts: bool,
+    server_forum_tag_ids: Iterable[str],
+    server_forum_tag_map: dict[str, tuple[str, ...]],
+    server_public_base_url: str,
+) -> DiscordPostSettings:
+    use_server_defaults = not saved_settings_exists and not settings.updated_at
+    return DiscordPostSettings(
+        webhook_url=settings.webhook_url or server_webhook_url,
+        destination_label=settings.destination_label,
+        sender_name=settings.sender_name,
+        public_base_url=settings.public_base_url or server_public_base_url,
+        forum_posts=server_forum_posts if use_server_defaults else settings.forum_posts,
+        forum_tag_ids=settings.forum_tag_ids or (tuple(server_forum_tag_ids) if use_server_defaults else ()),
+        forum_tag_map=settings.forum_tag_map or (server_forum_tag_map if use_server_defaults else {}),
+        updated_at=settings.updated_at,
+    )
+
+
+def build_discord_post_settings_response(
+    settings: DiscordPostSettings,
+    *,
+    effective_settings: DiscordPostSettings,
+    settings_path: Path,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "settings_file": settings_path.name,
+        "settings": settings.to_dict(),
+        "effective_settings": effective_settings.to_dict(),
+        "webhook_configured": bool(effective_settings.webhook_url),
+        "webhook_url_preview": redacted_discord_webhook_url(effective_settings.webhook_url),
+        "safety": {
+            "webhook_url_stored_locally": bool(settings.webhook_url),
+            "allowed_mentions": "disabled",
+            "manual_send_only": True,
+            "in_game_market_orders": False,
+        },
+    }
+
+
+def clean_direct_discord_post_payload(payload: Mapping[str, Any]) -> DirectDiscordPost:
+    post_type = normalize_discord_alert_key(payload.get("post_type"), default="wts", allowed=DISCORD_DIRECT_POST_TYPES)
+    category = clean_choice(payload.get("category") or "general", set(LISTING_CATEGORIES), "category")
+    title = clean_text(payload.get("title") or "", "Discord direct post title", max_length=120)
+    item_name = clean_text(payload.get("item_name") or payload.get("item") or "", "Discord direct post item", max_length=120)
+    if not title and not item_name:
+        raise ValueError("Direct Discord post needs either a title or an item/service name.")
+    return DirectDiscordPost(
+        post_type=post_type,
+        category=category,
+        title=title,
+        item_name=item_name,
+        quantity=clean_text(payload.get("quantity") or "", "Discord direct post quantity", max_length=80),
+        price_text=clean_text(payload.get("price_text") or payload.get("price") or "", "Discord direct post price", max_length=120),
+        location=clean_text(payload.get("location") or "", "Discord direct post location", max_length=160),
+        contact=clean_text(payload.get("contact") or payload.get("owner") or "", "Discord direct post contact", max_length=100),
+        link_url=clean_optional_url(payload.get("link_url") or payload.get("appraisal_url") or "", "Discord direct post link"),
+        details=clean_multiline(payload.get("details") or payload.get("notes") or "", "Discord direct post details", max_length=MAX_DISCORD_DIRECT_POST_DETAILS),
+    )
+
+
+def direct_discord_post_title(post: DirectDiscordPost) -> str:
+    if post.title:
+        return post.title
+    title = f"{post.type_label} {post.item_name}".strip()
+    if post.quantity:
+        title += f" x{post.quantity}"
+    if post.location:
+        title += f" at {post.location}"
+    if post.price_text:
+        title += f" | {post.price_text}"
+    return title
+
+
+def direct_discord_post_color(post: DirectDiscordPost) -> int:
+    colors = {
+        "wts": 0x2E7D32,
+        "wtb": 0x1565C0,
+        "buyback": 0x7C3AED,
+        "contract": 0xF0BA57,
+        "hauling": 0x61C7D9,
+        "service": 0x89A69A,
+        "announcement": 0x6B7280,
+    }
+    return colors.get(post.post_type, 0x89A69A)
+
+
+def resolve_direct_post_forum_tag_ids(
+    post: DirectDiscordPost,
+    *,
+    default_tag_ids: Iterable[str],
+    tag_map: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    tag_ids: list[str] = []
+    for raw_id in default_tag_ids:
+        tag_id = raw_id.strip()
+        if tag_id and tag_id not in tag_ids:
+            tag_ids.append(tag_id)
+    keys = (post.post_type, post.type_label.lower(), post.category, post.category_label.lower())
+    for key in keys:
+        for tag_id in tag_map.get(key, ()):
+            if tag_id and tag_id not in tag_ids:
+                tag_ids.append(tag_id)
+    return tuple(tag_ids)
+
+
+def build_direct_discord_post_payload(post: DirectDiscordPost, settings: DiscordPostSettings) -> dict[str, Any]:
+    title = sanitize_discord_text(direct_discord_post_title(post), max_length=180)
+    fields = [
+        {"name": "Type", "value": sanitize_discord_text(post.type_label), "inline": True},
+        {"name": "Category", "value": sanitize_discord_text(post.category_label), "inline": True},
+    ]
+    if post.item_name:
+        fields.append({"name": "Item / Service", "value": sanitize_discord_text(post.item_name, max_length=220), "inline": False})
+    if post.quantity:
+        fields.append({"name": "Quantity", "value": sanitize_discord_text(post.quantity, max_length=120), "inline": True})
+    if post.price_text:
+        fields.append({"name": "Price / Basis", "value": sanitize_discord_text(post.price_text, max_length=180), "inline": True})
+    if post.location:
+        fields.append({"name": "Location", "value": sanitize_discord_text(post.location, max_length=180), "inline": False})
+    if post.contact:
+        fields.append({"name": "Contact", "value": sanitize_discord_text(post.contact, max_length=120), "inline": True})
+    if post.link_url:
+        fields.append({"name": "Appraisal / Link", "value": f"[Open link]({post.link_url})", "inline": True})
+    fields.append(
+        {
+            "name": "Next Step",
+            "value": "Verify terms in EVE, then use contract, trade, market order, or EVE mail manually.",
+            "inline": False,
+        }
+    )
+    embed: dict[str, Any] = {
+        "title": title,
+        "color": direct_discord_post_color(post),
+        "fields": fields,
+        "footer": {"text": f"{settings.destination_label} · manual Discord market post"},
+        "timestamp": now_iso(),
+    }
+    if post.details:
+        embed["description"] = sanitize_discord_text(post.details, max_length=1200)
+    content_parts = [f"**{title}**"]
+    if post.price_text:
+        content_parts.append(f"Price/Basis: {sanitize_discord_text(post.price_text, max_length=160)}")
+    if post.location:
+        content_parts.append(f"Location: {sanitize_discord_text(post.location, max_length=160)}")
+    payload: dict[str, Any] = {
+        "username": sanitize_discord_text(settings.sender_name or DEFAULT_DISCORD_POST_SENDER_NAME, max_length=80),
+        "content": "\n".join(content_parts),
+        "embeds": [embed],
+        "allowed_mentions": {"parse": []},
+    }
+    if settings.forum_posts:
+        payload["thread_name"] = title if len(title) <= DISCORD_THREAD_NAME_MAX_LENGTH else title[: DISCORD_THREAD_NAME_MAX_LENGTH - 3].rstrip() + "..."
+        tag_ids = resolve_direct_post_forum_tag_ids(
+            post,
+            default_tag_ids=settings.forum_tag_ids,
+            tag_map=settings.forum_tag_map,
+        )
+        if tag_ids:
+            payload["applied_tags"] = list(tag_ids)
+    return payload
 
 
 def post_discord_webhook(
@@ -12826,6 +13203,7 @@ def build_http_server(
     public_base_url: str,
     discord_webhook_url: str = "",
     discord_alert_settings_path: Path = DEFAULT_DISCORD_ALERT_SETTINGS_PATH,
+    discord_post_settings_path: Path = DEFAULT_DISCORD_POST_SETTINGS_PATH,
     discord_timeout_seconds: float = DEFAULT_WEBHOOK_TIMEOUT_SECONDS,
     discord_forum_posts: bool = False,
     discord_forum_tag_ids: Iterable[str] = (),
@@ -12864,6 +13242,11 @@ def build_http_server(
                 if not self._require_public_read_access():
                     return
                 self._handle_discord_alert_settings()
+                return
+            if path == "/api/discord-post/settings":
+                if not self._require_public_read_access():
+                    return
+                self._handle_discord_post_settings()
                 return
             if path == "/api/fittings":
                 if not self._require_public_read_access():
@@ -12977,6 +13360,16 @@ def build_http_server(
                     return
                 self._handle_discord_alert_test()
                 return
+            if path == "/api/discord-post/settings":
+                if not self._require_write_access():
+                    return
+                self._handle_discord_post_settings_save()
+                return
+            if path == "/api/discord-post/direct":
+                if not self._require_write_access():
+                    return
+                self._handle_direct_discord_post()
+                return
             if path.startswith("/api/offers/") and path.endswith("/reserve"):
                 if not self._require_write_access():
                     return
@@ -13007,14 +13400,16 @@ def build_http_server(
             include_closed = first_query_value(params, "include_closed").lower() in {"1", "true", "yes"}
             try:
                 listings = store.list_listings(status=status, listing_type=listing_type, include_closed=include_closed)
+                _post_settings, effective_post_settings = self._load_effective_discord_post_settings()
             except (ValueError, CorpMarketError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
+            listing_public_base_url = effective_post_settings.public_base_url or public_base_url
             self._send_json(
                 {
                     "ok": True,
                     "generated_at": now_iso(),
-                    "offers": [listing.to_dict(public_base_url=public_base_url) for listing in listings],
+                    "offers": [listing.to_dict(public_base_url=listing_public_base_url) for listing in listings],
                 }
             )
 
@@ -13029,6 +13424,73 @@ def build_http_server(
                     settings,
                     settings_path=discord_alert_settings_path,
                     webhook_configured=bool(discord_webhook_url),
+                )
+            )
+
+        def _load_effective_discord_post_settings(self) -> tuple[DiscordPostSettings, DiscordPostSettings]:
+            saved_settings_exists = discord_post_settings_path.exists()
+            settings = load_discord_post_settings(discord_post_settings_path)
+            effective_settings = effective_discord_post_settings(
+                settings,
+                saved_settings_exists=saved_settings_exists,
+                server_webhook_url=discord_webhook_url,
+                server_forum_posts=discord_forum_posts,
+                server_forum_tag_ids=discord_forum_tag_ids,
+                server_forum_tag_map=discord_forum_tag_map or {},
+                server_public_base_url=public_base_url,
+            )
+            return settings, effective_settings
+
+        def _handle_discord_post_settings(self) -> None:
+            try:
+                settings, effective_settings = self._load_effective_discord_post_settings()
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=500)
+                return
+            self._send_json(
+                build_discord_post_settings_response(
+                    settings,
+                    effective_settings=effective_settings,
+                    settings_path=discord_post_settings_path,
+                )
+            )
+
+        def _handle_discord_post_settings_save(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, Mapping):
+                self._send_json({"ok": False, "error": "Discord posting settings payload must be a JSON object."}, status=400)
+                return
+            raw_settings = payload.get("settings", payload)
+            if not isinstance(raw_settings, Mapping):
+                self._send_json({"ok": False, "error": "Discord posting settings must be a JSON object."}, status=400)
+                return
+            try:
+                existing = load_discord_post_settings(discord_post_settings_path)
+                settings = save_discord_post_settings(
+                    clean_discord_post_settings_payload(raw_settings, existing=existing),
+                    discord_post_settings_path,
+                )
+                effective_settings = effective_discord_post_settings(
+                    settings,
+                    saved_settings_exists=True,
+                    server_webhook_url=discord_webhook_url,
+                    server_forum_posts=discord_forum_posts,
+                    server_forum_tag_ids=discord_forum_tag_ids,
+                    server_forum_tag_map=discord_forum_tag_map or {},
+                    server_public_base_url=public_base_url,
+                )
+            except (ValueError, CorpMarketError, OSError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(
+                build_discord_post_settings_response(
+                    settings,
+                    effective_settings=effective_settings,
+                    settings_path=discord_post_settings_path,
                 )
             )
 
@@ -13108,6 +13570,52 @@ def build_http_server(
                     "webhook_configured": bool(discord_webhook_url),
                     "sent_to_discord": bool(result),
                     "discord_message": result.to_dict() if result else None,
+                    "preview_payload": preview_payload,
+                }
+            )
+
+        def _handle_direct_discord_post(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, Mapping):
+                self._send_json({"ok": False, "error": "Direct Discord post payload must be a JSON object."}, status=400)
+                return
+            try:
+                existing_settings, effective_settings = self._load_effective_discord_post_settings()
+                raw_settings = payload.get("settings")
+                if isinstance(raw_settings, Mapping):
+                    effective_settings = clean_discord_post_settings_payload(raw_settings, existing=effective_settings)
+                raw_post = payload.get("post", payload)
+                if not isinstance(raw_post, Mapping):
+                    raise ValueError("Direct Discord post must be a JSON object.")
+                post = clean_direct_discord_post_payload(raw_post)
+                preview_payload = build_direct_discord_post_payload(post, effective_settings)
+                send = query_bool(payload.get("send"), default=False)
+                result = None
+                if send:
+                    if not effective_settings.webhook_url:
+                        raise CorpMarketError("Discord webhook is not configured for direct posts.")
+                    result = post_discord_webhook(
+                        effective_settings.webhook_url,
+                        preview_payload,
+                        timeout_seconds=discord_timeout_seconds,
+                    )
+            except (ValueError, CorpMarketError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(
+                {
+                    "ok": True,
+                    "generated_at": now_iso(),
+                    "webhook_configured": bool(effective_settings.webhook_url),
+                    "webhook_url_preview": redacted_discord_webhook_url(effective_settings.webhook_url),
+                    "sent_to_discord": bool(result),
+                    "discord_message": result.to_dict() if result else None,
+                    "post": post.to_dict(),
+                    "settings": existing_settings.to_dict(),
                     "preview_payload": preview_payload,
                 }
             )
@@ -13661,10 +14169,11 @@ def build_http_server(
             listing_id = path.removeprefix("/api/offers/").split("/", 1)[0]
             try:
                 listing = store.get_listing(listing_id)
+                _post_settings, effective_post_settings = self._load_effective_discord_post_settings()
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=404)
                 return
-            self._send_json({"ok": True, "offer": listing.to_dict(public_base_url=public_base_url)})
+            self._send_json({"ok": True, "offer": listing.to_dict(public_base_url=effective_post_settings.public_base_url or public_base_url)})
 
         def _handle_mail_api(self, path: str) -> None:
             listing_id = path.removeprefix("/api/offers/").removesuffix("/mail")
@@ -13672,11 +14181,18 @@ def build_http_server(
             actor = first_query_value(params, "actor")
             try:
                 listing = store.get_listing(listing_id)
+                _post_settings, effective_post_settings = self._load_effective_discord_post_settings()
             except CorpMarketError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=404)
                 return
             draft = build_mail_draft(listing, actor=actor)
-            self._send_json({"ok": True, "offer": listing.to_dict(public_base_url=public_base_url), "mail": draft.to_dict()})
+            self._send_json(
+                {
+                    "ok": True,
+                    "offer": listing.to_dict(public_base_url=effective_post_settings.public_base_url or public_base_url),
+                    "mail": draft.to_dict(),
+                }
+            )
 
         def _handle_fitting_api(self, path: str) -> None:
             fitting_id = path.removeprefix("/api/fittings/").split("/", 1)[0]
@@ -13709,17 +14225,20 @@ def build_http_server(
                 return
             try:
                 listing = store.create_listing(payload)
+                _post_settings, effective_post_settings = self._load_effective_discord_post_settings()
+                listing_public_base_url = effective_post_settings.public_base_url or public_base_url
                 discord_payload = build_discord_webhook_payload(
                     listing,
-                    public_base_url=public_base_url,
-                    forum_post=discord_forum_posts,
-                    forum_tag_ids=discord_forum_tag_ids,
-                    forum_tag_map=discord_forum_tag_map,
+                    public_base_url=listing_public_base_url,
+                    forum_post=effective_post_settings.forum_posts,
+                    forum_tag_ids=effective_post_settings.forum_tag_ids,
+                    forum_tag_map=effective_post_settings.forum_tag_map,
+                    sender_name=effective_post_settings.sender_name,
                 )
                 posted = False
-                if discord_webhook_url:
+                if effective_post_settings.webhook_url:
                     result = post_discord_webhook(
-                        discord_webhook_url,
+                        effective_post_settings.webhook_url,
                         discord_payload,
                         timeout_seconds=discord_timeout_seconds,
                     )
@@ -13739,7 +14258,7 @@ def build_http_server(
                 {
                     "ok": True,
                     "posted_to_discord": posted,
-                    "offer": listing.to_dict(public_base_url=public_base_url),
+                    "offer": listing.to_dict(public_base_url=listing_public_base_url),
                     "discord_payload": discord_payload if not posted else None,
                 },
                 status=201,
@@ -13774,11 +14293,12 @@ def build_http_server(
             try:
                 hours = float(payload.get("hours") or 24)
                 listing = store.reserve_listing(listing_id, reserved_by=str(payload.get("reserved_by") or ""), hours=hours)
+                _post_settings, effective_post_settings = self._load_effective_discord_post_settings()
                 listing, discord_synced, discord_sync_error = sync_listing_to_discord(
                     store,
                     listing,
-                    public_base_url=public_base_url,
-                    webhook_url=discord_webhook_url,
+                    public_base_url=effective_post_settings.public_base_url or public_base_url,
+                    webhook_url=effective_post_settings.webhook_url,
                     timeout_seconds=discord_timeout_seconds,
                 )
             except (ValueError, CorpMarketError) as exc:
@@ -13805,11 +14325,12 @@ def build_http_server(
                 return
             try:
                 listing = store.set_status(listing_id, str(payload.get("status") or ""))
+                _post_settings, effective_post_settings = self._load_effective_discord_post_settings()
                 listing, discord_synced, discord_sync_error = sync_listing_to_discord(
                     store,
                     listing,
-                    public_base_url=public_base_url,
-                    webhook_url=discord_webhook_url,
+                    public_base_url=effective_post_settings.public_base_url or public_base_url,
+                    webhook_url=effective_post_settings.webhook_url,
                     timeout_seconds=discord_timeout_seconds,
                 )
             except (ValueError, CorpMarketError) as exc:
@@ -17954,6 +18475,9 @@ def _render_flight_attendant_dashboard() -> str:
       font-size: 12px;
       padding: 2px 7px;
     }
+    .discord-post-grid {
+      margin-top: 16px;
+    }
     .discord-alert-toolbar {
       display: flex;
       flex-wrap: wrap;
@@ -17986,6 +18510,9 @@ def _render_flight_attendant_dashboard() -> str:
       font-family: Consolas, "Courier New", monospace;
       font-size: 12px;
       white-space: pre;
+    }
+    #direct-discord-details {
+      min-height: 118px;
     }
     .discord-alert-status-line {
       min-height: 20px;
@@ -18365,6 +18892,140 @@ help</textarea>
                 <button id="discord-alert-save" type="button">Save Settings</button>
                 <button id="discord-alert-preview-button" class="ghost" type="button">Refresh Preview</button>
                 <button id="discord-alert-send-test" class="secondary" type="button">Send Test To Discord</button>
+              </div>
+            </form>
+          </section>
+        </div>
+
+        <div class="market-grid discord-post-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Discord Market Posting</h2>
+                <div class="meta">Webhook, forum-post, and tag settings for corp buy, sell, buyback, contract, hauling, and service posts.</div>
+              </div>
+              <span class="pill reserved">Manual Send</span>
+            </div>
+            <div class="ops-strip">
+              <div class="ops-tile"><span>Webhook</span><strong id="discord-post-webhook-status">Checking</strong></div>
+              <div class="ops-tile"><span>Mode</span><strong id="discord-post-mode-status">Text Channel</strong></div>
+              <div class="ops-tile"><span>Sender</span><strong id="discord-post-sender-status">Corp Market Concierge</strong></div>
+              <div class="ops-tile"><span>Mentions</span><strong id="discord-post-mention-status">Disabled</strong></div>
+            </div>
+            <form id="discord-post-form" class="discord-alert-form">
+              <div class="discord-alert-section">
+                <h3>Destination</h3>
+                <label>Webhook URL
+                  <input id="discord-post-webhook-url" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/...">
+                </label>
+                <label class="checkline">
+                  <input id="discord-post-clear-webhook" type="checkbox">
+                  <span>Clear saved webhook URL</span>
+                  <small>Saved locally under profiles and never returned by the API.</small>
+                </label>
+                <div class="row">
+                  <label>Destination label
+                    <input id="discord-post-destination" autocomplete="off" value="Corp buy-or-sell channel" maxlength="140">
+                  </label>
+                  <label>Sender name
+                    <input id="discord-post-sender" autocomplete="off" value="Corp Market Concierge" maxlength="80">
+                  </label>
+                </div>
+                <label>Public board URL
+                  <input id="discord-post-public-base-url" autocomplete="off" placeholder="http://127.0.0.1:8770 or tunnel URL">
+                </label>
+              </div>
+
+              <div class="discord-alert-section">
+                <h3>Forum Tags</h3>
+                <label class="checkline">
+                  <input id="discord-post-forum-posts" type="checkbox">
+                  <span>Create a forum or media-channel post for each Discord market post</span>
+                  <small>Use this only when the webhook belongs to a Discord forum or media channel.</small>
+                </label>
+                <label>Default forum tag IDs
+                  <input id="discord-post-forum-tag-ids" autocomplete="off" placeholder="123456789012345678, 234567890123456789">
+                </label>
+                <label>Tag map
+                  <textarea id="discord-post-forum-tag-map" placeholder="wts:123456789012345678&#10;wtb:234567890123456789&#10;buyback:345678901234567890&#10;minerals:456789012345678901"></textarea>
+                </label>
+              </div>
+
+              <div id="discord-post-message" class="discord-alert-status-line" aria-live="polite"></div>
+              <div class="discord-alert-toolbar">
+                <button id="discord-post-save" type="button">Save Posting Settings</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Direct Discord Post</h2>
+                <div class="meta">Create a Discord-ready WTS, WTB, buyback, contract, hauling, service, or announcement post without creating a board listing.</div>
+              </div>
+              <span class="pill reserved">Preview First</span>
+            </div>
+            <form id="direct-discord-post-form" class="discord-alert-form">
+              <div class="discord-alert-section">
+                <h3>Entry</h3>
+                <div class="row">
+                  <label>Post type
+                    <select id="direct-discord-post-type">
+                      <option value="wts">WTS</option>
+                      <option value="wtb">WTB</option>
+                      <option value="buyback">Buyback</option>
+                      <option value="contract">Contract</option>
+                      <option value="hauling">Hauling</option>
+                      <option value="service">Service</option>
+                      <option value="announcement">Announcement</option>
+                    </select>
+                  </label>
+                  <label>Category
+                    <select id="direct-discord-category">
+@@CATEGORY_OPTIONS@@
+                    </select>
+                  </label>
+                </div>
+                <label>Title
+                  <input id="direct-discord-title" autocomplete="off" placeholder="WTS fitted Venture pack @ Amarr" maxlength="120">
+                </label>
+                <div class="row">
+                  <label>Item or service
+                    <input id="direct-discord-item" autocomplete="off" placeholder="Tritanium, fitted Venture pack, hauling run" maxlength="120">
+                  </label>
+                  <label>Quantity
+                    <input id="direct-discord-quantity" autocomplete="off" placeholder="1,000,000 or 3 contracts" maxlength="80">
+                  </label>
+                </div>
+                <div class="row">
+                  <label>Price or basis
+                    <input id="direct-discord-price" autocomplete="off" placeholder="95% Jita Buy, 12.5m each, quote requested" maxlength="120">
+                  </label>
+                  <label>Location
+                    <input id="direct-discord-location" autocomplete="off" placeholder="Jita 4-4, Amarr, Dihra structure" maxlength="160">
+                  </label>
+                </div>
+                <div class="row">
+                  <label>Contact
+                    <input id="direct-discord-contact" autocomplete="off" placeholder="EVE character or corp role" maxlength="100">
+                  </label>
+                  <label>Appraisal or link
+                    <input id="direct-discord-link" autocomplete="off" placeholder="Janice, EVE Workbench, forum, or board URL">
+                  </label>
+                </div>
+                <label>Details
+                  <textarea id="direct-discord-details" placeholder="Accepted item types, contract terms, pickup rules, timing, or manual verification notes."></textarea>
+                </label>
+              </div>
+
+              <label>Discord payload preview
+                <textarea id="direct-discord-preview" class="discord-alert-preview" readonly>Build a direct Discord post preview...</textarea>
+              </label>
+              <div id="direct-discord-message" class="discord-alert-status-line" aria-live="polite"></div>
+              <div class="discord-alert-toolbar">
+                <button id="direct-discord-preview-button" class="ghost" type="button">Refresh Preview</button>
+                <button id="direct-discord-send" class="secondary" type="button">Send Direct Post</button>
               </div>
             </form>
           </section>
@@ -19726,6 +20387,36 @@ help</textarea>
     const discordAlertSenderStatus = document.querySelector("#discord-alert-sender-status");
     const discordAlertForwardingStatus = document.querySelector("#discord-alert-forwarding-status");
     const discordAlertTextStatus = document.querySelector("#discord-alert-text-status");
+    const discordPostForm = document.querySelector("#discord-post-form");
+    const discordPostWebhookUrl = document.querySelector("#discord-post-webhook-url");
+    const discordPostClearWebhook = document.querySelector("#discord-post-clear-webhook");
+    const discordPostDestination = document.querySelector("#discord-post-destination");
+    const discordPostSender = document.querySelector("#discord-post-sender");
+    const discordPostPublicBaseUrl = document.querySelector("#discord-post-public-base-url");
+    const discordPostForumPosts = document.querySelector("#discord-post-forum-posts");
+    const discordPostForumTagIds = document.querySelector("#discord-post-forum-tag-ids");
+    const discordPostForumTagMap = document.querySelector("#discord-post-forum-tag-map");
+    const discordPostSave = document.querySelector("#discord-post-save");
+    const discordPostMessage = document.querySelector("#discord-post-message");
+    const discordPostWebhookStatus = document.querySelector("#discord-post-webhook-status");
+    const discordPostModeStatus = document.querySelector("#discord-post-mode-status");
+    const discordPostSenderStatus = document.querySelector("#discord-post-sender-status");
+    const discordPostMentionStatus = document.querySelector("#discord-post-mention-status");
+    const directDiscordPostForm = document.querySelector("#direct-discord-post-form");
+    const directDiscordPostType = document.querySelector("#direct-discord-post-type");
+    const directDiscordCategory = document.querySelector("#direct-discord-category");
+    const directDiscordTitle = document.querySelector("#direct-discord-title");
+    const directDiscordItem = document.querySelector("#direct-discord-item");
+    const directDiscordQuantity = document.querySelector("#direct-discord-quantity");
+    const directDiscordPrice = document.querySelector("#direct-discord-price");
+    const directDiscordLocation = document.querySelector("#direct-discord-location");
+    const directDiscordContact = document.querySelector("#direct-discord-contact");
+    const directDiscordLink = document.querySelector("#direct-discord-link");
+    const directDiscordDetails = document.querySelector("#direct-discord-details");
+    const directDiscordPreview = document.querySelector("#direct-discord-preview");
+    const directDiscordPreviewButton = document.querySelector("#direct-discord-preview-button");
+    const directDiscordSend = document.querySelector("#direct-discord-send");
+    const directDiscordMessage = document.querySelector("#direct-discord-message");
     const fittingForm = document.querySelector("#fitting-form");
     const fittingErrorEl = document.querySelector("#fitting-form-error");
     const fittingsEl = document.querySelector("#fittings-list");
@@ -20319,6 +21010,168 @@ help</textarea>
         setDiscordAlertMessage(data.sent_to_discord ? "Test alert sent to Discord." : "Preview built; Discord did not return a message.", "ok");
       } catch (error) {
         setDiscordAlertMessage(error.message, "error");
+      }
+    }
+
+    function discordPostValues(textareaOrInput) {
+      return String(textareaOrInput?.value || "")
+        .split(/[\\n,\\s]+/)
+        .map((value) => value.trim())
+        .filter(Boolean);
+    }
+
+    function discordPostSettingsFromForm() {
+      return {
+        webhook_url: String(discordPostWebhookUrl?.value || "").trim(),
+        clear_webhook_url: Boolean(discordPostClearWebhook?.checked),
+        destination_label: String(discordPostDestination?.value || "Corp buy-or-sell channel").trim() || "Corp buy-or-sell channel",
+        sender_name: String(discordPostSender?.value || "Corp Market Concierge").trim() || "Corp Market Concierge",
+        public_base_url: String(discordPostPublicBaseUrl?.value || "").trim(),
+        forum_posts: Boolean(discordPostForumPosts?.checked),
+        forum_tag_ids: discordPostValues(discordPostForumTagIds),
+        forum_tag_map: String(discordPostForumTagMap?.value || "").trim(),
+      };
+    }
+
+    function setDiscordPostMessage(message, kind = "") {
+      if (!discordPostMessage) return;
+      discordPostMessage.textContent = message || "";
+      discordPostMessage.classList.toggle("ok", kind === "ok");
+      discordPostMessage.classList.toggle("error", kind === "error");
+    }
+
+    function setDirectDiscordMessage(message, kind = "") {
+      if (!directDiscordMessage) return;
+      directDiscordMessage.textContent = message || "";
+      directDiscordMessage.classList.toggle("ok", kind === "ok");
+      directDiscordMessage.classList.toggle("error", kind === "error");
+    }
+
+    function renderDirectDiscordPreview(payload) {
+      if (!directDiscordPreview) return;
+      directDiscordPreview.value = JSON.stringify(payload || {}, null, 2);
+    }
+
+    function updateDiscordPostStatus(data) {
+      const settings = data?.effective_settings || data?.settings || discordPostSettingsFromForm();
+      if (discordPostWebhookStatus) discordPostWebhookStatus.textContent = data?.webhook_configured ? "Configured" : "Missing";
+      if (discordPostModeStatus) discordPostModeStatus.textContent = settings.forum_posts ? "Forum Post" : "Text Channel";
+      if (discordPostSenderStatus) discordPostSenderStatus.textContent = settings.sender_name || "Corp Market Concierge";
+      if (discordPostMentionStatus) discordPostMentionStatus.textContent = "Disabled";
+      if (directDiscordSend) directDiscordSend.disabled = !data?.webhook_configured;
+      if (discordPostWebhookUrl && data?.webhook_url_preview) {
+        discordPostWebhookUrl.placeholder = `Configured: ${data.webhook_url_preview}`;
+      }
+    }
+
+    function applyDiscordPostSettings(data) {
+      if (!discordPostForm || !data) return;
+      const settings = data.settings || {};
+      const effective = data.effective_settings || settings;
+      if (discordPostWebhookUrl) discordPostWebhookUrl.value = "";
+      if (discordPostClearWebhook) discordPostClearWebhook.checked = false;
+      if (discordPostDestination) discordPostDestination.value = settings.destination_label || effective.destination_label || "Corp buy-or-sell channel";
+      if (discordPostSender) discordPostSender.value = settings.sender_name || effective.sender_name || "Corp Market Concierge";
+      if (discordPostPublicBaseUrl) discordPostPublicBaseUrl.value = settings.public_base_url || effective.public_base_url || "";
+      if (discordPostForumPosts) discordPostForumPosts.checked = Boolean(settings.forum_posts ?? effective.forum_posts);
+      if (discordPostForumTagIds) discordPostForumTagIds.value = (settings.forum_tag_ids || effective.forum_tag_ids || []).join(", ");
+      if (discordPostForumTagMap) discordPostForumTagMap.value = settings.forum_tag_map_text || effective.forum_tag_map_text || "";
+      updateDiscordPostStatus(data);
+    }
+
+    async function loadDiscordPostSettings() {
+      if (!discordPostForm) return;
+      try {
+        setDiscordPostMessage("Loading Discord posting settings...");
+        const response = await fetch("/api/discord-post/settings");
+        const data = await readJsonApiResponse(response, "Could not load Discord posting settings");
+        applyDiscordPostSettings(data);
+        setDiscordPostMessage(`Settings file: ${data.settings_file || "local profile data"}`, "ok");
+        await previewDirectDiscordPost({quiet: true});
+      } catch (error) {
+        setDiscordPostMessage(error.message, "error");
+      }
+    }
+
+    async function saveDiscordPostSettings() {
+      if (!discordPostForm) return;
+      try {
+        setDiscordPostMessage("Saving Discord posting settings...");
+        const response = await fetch("/api/discord-post/settings", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({settings: discordPostSettingsFromForm()}),
+        });
+        const data = await readJsonApiResponse(response, "Could not save Discord posting settings");
+        applyDiscordPostSettings(data);
+        setDiscordPostMessage(`Saved. ${data.webhook_configured ? "Webhook is configured." : "Webhook is not configured."}`, "ok");
+        await previewDirectDiscordPost({quiet: true});
+      } catch (error) {
+        setDiscordPostMessage(error.message, "error");
+      }
+    }
+
+    function directDiscordPostFromForm() {
+      return {
+        post_type: directDiscordPostType?.value || "wts",
+        category: directDiscordCategory?.value || "general",
+        title: String(directDiscordTitle?.value || "").trim(),
+        item_name: String(directDiscordItem?.value || "").trim(),
+        quantity: String(directDiscordQuantity?.value || "").trim(),
+        price_text: String(directDiscordPrice?.value || "").trim(),
+        location: String(directDiscordLocation?.value || "").trim(),
+        contact: String(directDiscordContact?.value || "").trim(),
+        link_url: String(directDiscordLink?.value || "").trim(),
+        details: String(directDiscordDetails?.value || "").trim(),
+      };
+    }
+
+    async function previewDirectDiscordPost(options = {}) {
+      if (!directDiscordPostForm) return;
+      const post = directDiscordPostFromForm();
+      if (!post.title && !post.item_name) {
+        renderDirectDiscordPreview({needs: "title or item/service"});
+        if (!options.quiet) setDirectDiscordMessage("Add a title or item/service before previewing.", "error");
+        return;
+      }
+      try {
+        const response = await fetch("/api/discord-post/direct", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            send: false,
+            settings: discordPostSettingsFromForm(),
+            post,
+          }),
+        });
+        const data = await readJsonApiResponse(response, "Could not preview direct Discord post");
+        renderDirectDiscordPreview(data.preview_payload);
+        updateDiscordPostStatus(data);
+        if (!options.quiet) setDirectDiscordMessage("Preview refreshed.", "ok");
+      } catch (error) {
+        setDirectDiscordMessage(error.message, "error");
+      }
+    }
+
+    async function sendDirectDiscordPost() {
+      if (!directDiscordPostForm) return;
+      try {
+        setDirectDiscordMessage("Sending direct Discord post...");
+        const response = await fetch("/api/discord-post/direct", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            send: true,
+            settings: discordPostSettingsFromForm(),
+            post: directDiscordPostFromForm(),
+          }),
+        });
+        const data = await readJsonApiResponse(response, "Could not send direct Discord post");
+        renderDirectDiscordPreview(data.preview_payload);
+        updateDiscordPostStatus(data);
+        setDirectDiscordMessage(data.sent_to_discord ? "Direct Discord post sent." : "Preview built; Discord did not return a message.", "ok");
+      } catch (error) {
+        setDirectDiscordMessage(error.message, "error");
       }
     }
 
@@ -27519,6 +28372,52 @@ help</textarea>
       discordAlertSendTest.addEventListener("click", sendDiscordAlertTest);
     }
 
+    let directDiscordPreviewTimer = null;
+    function scheduleDirectDiscordPreview() {
+      if (!directDiscordPostForm) return;
+      if (directDiscordPreviewTimer) window.clearTimeout(directDiscordPreviewTimer);
+      directDiscordPreviewTimer = window.setTimeout(() => previewDirectDiscordPost({quiet: true}), 260);
+    }
+
+    if (discordPostForm) {
+      [
+        discordPostWebhookUrl,
+        discordPostClearWebhook,
+        discordPostDestination,
+        discordPostSender,
+        discordPostPublicBaseUrl,
+        discordPostForumPosts,
+        discordPostForumTagIds,
+        discordPostForumTagMap,
+      ].forEach((control) => {
+        if (!control) return;
+        control.addEventListener("input", scheduleDirectDiscordPreview);
+        control.addEventListener("change", scheduleDirectDiscordPreview);
+      });
+      discordPostSave.addEventListener("click", saveDiscordPostSettings);
+    }
+
+    if (directDiscordPostForm) {
+      [
+        directDiscordPostType,
+        directDiscordCategory,
+        directDiscordTitle,
+        directDiscordItem,
+        directDiscordQuantity,
+        directDiscordPrice,
+        directDiscordLocation,
+        directDiscordContact,
+        directDiscordLink,
+        directDiscordDetails,
+      ].forEach((control) => {
+        if (!control) return;
+        control.addEventListener("input", scheduleDirectDiscordPreview);
+        control.addEventListener("change", scheduleDirectDiscordPreview);
+      });
+      directDiscordPreviewButton.addEventListener("click", () => previewDirectDiscordPost());
+      directDiscordSend.addEventListener("click", sendDirectDiscordPost);
+    }
+
     function alertDiscordSyncProblem(data) {
       if (data.discord_sync_error) {
         window.alert(`Updated locally, but Discord did not sync: ${data.discord_sync_error}`);
@@ -27543,6 +28442,7 @@ help</textarea>
     updateFittingFilterButtons();
     renderNotes();
     loadDiscordAlertSettings();
+    loadDiscordPostSettings();
     loadFlightStatus();
     loadFlightDiagnostics();
     loadOffers().catch((error) => {
@@ -27809,6 +28709,7 @@ def run_server(args: argparse.Namespace) -> int:
         public_base_url=public_base_url,
         discord_webhook_url=args.discord_webhook_url,
         discord_alert_settings_path=args.discord_alert_settings_path,
+        discord_post_settings_path=args.discord_post_settings_path,
         discord_timeout_seconds=args.discord_timeout,
         discord_forum_posts=args.discord_forum_posts,
         discord_forum_tag_ids=parse_csv(args.discord_forum_tag_ids),
@@ -27847,6 +28748,7 @@ def run_server(args: argparse.Namespace) -> int:
     else:
         print("Discord webhook posting is disabled. Set --discord-webhook-url to post new offers.")
     print(f"Discord alert settings file: {args.discord_alert_settings_path}")
+    print(f"Discord posting settings file: {args.discord_post_settings_path}")
     if args.admin_token:
         print("Remote offer creation/status writes require the market admin token.")
     if args.trusted_members_can_write_market:
@@ -27888,6 +28790,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path(os.environ.get("CORP_MARKET_DISCORD_ALERT_SETTINGS_PATH", DEFAULT_DISCORD_ALERT_SETTINGS_PATH)),
         help="Local JSON file used to persist Discord alert route and rule settings.",
+    )
+    serve.add_argument(
+        "--discord-post-settings-path",
+        type=Path,
+        default=Path(os.environ.get("CORP_MARKET_DISCORD_POST_SETTINGS_PATH", DEFAULT_DISCORD_POST_SETTINGS_PATH)),
+        help="Local JSON file used to persist Discord market-posting settings.",
     )
     serve.add_argument(
         "--discord-timeout",
