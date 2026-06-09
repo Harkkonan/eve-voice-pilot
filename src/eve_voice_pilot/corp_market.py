@@ -16677,6 +16677,42 @@ def _render_flight_attendant_dashboard() -> str:
       padding: 9px 10px 10px;
       min-width: 0;
     }
+    .haul-checklist {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .haul-check-item {
+      border: 1px solid rgba(63, 85, 80, .5);
+      border-radius: 6px;
+      background: rgba(7, 12, 14, .58);
+      padding: 8px;
+      min-width: 0;
+    }
+    .haul-check-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .haul-check-item b {
+      display: block;
+      color: var(--text);
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .haul-check-item small {
+      display: block;
+      color: var(--muted);
+      margin-top: 3px;
+      line-height: 1.25;
+    }
+    .haul-check-item.warning {
+      border-color: rgba(242, 178, 63, .55);
+      background: rgba(86, 58, 20, .32);
+    }
     .haul-opportunity-detail-region {
       position: sticky;
       top: 12px;
@@ -18649,6 +18685,7 @@ def _render_flight_attendant_dashboard() -> str:
       .scope-panel { grid-template-columns: 1fr; }
       .scope-chip-row { justify-content: flex-start; }
       .row, .discord-alert-section .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
+      .haul-checklist { grid-template-columns: 1fr; }
       .haul-opportunity-layout { grid-template-columns: 1fr; }
       .haul-opportunity-detail-region { display: none; }
       .haul-opportunity-summary-panel { padding: 10px; }
@@ -24335,6 +24372,61 @@ help</textarea>
       `;
     }
 
+    function renderHaulCheckItem(label, value, detail, options = {}) {
+      return `
+        <div class="haul-check-item${options.warning ? " warning" : ""}">
+          <span>${escapeHtml(label)}</span>
+          <b>${escapeHtml(value)}</b>
+          ${detail ? `<small>${escapeHtml(detail)}</small>` : ""}
+        </div>
+      `;
+    }
+
+    function renderHaulBeforeBuyingChecklist(item) {
+      const pickup = item.pickup_order || {};
+      const destination = item.destination_order || {};
+      const pickupMinVolume = pickup.min_volume == null ? "unknown" : formatNumber(pickup.min_volume);
+      const destinationMinVolume = destination.min_volume == null ? "unknown" : formatNumber(destination.min_volume);
+      const matchedRouteJumps = item.matched_pickup_route_jumps == null ? "unknown" : formatNumber(item.matched_pickup_route_jumps);
+      const extraJumps = item.extra_route_jumps == null ? "unknown" : formatNumber(item.extra_route_jumps);
+      const pickupAccessWarning = String(pickup.location_kind || "") === "player-structure" || String(pickup.location_kind || "") === "unknown";
+      const destinationAccessWarning = String(destination.location_kind || "") === "player-structure" || String(destination.location_kind || "") === "unknown";
+      return `
+        <div class="decision-lede">Before Buying: verify the live in-game order still matches this plan.</div>
+        <div class="haul-checklist">
+          ${renderHaulCheckItem("Pickup Price", formatIsk(item.average_pickup_price == null ? pickup.price : item.average_pickup_price), `${formatNumber(item.units)} units planned from ${pickup.system_name || "pickup"}.`)}
+          ${renderHaulCheckItem("Min Volume", `${pickupMinVolume} pickup / ${destinationMinVolume} destination`, "The recommendation skips orders it cannot fill, but live orders can change.")}
+          ${renderHaulCheckItem("Docking Access", pickup.location_kind_label || "Unknown pickup", pickup.location_access_note || "Verify pickup access in EVE.", {warning: pickupAccessWarning})}
+          ${renderHaulCheckItem("Route Jumps", `${matchedRouteJumps} planned; ${extraJumps} extra`, "Confirm the route, ship, cargo value, and risk before undocking.")}
+          ${renderHaulCheckItem("Destination Demand", `${formatIsk(item.average_destination_price == null ? destination.price : item.average_destination_price)} avg`, `${formatNumber(destination.volume_remain)} units visible at destination buy orders.`)}
+          ${renderHaulCheckItem("Sales Tax", formatIsk(item.sales_tax_total), `${formatRatePercent(item.sales_tax_rate)} estimated from the signed-in pilot.`)}
+          ${renderHaulCheckItem("Destination Access", destination.location_kind_label || "Unknown destination", destination.location_access_note || "Verify destination access in EVE.", {warning: destinationAccessWarning})}
+          ${renderHaulCheckItem("Spreadsheet", "Fill actuals after run", "Record actual cost, filled quantity, route jumps, realized return, and lesson learned.")}
+        </div>
+      `;
+    }
+
+    function renderHaulExpectedActualTracker(reportRow) {
+      if (!reportRow) {
+        return `<div class="decision-empty">No tracking row returned for this opportunity.</div>`;
+      }
+      return `
+        <div class="decision-lede">Expected vs Actual: compare the plan against what happened in EVE.</div>
+        <div class="decision-metrics">
+          <div class="decision-metric"><span>Expected Cost</span><b>${formatIsk(reportRow["Expected Total Cost"])}</b><small>Pickup buy cost planned by the scanner.</small></div>
+          <div class="decision-metric"><span>Expected Tax</span><b>${formatIsk(reportRow["Expected Sales Tax ISK"])}</b><small>Sales tax estimate for selling into destination buy orders.</small></div>
+          <div class="decision-metric"><span>Expected Route</span><b>${escapeHtml(String(reportRow["Expected Route Jumps"] || "unknown"))} jumps</b><small>Actual route may differ after you undock.</small></div>
+          <div class="decision-metric"><span>Expected Profit</span><b>${formatSignedIsk(reportRow["Expected Total Profit"])}</b><small>After expected pickup cost and sales tax.</small></div>
+        </div>
+        <div class="profit-detail-grid">
+          <div class="profit-detail-row"><span>Actual buy/order cost</span><b>${escapeHtml(String(reportRow["Actual Total Cost"] || "fill after run"))}</b></div>
+          <div class="profit-detail-row"><span>Actual filled quantity</span><b>${escapeHtml(String(reportRow["Actual Filled Quantity"] || "fill after run"))}</b></div>
+          <div class="profit-detail-row"><span>Actual route jumps</span><b>${escapeHtml(String(reportRow["Actual Route Jumps"] || "fill after run"))}</b></div>
+          <div class="profit-detail-row"><span>Realized return</span><b>${escapeHtml(String(reportRow["Realized Total Return"] || "fill after sale"))}</b></div>
+        </div>
+      `;
+    }
+
     function renderHaulOpportunityDetail(item, reportRow, options = {}) {
       if (!item) return `<div class="decision-empty">Select an opportunity to view details.</div>`;
       const pickup = item.pickup_order || {};
@@ -24434,6 +24526,8 @@ help</textarea>
               ${closeButton}
             </div>
           </div>
+          ${renderHaulDetailAccordion("Before Buying", renderHaulBeforeBuyingChecklist(item), {open: true})}
+          ${renderHaulDetailAccordion("Expected vs Actual", renderHaulExpectedActualTracker(reportRow), {open: true})}
           ${renderHaulDetailAccordion("Route", routeBody, {open: true})}
           ${renderHaulDetailAccordion("Profit Breakdown", profitBody, {open: true})}
           ${renderHaulDetailAccordion("Warnings", warningsBody)}

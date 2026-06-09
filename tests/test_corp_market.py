@@ -496,6 +496,12 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "renderHaulOpportunityDetail" in page
     assert "data-haul-opportunity-detail" in page
     assert "Select an opportunity to view details." in page
+    assert "Before Buying" in page
+    assert "Expected vs Actual" in page
+    assert "renderHaulBeforeBuyingChecklist" in page
+    assert "renderHaulExpectedActualTracker" in page
+    assert "Min Volume" in page
+    assert "Actual route jumps" in page
     assert "Export Preview (CSV Row)" in page
     assert "Profit Breakdown" in page
     assert "Profit per m3" in page
