@@ -79,7 +79,9 @@ DEFAULT_DISCORD_POST_DESTINATION = "Corp buy-or-sell channel"
 DISCORD_ALERT_ROUTE_TYPES = frozenset({"webhook", "user_oauth_future"})
 DISCORD_ALERT_EVENT_TYPES = frozenset({"intel", "help", "market", "location", "combat", "custom"})
 DISCORD_ALERT_SEVERITIES = frozenset({"critical", "high", "medium", "info"})
-DISCORD_DIRECT_POST_TYPES = frozenset({"wts", "wtb", "buyback", "contract", "hauling", "service", "announcement"})
+DISCORD_DIRECT_POST_TYPES = frozenset(
+    {"wts", "wtb", "buyback", "market_order", "contract", "hauling", "service", "announcement"}
+)
 MAX_DISCORD_ALERT_ROUTES = 6
 MAX_DISCORD_ALERT_RULES = 24
 MAX_DISCORD_ALERT_PHRASES = 24
@@ -789,6 +791,7 @@ class DirectDiscordPost:
             "wts": "WTS",
             "wtb": "WTB",
             "buyback": "Buyback",
+            "market_order": "Market Order",
             "contract": "Contract",
             "hauling": "Hauling",
             "service": "Service",
@@ -2998,6 +3001,7 @@ def direct_discord_post_color(post: DirectDiscordPost) -> int:
         "wts": 0x2E7D32,
         "wtb": 0x1565C0,
         "buyback": 0x7C3AED,
+        "market_order": 0xF0BA57,
         "contract": 0xF0BA57,
         "hauling": 0x61C7D9,
         "service": 0x89A69A,
@@ -18547,6 +18551,243 @@ def _render_flight_attendant_dashboard() -> str:
       font-size: 12px;
       padding: 2px 7px;
     }
+    .discord-page {
+      display: grid;
+      gap: 16px;
+    }
+    #tab-market .discord-page-status {
+      grid-template-columns: repeat(6, minmax(126px, 1fr));
+      margin-bottom: 0;
+    }
+    .discord-workspace {
+      display: grid;
+      grid-template-columns: minmax(0, .98fr) minmax(380px, 1.02fr);
+      gap: 16px;
+      align-items: stretch;
+    }
+    .discord-column {
+      display: grid;
+      gap: 16px;
+      align-content: start;
+    }
+    .discord-left-column {
+      min-height: 900px;
+    }
+    .discord-advanced-panel {
+      margin-top: clamp(36px, 8vh, 118px);
+      opacity: .92;
+    }
+    .discord-advanced-panel > summary {
+      display: block;
+      cursor: pointer;
+      list-style: none;
+    }
+    .discord-advanced-panel > summary::-webkit-details-marker {
+      display: none;
+    }
+    .discord-advanced-summary {
+      display: grid;
+      gap: 10px;
+    }
+    .discord-advanced-teaser {
+      align-items: center;
+      background: rgba(20, 31, 48, .66);
+      border: 1px solid rgba(63, 85, 80, .58);
+      border-radius: 7px;
+      display: grid;
+      gap: 10px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      padding: 9px 10px;
+    }
+    .discord-advanced-body {
+      display: grid;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .discord-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-width: 0;
+    }
+    .discord-chip {
+      align-items: center;
+      border: 1px solid rgba(97, 199, 217, .48);
+      border-radius: 999px;
+      color: var(--cyan);
+      display: inline-flex;
+      font-size: 12px;
+      font-weight: 800;
+      gap: 6px;
+      min-height: 27px;
+      padding: 4px 9px;
+    }
+    .discord-chip::before {
+      background: currentColor;
+      border-radius: 999px;
+      content: "";
+      height: 7px;
+      width: 7px;
+    }
+    .discord-chip.buyback { border-color: rgba(139, 92, 246, .55); color: #c4b5fd; }
+    .discord-chip.hauling,
+    .discord-chip.manual { border-color: rgba(240, 186, 87, .5); color: var(--amber); }
+    .discord-chip.muted { border-color: rgba(63, 85, 80, .65); color: var(--muted); }
+    .discord-post-settings-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .discord-field-full {
+      grid-column: 1 / -1;
+    }
+    .discord-tag-well {
+      background: rgba(5, 9, 11, .64);
+      border: 1px solid rgba(97, 199, 217, .36);
+      border-radius: 7px;
+      display: grid;
+      gap: 9px;
+      padding: 10px;
+    }
+    .discord-tag-well textarea {
+      min-height: 72px;
+    }
+    .discord-pattern-list {
+      display: grid;
+      gap: 9px;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .discord-pattern-list li {
+      align-items: start;
+      color: var(--text);
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 22px minmax(0, 1fr);
+    }
+    .discord-pattern-list li::before {
+      align-items: center;
+      background: rgba(68, 207, 123, .14);
+      border: 1px solid rgba(68, 207, 123, .56);
+      border-radius: 999px;
+      color: var(--green);
+      content: "✓";
+      display: inline-flex;
+      font-size: 12px;
+      font-weight: 900;
+      height: 20px;
+      justify-content: center;
+      line-height: 1;
+      width: 20px;
+    }
+    .discord-segmented {
+      background: rgba(5, 9, 11, .64);
+      border: 1px solid rgba(63, 85, 80, .72);
+      border-radius: 7px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 5px;
+    }
+    .discord-segmented button {
+      background: rgba(35, 48, 49, .78);
+      border: 1px solid rgba(63, 85, 80, .64);
+      color: var(--muted);
+      font-size: 12px;
+      min-height: 30px;
+      padding: 6px 9px;
+    }
+    .discord-segmented button[aria-pressed="true"] {
+      border-color: rgba(68, 207, 123, .58);
+      color: var(--green);
+    }
+    .discord-hidden-select {
+      position: absolute;
+      left: -9999px;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .discord-direct-fields {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .discord-direct-fields .span-2 {
+      grid-column: span 2;
+    }
+    .discord-direct-fields .span-3 {
+      grid-column: 1 / -1;
+    }
+    .discord-preview-card {
+      background: rgba(5, 9, 11, .68);
+      border: 1px solid rgba(97, 199, 217, .34);
+      border-radius: 7px;
+      display: grid;
+      gap: 12px;
+      min-height: 284px;
+      padding: 14px;
+    }
+    .discord-preview-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .discord-preview-title {
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 900;
+      overflow-wrap: anywhere;
+    }
+    .discord-preview-copy {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .discord-preview-embed {
+      border-left: 3px solid #5865f2;
+      background: rgba(17, 24, 25, .84);
+      border-radius: 7px;
+      display: grid;
+      gap: 12px;
+      padding: 12px;
+    }
+    .discord-preview-field-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .discord-preview-field {
+      border: 1px solid rgba(63, 85, 80, .62);
+      border-radius: 7px;
+      background: rgba(20, 31, 27, .64);
+      min-height: 64px;
+      padding: 9px;
+    }
+    .discord-preview-field span {
+      color: var(--muted);
+      display: block;
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    .discord-preview-field strong {
+      color: var(--text);
+      display: block;
+      font-size: 17px;
+      margin-top: 5px;
+      overflow-wrap: anywhere;
+    }
+    .discord-json-details summary {
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+      margin-top: 10px;
+    }
     .discord-post-grid {
       margin-top: 16px;
     }
@@ -18637,6 +18878,10 @@ def _render_flight_attendant_dashboard() -> str:
     @media (max-width: 1040px) {
       .ops-launcher { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .market-grid, #tab-market > .market-grid, .fitting-grid, .flight-grid, .briefing, .industry-library-grid { grid-template-columns: 1fr; }
+      .discord-workspace { grid-template-columns: 1fr; }
+      .discord-left-column { min-height: 0; }
+      .discord-advanced-panel { margin-top: 16px; }
+      #tab-market .discord-page-status { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .reprocess-page {
         grid-template-columns: 1fr;
         grid-template-areas:
@@ -18685,6 +18930,13 @@ def _render_flight_attendant_dashboard() -> str:
       .scope-panel { grid-template-columns: 1fr; }
       .scope-chip-row { justify-content: flex-start; }
       .row, .discord-alert-section .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
+      #tab-market .discord-page-status,
+      .discord-post-settings-grid,
+      .discord-direct-fields,
+      .discord-preview-field-grid { grid-template-columns: 1fr; }
+      .discord-direct-fields .span-2,
+      .discord-direct-fields .span-3 { grid-column: 1; }
+      .discord-advanced-teaser { grid-template-columns: 1fr; }
       .haul-checklist { grid-template-columns: 1fr; }
       .haul-opportunity-layout { grid-template-columns: 1fr; }
       .haul-opportunity-detail-region { display: none; }
@@ -18824,284 +19076,325 @@ def _render_flight_attendant_dashboard() -> str:
 
     <main>
       <section id="tab-market" class="tab-panel" data-tab-panel="market">
-        <div class="market-grid">
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Discord Alert Router</h2>
-                <div class="meta">Choose which Intel Pet phrases and events can become Discord alert summaries.</div>
-              </div>
-              <span class="pill reserved">Settings</span>
-            </div>
-            <div class="ops-strip">
-              <div class="ops-tile"><span>Discord</span><strong id="discord-alert-webhook-status">Checking</strong></div>
-              <div class="ops-tile"><span>Sender</span><strong id="discord-alert-sender-status">IntelPet</strong></div>
-              <div class="ops-tile"><span>Forwarding</span><strong id="discord-alert-forwarding-status">Dry run</strong></div>
-              <div class="ops-tile"><span>Text</span><strong id="discord-alert-text-status">Summary only</strong></div>
-            </div>
+        <div class="discord-page">
+          <div class="ops-strip discord-page-status">
+            <div class="ops-tile"><span>Webhook</span><strong id="discord-post-webhook-status">Checking</strong></div>
+            <div class="ops-tile"><span>Mode</span><strong id="discord-post-mode-status">Text Channel</strong></div>
+            <div class="ops-tile"><span>Sender</span><strong id="discord-post-sender-status">Corp Market Concierge</strong></div>
+            <div class="ops-tile"><span>Mentions</span><strong id="discord-post-mention-status">Disabled</strong></div>
+            <div class="ops-tile"><span>In EVE</span><strong>Manual</strong></div>
+            <div class="ops-tile"><span>Pattern</span><strong>WTS / WTB</strong></div>
+          </div>
 @@TAB_SCOPE_MARKET@@
-            <form id="discord-alert-form" class="discord-alert-form">
-              <div class="discord-alert-section">
-                <h3>Global Behavior</h3>
-                <label class="checkline">
-                  <input id="discord-alert-enabled" type="checkbox">
-                  <span>Allow matching alerts to use Discord routes</span>
-                  <small>Future automatic forwarding checks this first. Manual test sends still require the button below.</small>
-                </label>
-                <label class="checkline">
-                  <input id="discord-alert-dry-run" type="checkbox" checked>
-                  <span>Dry run mode</span>
-                  <small>Keep automatic alert forwarding in preview mode until rules are trusted.</small>
-                </label>
-                <label>Default sender name
-                  <input id="discord-alert-sender" autocomplete="off" value="IntelPet" maxlength="80">
-                </label>
-              </div>
-
-              <div class="discord-alert-section">
-                <h3>Route</h3>
-                <label class="checkline">
-                  <input id="discord-alert-route-enabled" type="checkbox">
-                  <span>Enable this Discord route</span>
-                  <small>The route uses the server's configured webhook. The webhook URL is not saved in this settings file.</small>
-                </label>
-                <div class="row">
-                  <label>Route name
-                    <input id="discord-alert-route-name" autocomplete="off" value="IntelPet server webhook" maxlength="100">
-                  </label>
-                  <label>Destination label
-                    <input id="discord-alert-destination" autocomplete="off" value="Configured Discord alert channel" maxlength="140">
-                  </label>
+          <div class="discord-workspace">
+            <div class="discord-column discord-left-column">
+              <section class="panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>Discord Market Posting</h2>
+                    <div class="meta">Saved local posting settings for text channels or Discord forum/media posts.</div>
+                  </div>
+                  <span class="pill reserved">Manual</span>
                 </div>
-                <label>Sender mode
-                  <select id="discord-alert-route-type">
-                    <option value="webhook">IntelPet webhook</option>
-                    <option value="user_oauth_future" disabled>User-owned sender - future</option>
-                  </select>
-                </label>
-                <div class="future-option">The default route posts as IntelPet through your configured Discord webhook. Sending from a user's own Discord identity needs a later bot/user-consent design.</div>
-              </div>
+                <form id="discord-post-form" class="discord-alert-form">
+                  <div class="discord-post-settings-grid">
+                    <label>Webhook URL
+                      <input id="discord-post-webhook-url" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/...">
+                    </label>
+                    <label>Destination label
+                      <input id="discord-post-destination" autocomplete="off" value="Corp buy-or-sell forum" maxlength="140">
+                    </label>
+                    <label>Sender name
+                      <input id="discord-post-sender" autocomplete="off" value="Market Desk" maxlength="80">
+                    </label>
+                    <label>Public board URL
+                      <input id="discord-post-public-base-url" autocomplete="off" placeholder="http://127.0.0.1:8770 or tunnel URL">
+                    </label>
+                    <label class="checkline discord-field-full">
+                      <input id="discord-post-clear-webhook" type="checkbox">
+                      <span>Clear saved webhook URL</span>
+                      <small>Saved locally under profiles and never returned by the API.</small>
+                    </label>
+                    <label class="checkline discord-field-full">
+                      <input id="discord-post-forum-posts" type="checkbox">
+                      <span>Create forum/media-channel post</span>
+                      <small>Adds thread_name and applied_tags for each market post when the webhook belongs to a Discord forum or media channel.</small>
+                    </label>
+                    <div class="discord-tag-well discord-field-full">
+                      <label>Default forum tag IDs
+                        <input id="discord-post-forum-tag-ids" autocomplete="off" placeholder="123456789012345678, 234567890123456789">
+                      </label>
+                      <label>Tag map
+                        <textarea id="discord-post-forum-tag-map" placeholder="wts:123456789012345678&#10;wtb:234567890123456789&#10;buyback:345678901234567890&#10;minerals:456789012345678901&#10;hauling:567890123456789012"></textarea>
+                      </label>
+                      <div id="discord-post-tag-chips" class="discord-chip-row" aria-label="Configured Discord tag map">
+                        <span class="discord-chip muted">No tags configured</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="discord-post-message" class="discord-alert-status-line" aria-live="polite"></div>
+                  <div class="discord-alert-toolbar">
+                    <button id="discord-post-save" type="button">Save Posting Settings</button>
+                  </div>
+                </form>
+              </section>
 
-              <div id="discord-alert-message" class="discord-alert-status-line" aria-live="polite"></div>
-            </form>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Rule And Preview</h2>
-                <div class="meta">Edit one starter rule, inspect the exact Discord payload, then send a manual test.</div>
-              </div>
-            </div>
-            <form id="discord-alert-rule-form" class="discord-alert-form">
-              <div class="discord-alert-section">
-                <h3>Trigger Rule</h3>
-                <label class="checkline">
-                  <input id="discord-alert-rule-enabled" type="checkbox">
-                  <span>Enable this rule</span>
-                  <small>Disabled rules stay saved but should not forward automatically in a later Intel Pet integration.</small>
-                </label>
-                <label>Rule name
-                  <input id="discord-alert-rule-name" autocomplete="off" value="Corp help or hostile alert" maxlength="100">
-                </label>
-                <div class="row">
-                  <label>Event type
-                    <select id="discord-alert-event-type">
-                      <option value="intel">Intel</option>
-                      <option value="help">Help</option>
-                      <option value="market">Market</option>
-                      <option value="location">Location</option>
-                      <option value="combat">Combat</option>
-                      <option value="custom">Custom</option>
-                    </select>
-                  </label>
-                  <label>Severity
-                    <select id="discord-alert-severity">
-                      <option value="critical">Critical</option>
-                      <option value="high" selected>High</option>
-                      <option value="medium">Medium</option>
-                      <option value="info">Info</option>
-                    </select>
-                  </label>
+              <section class="panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>Research Pattern Checklist</h2>
+                    <div class="meta">What the UI is optimized to capture from real corp Discord market flows.</div>
+                  </div>
+                  <span class="pill reserved">Manual</span>
                 </div>
-                <label>Trigger phrases
-                  <textarea id="discord-alert-phrases">war target
+                <ul class="discord-pattern-list">
+                  <li>WTS/WTB title with item, quantity, location, and price basis</li>
+                  <li>Buyback terms: accepted items, location, percentage of Jita Buy</li>
+                  <li>Appraisal/reference link field for Janice, EVE Workbench, doctrine, or forum</li>
+                  <li>Forum tags for type and item family; manual closeout after EVE verification</li>
+                </ul>
+              </section>
+
+              <details class="panel discord-advanced-panel">
+                <summary>
+                  <div class="panel-header discord-advanced-summary">
+                    <div>
+                      <h2>Advanced Intel Bot Routes</h2>
+                      <div class="meta">Collapsed by default; rare admin-only Intel Pet note routing.</div>
+                    </div>
+                    <span class="pill reserved">Advanced</span>
+                  </div>
+                  <div class="discord-advanced-teaser">
+                    <div>
+                      <strong>&gt; Intel bot / Intel Pet notes</strong>
+                      <div class="meta">Voice-note sends only. No raw chat forwarding; mentions disabled.</div>
+                    </div>
+                    <div class="discord-chip-row">
+                      <span class="discord-chip">Notes only</span>
+                      <span class="discord-chip muted">Few users</span>
+                    </div>
+                  </div>
+                </summary>
+                <div class="discord-advanced-body">
+                  <div class="ops-strip">
+                    <div class="ops-tile"><span>Discord</span><strong id="discord-alert-webhook-status">Checking</strong></div>
+                    <div class="ops-tile"><span>Sender</span><strong id="discord-alert-sender-status">IntelPet</strong></div>
+                    <div class="ops-tile"><span>Forwarding</span><strong id="discord-alert-forwarding-status">Dry run</strong></div>
+                    <div class="ops-tile"><span>Text</span><strong id="discord-alert-text-status">Summary only</strong></div>
+                  </div>
+                  <form id="discord-alert-form" class="discord-alert-form">
+                    <div class="discord-alert-section">
+                      <h3>Global Behavior</h3>
+                      <label class="checkline">
+                        <input id="discord-alert-enabled" type="checkbox">
+                        <span>Allow matching alerts to use Discord routes</span>
+                        <small>Future automatic forwarding checks this first. Manual test sends still require the button below.</small>
+                      </label>
+                      <label class="checkline">
+                        <input id="discord-alert-dry-run" type="checkbox" checked>
+                        <span>Dry run mode</span>
+                        <small>Keep automatic alert forwarding in preview mode until rules are trusted.</small>
+                      </label>
+                      <label>Default sender name
+                        <input id="discord-alert-sender" autocomplete="off" value="IntelPet" maxlength="80">
+                      </label>
+                    </div>
+
+                    <div class="discord-alert-section">
+                      <h3>Route</h3>
+                      <label class="checkline">
+                        <input id="discord-alert-route-enabled" type="checkbox">
+                        <span>Enable this Discord route</span>
+                        <small>The route uses the server's configured webhook. The webhook URL is not saved in this settings file.</small>
+                      </label>
+                      <div class="row">
+                        <label>Route name
+                          <input id="discord-alert-route-name" autocomplete="off" value="IntelPet server webhook" maxlength="100">
+                        </label>
+                        <label>Destination label
+                          <input id="discord-alert-destination" autocomplete="off" value="Configured Discord alert channel" maxlength="140">
+                        </label>
+                      </div>
+                      <label>Sender mode
+                        <select id="discord-alert-route-type">
+                          <option value="webhook">IntelPet webhook</option>
+                          <option value="user_oauth_future" disabled>User-owned sender - future</option>
+                        </select>
+                      </label>
+                      <div class="future-option">Sending from a user's own Discord identity needs a later bot/user-consent design.</div>
+                    </div>
+                    <div id="discord-alert-message" class="discord-alert-status-line" aria-live="polite"></div>
+                  </form>
+
+                  <form id="discord-alert-rule-form" class="discord-alert-form">
+                    <div class="discord-alert-section">
+                      <h3>Trigger Rule</h3>
+                      <label class="checkline">
+                        <input id="discord-alert-rule-enabled" type="checkbox">
+                        <span>Enable this rule</span>
+                        <small>Disabled rules stay saved but should not forward automatically in a later Intel Pet integration.</small>
+                      </label>
+                      <label>Rule name
+                        <input id="discord-alert-rule-name" autocomplete="off" value="Corp help or hostile alert" maxlength="100">
+                      </label>
+                      <div class="row">
+                        <label>Event type
+                          <select id="discord-alert-event-type">
+                            <option value="intel">Intel</option>
+                            <option value="help">Help</option>
+                            <option value="market">Market</option>
+                            <option value="location">Location</option>
+                            <option value="combat">Combat</option>
+                            <option value="custom">Custom</option>
+                          </select>
+                        </label>
+                        <label>Severity
+                          <select id="discord-alert-severity">
+                            <option value="critical">Critical</option>
+                            <option value="high" selected>High</option>
+                            <option value="medium">Medium</option>
+                            <option value="info">Info</option>
+                          </select>
+                        </label>
+                      </div>
+                      <label>Trigger phrases
+                        <textarea id="discord-alert-phrases">war target
 enemy vessels
 gate camp
 help</textarea>
-                </label>
-                <label class="checkline">
-                  <input id="discord-alert-include-text" type="checkbox">
-                  <span>Include matched chat text</span>
-                  <small>Leave off unless everyone involved understands the privacy risk.</small>
-                </label>
-              </div>
+                      </label>
+                      <label class="checkline">
+                        <input id="discord-alert-include-text" type="checkbox">
+                        <span>Include matched chat text</span>
+                        <small>Leave off unless everyone involved understands the privacy risk.</small>
+                      </label>
+                    </div>
 
-              <div class="discord-alert-section">
-                <h3>Sample Event</h3>
-                <label>Summary
-                  <input id="discord-alert-test-summary" autocomplete="off" value="Hostile vessels reported near Dihra" maxlength="180">
-                </label>
-                <div class="row">
-                  <label>Source
-                    <input id="discord-alert-test-source" autocomplete="off" value="local Intel Pet" maxlength="120">
-                  </label>
-                  <label>System
-                    <input id="discord-alert-test-system" autocomplete="off" value="Dihra" maxlength="80">
-                  </label>
+                    <div class="discord-alert-section">
+                      <h3>Sample Event</h3>
+                      <label>Summary
+                        <input id="discord-alert-test-summary" autocomplete="off" value="Hostile vessels reported near Dihra" maxlength="180">
+                      </label>
+                      <div class="row">
+                        <label>Source
+                          <input id="discord-alert-test-source" autocomplete="off" value="local Intel Pet" maxlength="120">
+                        </label>
+                        <label>System
+                          <input id="discord-alert-test-system" autocomplete="off" value="Dihra" maxlength="80">
+                        </label>
+                      </div>
+                      <label>Channel
+                        <input id="discord-alert-test-channel" autocomplete="off" value="Local" maxlength="80">
+                      </label>
+                      <label>Matched text sample
+                        <textarea id="discord-alert-test-message">war target and gate camp reported on the structure route</textarea>
+                      </label>
+                    </div>
+
+                    <label>Discord payload preview
+                      <textarea id="discord-alert-preview" class="discord-alert-preview" readonly>Loading Discord alert settings...</textarea>
+                    </label>
+                    <div class="discord-alert-toolbar">
+                      <button id="discord-alert-save" type="button">Save Settings</button>
+                      <button id="discord-alert-preview-button" class="ghost" type="button">Refresh Preview</button>
+                      <button id="discord-alert-send-test" class="secondary" type="button">Send Test To Discord</button>
+                    </div>
+                  </form>
                 </div>
-                <label>Channel
-                  <input id="discord-alert-test-channel" autocomplete="off" value="Local" maxlength="80">
-                </label>
-                <label>Matched text sample
-                  <textarea id="discord-alert-test-message">war target and gate camp reported on the structure route</textarea>
-                </label>
-              </div>
-
-              <label>Discord payload preview
-                <textarea id="discord-alert-preview" class="discord-alert-preview" readonly>Loading Discord alert settings...</textarea>
-              </label>
-              <div class="discord-alert-toolbar">
-                <button id="discord-alert-save" type="button">Save Settings</button>
-                <button id="discord-alert-preview-button" class="ghost" type="button">Refresh Preview</button>
-                <button id="discord-alert-send-test" class="secondary" type="button">Send Test To Discord</button>
-              </div>
-            </form>
-          </section>
-        </div>
-
-        <div class="market-grid discord-post-grid">
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Discord Market Posting</h2>
-                <div class="meta">Webhook, forum-post, and tag settings for corp buy, sell, buyback, contract, hauling, and service posts.</div>
-              </div>
-              <span class="pill reserved">Manual Send</span>
+              </details>
             </div>
-            <div class="ops-strip">
-              <div class="ops-tile"><span>Webhook</span><strong id="discord-post-webhook-status">Checking</strong></div>
-              <div class="ops-tile"><span>Mode</span><strong id="discord-post-mode-status">Text Channel</strong></div>
-              <div class="ops-tile"><span>Sender</span><strong id="discord-post-sender-status">Corp Market Concierge</strong></div>
-              <div class="ops-tile"><span>Mentions</span><strong id="discord-post-mention-status">Disabled</strong></div>
-            </div>
-            <form id="discord-post-form" class="discord-alert-form">
-              <div class="discord-alert-section">
-                <h3>Destination</h3>
-                <label>Webhook URL
-                  <input id="discord-post-webhook-url" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/...">
-                </label>
-                <label class="checkline">
-                  <input id="discord-post-clear-webhook" type="checkbox">
-                  <span>Clear saved webhook URL</span>
-                  <small>Saved locally under profiles and never returned by the API.</small>
-                </label>
-                <div class="row">
-                  <label>Destination label
-                    <input id="discord-post-destination" autocomplete="off" value="Corp buy-or-sell channel" maxlength="140">
-                  </label>
-                  <label>Sender name
-                    <input id="discord-post-sender" autocomplete="off" value="Corp Market Concierge" maxlength="80">
-                  </label>
+
+            <div class="discord-column">
+              <section class="panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>Direct Discord Post</h2>
+                    <div class="meta">Create a Discord-ready market entry without creating a local board listing first.</div>
+                  </div>
+                  <span class="pill reserved">Manual</span>
                 </div>
-                <label>Public board URL
-                  <input id="discord-post-public-base-url" autocomplete="off" placeholder="http://127.0.0.1:8770 or tunnel URL">
-                </label>
-              </div>
-
-              <div class="discord-alert-section">
-                <h3>Forum Tags</h3>
-                <label class="checkline">
-                  <input id="discord-post-forum-posts" type="checkbox">
-                  <span>Create a forum or media-channel post for each Discord market post</span>
-                  <small>Use this only when the webhook belongs to a Discord forum or media channel.</small>
-                </label>
-                <label>Default forum tag IDs
-                  <input id="discord-post-forum-tag-ids" autocomplete="off" placeholder="123456789012345678, 234567890123456789">
-                </label>
-                <label>Tag map
-                  <textarea id="discord-post-forum-tag-map" placeholder="wts:123456789012345678&#10;wtb:234567890123456789&#10;buyback:345678901234567890&#10;minerals:456789012345678901"></textarea>
-                </label>
-              </div>
-
-              <div id="discord-post-message" class="discord-alert-status-line" aria-live="polite"></div>
-              <div class="discord-alert-toolbar">
-                <button id="discord-post-save" type="button">Save Posting Settings</button>
-              </div>
-            </form>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Direct Discord Post</h2>
-                <div class="meta">Create a Discord-ready WTS, WTB, buyback, contract, hauling, service, or announcement post without creating a board listing.</div>
-              </div>
-              <span class="pill reserved">Preview First</span>
-            </div>
-            <form id="direct-discord-post-form" class="discord-alert-form">
-              <div class="discord-alert-section">
-                <h3>Entry</h3>
-                <div class="row">
-                  <label>Post type
-                    <select id="direct-discord-post-type">
-                      <option value="wts">WTS</option>
-                      <option value="wtb">WTB</option>
-                      <option value="buyback">Buyback</option>
-                      <option value="contract">Contract</option>
-                      <option value="hauling">Hauling</option>
-                      <option value="service">Service</option>
-                      <option value="announcement">Announcement</option>
-                    </select>
-                  </label>
-                  <label>Category
-                    <select id="direct-discord-category">
+                <form id="direct-discord-post-form" class="discord-alert-form">
+                  <div id="direct-discord-type-segments" class="discord-segmented" role="group" aria-label="Discord post type">
+                    <button type="button" data-direct-discord-type="wts" aria-pressed="true">WTS</button>
+                    <button type="button" data-direct-discord-type="wtb" aria-pressed="false">WTB</button>
+                    <button type="button" data-direct-discord-type="buyback" aria-pressed="false">Buyback</button>
+                    <button type="button" data-direct-discord-type="market_order" aria-pressed="false">Market Order</button>
+                    <button type="button" data-direct-discord-type="contract" aria-pressed="false">Contract</button>
+                    <button type="button" data-direct-discord-type="hauling" aria-pressed="false">Hauling</button>
+                    <button type="button" data-direct-discord-type="service" aria-pressed="false">Service</button>
+                    <button type="button" data-direct-discord-type="announcement" aria-pressed="false">Announcement</button>
+                  </div>
+                  <select id="direct-discord-post-type" class="discord-hidden-select" aria-label="Post type">
+                    <option value="wts">WTS</option>
+                    <option value="wtb">WTB</option>
+                    <option value="buyback">Buyback</option>
+                    <option value="market_order">Market Order</option>
+                    <option value="contract">Contract</option>
+                    <option value="hauling">Hauling</option>
+                    <option value="service">Service</option>
+                    <option value="announcement">Announcement</option>
+                  </select>
+                  <div class="discord-direct-fields">
+                    <label>Category
+                      <select id="direct-discord-category">
 @@CATEGORY_OPTIONS@@
-                    </select>
-                  </label>
-                </div>
-                <label>Title
-                  <input id="direct-discord-title" autocomplete="off" placeholder="WTS fitted Venture pack @ Amarr" maxlength="120">
-                </label>
-                <div class="row">
-                  <label>Item or service
-                    <input id="direct-discord-item" autocomplete="off" placeholder="Tritanium, fitted Venture pack, hauling run" maxlength="120">
-                  </label>
-                  <label>Quantity
-                    <input id="direct-discord-quantity" autocomplete="off" placeholder="1,000,000 or 3 contracts" maxlength="80">
-                  </label>
-                </div>
-                <div class="row">
-                  <label>Price or basis
-                    <input id="direct-discord-price" autocomplete="off" placeholder="95% Jita Buy, 12.5m each, quote requested" maxlength="120">
-                  </label>
-                  <label>Location
-                    <input id="direct-discord-location" autocomplete="off" placeholder="Jita 4-4, Amarr, Dihra structure" maxlength="160">
-                  </label>
-                </div>
-                <div class="row">
-                  <label>Contact
-                    <input id="direct-discord-contact" autocomplete="off" placeholder="EVE character or corp role" maxlength="100">
-                  </label>
-                  <label>Appraisal or link
-                    <input id="direct-discord-link" autocomplete="off" placeholder="Janice, EVE Workbench, forum, or board URL">
-                  </label>
-                </div>
-                <label>Details
-                  <textarea id="direct-discord-details" placeholder="Accepted item types, contract terms, pickup rules, timing, or manual verification notes."></textarea>
-                </label>
-              </div>
+                      </select>
+                    </label>
+                    <label>Item or service
+                      <input id="direct-discord-item" autocomplete="off" placeholder="Tritanium, fitted Venture pack, hauling run" maxlength="120">
+                    </label>
+                    <label>Quantity
+                      <input id="direct-discord-quantity" autocomplete="off" placeholder="1,000,000 or 3 contracts" maxlength="80">
+                    </label>
+                    <label>Price or basis
+                      <input id="direct-discord-price" autocomplete="off" placeholder="95% Jita Buy, 12.5m each, quote requested" maxlength="120">
+                    </label>
+                    <label>Location
+                      <input id="direct-discord-location" autocomplete="off" placeholder="Jita 4-4, Amarr, Dihra structure" maxlength="160">
+                    </label>
+                    <label>Contact
+                      <input id="direct-discord-contact" autocomplete="off" placeholder="EVE character or corp role" maxlength="100">
+                    </label>
+                    <label class="span-2">Appraisal or link
+                      <input id="direct-discord-link" autocomplete="off" placeholder="Janice, EVE Workbench, forum, or board URL">
+                    </label>
+                    <label>Thread title
+                      <input id="direct-discord-title" autocomplete="off" placeholder="WTS Tritanium x1,000,000 at Amarr" maxlength="120">
+                    </label>
+                    <label class="span-3">Details
+                      <textarea id="direct-discord-details" placeholder="Accepted item types, contract terms, pickup rules, timing, or manual verification notes."></textarea>
+                    </label>
+                  </div>
+                  <div id="direct-discord-message" class="discord-alert-status-line" aria-live="polite"></div>
+                  <div class="discord-alert-toolbar">
+                    <button id="direct-discord-preview-button" class="ghost" type="button">Refresh Preview</button>
+                    <button id="direct-discord-send" class="secondary" type="button">Send Direct Post</button>
+                  </div>
+                </form>
+              </section>
 
-              <label>Discord payload preview
-                <textarea id="direct-discord-preview" class="discord-alert-preview" readonly>Build a direct Discord post preview...</textarea>
-              </label>
-              <div id="direct-discord-message" class="discord-alert-status-line" aria-live="polite"></div>
-              <div class="discord-alert-toolbar">
-                <button id="direct-discord-preview-button" class="ghost" type="button">Refresh Preview</button>
-                <button id="direct-discord-send" class="secondary" type="button">Send Direct Post</button>
-              </div>
-            </form>
-          </section>
+              <section class="panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>Discord Forum Preview</h2>
+                    <div class="meta">What the webhook payload becomes before any live send.</div>
+                  </div>
+                  <span class="pill reserved">Manual</span>
+                </div>
+                <div id="direct-discord-visual-preview" class="discord-preview-card" aria-live="polite">
+                  <div class="discord-preview-tags">
+                    <span class="discord-chip muted">Build preview</span>
+                  </div>
+                  <div class="discord-preview-title">Add a title or item/service to build the Discord preview.</div>
+                  <div class="discord-preview-copy">Discord mentions stay disabled. In-game follow-up remains manual.</div>
+                </div>
+                <details class="discord-json-details">
+                  <summary>JSON payload</summary>
+                  <textarea id="direct-discord-preview" class="discord-alert-preview" readonly>Build a direct Discord post preview...</textarea>
+                </details>
+              </section>
+            </div>
+          </div>
         </div>
 
         <details class="module note-module">
@@ -20469,6 +20762,7 @@ help</textarea>
     const discordPostForumPosts = document.querySelector("#discord-post-forum-posts");
     const discordPostForumTagIds = document.querySelector("#discord-post-forum-tag-ids");
     const discordPostForumTagMap = document.querySelector("#discord-post-forum-tag-map");
+    const discordPostTagChips = document.querySelector("#discord-post-tag-chips");
     const discordPostSave = document.querySelector("#discord-post-save");
     const discordPostMessage = document.querySelector("#discord-post-message");
     const discordPostWebhookStatus = document.querySelector("#discord-post-webhook-status");
@@ -20476,6 +20770,7 @@ help</textarea>
     const discordPostSenderStatus = document.querySelector("#discord-post-sender-status");
     const discordPostMentionStatus = document.querySelector("#discord-post-mention-status");
     const directDiscordPostForm = document.querySelector("#direct-discord-post-form");
+    const directDiscordTypeSegments = document.querySelector("#direct-discord-type-segments");
     const directDiscordPostType = document.querySelector("#direct-discord-post-type");
     const directDiscordCategory = document.querySelector("#direct-discord-category");
     const directDiscordTitle = document.querySelector("#direct-discord-title");
@@ -20487,6 +20782,7 @@ help</textarea>
     const directDiscordLink = document.querySelector("#direct-discord-link");
     const directDiscordDetails = document.querySelector("#direct-discord-details");
     const directDiscordPreview = document.querySelector("#direct-discord-preview");
+    const directDiscordVisualPreview = document.querySelector("#direct-discord-visual-preview");
     const directDiscordPreviewButton = document.querySelector("#direct-discord-preview-button");
     const directDiscordSend = document.querySelector("#direct-discord-send");
     const directDiscordMessage = document.querySelector("#direct-discord-message");
@@ -21120,9 +21416,101 @@ help</textarea>
       directDiscordMessage.classList.toggle("error", kind === "error");
     }
 
+    function discordTagClass(label) {
+      const normalized = String(label || "").toLowerCase();
+      if (normalized.includes("buyback")) return "buyback";
+      if (normalized.includes("hauling") || normalized.includes("manual")) return "hauling";
+      if (normalized.includes("default") || normalized.includes("few users")) return "muted";
+      return "";
+    }
+
+    function shortDiscordTagLabel(value) {
+      const label = String(value || "").trim();
+      if (!label) return "";
+      if (label.length <= 34) return label;
+      return `${label.slice(0, 16)}...${label.slice(-8)}`;
+    }
+
+    function renderDiscordPostTagChips(data = null) {
+      if (!discordPostTagChips) return;
+      const settings = data?.effective_settings || data?.settings || {};
+      const mapText = String(discordPostForumTagMap?.value || settings.forum_tag_map_text || "").trim();
+      const defaultIds = discordPostValues(discordPostForumTagIds).length
+        ? discordPostValues(discordPostForumTagIds)
+        : (settings.forum_tag_ids || []);
+      const entries = mapText
+        .split(/[\\n,]+/)
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      const labels = [
+        ...entries,
+        ...Array.from(defaultIds || []).map((tagId) => `default:${tagId}`),
+      ].slice(0, 12);
+      if (!labels.length) {
+        discordPostTagChips.innerHTML = '<span class="discord-chip muted">No tags configured</span>';
+        return;
+      }
+      discordPostTagChips.innerHTML = labels.map((label) => {
+        const chipClass = discordTagClass(label);
+        return `<span class="discord-chip ${chipClass}">${escapeHtml(shortDiscordTagLabel(label))}</span>`;
+      }).join("");
+    }
+
+    function discordEmbedField(embed, fieldName) {
+      const target = String(fieldName || "").toLowerCase();
+      const field = (embed?.fields || []).find((candidate) => String(candidate.name || "").toLowerCase() === target);
+      return field?.value || "";
+    }
+
+    function renderDirectDiscordVisualPreview(payload) {
+      if (!directDiscordVisualPreview) return;
+      if (!payload || payload.needs) {
+        directDiscordVisualPreview.innerHTML = `
+          <div class="discord-preview-tags">
+            <span class="discord-chip muted">Build preview</span>
+          </div>
+          <div class="discord-preview-title">Add a title or item/service to build the Discord preview.</div>
+          <div class="discord-preview-copy">Discord mentions stay disabled. In-game follow-up remains manual.</div>
+        `;
+        return;
+      }
+      const embed = (payload.embeds || [])[0] || {};
+      const content = String(payload.content || "").trim();
+      const title = embed.title || content.split("\\n")[0] || "Direct Discord post";
+      const type = discordEmbedField(embed, "Type") || "Post";
+      const category = discordEmbedField(embed, "Category") || "General";
+      const quantity = discordEmbedField(embed, "Quantity") || "Not set";
+      const price = discordEmbedField(embed, "Price / Basis");
+      const location = discordEmbedField(embed, "Location");
+      const nextStep = discordEmbedField(embed, "Next Step") || "Verify terms in EVE, then use contract, trade, market order, or EVE mail manually.";
+      const threadLabel = payload.thread_name ? "Forum post" : "Manual send";
+      const tagCount = Array.isArray(payload.applied_tags) ? payload.applied_tags.length : 0;
+      const appliedTag = tagCount ? `<span class="discord-chip muted">${escapeHtml(tagCount)} tag${tagCount === 1 ? "" : "s"}</span>` : "";
+      const detailLines = [price ? `Price/Basis: ${price}` : "", location ? `Location: ${location}` : ""].filter(Boolean).join("\\n");
+      directDiscordVisualPreview.innerHTML = `
+        <div class="discord-preview-tags">
+          <span class="discord-chip ${discordTagClass(type)}">${escapeHtml(type)}</span>
+          <span class="discord-chip">${escapeHtml(category)}</span>
+          <span class="discord-chip manual">${escapeHtml(threadLabel)}</span>
+          ${appliedTag}
+        </div>
+        <div class="discord-preview-title">${escapeHtml(title)}</div>
+        ${detailLines ? `<div class="discord-preview-copy">${escapeHtml(detailLines)}</div>` : ""}
+        <div class="discord-preview-embed">
+          <div class="discord-preview-field-grid">
+            <div class="discord-preview-field"><span>Type</span><strong>${escapeHtml(type)}</strong></div>
+            <div class="discord-preview-field"><span>Category</span><strong>${escapeHtml(category)}</strong></div>
+            <div class="discord-preview-field"><span>Quantity</span><strong>${escapeHtml(quantity)}</strong></div>
+          </div>
+          ${embed.description ? `<div class="discord-preview-copy">${escapeHtml(embed.description)}</div>` : ""}
+          <div class="discord-preview-copy">Next step: ${escapeHtml(nextStep)}</div>
+        </div>
+      `;
+    }
+
     function renderDirectDiscordPreview(payload) {
-      if (!directDiscordPreview) return;
-      directDiscordPreview.value = JSON.stringify(payload || {}, null, 2);
+      if (directDiscordPreview) directDiscordPreview.value = JSON.stringify(payload || {}, null, 2);
+      renderDirectDiscordVisualPreview(payload);
     }
 
     function updateDiscordPostStatus(data) {
@@ -21135,6 +21523,7 @@ help</textarea>
       if (discordPostWebhookUrl && data?.webhook_url_preview) {
         discordPostWebhookUrl.placeholder = `Configured: ${data.webhook_url_preview}`;
       }
+      renderDiscordPostTagChips(data);
     }
 
     function applyDiscordPostSettings(data) {
@@ -28512,6 +28901,14 @@ help</textarea>
       directDiscordPreviewTimer = window.setTimeout(() => previewDirectDiscordPost({quiet: true}), 260);
     }
 
+    function syncDirectDiscordTypeSegments() {
+      if (!directDiscordTypeSegments || !directDiscordPostType) return;
+      const value = directDiscordPostType.value || "wts";
+      directDiscordTypeSegments.querySelectorAll("button[data-direct-discord-type]").forEach((button) => {
+        button.setAttribute("aria-pressed", button.dataset.directDiscordType === value ? "true" : "false");
+      });
+    }
+
     if (discordPostForm) {
       [
         discordPostWebhookUrl,
@@ -28524,13 +28921,29 @@ help</textarea>
         discordPostForumTagMap,
       ].forEach((control) => {
         if (!control) return;
-        control.addEventListener("input", scheduleDirectDiscordPreview);
-        control.addEventListener("change", scheduleDirectDiscordPreview);
+        control.addEventListener("input", () => {
+          renderDiscordPostTagChips();
+          scheduleDirectDiscordPreview();
+        });
+        control.addEventListener("change", () => {
+          renderDiscordPostTagChips();
+          scheduleDirectDiscordPreview();
+        });
       });
       discordPostSave.addEventListener("click", saveDiscordPostSettings);
     }
 
     if (directDiscordPostForm) {
+      syncDirectDiscordTypeSegments();
+      if (directDiscordTypeSegments) {
+        directDiscordTypeSegments.addEventListener("click", (event) => {
+          const button = event.target.closest("button[data-direct-discord-type]");
+          if (!button || !directDiscordPostType) return;
+          directDiscordPostType.value = button.dataset.directDiscordType || "wts";
+          syncDirectDiscordTypeSegments();
+          scheduleDirectDiscordPreview();
+        });
+      }
       [
         directDiscordPostType,
         directDiscordCategory,
@@ -28544,8 +28957,14 @@ help</textarea>
         directDiscordDetails,
       ].forEach((control) => {
         if (!control) return;
-        control.addEventListener("input", scheduleDirectDiscordPreview);
-        control.addEventListener("change", scheduleDirectDiscordPreview);
+        control.addEventListener("input", () => {
+          syncDirectDiscordTypeSegments();
+          scheduleDirectDiscordPreview();
+        });
+        control.addEventListener("change", () => {
+          syncDirectDiscordTypeSegments();
+          scheduleDirectDiscordPreview();
+        });
       });
       directDiscordPreviewButton.addEventListener("click", () => previewDirectDiscordPost());
       directDiscordSend.addEventListener("click", sendDirectDiscordPost);

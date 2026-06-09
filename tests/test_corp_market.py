@@ -287,7 +287,7 @@ def test_dashboard_keeps_market_offer_workflow_controls():
     assert "id=\"offer-form\"" in page
     assert "data-tab-target=\"market\"" in page
     assert "Discord Alerts" in page
-    assert "Discord Alert Router" in page
+    assert "Advanced Intel Bot Routes" in page
     assert "Legacy Market Board" in page
     assert "Post Offer" in page
     assert "/api/offers" in page

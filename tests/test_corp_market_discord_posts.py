@@ -113,6 +113,31 @@ def test_direct_discord_post_payload_uses_forum_tags_and_blocks_mentions():
     assert "Verify terms in EVE" in payload_text
 
 
+def test_direct_discord_market_order_post_stays_manual():
+    settings = corp_market.DiscordPostSettings(destination_label="Corp orders", sender_name="Market Desk")
+    post = corp_market.clean_direct_discord_post_payload(
+        {
+            "post_type": "market_order",
+            "category": "minerals",
+            "item_name": "Mexallon",
+            "quantity": "500,000",
+            "price_text": "Regional sell order",
+            "location": "Amarr",
+            "details": "Post the Discord notice first, then place or verify the market order manually in EVE.",
+        }
+    )
+
+    payload = corp_market.build_direct_discord_post_payload(post, settings)
+    payload_text = json.dumps(payload)
+    fields = {field["name"]: field["value"] for field in payload["embeds"][0]["fields"]}
+
+    assert fields["Type"] == "Market Order"
+    assert payload["allowed_mentions"] == {"parse": []}
+    assert "Market Order Mexallon x500,000 at Amarr | Regional sell order" in payload["content"]
+    assert "market order" in payload_text
+    assert "manually" in payload_text
+
+
 def test_discord_market_listing_payload_accepts_sender_name(tmp_path):
     store = MarketStore(tmp_path / "market.sqlite3")
     listing = store.create_listing(
@@ -144,8 +169,13 @@ def test_dashboard_includes_discord_market_posting_controls():
     assert "id=\"discord-post-webhook-url\"" in page
     assert "id=\"discord-post-forum-posts\"" in page
     assert "id=\"discord-post-forum-tag-map\"" in page
+    assert "id=\"discord-post-tag-chips\"" in page
     assert "id=\"direct-discord-post-form\"" in page
+    assert "id=\"direct-discord-visual-preview\"" in page
     assert "id=\"direct-discord-send\"" in page
+    assert "data-direct-discord-type=\"market_order\"" in page
+    assert "Advanced Intel Bot Routes" in page
+    assert "Research Pattern Checklist" in page
     assert "/api/discord-post/settings" in page
     assert "/api/discord-post/direct" in page
-    assert "Create a forum or media-channel post" in page
+    assert "Create forum/media-channel post" in page
