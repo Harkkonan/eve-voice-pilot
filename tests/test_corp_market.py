@@ -281,17 +281,16 @@ def test_dashboard_includes_flight_attendant_tab_and_safety_charter():
     assert "id=\"flight-buyer-scan\"" not in flight_section
 
 
-def test_dashboard_keeps_market_offer_workflow_controls():
+def test_dashboard_keeps_discord_alerts_as_primary_market_workflow():
     page = render_dashboard()
 
-    assert "id=\"offer-form\"" in page
     assert "data-tab-target=\"market\"" in page
     assert "Discord Alerts" in page
     assert "Advanced Intel Bot Routes" in page
-    assert "Legacy Market Board" in page
-    assert "Post Offer" in page
-    assert "/api/offers" in page
-    assert "Mail draft" in page
+    assert "Direct Discord Post" in page
+    assert "id=\"direct-discord-post-form\"" in page
+    assert "id=\"offer-form\"" not in page
+    assert "Legacy Market Board" not in page
 
 
 def test_dashboard_includes_plex_button_press_effect():

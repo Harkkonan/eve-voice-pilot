@@ -246,7 +246,7 @@ def test_direct_discord_post_send_still_requires_write_access_in_public_mode(tmp
 
     assert status == 403, body
     assert data["ok"] is False
-    assert "market admin token or trusted SSO member write access" in data["error"]
+    assert "--trusted-members-can-write-market" in data["error"]
 
 
 def test_discord_market_listing_payload_accepts_sender_name(tmp_path):

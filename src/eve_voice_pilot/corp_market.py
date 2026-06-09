@@ -14433,11 +14433,18 @@ def build_http_server(
                 trusted_member=trusted_member,
             ):
                 return True
-            error = (
-                "Public hosting mode requires the market admin token or trusted SSO member write access."
-                if public_hosting_mode
-                else "Write access requires the market admin token."
-            )
+            if public_hosting_mode and not admin_token and not sso_config.trusted_members_can_edit:
+                error = (
+                    "Public hosting mode is running read-only for market writes. "
+                    "Restart with --trusted-members-can-write-market for allowlisted SSO members, "
+                    "or set CORP_MARKET_ADMIN_TOKEN."
+                )
+            else:
+                error = (
+                    "Public hosting mode requires the market admin token or trusted SSO member write access."
+                    if public_hosting_mode
+                    else "Write access requires the market admin token."
+                )
             self._send_json({"ok": False, "error": error}, status=403)
             return False
 
@@ -19398,89 +19405,6 @@ help</textarea>
             </div>
           </div>
         </div>
-
-        <details class="module note-module">
-          <summary><h3>Legacy Market Board</h3></summary>
-          <div class="module-content">
-        <div class="market-grid">
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Create Offer</h2>
-                <div class="meta">Create Discord-ready offers and mail drafts.</div>
-              </div>
-            </div>
-            <form id="offer-form">
-              <div class="row">
-                <label>Type
-                  <select name="listing_type">
-                    <option value="sell">For sale</option>
-                    <option value="want">Want to buy</option>
-                  </select>
-                </label>
-                <label>Category
-                  <select name="category">
-@@CATEGORY_OPTIONS@@
-                  </select>
-                </label>
-              </div>
-              <div class="row">
-                <label>Quantity
-                  <input name="quantity" type="number" min="1" step="1" value="1">
-                </label>
-                <label>Unit Price
-                  <input name="unit_price" autocomplete="off" placeholder="12.5m or blank">
-                </label>
-              </div>
-              <label>Item
-                <input name="item_name" autocomplete="off" placeholder="Venture, Water, 10MN Afterburner I">
-              </label>
-              <div class="row">
-                <label>Contact
-                  <input name="owner" autocomplete="off" placeholder="EVE character">
-                </label>
-                <label>Location
-                  <input name="location" autocomplete="off" placeholder="Station or system">
-                </label>
-              </div>
-              <label>Delivery
-                <input name="delivery" autocomplete="off" placeholder="Pickup, delivery available, high-sec only">
-              </label>
-              <label>Fit Image URL
-                <input name="fit_image_url" autocomplete="off" placeholder="Optional Discord/CDN screenshot URL">
-              </label>
-              <label>Notes
-                <textarea name="notes" placeholder="[Hawk, Fit name]\nPaste EFT fit blocks, contract details, timing, limits"></textarea>
-              </label>
-              <button type="submit">Post Offer</button>
-              <div id="form-error" class="error" hidden></div>
-            </form>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Market Board</h2>
-                <div class="meta">Scan open requests, reserve manually, then use the mail draft page for in-game contact.</div>
-              </div>
-            </div>
-            <div class="ops-strip">
-              <div class="ops-tile"><span>Mode</span><strong>Manual Trade</strong></div>
-              <div class="ops-tile"><span>Mail</span><strong>Copy Drafts</strong></div>
-              <div class="ops-tile"><span>Discord</span><strong>Webhook Ready</strong></div>
-              <div class="ops-tile"><span>Safety</span><strong>No Client Control</strong></div>
-            </div>
-            <div class="filters">
-              <button class="secondary active" type="button" data-filter="">Open</button>
-              <button class="secondary" type="button" data-filter="sell">For sale</button>
-              <button class="secondary" type="button" data-filter="want">Want to buy</button>
-              <button class="secondary" type="button" data-closed="1">All statuses</button>
-            </div>
-            <div id="offers" class="offers"></div>
-          </section>
-        </div>
-          </div>
-        </details>
       </section>
 
       <section id="tab-fittings" class="tab-panel" data-tab-panel="fittings" hidden>
@@ -20723,9 +20647,11 @@ help</textarea>
     </main>
   </div>
   <script>
+    const offerForm = document.querySelector("#offer-form");
     const offersEl = document.querySelector("#offers");
     const statusEl = document.querySelector("#status");
     const errorEl = document.querySelector("#form-error");
+    const offerFilters = document.querySelector(".filters");
     const discordAlertForm = document.querySelector("#discord-alert-form");
     const discordAlertRuleForm = document.querySelector("#discord-alert-rule-form");
     const discordAlertEnabled = document.querySelector("#discord-alert-enabled");
@@ -22131,6 +22057,7 @@ help</textarea>
     }
 
     async function loadOffers() {
+      if (!offersEl || !statusEl) return;
       const params = new URLSearchParams();
       if (filterType) params.set("type", filterType);
       if (includeClosed) params.set("include_closed", "1");
@@ -28222,29 +28149,33 @@ help</textarea>
 
     window.addEventListener("hashchange", showTabFromHash);
 
-    document.querySelector("#offer-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      errorEl.hidden = true;
-      const formEl = event.currentTarget;
-      const form = new FormData(formEl);
-      const payload = Object.fromEntries(form.entries());
-      try {
-        const response = await fetch("/api/offers", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify(payload),
-        });
-        const data = await response.json();
-        if (!data.ok) throw new Error(data.error || "Offer was not created");
-        formEl.reset();
-        formEl.quantity.value = "1";
-        alertDiscordSyncProblem(data);
-        await loadOffers();
-      } catch (error) {
-        errorEl.textContent = error.message;
-        errorEl.hidden = false;
-      }
-    });
+    if (offerForm) {
+      offerForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (errorEl) errorEl.hidden = true;
+        const formEl = event.currentTarget;
+        const form = new FormData(formEl);
+        const payload = Object.fromEntries(form.entries());
+        try {
+          const response = await fetch("/api/offers", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!data.ok) throw new Error(data.error || "Offer was not created");
+          formEl.reset();
+          formEl.quantity.value = "1";
+          alertDiscordSyncProblem(data);
+          await loadOffers();
+        } catch (error) {
+          if (errorEl) {
+            errorEl.textContent = error.message;
+            errorEl.hidden = false;
+          }
+        }
+      });
+    }
 
     if (fittingForm) {
       fittingForm.addEventListener("submit", async (event) => {
@@ -28273,17 +28204,19 @@ help</textarea>
       });
     }
 
-    document.querySelector(".filters").addEventListener("click", async (event) => {
-      const button = event.target.closest("button");
-      if (!button) return;
-      if (button.dataset.closed) {
-        includeClosed = !includeClosed;
-      } else {
-        filterType = button.dataset.filter || "";
-      }
-      updateFilterButtons();
-      await loadOffers();
-    });
+    if (offerFilters) {
+      offerFilters.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        if (button.dataset.closed) {
+          includeClosed = !includeClosed;
+        } else {
+          filterType = button.dataset.filter || "";
+        }
+        updateFilterButtons();
+        await loadOffers();
+      });
+    }
 
     if (fittingFilters) {
       fittingFilters.addEventListener("click", async (event) => {
@@ -28306,43 +28239,45 @@ help</textarea>
       });
     }
 
-    offersEl.addEventListener("click", async (event) => {
-      const reserveButton = event.target.closest("button[data-reserve]");
-      if (reserveButton) {
-        const reservedBy = window.prompt("Reserve for which character?");
-        if (!reservedBy) return;
-        const response = await fetch(`/api/offers/${reserveButton.dataset.reserve}/reserve`, {
+    if (offersEl) {
+      offersEl.addEventListener("click", async (event) => {
+        const reserveButton = event.target.closest("button[data-reserve]");
+        if (reserveButton) {
+          const reservedBy = window.prompt("Reserve for which character?");
+          if (!reservedBy) return;
+          const response = await fetch(`/api/offers/${reserveButton.dataset.reserve}/reserve`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({reserved_by: reservedBy, hours: 24}),
+          });
+          const data = await response.json();
+          if (!data.ok) {
+            window.alert(data.error || "Could not reserve offer");
+            return;
+          }
+          alertDiscordSyncProblem(data);
+          await loadOffers();
+          return;
+        }
+
+        const statusButton = event.target.closest("button[data-status-id]");
+        if (!statusButton) return;
+        const nextStatus = statusButton.dataset.status;
+        if (!window.confirm(`Set this listing to ${nextStatus}?`)) return;
+        const response = await fetch(`/api/offers/${statusButton.dataset.statusId}/status`, {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({reserved_by: reservedBy, hours: 24}),
+          body: JSON.stringify({status: nextStatus}),
         });
         const data = await response.json();
         if (!data.ok) {
-          window.alert(data.error || "Could not reserve offer");
+          window.alert(data.error || "Could not update listing");
           return;
         }
         alertDiscordSyncProblem(data);
         await loadOffers();
-        return;
-      }
-
-      const statusButton = event.target.closest("button[data-status-id]");
-      if (!statusButton) return;
-      const nextStatus = statusButton.dataset.status;
-      if (!window.confirm(`Set this listing to ${nextStatus}?`)) return;
-      const response = await fetch(`/api/offers/${statusButton.dataset.statusId}/status`, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({status: nextStatus}),
       });
-      const data = await response.json();
-      if (!data.ok) {
-        window.alert(data.error || "Could not update listing");
-        return;
-      }
-      alertDiscordSyncProblem(data);
-      await loadOffers();
-    });
+    }
 
     if (fittingsEl) {
       fittingsEl.addEventListener("click", async (event) => {
@@ -29000,8 +28935,8 @@ help</textarea>
     loadFlightStatus();
     loadFlightDiagnostics();
     loadOffers().catch((error) => {
-      offersEl.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
-      statusEl.textContent = "Load failed";
+      if (offersEl) offersEl.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+      if (statusEl) statusEl.textContent = "Load failed";
     });
     loadFittings().catch((error) => {
       if (fittingsEl) fittingsEl.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
