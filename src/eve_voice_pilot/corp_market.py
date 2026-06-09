@@ -9123,6 +9123,64 @@ def market_order_sort_key(order: dict[str, Any], *, order_type: str) -> tuple[fl
     return (price_rank, int(order.get("jumps") or 0), -int(order.get("volume_remain") or 0))
 
 
+def build_haul_match_depth(
+    orders: Iterable[dict[str, Any]],
+    *,
+    depth_prefix: str,
+    excluded_depth_keys: set[str],
+) -> list[dict[str, Any]]:
+    depth: list[dict[str, Any]] = []
+    for index, order in enumerate(orders):
+        try:
+            volume_remain = int(order.get("volume_remain") or 0)
+            price = float(order.get("price") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        min_volume = max(1, clean_optional_int(order.get("min_volume")) or 1)
+        depth_key = f"{depth_prefix}:{index}:{clean_optional_int(order.get('order_id')) or 0}"
+        if depth_key in excluded_depth_keys:
+            continue
+        if volume_remain <= 0 or price <= 0 or min_volume > volume_remain:
+            continue
+        depth.append(
+            {
+                **order,
+                "min_volume": min_volume,
+                "_remaining": volume_remain,
+                "_depth_key": depth_key,
+            }
+        )
+    return depth
+
+
+def haul_min_volume_blocked_depth_keys(matches: Iterable[dict[str, Any]], *, order_key: str) -> set[str]:
+    units_by_key: dict[str, int] = {}
+    min_volume_by_key: dict[str, int] = {}
+    for match in matches:
+        order = match.get(order_key) or {}
+        depth_key = str(order.get("_depth_key") or "")
+        if not depth_key:
+            continue
+        units_by_key[depth_key] = units_by_key.get(depth_key, 0) + int(match.get("units") or 0)
+        min_volume_by_key[depth_key] = max(1, clean_optional_int(order.get("min_volume")) or 1)
+    return {
+        depth_key
+        for depth_key, units in units_by_key.items()
+        if units > 0 and units < min_volume_by_key.get(depth_key, 1)
+    }
+
+
+def public_haul_order_depth_match(match: dict[str, Any]) -> dict[str, Any]:
+    public_match = dict(match)
+    public_match["pickup_order"] = {
+        key: value for key, value in (match.get("pickup_order") or {}).items() if not str(key).startswith("_")
+    }
+    public_match["destination_order"] = {
+        key: value for key, value in (match.get("destination_order") or {}).items() if not str(key).startswith("_")
+    }
+    return public_match
+
+
 def match_haul_order_depth(
     *,
     sell_orders: list[dict[str, Any]],
@@ -9142,88 +9200,101 @@ def match_haul_order_depth(
         if cargo_units <= 0:
             return None
 
-    sell_depth = [
-        {**order, "_remaining": int(order.get("volume_remain") or 0)}
-        for order in sell_orders
-        if int(order.get("volume_remain") or 0) > 0 and float(order.get("price") or 0.0) > 0
-    ]
-    buy_depth = [
-        {**order, "_remaining": int(order.get("volume_remain") or 0)}
-        for order in buy_orders
-        if int(order.get("volume_remain") or 0) > 0 and float(order.get("price") or 0.0) > 0
-    ]
-    sell_index = 0
-    buy_index = 0
-    remaining_cargo_units = cargo_units
-    matched_units = 0
-    pickup_cost = 0.0
-    gross_destination_revenue = 0.0
-    net_destination_revenue = 0.0
-    remaining_budget_isk = clean_purchase_budget_isk
-    budget_limited = False
-    matches: list[dict[str, Any]] = []
-
-    while sell_index < len(sell_depth) and buy_index < len(buy_depth):
-        sell_order = sell_depth[sell_index]
-        buy_order = buy_depth[buy_index]
-        sell_price = float(sell_order["price"])
-        buy_price = float(buy_order["price"])
-        net_buy_price = buy_price * (1.0 - clean_tax_rate)
-        if net_buy_price <= sell_price:
-            break
-
-        available_units = min(int(sell_order["_remaining"]), int(buy_order["_remaining"]))
-        if remaining_cargo_units is not None:
-            available_units = min(available_units, remaining_cargo_units)
-        affordable_units = int((remaining_budget_isk + 1e-9) // sell_price)
-        if affordable_units <= 0:
-            budget_limited = True
-            break
-        if affordable_units < available_units:
-            budget_limited = True
-            available_units = affordable_units
-        if available_units <= 0:
-            break
-
-        line_pickup_cost = sell_price * available_units
-        line_gross_destination_revenue = buy_price * available_units
-        line_net_destination_revenue = net_buy_price * available_units
-        pickup_cost += line_pickup_cost
-        gross_destination_revenue += line_gross_destination_revenue
-        net_destination_revenue += line_net_destination_revenue
-        matched_units += available_units
-        remaining_budget_isk = max(0.0, remaining_budget_isk - line_pickup_cost)
-        matches.append(
-            {
-                "units": available_units,
-                "pickup_order": {key: value for key, value in sell_order.items() if key != "_remaining"},
-                "destination_order": {key: value for key, value in buy_order.items() if key != "_remaining"},
-                "pickup_price": sell_price,
-                "destination_price": buy_price,
-                "net_destination_price": net_buy_price,
-                "net_profit": line_net_destination_revenue - line_pickup_cost,
-            }
+    excluded_sell_depth_keys: set[str] = set()
+    excluded_buy_depth_keys: set[str] = set()
+    while True:
+        sell_depth = build_haul_match_depth(
+            sell_orders,
+            depth_prefix="sell",
+            excluded_depth_keys=excluded_sell_depth_keys,
         )
+        buy_depth = build_haul_match_depth(
+            buy_orders,
+            depth_prefix="buy",
+            excluded_depth_keys=excluded_buy_depth_keys,
+        )
+        sell_index = 0
+        buy_index = 0
+        remaining_cargo_units = cargo_units
+        matched_units = 0
+        pickup_cost = 0.0
+        gross_destination_revenue = 0.0
+        net_destination_revenue = 0.0
+        remaining_budget_isk = clean_purchase_budget_isk
+        budget_limited = False
+        matches: list[dict[str, Any]] = []
 
-        sell_order["_remaining"] = int(sell_order["_remaining"]) - available_units
-        buy_order["_remaining"] = int(buy_order["_remaining"]) - available_units
-        if remaining_cargo_units is not None:
-            remaining_cargo_units -= available_units
-            if remaining_cargo_units <= 0:
+        while sell_index < len(sell_depth) and buy_index < len(buy_depth):
+            sell_order = sell_depth[sell_index]
+            buy_order = buy_depth[buy_index]
+            sell_price = float(sell_order["price"])
+            buy_price = float(buy_order["price"])
+            net_buy_price = buy_price * (1.0 - clean_tax_rate)
+            if net_buy_price <= sell_price:
                 break
-        if int(sell_order["_remaining"]) <= 0:
-            sell_index += 1
-        if int(buy_order["_remaining"]) <= 0:
-            buy_index += 1
+
+            available_units = min(int(sell_order["_remaining"]), int(buy_order["_remaining"]))
+            if remaining_cargo_units is not None:
+                available_units = min(available_units, remaining_cargo_units)
+            affordable_units = int((remaining_budget_isk + 1e-9) // sell_price)
+            if affordable_units <= 0:
+                budget_limited = True
+                break
+            if affordable_units < available_units:
+                budget_limited = True
+                available_units = affordable_units
+            if available_units <= 0:
+                break
+
+            line_pickup_cost = sell_price * available_units
+            line_gross_destination_revenue = buy_price * available_units
+            line_net_destination_revenue = net_buy_price * available_units
+            pickup_cost += line_pickup_cost
+            gross_destination_revenue += line_gross_destination_revenue
+            net_destination_revenue += line_net_destination_revenue
+            matched_units += available_units
+            remaining_budget_isk = max(0.0, remaining_budget_isk - line_pickup_cost)
+            matches.append(
+                {
+                    "units": available_units,
+                    "pickup_order": {key: value for key, value in sell_order.items() if key != "_remaining"},
+                    "destination_order": {key: value for key, value in buy_order.items() if key != "_remaining"},
+                    "pickup_price": sell_price,
+                    "destination_price": buy_price,
+                    "net_destination_price": net_buy_price,
+                    "net_profit": line_net_destination_revenue - line_pickup_cost,
+                }
+            )
+
+            sell_order["_remaining"] = int(sell_order["_remaining"]) - available_units
+            buy_order["_remaining"] = int(buy_order["_remaining"]) - available_units
+            if remaining_cargo_units is not None:
+                remaining_cargo_units -= available_units
+                if remaining_cargo_units <= 0:
+                    break
+            if int(sell_order["_remaining"]) <= 0:
+                sell_index += 1
+            if int(buy_order["_remaining"]) <= 0:
+                buy_index += 1
+
+        if matched_units <= 0 or pickup_cost <= 0:
+            return None
+        blocked_sell_keys = haul_min_volume_blocked_depth_keys(matches, order_key="pickup_order")
+        blocked_buy_keys = haul_min_volume_blocked_depth_keys(matches, order_key="destination_order")
+        if not blocked_sell_keys and not blocked_buy_keys:
+            break
+        excluded_sell_depth_keys.update(blocked_sell_keys)
+        excluded_buy_depth_keys.update(blocked_buy_keys)
 
     if matched_units <= 0 or pickup_cost <= 0:
         return None
 
+    public_matches = [public_haul_order_depth_match(match) for match in matches]
     pickup_systems: dict[int, dict[str, Any]] = {}
     pickup_system_order_ids: dict[int, set[int]] = {}
     pickup_order_ids: set[int] = set()
     destination_order_ids: set[int] = set()
-    for match in matches:
+    for match in public_matches:
         pickup_order = match["pickup_order"]
         destination_order = match["destination_order"]
         pickup_order_id = int(pickup_order.get("order_id") or 0)
@@ -9248,8 +9319,8 @@ def match_haul_order_depth(
     net_profit = net_destination_revenue - pickup_cost
     return {
         "units": matched_units,
-        "pickup_order": matches[0]["pickup_order"],
-        "destination_order": matches[0]["destination_order"],
+        "pickup_order": public_matches[0]["pickup_order"],
+        "destination_order": public_matches[0]["destination_order"],
         "average_pickup_price": pickup_cost / matched_units,
         "average_destination_price": gross_destination_revenue / matched_units,
         "average_net_destination_price": net_destination_revenue / matched_units,
@@ -9269,9 +9340,9 @@ def match_haul_order_depth(
             pickup_systems.values(),
             key=lambda item: (-int(item["units"]), str(item["system_name"]), int(item["system_id"])),
         ),
-        "order_depth": matches[:12],
-        "load_plan_depth": matches,
-        "order_depth_truncated": len(matches) > 12,
+        "order_depth": public_matches[:12],
+        "load_plan_depth": public_matches,
+        "order_depth_truncated": len(public_matches) > 12,
         "cargo_limited": cargo_units is not None and matched_units >= cargo_units,
         "budget_limited": budget_limited,
     }

@@ -2213,6 +2213,60 @@ def test_haul_efficiency_sort_and_filter_rules():
     ]
 
 
+def test_haul_order_depth_skips_orders_that_cannot_meet_min_volume():
+    result = corp_market.match_haul_order_depth(
+        sell_orders=[
+            {
+                "order_id": 10,
+                "system_id": 1,
+                "system_name": "Cheap But Blocked",
+                "price": 1.0,
+                "volume_remain": 100,
+                "min_volume": 50,
+            },
+            {
+                "order_id": 11,
+                "system_id": 2,
+                "system_name": "Usable Pickup",
+                "price": 2.0,
+                "volume_remain": 10,
+                "min_volume": 1,
+            },
+        ],
+        buy_orders=[
+            {
+                "order_id": 20,
+                "system_id": 3,
+                "system_name": "Blocked Destination",
+                "price": 100.0,
+                "volume_remain": 100,
+                "min_volume": 50,
+            },
+            {
+                "order_id": 21,
+                "system_id": 3,
+                "system_name": "Usable Destination",
+                "price": 90.0,
+                "volume_remain": 10,
+                "min_volume": 1,
+            },
+        ],
+        cargo_capacity_m3=10,
+        purchase_budget_isk=1_000_000,
+        volume_m3=1,
+        sales_tax_rate=0,
+    )
+
+    assert result is not None
+    assert result["units"] == 10
+    assert result["pickup_order"]["order_id"] == 11
+    assert result["destination_order"]["order_id"] == 21
+    assert result["pickup_cost"] == pytest.approx(20.0)
+    assert result["gross_destination_revenue"] == pytest.approx(900.0)
+    assert "_depth_key" not in result["order_depth"][0]["pickup_order"]
+    assert "_depth_key" not in result["order_depth"][0]["destination_order"]
+
+
 def test_haul_scan_skips_pickup_regions_without_destination_demand(monkeypatch, tmp_path):
     route_cache = RouteGraphCache(
         path=tmp_path / "route.json",
