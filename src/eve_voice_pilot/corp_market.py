@@ -68,6 +68,7 @@ STATIC_ASSET_ROOT = ROOT / "src" / "eve_voice_pilot" / "static"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_MAX_FITTING_TEXT_LENGTH = 12000
+DEFAULT_MAX_BULK_APPRAISAL_TEXT_LENGTH = 200_000
 MAX_JSON_BODY_BYTES = 256 * 1024
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
 MAX_UI_PERFORMANCE_EVENTS = 300
@@ -233,6 +234,13 @@ JITA_SYSTEM_NAME = "Jita"
 JITA_SOLAR_SYSTEM_ID = 30000142
 JITA_REGION_ID = 10000002
 JITA_4_4_STATION_ID = 60003760
+BULK_APPRAISAL_PUBLIC_HUBS = {
+    "jita": {"label": "Jita", "system_id": JITA_SOLAR_SYSTEM_ID, "region_id": JITA_REGION_ID, "security_status": 0.9},
+    "amarr": {"label": "Amarr", "system_id": 30002187, "region_id": 10000043, "security_status": 1.0},
+    "dodixie": {"label": "Dodixie", "system_id": 30002659, "region_id": 10000032, "security_status": 0.9},
+    "hek": {"label": "Hek", "system_id": 30002053, "region_id": 10000042, "security_status": 0.5},
+    "rens": {"label": "Rens", "system_id": 30002510, "region_id": 10000030, "security_status": 0.9},
+}
 FUZZWORK_MARKET_AGGREGATES_URL = "https://market.fuzzwork.co.uk/aggregates/"
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
@@ -341,6 +349,11 @@ FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
         "label": "Investment Portfolio",
         "summary": "Uses live location when no buy-order system is typed, plus skills for tax-aware advisory math. Total investment, portfolio jumps, and broker fee remain manual inputs.",
         "scopes": (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE),
+    },
+    "appraisal": {
+        "label": "Bulk Appraisal",
+        "summary": "No character ESI scope is used by this tab. It resolves pasted item text with local static market data and prices public hub orders only.",
+        "scopes": (),
     },
     "trade-pnl": {
         "label": "Trade P&L",
@@ -616,6 +629,29 @@ DISCORD_WEBHOOK_PATH_RE = re.compile(r"^/api/(?:v\d+/)?webhooks/\d+/[^/]+/?$")
 DISCORD_SNOWFLAKE_RE = re.compile(r"^\d{5,25}$")
 FIT_HEADER_RE = re.compile(r"^\[(?P<hull>[^,\]]+),\s*(?P<name>[^\]]+)\]\s*$")
 FIT_QUANTITY_RE = re.compile(r"\sx[\d,]+\s*$", re.IGNORECASE)
+BULK_APPRAISAL_X_QUANTITY_RE = re.compile(r"^(?P<name>.+?)\s+x(?P<quantity>[\d,]+)\s*$", re.IGNORECASE)
+BULK_APPRAISAL_LEADING_QUANTITY_RE = re.compile(r"^(?P<quantity>[\d,]+)\s*x?\s+(?P<name>.+?)\s*$", re.IGNORECASE)
+BULK_APPRAISAL_TRAILING_QUANTITY_RE = re.compile(r"^(?P<name>.+?)\s+(?P<quantity>[\d,]+)\s*$")
+BULK_APPRAISAL_COPY_MARKER_RE = re.compile(r"\s*\((?P<marker>copy|original)\)\s*$", re.IGNORECASE)
+BULK_APPRAISAL_SECTION_HEADINGS = frozenset(
+    {
+        "cargo",
+        "drone bay",
+        "fighter bay",
+        "fleet hangar",
+        "fuel bay",
+        "high power",
+        "low power",
+        "medium power",
+        "mid power",
+        "module",
+        "modules",
+        "rig slots",
+        "rigs",
+        "ship hangar",
+        "subsystems",
+    }
+)
 MARKET_ORDER_CACHE_LOCK = threading.Lock()
 MARKET_ORDER_CACHE: dict[tuple[str, int, int, str], tuple[float, list[dict[str, Any]]]] = {}
 MARKET_PRICE_CACHE_LOCK = threading.Lock()
@@ -5611,6 +5647,443 @@ def build_market_type_targets(config: EveSsoConfig, type_ids: Iterable[int]) -> 
     if static_result is not None:
         return static_result
     return build_market_type_targets_from_esi(config, type_ids, detail_limit=MAX_HAUL_MARKET_TYPE_IDS)
+
+
+def clean_bulk_appraisal_quantity(value: Any) -> int | None:
+    text = str(value or "").strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        quantity = int(text)
+    except ValueError:
+        return None
+    return quantity if quantity > 0 else None
+
+
+def clean_bulk_appraisal_item_name(value: Any) -> tuple[str, bool]:
+    text = " ".join(str(value or "").replace("\u00a0", " ").split())
+    blueprint_copy = False
+    copy_match = BULK_APPRAISAL_COPY_MARKER_RE.search(text)
+    if copy_match:
+        blueprint_copy = copy_match.group("marker").casefold() == "copy"
+        text = BULK_APPRAISAL_COPY_MARKER_RE.sub("", text).strip()
+    if re.search(r"\bbpc\b", text, flags=re.IGNORECASE):
+        blueprint_copy = True
+        text = re.sub(r"\bbpc\b", "", text, flags=re.IGNORECASE)
+    if re.search(r"\bblueprint\s+copy\b", text, flags=re.IGNORECASE):
+        blueprint_copy = True
+        text = re.sub(r"\bblueprint\s+copy\b", "Blueprint", text, flags=re.IGNORECASE)
+    return " ".join(text.strip(" -:\t").split()), blueprint_copy
+
+
+def bulk_appraisal_is_header_or_section(line: str) -> bool:
+    clean_line = " ".join(str(line or "").strip().strip(":").split())
+    if not clean_line:
+        return True
+    folded = clean_line.casefold()
+    if folded in BULK_APPRAISAL_SECTION_HEADINGS:
+        return True
+    if folded.startswith("[empty ") and folded.endswith(" slot]"):
+        return True
+    if folded in {"item", "items", "name", "type", "quantity", "qty", "item quantity", "item qty", "name quantity", "name qty"}:
+        return True
+    if "\t" in line:
+        cells = [cell.strip().casefold() for cell in line.split("\t") if cell.strip()]
+        if cells and cells[0] in {"item", "name", "type"} and any(cell in {"quantity", "qty"} for cell in cells[1:3]):
+            return True
+    return False
+
+
+def parse_bulk_appraisal_tabbed_line(line: str) -> tuple[str, int, str] | None:
+    cells = [cell.strip() for cell in line.split("\t") if cell.strip()]
+    if len(cells) < 2 or cells[0].casefold() in {"item", "name", "type"}:
+        return None
+    quantity = clean_bulk_appraisal_quantity(cells[1])
+    if quantity is not None:
+        return cells[0], quantity, "inventory"
+    quantity = clean_bulk_appraisal_quantity(cells[0])
+    if quantity is not None:
+        return cells[1], quantity, "inventory"
+    return None
+
+
+def parse_bulk_appraisal_plain_line(line: str) -> tuple[str, int, str] | None:
+    header = FIT_HEADER_RE.match(line)
+    if header:
+        return header.group("hull"), 1, "eft"
+    for pattern, source in (
+        (BULK_APPRAISAL_X_QUANTITY_RE, "quantity_suffix"),
+        (BULK_APPRAISAL_LEADING_QUANTITY_RE, "quantity_prefix"),
+        (BULK_APPRAISAL_TRAILING_QUANTITY_RE, "quantity_suffix"),
+    ):
+        match = pattern.match(line)
+        if not match:
+            continue
+        quantity = clean_bulk_appraisal_quantity(match.group("quantity"))
+        name = match.group("name").strip()
+        if quantity is not None and name:
+            return name, quantity, source
+    return line, 1, "single_line"
+
+
+def merge_bulk_appraisal_parse_row(rows: dict[tuple[str, bool], dict[str, Any]], row: dict[str, Any]) -> None:
+    key = (normalize_market_type_name_key(row.get("name")), bool(row.get("blueprint_copy")))
+    if not key[0]:
+        return
+    existing = rows.get(key)
+    if existing is None:
+        rows[key] = row
+        return
+    existing["quantity"] = int(existing.get("quantity") or 0) + int(row.get("quantity") or 0)
+    existing.setdefault("line_numbers", []).extend(row.get("line_numbers") or [])
+    source_formats = set(existing.get("source_formats") or [])
+    source_formats.update(row.get("source_formats") or [])
+    existing["source_formats"] = sorted(source_formats)
+
+
+def parse_bulk_appraisal_text(raw_text: Any) -> dict[str, Any]:
+    text = clean_multiline(raw_text, "appraisal_text", max_length=DEFAULT_MAX_BULK_APPRAISAL_TEXT_LENGTH)
+    rows_by_name: dict[tuple[str, bool], dict[str, Any]] = {}
+    unresolved_lines: list[dict[str, Any]] = []
+    ignored_line_count = 0
+    for index, line in enumerate(text.split("\n"), start=1):
+        raw_line = line.strip()
+        if not raw_line or bulk_appraisal_is_header_or_section(raw_line):
+            ignored_line_count += 1
+            continue
+        parsed = parse_bulk_appraisal_tabbed_line(raw_line) if "\t" in raw_line else None
+        if parsed is None:
+            parsed = parse_bulk_appraisal_plain_line(raw_line)
+        if parsed is None:
+            unresolved_lines.append({"line_number": index, "raw": raw_line, "reason": "Could not parse an item and quantity."})
+            continue
+        raw_name, quantity, source_format = parsed
+        name, blueprint_copy = clean_bulk_appraisal_item_name(raw_name)
+        if not name:
+            unresolved_lines.append({"line_number": index, "raw": raw_line, "reason": "Item name was empty after cleanup."})
+            continue
+        merge_bulk_appraisal_parse_row(
+            rows_by_name,
+            {
+                "input_name": raw_name.strip(),
+                "name": name,
+                "quantity": quantity,
+                "line_numbers": [index],
+                "source_formats": [source_format],
+                "blueprint_copy": blueprint_copy,
+                "warnings": ["Blueprint copy detected; BPCs are marked unpriceable."] if blueprint_copy else [],
+            },
+        )
+    return {
+        "ok": True,
+        "raw_line_count": len(text.split("\n")) if text else 0,
+        "ignored_line_count": ignored_line_count,
+        "items": sorted(rows_by_name.values(), key=lambda item: (str(item["name"]).casefold(), bool(item["blueprint_copy"]))),
+        "unresolved_lines": unresolved_lines,
+    }
+
+
+def resolve_bulk_appraisal_items(
+    parsed_items: Iterable[dict[str, Any]],
+    *,
+    static_data: StaticMarketData | None = None,
+    limit: int = MAX_FLIGHT_TRADE_PNL_MARKET_TYPES,
+) -> dict[str, Any]:
+    all_items = list(parsed_items)
+    scoped_items = all_items[: max(0, int(limit))]
+    if static_data is None:
+        static_data = load_static_market_data()
+    if static_data is None:
+        return {
+            "items": [],
+            "unresolved_lines": [
+                {
+                    "line_number": min(item.get("line_numbers") or [0]),
+                    "raw": item.get("input_name") or item.get("name") or "",
+                    "reason": "Static market data cache is missing; item type could not be resolved.",
+                }
+                for item in scoped_items
+            ],
+            "truncated_item_count": max(0, len(all_items) - len(scoped_items)),
+            "static_data_available": False,
+        }
+    type_infos_by_name = static_market_type_infos_by_name(static_data)
+    resolved_items: list[dict[str, Any]] = []
+    unresolved_lines: list[dict[str, Any]] = []
+    for item in scoped_items:
+        matches = type_infos_by_name.get(normalize_market_type_name_key(item.get("name")), [])
+        if len(matches) != 1:
+            unresolved_lines.append(
+                {
+                    "line_number": min(item.get("line_numbers") or [0]),
+                    "raw": item.get("input_name") or item.get("name") or "",
+                    "name": item.get("name") or "",
+                    "quantity": item.get("quantity") or 0,
+                    "reason": "Item name is ambiguous in static market data." if matches else "Item name was not found in static market data.",
+                    "match_count": len(matches),
+                }
+            )
+            continue
+        match = matches[0]
+        quantity = int(item.get("quantity") or 0)
+        volume_m3 = clean_optional_float(match.get("volume_m3"))
+        resolved_items.append(
+            {
+                **item,
+                "type_id": int(match["type_id"]),
+                "name": str(match.get("name") or item.get("name") or ""),
+                "quantity": quantity,
+                "volume_m3": volume_m3,
+                "total_volume_m3": round((volume_m3 or 0.0) * quantity, 6),
+                "market_group_id": match.get("market_group_id"),
+                "market_group_name": match.get("market_group_name") or "",
+            }
+        )
+    return {
+        "items": resolved_items,
+        "unresolved_lines": unresolved_lines,
+        "truncated_item_count": max(0, len(all_items) - len(scoped_items)),
+        "static_data_available": True,
+    }
+
+
+def normalize_bulk_appraisal_hub(hub_name: Any) -> str:
+    key = normalize_market_type_name_key(hub_name)
+    if key in BULK_APPRAISAL_PUBLIC_HUBS:
+        return key
+    for candidate_key, hub in BULK_APPRAISAL_PUBLIC_HUBS.items():
+        if normalize_market_type_name_key(hub["label"]) == key:
+            return candidate_key
+    return "jita"
+
+
+def bulk_appraisal_hub_options() -> list[dict[str, Any]]:
+    return [
+        {"key": key, "label": str(value["label"]), "system_id": int(value["system_id"]), "region_id": int(value["region_id"])}
+        for key, value in BULK_APPRAISAL_PUBLIC_HUBS.items()
+    ]
+
+
+def bulk_appraisal_hub_system(hub_key: str) -> RouteSystem:
+    hub = BULK_APPRAISAL_PUBLIC_HUBS[normalize_bulk_appraisal_hub(hub_key)]
+    return RouteSystem(
+        solar_system_id=int(hub["system_id"]),
+        name=str(hub["label"]),
+        region_id=int(hub["region_id"]),
+        security_status=clean_optional_float(hub.get("security_status")),
+    )
+
+
+def price_bulk_appraisal_items(
+    *,
+    config: EveSsoConfig,
+    resolved_items: Iterable[dict[str, Any]],
+    hub_key: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    items = list(resolved_items)
+    system = bulk_appraisal_hub_system(hub_key)
+    type_ids = [int(item["type_id"]) for item in items if not item.get("blueprint_copy")]
+    buy_orders_by_type, buy_order_count, buy_errors = scan_system_market_orders(
+        config=config,
+        type_ids=type_ids,
+        system=system,
+        order_type="buy",
+    )
+    sell_orders_by_type, sell_order_count, sell_errors = scan_system_market_orders(
+        config=config,
+        type_ids=type_ids,
+        system=system,
+        order_type="sell",
+    )
+    priced_items: list[dict[str, Any]] = []
+    for item in items:
+        quantity = int(item.get("quantity") or 0)
+        warnings = list(item.get("warnings") or [])
+        if item.get("blueprint_copy"):
+            warnings.append("Blueprint copies do not have a reliable public market price; verify manually.")
+            priced_items.append(
+                {
+                    **item,
+                    "quick_sell_value_isk": None,
+                    "quick_sell_unit_isk": None,
+                    "replace_buy_value_isk": None,
+                    "replace_buy_unit_isk": None,
+                    "spread_isk": None,
+                    "spread_percent": None,
+                    "quick_sell_complete": False,
+                    "replace_buy_complete": False,
+                    "buy_order_count": 0,
+                    "sell_order_count": 0,
+                    "low_confidence": True,
+                    "unpriceable": True,
+                    "confidence_notes": ["BPC/unpriceable"],
+                    "warnings": sorted(set(warnings)),
+                }
+            )
+            continue
+        type_id = int(item["type_id"])
+        buy_orders = buy_orders_by_type.get(type_id, [])
+        sell_orders = sell_orders_by_type.get(type_id, [])
+        quick_sell = liquidation_value_from_orders(buy_orders, quantity=quantity)
+        replace_buy = liquidation_value_from_orders(sell_orders, quantity=quantity)
+        quick_sell_value = clean_optional_float(quick_sell.get("value"))
+        replace_buy_value = clean_optional_float(replace_buy.get("value"))
+        quick_sell_unit = quick_sell_value / quantity if quick_sell_value is not None and quantity > 0 else None
+        replace_buy_unit = replace_buy_value / quantity if replace_buy_value is not None and quantity > 0 else None
+        spread = replace_buy_value - quick_sell_value if replace_buy_value is not None and quick_sell_value is not None else None
+        spread_percent = spread / replace_buy_value * 100.0 if spread is not None and replace_buy_value else None
+        confidence_notes: list[str] = []
+        if not quick_sell.get("complete"):
+            confidence_notes.append("not enough public buy depth")
+        if not replace_buy.get("complete"):
+            confidence_notes.append("not enough public sell depth")
+        if len(buy_orders) < 2:
+            confidence_notes.append("thin buy orders")
+        if len(sell_orders) < 2:
+            confidence_notes.append("thin sell orders")
+        priced_items.append(
+            {
+                **item,
+                "quick_sell_value_isk": quick_sell_value if quick_sell.get("priced_quantity") else None,
+                "quick_sell_unit_isk": quick_sell_unit if quick_sell.get("priced_quantity") else None,
+                "replace_buy_value_isk": replace_buy_value if replace_buy.get("priced_quantity") else None,
+                "replace_buy_unit_isk": replace_buy_unit if replace_buy.get("priced_quantity") else None,
+                "spread_isk": spread,
+                "spread_percent": spread_percent,
+                "quick_sell_complete": bool(quick_sell.get("complete")),
+                "replace_buy_complete": bool(replace_buy.get("complete")),
+                "quick_sell_priced_quantity": int(quick_sell.get("priced_quantity") or 0),
+                "replace_buy_priced_quantity": int(replace_buy.get("priced_quantity") or 0),
+                "buy_order_count": len(buy_orders),
+                "sell_order_count": len(sell_orders),
+                "buy_orders_used": int(quick_sell.get("order_count") or 0),
+                "sell_orders_used": int(replace_buy.get("order_count") or 0),
+                "low_confidence": bool(confidence_notes),
+                "unpriceable": False,
+                "confidence_notes": confidence_notes,
+                "warnings": sorted(set(warnings)),
+            }
+        )
+    errors = [{"side": "quick_sell", **error} for error in buy_errors] + [
+        {"side": "replace_buy", **error} for error in sell_errors
+    ]
+    if buy_order_count == 0 and sell_order_count == 0 and type_ids:
+        errors.append({"error": f"No public market orders were found in {system.name} for the resolved item set."})
+    return priced_items, errors
+
+
+def bulk_appraisal_totals(items: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    rows = list(items)
+    quick_sell_total = sum(float(item.get("quick_sell_value_isk") or 0.0) for item in rows)
+    replace_buy_total = sum(float(item.get("replace_buy_value_isk") or 0.0) for item in rows)
+    spread = replace_buy_total - quick_sell_total
+    return {
+        "item_count": len(rows),
+        "resolved_row_count": len(rows),
+        "total_quantity": sum(int(item.get("quantity") or 0) for item in rows),
+        "total_volume_m3": round(sum(float(item.get("total_volume_m3") or 0.0) for item in rows), 6),
+        "quick_sell_value_isk": round(quick_sell_total, 4),
+        "replace_buy_value_isk": round(replace_buy_total, 4),
+        "spread_isk": round(spread, 4),
+        "spread_percent": round(spread / replace_buy_total * 100.0, 4) if replace_buy_total > 0 else None,
+        "low_confidence_count": sum(1 for item in rows if item.get("low_confidence")),
+        "unpriceable_count": sum(1 for item in rows if item.get("unpriceable")),
+    }
+
+
+def build_bulk_appraisal_export_text(payload: dict[str, Any]) -> str:
+    totals = payload.get("totals") or {}
+    hub = payload.get("hub") or {}
+    lines = [
+        f"Bulk Appraisal - {hub.get('label') or 'Jita'} public orders",
+        f"Quick-sell: {format_isk(totals.get('quick_sell_value_isk'))}",
+        f"Replace/buy: {format_isk(totals.get('replace_buy_value_isk'))}",
+        f"Spread: {format_isk(totals.get('spread_isk'))}",
+        f"Total m3: {totals.get('total_volume_m3') or 0}",
+        "",
+        "Rows:",
+    ]
+    for item in payload.get("items") or []:
+        flags = []
+        if item.get("low_confidence"):
+            flags.append("low confidence")
+        if item.get("unpriceable"):
+            flags.append("unpriceable")
+        flag_text = f" ({', '.join(flags)})" if flags else ""
+        lines.append(
+            f"- {item.get('quantity')}x {item.get('name')}: "
+            f"quick-sell {format_isk(item.get('quick_sell_value_isk'))}, "
+            f"replace {format_isk(item.get('replace_buy_value_isk'))}{flag_text}"
+        )
+    unresolved = payload.get("unresolved_lines") or []
+    if unresolved:
+        lines.append("")
+        lines.append("Unresolved:")
+        for item in unresolved[:12]:
+            line_number = item.get("line_number")
+            prefix = f"line {line_number}: " if line_number else ""
+            lines.append(f"- {prefix}{item.get('raw') or item.get('name') or 'unknown'} - {item.get('reason') or 'unresolved'}")
+        if len(unresolved) > 12:
+            lines.append(f"- +{len(unresolved) - 12} more unresolved lines")
+    lines.append("")
+    lines.append("Advisory only. Verify low-confidence rows, BPCs, and public-order depth in EVE before acting.")
+    return "\n".join(lines)
+
+
+def build_bulk_appraisal_payload(
+    *,
+    config: EveSsoConfig,
+    raw_text: Any,
+    hub_name: Any = "jita",
+    static_data: StaticMarketData | None = None,
+) -> dict[str, Any]:
+    parsed = parse_bulk_appraisal_text(raw_text)
+    if not parsed["items"] and not parsed["unresolved_lines"]:
+        raise CorpMarketError("Paste at least one item line or EVE fitting block.")
+    resolved = resolve_bulk_appraisal_items(parsed["items"], static_data=static_data)
+    hub_key = normalize_bulk_appraisal_hub(hub_name)
+    priced_items, price_errors = price_bulk_appraisal_items(config=config, resolved_items=resolved["items"], hub_key=hub_key)
+    unresolved_lines = list(parsed["unresolved_lines"]) + list(resolved["unresolved_lines"])
+    totals = bulk_appraisal_totals(priced_items)
+    hub = BULK_APPRAISAL_PUBLIC_HUBS[hub_key]
+    warnings: list[dict[str, Any]] = []
+    if resolved["truncated_item_count"]:
+        warnings.append(
+            {
+                "level": "warning",
+                "message": f"{resolved['truncated_item_count']} parsed item rows were skipped because the local appraisal limit was reached.",
+            }
+        )
+    if not resolved["static_data_available"]:
+        warnings.append({"level": "error", "message": "Static market data cache is missing; refresh the local cache before appraising."})
+    if price_errors:
+        warnings.extend({"level": "warning", "message": str(error.get("error") or error)} for error in price_errors[:8])
+    if totals["unpriceable_count"]:
+        warnings.append({"level": "warning", "message": "Blueprint copies or unpriceable rows were left out of ISK totals."})
+    if totals["low_confidence_count"]:
+        warnings.append({"level": "warning", "message": "Low-confidence rows need manual review for thin order depth or missing side prices."})
+    payload: dict[str, Any] = {
+        "ok": True,
+        "generated_at": now_iso(),
+        "source": "local-bulk-appraisal",
+        "persistence": "none",
+        "hub": {"key": hub_key, "label": str(hub["label"]), "system_id": int(hub["system_id"]), "region_id": int(hub["region_id"])},
+        "hub_options": bulk_appraisal_hub_options(),
+        "items": priced_items,
+        "unresolved_lines": unresolved_lines,
+        "ignored_line_count": parsed["ignored_line_count"],
+        "raw_line_count": parsed["raw_line_count"],
+        "totals": totals,
+        "warnings": warnings,
+        "market_cache": market_order_cache_status(),
+        "notes": [
+            "Uses local static market data and public ESI market orders only.",
+            "No EVE SSO scope or token is required for this appraisal tab.",
+            "Appraisals are not stored by the server.",
+        ],
+    }
+    payload["export_text"] = build_bulk_appraisal_export_text(payload)
+    return payload
 
 
 def fetch_market_orders(
@@ -13924,6 +14397,11 @@ def build_http_server(
                     return
                 self._handle_direct_discord_post()
                 return
+            if path == "/api/flight/appraisal":
+                if not self._require_public_read_access():
+                    return
+                self._handle_flight_appraisal()
+                return
             if path.startswith("/api/offers/") and path.endswith("/reserve"):
                 if not self._require_write_access():
                     return
@@ -14511,6 +14989,29 @@ def build_http_server(
                 emit("done", {"ok": True, "generated_at": now_iso()})
             except (BrokenPipeError, ConnectionResetError):
                 return
+
+        def _handle_flight_appraisal(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, dict):
+                self._send_json({"ok": False, "error": "Appraisal payload must be a JSON object."}, status=400)
+                return
+            raw_text = payload.get("text")
+            if raw_text is None:
+                raw_text = payload.get("raw_text")
+            try:
+                appraisal = build_bulk_appraisal_payload(
+                    config=sso_config,
+                    raw_text=raw_text,
+                    hub_name=payload.get("hub") or payload.get("hub_name") or "jita",
+                )
+            except (ValueError, CorpMarketError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(appraisal)
 
         def _handle_flight_trade_pnl(self) -> None:
             session = self._require_flight_session("analyzing trade profit and loss")
@@ -16036,6 +16537,7 @@ def _render_flight_attendant_dashboard() -> str:
     .fitting-share-panel { grid-area: fitting-share; }
     .fitting-list-panel { grid-area: fitting-list; }
     .flight-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; min-width: 0; }
+    .full-span { grid-column: 1 / -1; }
     .reprocess-page {
       display: grid;
       grid-template-columns: minmax(360px, .92fr) minmax(300px, .58fr);
@@ -16076,6 +16578,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
     body[data-active-tab="hauling"] #tab-hauling .panel,
     body[data-active-tab="acquisition"] #tab-acquisition .panel,
+    body[data-active-tab="appraisal"] #tab-appraisal .panel,
     body[data-active-tab="reprocessing"] #tab-reprocessing .panel {
       background: linear-gradient(180deg, rgba(11, 18, 20, .8), rgba(7, 11, 13, .72));
       border-color: rgba(97, 199, 217, .34);
@@ -16084,6 +16587,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
     body[data-active-tab="hauling"] #tab-hauling .panel:first-child,
     body[data-active-tab="acquisition"] #tab-acquisition .panel:first-child,
+    body[data-active-tab="appraisal"] #tab-appraisal .panel:first-child,
     body[data-active-tab="reprocessing"] #tab-reprocessing .panel:first-child {
       background: linear-gradient(180deg, rgba(11, 18, 20, .84), rgba(7, 11, 13, .78));
     }
@@ -16093,6 +16597,9 @@ def _render_flight_attendant_dashboard() -> str:
     body[data-active-tab="acquisition"] #tab-acquisition input,
     body[data-active-tab="acquisition"] #tab-acquisition select,
     body[data-active-tab="acquisition"] #tab-acquisition textarea,
+    body[data-active-tab="appraisal"] #tab-appraisal input,
+    body[data-active-tab="appraisal"] #tab-appraisal select,
+    body[data-active-tab="appraisal"] #tab-appraisal textarea,
     body[data-active-tab="reprocessing"] #tab-reprocessing input,
     body[data-active-tab="reprocessing"] #tab-reprocessing select,
     body[data-active-tab="reprocessing"] #tab-reprocessing textarea {
@@ -18772,6 +19279,89 @@ def _render_flight_attendant_dashboard() -> str:
     .acquisition-strategy-card strong,
     .planetary-strategy-card strong,
     .planetary-plan-box strong { display: block; color: var(--text); overflow-wrap: anywhere; }
+    .bulk-appraisal-input-panel textarea {
+      min-height: 270px;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      line-height: 1.36;
+    }
+    .bulk-appraisal-actions { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
+    .bulk-appraisal-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .bulk-appraisal-summary-card {
+      border: 1px solid rgba(63, 85, 80, .58);
+      border-radius: 7px;
+      background: rgba(8, 13, 15, .4);
+      padding: 9px;
+      min-width: 0;
+    }
+    .bulk-appraisal-summary-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .bulk-appraisal-summary-card strong {
+      display: block;
+      color: var(--text);
+      font-size: 15px;
+      overflow-wrap: anywhere;
+    }
+    .bulk-appraisal-warning-list { display: grid; gap: 7px; margin: 10px 0; }
+    .bulk-appraisal-warning-row {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr);
+      gap: 8px;
+      border: 1px solid rgba(224, 168, 74, .34);
+      border-radius: 7px;
+      padding: 8px;
+      background: rgba(69, 52, 21, .24);
+      color: var(--text);
+    }
+    .bulk-appraisal-warning-row b {
+      color: var(--amber);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    .bulk-appraisal-table-wrap { width: 100%; overflow-x: auto; margin-top: 10px; }
+    .bulk-appraisal-table {
+      width: 100%;
+      min-width: 980px;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .bulk-appraisal-table th,
+    .bulk-appraisal-table td {
+      border-bottom: 1px solid rgba(63, 85, 80, .5);
+      padding: 8px 7px;
+      text-align: right;
+      vertical-align: top;
+    }
+    .bulk-appraisal-table th:first-child,
+    .bulk-appraisal-table td:first-child,
+    .bulk-appraisal-table th:nth-child(2),
+    .bulk-appraisal-table td:nth-child(2),
+    .bulk-appraisal-table th:last-child,
+    .bulk-appraisal-table td:last-child {
+      text-align: left;
+    }
+    .bulk-appraisal-table th {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0;
+      background: rgba(5, 9, 11, .52);
+    }
+    .bulk-appraisal-name strong { display: block; color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+    .bulk-appraisal-name span { display: block; color: var(--muted); margin-top: 2px; }
+    .bulk-appraisal-row-low td { background: rgba(224, 168, 74, .055); }
+    .bulk-appraisal-row-unpriceable td { background: rgba(227, 111, 111, .055); }
+    .bulk-appraisal-flags { display: flex; flex-wrap: wrap; gap: 5px; min-width: 160px; }
+    .bulk-appraisal-flags .pill { border-radius: 999px; padding: 2px 7px; font-size: 11px; line-height: 1.4; }
     .planetary-plan-list { display: grid; gap: 7px; margin-top: 8px; }
     .planetary-plan-row {
       display: grid;
@@ -19730,7 +20320,7 @@ def _render_flight_attendant_dashboard() -> str:
       h1 { font-size: 24px; }
       .scope-panel { grid-template-columns: 1fr; }
       .scope-chip-row { justify-content: flex-start; }
-      .row, .discord-alert-section .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
+      .row, .discord-alert-section .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .bulk-appraisal-summary-grid, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
       #tab-market .discord-page-status,
       .workflow-discord-destination,
       .discord-post-settings-grid,
@@ -19740,6 +20330,7 @@ def _render_flight_attendant_dashboard() -> str:
       .discord-direct-fields .span-3 { grid-column: 1; }
       .discord-advanced-teaser { grid-template-columns: 1fr; }
       .haul-checklist { grid-template-columns: 1fr; }
+      .bulk-appraisal-warning-row { grid-template-columns: 1fr; }
       .haul-route-cost-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .haul-hub-comparison-summary,
       .haul-hub-route,
@@ -19883,6 +20474,7 @@ def _render_flight_attendant_dashboard() -> str:
       <button type="button" data-tab-target="industry" aria-selected="false">Industry Library</button>
       <button type="button" data-tab-target="hauling" aria-selected="false">Hauler Routes</button>
       <button type="button" data-tab-target="acquisition" aria-selected="false">Investment Portfolio</button>
+      <button type="button" data-tab-target="appraisal" aria-selected="false">Bulk Appraisal</button>
       <button type="button" data-tab-target="trade-pnl" aria-selected="false">Trade P&amp;L</button>
       <button type="button" data-tab-target="planetary" aria-selected="false">Planetary Industry</button>
       <button type="button" data-tab-target="reprocessing" aria-selected="false">Reprocessing</button>
@@ -20996,6 +21588,97 @@ help</textarea>
         </div>
       </section>
 
+      <section id="tab-appraisal" class="tab-panel" data-tab-panel="appraisal" hidden>
+        <div class="flight-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Bulk Appraisal</h2>
+                <div class="meta">Paste fits, inventory lists, view-contents text, or freight contents. Prices use public hub orders only.</div>
+              </div>
+              <span class="pill reserved">Local Only</span>
+            </div>
+@@TAB_SCOPE_APPRAISAL@@
+            <form id="bulk-appraisal-form" class="note-form bulk-appraisal-input-panel">
+              <div class="row">
+                <label>Market hub
+                  <select id="bulk-appraisal-hub" name="hub">
+                    <option value="jita" selected>Jita</option>
+                    <option value="amarr">Amarr</option>
+                    <option value="dodixie">Dodixie</option>
+                    <option value="hek">Hek</option>
+                    <option value="rens">Rens</option>
+                  </select>
+                  <small class="input-note">Quick-sell uses public buy orders. Replace/buy uses public sell orders.</small>
+                </label>
+                <label>Input mode
+                  <select id="bulk-appraisal-mode" name="mode">
+                    <option value="auto" selected>Auto detect</option>
+                    <option value="fit">EFT fit</option>
+                    <option value="inventory">Inventory / contents</option>
+                    <option value="manual">Manual list</option>
+                  </select>
+                  <small class="input-note">Mode is a local hint today; the parser still accepts mixed pasted text.</small>
+                </label>
+              </div>
+              <label>Paste items
+                <textarea id="bulk-appraisal-text" name="text" rows="12" spellcheck="false" placeholder="[Hawk, Example fit]&#10;Ballistic Control System II&#10;Scourge Rage Rocket x4772&#10;&#10;Tritanium&#9;100000&#10;Merlin Blueprint (Copy)&#9;1"></textarea>
+                <small class="input-note">Raw paste text is sent only to this local server request and is not stored by the app.</small>
+              </label>
+              <div class="bulk-appraisal-actions">
+                <button id="bulk-appraisal-run" class="ghost" type="submit" data-no-plex>Appraise</button>
+                <button id="bulk-appraisal-clear" class="secondary" type="button" data-no-plex>Clear</button>
+                <span id="bulk-appraisal-status" class="meta quickbar-copy-status" aria-live="polite">No appraisal has run yet.</span>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Appraisal Rules</h2>
+                <div class="meta">Use this like a fast estimate, not as a contract or buyback authority.</div>
+              </div>
+            </div>
+            <ul class="charter-list">
+              <li><strong>Public hubs:</strong> the tab checks public orders in the selected hub system, starting with Jita.</li>
+              <li><strong>Quick-sell:</strong> what visible buy orders can currently absorb.</li>
+              <li><strong>Replace/buy:</strong> what visible sell orders currently cost to buy through.</li>
+              <li><strong>Low confidence:</strong> thin depth, missing buy/sell side, or incomplete quantity coverage.</li>
+              <li><strong>BPCs:</strong> blueprint copies are flagged unpriceable instead of guessed.</li>
+            </ul>
+          </section>
+
+          <section class="panel profit-panel full-span" aria-labelledby="bulk-appraisal-results-title">
+            <div class="panel-header">
+              <div>
+                <div class="profit-title">
+                  <h2 id="bulk-appraisal-results-title">Appraisal Results</h2>
+                  <span class="pill reserved">Manual Review</span>
+                </div>
+                <div class="meta">Totals, row confidence, unresolved lines, and copyable Discord text.</div>
+              </div>
+            </div>
+            <details class="output-details" open>
+              <summary>Bulk Appraisal Output</summary>
+              <div class="output-details-body">
+                <div id="bulk-appraisal-summary" class="profit-summary">Paste items and run an appraisal.</div>
+                <div id="bulk-appraisal-warning-list" class="bulk-appraisal-warning-list"></div>
+                <div id="bulk-appraisal-export-panel" class="quickbar-copy-panel" hidden>
+                  <div>
+                    <strong>Share Text</strong>
+                    <div class="meta">Copies the appraisal summary and row values for Discord. Raw pasted contents are not included.</div>
+                    <div id="bulk-appraisal-copy-status" class="meta quickbar-copy-status" aria-live="polite"></div>
+                  </div>
+                  <button id="bulk-appraisal-copy-export" class="secondary" type="button" data-no-plex>Copy Share Text</button>
+                </div>
+                <div id="bulk-appraisal-results" class="decision-output"></div>
+              </div>
+            </details>
+          </section>
+        </div>
+      </section>
+
       <section id="tab-trade-pnl" class="tab-panel" data-tab-panel="trade-pnl" hidden>
         <div class="flight-grid">
           <section class="panel">
@@ -21765,6 +22448,19 @@ help</textarea>
     const acqPostTestStatus = document.querySelector("#acq-post-test-status");
     const acqPostTestResults = document.querySelector("#acq-post-test-results");
     const acqResults = document.querySelector("#acq-results");
+    const bulkAppraisalForm = document.querySelector("#bulk-appraisal-form");
+    const bulkAppraisalHub = document.querySelector("#bulk-appraisal-hub");
+    const bulkAppraisalMode = document.querySelector("#bulk-appraisal-mode");
+    const bulkAppraisalText = document.querySelector("#bulk-appraisal-text");
+    const bulkAppraisalRun = document.querySelector("#bulk-appraisal-run");
+    const bulkAppraisalClear = document.querySelector("#bulk-appraisal-clear");
+    const bulkAppraisalStatus = document.querySelector("#bulk-appraisal-status");
+    const bulkAppraisalSummary = document.querySelector("#bulk-appraisal-summary");
+    const bulkAppraisalWarnings = document.querySelector("#bulk-appraisal-warning-list");
+    const bulkAppraisalExportPanel = document.querySelector("#bulk-appraisal-export-panel");
+    const bulkAppraisalCopyExport = document.querySelector("#bulk-appraisal-copy-export");
+    const bulkAppraisalCopyStatus = document.querySelector("#bulk-appraisal-copy-status");
+    const bulkAppraisalResults = document.querySelector("#bulk-appraisal-results");
     const tradePnlForm = document.querySelector("#trade-pnl-form");
     const tradePnlWindowHours = document.querySelector("#trade-pnl-window-hours");
     const tradePnlLens = document.querySelector("#trade-pnl-lens");
@@ -21867,6 +22563,9 @@ help</textarea>
     const acqMarketTypeIdsKey = "eve-flight-acq-market-type-ids-v1";
     const acqPastedItemsKey = "eve-flight-acq-pasted-items-v1";
     const acqPastedItemsOnlyKey = "eve-flight-acq-pasted-items-only-v1";
+    const bulkAppraisalHubKey = "eve-flight-bulk-appraisal-hub-v1";
+    const bulkAppraisalTextKey = "eve-flight-bulk-appraisal-text-v1";
+    const bulkAppraisalModeKey = "eve-flight-bulk-appraisal-mode-v1";
     const tradePnlWindowHoursKey = "eve-flight-trade-pnl-window-hours-v1";
     const tradePnlLensKey = "eve-flight-trade-pnl-lens-v1";
     const tradePnlConsiderationRuleKey = "eve-flight-trade-pnl-consideration-rule-v1";
@@ -21901,7 +22600,7 @@ help</textarea>
     const optionalReprocessingScopeNames = new Set(Object.values(flightScopeMetadata)
       .filter((entry) => entry && entry.optional_reprocessing && entry.scope)
       .map((entry) => entry.scope));
-    const validTabs = new Set(["market", "fittings", "flight", "industry", "hauling", "acquisition", "trade-pnl", "planetary", "reprocessing"]);
+    const validTabs = new Set(["market", "fittings", "flight", "industry", "hauling", "acquisition", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
     const tabAliases = new Map([
       ["discord-alerts", "market"],
       ["discord", "market"],
@@ -21940,6 +22639,7 @@ help</textarea>
     let acquisitionProgressSettings = null;
     let acquisitionQuickbarItems = [];
     let acquisitionReportRows = [];
+    let bulkAppraisalLastExportText = "";
     let planetaryShoppingQuickbarItems = [];
     let planetarySellQuickbarItems = [];
     let planetaryExtractedQuickbarItems = [];
@@ -23950,6 +24650,213 @@ help</textarea>
       const value = Math.max(0, Number(seconds || 0));
       if (value >= 10) return `${value.toFixed(1)}s`;
       return `${value.toFixed(2)}s`;
+    }
+
+    function formatAppraisalIsk(value) {
+      return value == null ? "unpriced" : formatIsk(value);
+    }
+
+    function formatAppraisalSpread(value, percent) {
+      if (value == null) return "unknown";
+      const percentText = percent == null ? "" : ` (${Number(percent || 0).toFixed(1)}%)`;
+      return `${formatSignedIsk(value)}${percentText}`;
+    }
+
+    function setBulkAppraisalStatus(message, isError = false) {
+      if (!bulkAppraisalStatus) return;
+      bulkAppraisalStatus.textContent = message || "";
+      bulkAppraisalStatus.classList.toggle("error", Boolean(isError));
+    }
+
+    function resetBulkAppraisal(clearText = false) {
+      bulkAppraisalLastExportText = "";
+      if (bulkAppraisalSummary) bulkAppraisalSummary.textContent = "Paste items and run an appraisal.";
+      if (bulkAppraisalWarnings) bulkAppraisalWarnings.innerHTML = "";
+      if (bulkAppraisalResults) bulkAppraisalResults.innerHTML = "";
+      if (bulkAppraisalExportPanel) bulkAppraisalExportPanel.hidden = true;
+      if (bulkAppraisalCopyStatus) bulkAppraisalCopyStatus.textContent = "";
+      setBulkAppraisalStatus("No appraisal has run yet.");
+      if (clearText && bulkAppraisalText) {
+        bulkAppraisalText.value = "";
+        window.localStorage.removeItem(bulkAppraisalTextKey);
+      }
+    }
+
+    function renderBulkAppraisalSummary(data) {
+      if (!bulkAppraisalSummary) return;
+      const totals = data?.totals || {};
+      const hub = data?.hub || {};
+      bulkAppraisalSummary.innerHTML = `
+        <div><strong>${escapeHtml(hub.label || "Jita")} public orders</strong> | ${formatNumber(totals.resolved_row_count || 0)} resolved row${totals.resolved_row_count === 1 ? "" : "s"} | ${formatNumber((data?.unresolved_lines || []).length)} unresolved</div>
+        <div class="bulk-appraisal-summary-grid">
+          <div class="bulk-appraisal-summary-card"><span>Quick-sell</span><strong>${formatAppraisalIsk(totals.quick_sell_value_isk)}</strong></div>
+          <div class="bulk-appraisal-summary-card"><span>Replace/buy</span><strong>${formatAppraisalIsk(totals.replace_buy_value_isk)}</strong></div>
+          <div class="bulk-appraisal-summary-card"><span>Spread</span><strong>${formatAppraisalSpread(totals.spread_isk, totals.spread_percent)}</strong></div>
+          <div class="bulk-appraisal-summary-card"><span>Total m3</span><strong>${formatVolume(totals.total_volume_m3 || 0)}</strong></div>
+        </div>
+      `;
+    }
+
+    function renderBulkAppraisalStatusPills(item) {
+      const flags = [];
+      if (item.unpriceable) flags.push('<span class="pill sold">Unpriceable</span>');
+      if (item.blueprint_copy) flags.push('<span class="pill reserved">BPC</span>');
+      if (item.low_confidence) flags.push('<span class="pill reserved">Low confidence</span>');
+      if (item.quick_sell_complete && item.replace_buy_complete && !item.low_confidence) {
+        flags.push('<span class="pill sell">Depth OK</span>');
+      }
+      (item.confidence_notes || []).slice(0, 3).forEach((note) => {
+        flags.push(`<span class="pill want">${escapeHtml(note)}</span>`);
+      });
+      return flags.join("");
+    }
+
+    function renderBulkAppraisalRows(items) {
+      if (!items.length) {
+        return '<div class="empty">No resolved item rows yet.</div>';
+      }
+      const rows = items.map((item) => {
+        const rowClass = item.unpriceable ? "bulk-appraisal-row-unpriceable" : item.low_confidence ? "bulk-appraisal-row-low" : "";
+        return `
+          <tr class="${rowClass}">
+            <td>${formatNumber(item.quantity || 0)}</td>
+            <td class="bulk-appraisal-name">
+              <strong>${escapeHtml(item.name || "")}</strong>
+              <span>${escapeHtml(item.market_group_name || "Market group unknown")} | type ${formatNumber(item.type_id || 0)}</span>
+            </td>
+            <td>${formatAppraisalIsk(item.quick_sell_value_isk)}</td>
+            <td>${formatAppraisalIsk(item.replace_buy_value_isk)}</td>
+            <td>${formatAppraisalSpread(item.spread_isk, item.spread_percent)}</td>
+            <td>${formatVolume(item.total_volume_m3 || 0)}</td>
+            <td>${formatNumber(item.buy_order_count || 0)} / ${formatNumber(item.sell_order_count || 0)}</td>
+            <td><div class="bulk-appraisal-flags">${renderBulkAppraisalStatusPills(item)}</div></td>
+          </tr>
+        `;
+      }).join("");
+      return `
+        <div class="bulk-appraisal-table-wrap">
+          <table class="bulk-appraisal-table">
+            <thead>
+              <tr>
+                <th>Qty</th>
+                <th>Item</th>
+                <th>Quick-sell</th>
+                <th>Replace/buy</th>
+                <th>Spread</th>
+                <th>m3</th>
+                <th>Buy / sell orders</th>
+                <th>Flags</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderBulkAppraisalWarnings(data) {
+      if (!bulkAppraisalWarnings) return;
+      const warnings = (data?.warnings || []).map((warning) => ({
+        label: warning.level || "warning",
+        message: warning.message || String(warning || ""),
+      }));
+      (data?.unresolved_lines || []).slice(0, 8).forEach((line) => {
+        const lineNumber = line.line_number ? `Line ${line.line_number}: ` : "";
+        warnings.push({
+          label: "unresolved",
+          message: `${lineNumber}${line.raw || line.name || "unknown"} - ${line.reason || "not resolved"}`,
+        });
+      });
+      const extraUnresolved = Math.max(0, (data?.unresolved_lines || []).length - 8);
+      if (extraUnresolved) {
+        warnings.push({label: "unresolved", message: `${formatNumber(extraUnresolved)} more unresolved line${extraUnresolved === 1 ? "" : "s"}.`});
+      }
+      if (!warnings.length) {
+        bulkAppraisalWarnings.innerHTML = "";
+        return;
+      }
+      bulkAppraisalWarnings.innerHTML = warnings.map((warning) => `
+        <div class="bulk-appraisal-warning-row">
+          <b>${escapeHtml(warning.label)}</b>
+          <span>${escapeHtml(warning.message)}</span>
+        </div>
+      `).join("");
+    }
+
+    function renderBulkAppraisal(data) {
+      renderBulkAppraisalSummary(data);
+      renderBulkAppraisalWarnings(data);
+      if (bulkAppraisalResults) {
+        bulkAppraisalResults.innerHTML = renderBulkAppraisalRows(data?.items || []);
+      }
+      bulkAppraisalLastExportText = data?.export_text || "";
+      if (bulkAppraisalExportPanel) bulkAppraisalExportPanel.hidden = !bulkAppraisalLastExportText;
+      if (bulkAppraisalCopyStatus) bulkAppraisalCopyStatus.textContent = "";
+      const totals = data?.totals || {};
+      setBulkAppraisalStatus(
+        `Appraised ${formatNumber(totals.resolved_row_count || 0)} rows; ${formatNumber((data?.unresolved_lines || []).length)} unresolved.`,
+      );
+    }
+
+    async function runBulkAppraisal() {
+      if (!bulkAppraisalText) return;
+      const text = String(bulkAppraisalText.value || "").trim();
+      if (!text) {
+        setBulkAppraisalStatus("Paste item lines before running an appraisal.", true);
+        return;
+      }
+      if (bulkAppraisalRun) bulkAppraisalRun.disabled = true;
+      setBulkAppraisalStatus("Appraising public hub orders...");
+      try {
+        window.localStorage.setItem(bulkAppraisalTextKey, text);
+        if (bulkAppraisalHub) window.localStorage.setItem(bulkAppraisalHubKey, bulkAppraisalHub.value || "jita");
+        if (bulkAppraisalMode) window.localStorage.setItem(bulkAppraisalModeKey, bulkAppraisalMode.value || "auto");
+        const response = await fetch("/api/flight/appraisal", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            text,
+            hub: bulkAppraisalHub ? bulkAppraisalHub.value : "jita",
+            mode: bulkAppraisalMode ? bulkAppraisalMode.value : "auto",
+          }),
+        });
+        const data = await readJsonApiResponse(response, "Could not build bulk appraisal");
+        renderBulkAppraisal(data);
+      } catch (error) {
+        setBulkAppraisalStatus(error.message || "Appraisal failed.", true);
+        if (bulkAppraisalResults) bulkAppraisalResults.innerHTML = `<div class="error">${escapeHtml(error.message || "Appraisal failed.")}</div>`;
+      } finally {
+        if (bulkAppraisalRun) bulkAppraisalRun.disabled = false;
+      }
+    }
+
+    async function copyBulkAppraisalExport() {
+      if (!bulkAppraisalLastExportText) {
+        if (bulkAppraisalCopyStatus) bulkAppraisalCopyStatus.textContent = "Run an appraisal first.";
+        return;
+      }
+      const previousText = bulkAppraisalCopyExport ? bulkAppraisalCopyExport.textContent : "";
+      try {
+        if (bulkAppraisalCopyExport) {
+          bulkAppraisalCopyExport.disabled = true;
+          bulkAppraisalCopyExport.textContent = "Copying...";
+        }
+        await writeTextToClipboard(bulkAppraisalLastExportText);
+        if (bulkAppraisalCopyStatus) {
+          bulkAppraisalCopyStatus.textContent = "Copied appraisal share text.";
+          bulkAppraisalCopyStatus.classList.remove("error");
+        }
+      } catch (error) {
+        if (bulkAppraisalCopyStatus) {
+          bulkAppraisalCopyStatus.textContent = error.message || "Clipboard copy failed.";
+          bulkAppraisalCopyStatus.classList.add("error");
+        }
+      } finally {
+        if (bulkAppraisalCopyExport) {
+          bulkAppraisalCopyExport.disabled = false;
+          bulkAppraisalCopyExport.textContent = previousText;
+        }
+      }
     }
 
     function formatIskPerHour(value) {
@@ -30469,6 +31376,37 @@ help</textarea>
       }
     });
 
+    if (bulkAppraisalForm) {
+      bulkAppraisalForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        runBulkAppraisal();
+      });
+    }
+    if (bulkAppraisalHub) {
+      bulkAppraisalHub.addEventListener("change", () => {
+        window.localStorage.setItem(bulkAppraisalHubKey, bulkAppraisalHub.value || "jita");
+        resetBulkAppraisal(false);
+      });
+    }
+    if (bulkAppraisalMode) {
+      bulkAppraisalMode.addEventListener("change", () => {
+        window.localStorage.setItem(bulkAppraisalModeKey, bulkAppraisalMode.value || "auto");
+      });
+    }
+    if (bulkAppraisalText) {
+      bulkAppraisalText.addEventListener("input", () => {
+        window.localStorage.setItem(bulkAppraisalTextKey, String(bulkAppraisalText.value || ""));
+      });
+    }
+    if (bulkAppraisalClear) {
+      bulkAppraisalClear.addEventListener("click", () => {
+        resetBulkAppraisal(true);
+      });
+    }
+    if (bulkAppraisalCopyExport) {
+      bulkAppraisalCopyExport.addEventListener("click", copyBulkAppraisalExport);
+    }
+
     function updateTradePnlAndReset() {
       const settings = writeTradePnlSettings({
         windowHours: tradePnlWindowHours.value,
@@ -30821,6 +31759,16 @@ help</textarea>
     writeHaulSettings(readHaulSettings());
     applyMarketItemSearch(haulMarketGroups, haulItemSearch.value, haulItemSearchStatus);
     writeAcquisitionSettings(readAcquisitionSettings());
+    if (bulkAppraisalHub) {
+      bulkAppraisalHub.value = window.localStorage.getItem(bulkAppraisalHubKey) || bulkAppraisalHub.value || "jita";
+    }
+    if (bulkAppraisalMode) {
+      bulkAppraisalMode.value = window.localStorage.getItem(bulkAppraisalModeKey) || bulkAppraisalMode.value || "auto";
+    }
+    if (bulkAppraisalText) {
+      bulkAppraisalText.value = window.localStorage.getItem(bulkAppraisalTextKey) || bulkAppraisalText.value || "";
+    }
+    resetBulkAppraisal(false);
     writeTradePnlSettings(readTradePnlSettings());
     writePlanetarySettings(readPlanetarySettings());
     renderPlanetaryCustomsFieldTest();
@@ -30860,6 +31808,7 @@ help</textarea>
         "@@TAB_SCOPE_INDUSTRY@@": render_flight_scope_summary("industry"),
         "@@TAB_SCOPE_HAULING@@": render_flight_scope_summary("hauling"),
         "@@TAB_SCOPE_ACQUISITION@@": render_flight_scope_summary("acquisition"),
+        "@@TAB_SCOPE_APPRAISAL@@": render_flight_scope_summary("appraisal"),
         "@@TAB_SCOPE_TRADE_PNL@@": render_flight_scope_summary("trade-pnl"),
         "@@TAB_SCOPE_PLANETARY@@": render_flight_scope_summary("planetary"),
         "@@TAB_SCOPE_REPROCESSING@@": render_flight_scope_summary("reprocessing"),

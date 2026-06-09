@@ -91,6 +91,40 @@ Tranquil Dark Filament x97
 Tranquil Firestorm Filament x3"""
 
 
+def bulk_appraisal_static_data(tmp_path: Path) -> corp_market.StaticMarketData:
+    return corp_market.StaticMarketData(
+        path=tmp_path / "static.zip",
+        groups={
+            1: {"market_group_id": 1, "name": "Minerals", "parent_group_id": None},
+            2: {"market_group_id": 2, "name": "Ships", "parent_group_id": None},
+            3: {"market_group_id": 3, "name": "Blueprints", "parent_group_id": None},
+            4: {"market_group_id": 4, "name": "Modules", "parent_group_id": None},
+        },
+        children={},
+        types_by_group={
+            1: (
+                {"type_id": 34, "name": "Tritanium", "volume_m3": 0.01, "market_group_id": 1, "market_group_name": "Minerals"},
+                {"type_id": 35, "name": "Pyerite", "volume_m3": 0.01, "market_group_id": 1, "market_group_name": "Minerals"},
+            ),
+            2: (
+                {"type_id": 603, "name": "Merlin", "volume_m3": 2500.0, "market_group_id": 2, "market_group_name": "Ships"},
+            ),
+            3: (
+                {"type_id": 681, "name": "Merlin Blueprint", "volume_m3": 0.01, "market_group_id": 3, "market_group_name": "Blueprints"},
+            ),
+            4: (
+                {
+                    "type_id": 519,
+                    "name": "Gyrostabilizer I",
+                    "volume_m3": 5.0,
+                    "market_group_id": 4,
+                    "market_group_name": "Modules",
+                },
+            ),
+        },
+    )
+
+
 def test_parse_isk_amount_accepts_eve_shorthand():
     assert parse_isk_amount("750k") == 750_000
     assert parse_isk_amount("12.5m") == 12_500_000
@@ -117,6 +151,90 @@ def test_parse_fit_note_reads_eft_clipboard_format():
     assert fit_note.empty_slots == 1
     assert fit_note.cargo_lines[0] == "Scourge Rage Rocket x4772"
     assert fit_note.cargo_lines[-1] == "Tranquil Firestorm Filament x3"
+
+
+def test_bulk_appraisal_parser_resolves_fits_inventory_and_bpc_rows(tmp_path):
+    parsed = corp_market.parse_bulk_appraisal_text(
+        """[Merlin, Tackle frigate]
+Gyrostabilizer I
+[Empty High slot]
+
+Cargo
+Tritanium x100
+50 Pyerite
+Merlin Blueprint (Copy) 1
+Item\tQuantity
+Gyrostabilizer I\t2
+Unknown Hull Plate x3"""
+    )
+
+    assert parsed["ignored_line_count"] >= 3
+    names = {item["name"]: item for item in parsed["items"]}
+    assert names["Merlin"]["quantity"] == 1
+    assert names["Tritanium"]["quantity"] == 100
+    assert names["Pyerite"]["quantity"] == 50
+    assert names["Gyrostabilizer I"]["quantity"] == 3
+    assert names["Merlin Blueprint"]["blueprint_copy"] is True
+
+    resolved = corp_market.resolve_bulk_appraisal_items(
+        parsed["items"],
+        static_data=bulk_appraisal_static_data(tmp_path),
+    )
+
+    resolved_names = {item["name"] for item in resolved["items"]}
+    assert {"Merlin", "Tritanium", "Pyerite", "Gyrostabilizer I", "Merlin Blueprint"} <= resolved_names
+    assert resolved["unresolved_lines"][0]["name"] == "Unknown Hull Plate"
+    assert resolved["static_data_available"] is True
+
+
+def test_bulk_appraisal_payload_prices_public_hub_orders_and_export_text(tmp_path, monkeypatch):
+    static_data = bulk_appraisal_static_data(tmp_path)
+
+    def fake_scan_system_market_orders(*, config, type_ids, system, order_type):
+        assert system.name == "Jita"
+        requested = set(type_ids)
+        if order_type == "buy":
+            orders = {
+                34: [
+                    {"price": 5.0, "volume_remain": 200, "min_volume": 1},
+                    {"price": 4.5, "volume_remain": 200, "min_volume": 1},
+                ],
+                35: [],
+            }
+        else:
+            orders = {
+                34: [
+                    {"price": 6.0, "volume_remain": 100, "min_volume": 1},
+                    {"price": 6.5, "volume_remain": 100, "min_volume": 1},
+                ],
+                35: [{"price": 12.0, "volume_remain": 25, "min_volume": 1}],
+            }
+        filtered = {type_id: rows for type_id, rows in orders.items() if type_id in requested and rows}
+        return filtered, sum(len(rows) for rows in filtered.values()), []
+
+    monkeypatch.setattr(corp_market, "scan_system_market_orders", fake_scan_system_market_orders)
+
+    payload = corp_market.build_bulk_appraisal_payload(
+        config=corp_market.EveSsoConfig(),
+        raw_text="Tritanium 100\nPyerite 50\nMerlin Blueprint (Copy) 1",
+        hub_name="jita",
+        static_data=static_data,
+    )
+
+    items = {item["name"]: item for item in payload["items"]}
+    assert payload["ok"] is True
+    assert payload["persistence"] == "none"
+    assert payload["totals"]["quick_sell_value_isk"] == 500.0
+    assert payload["totals"]["replace_buy_value_isk"] == 900.0
+    assert payload["totals"]["spread_isk"] == 400.0
+    assert payload["totals"]["total_volume_m3"] == 1.51
+    assert items["Tritanium"]["quick_sell_complete"] is True
+    assert items["Pyerite"]["replace_buy_complete"] is False
+    assert items["Pyerite"]["low_confidence"] is True
+    assert items["Merlin Blueprint"]["unpriceable"] is True
+    assert "Bulk Appraisal - Jita public orders" in payload["export_text"]
+    assert "Merlin Blueprint" in payload["export_text"]
+    assert "Advisory only" in payload["export_text"]
 
 
 def test_market_store_creates_and_archives_shared_fitting(tmp_path):
@@ -407,6 +525,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/hauling/progress" in page
     assert "/api/flight/acquisition" in page
     assert "/api/flight/acquisition/progress" in page
+    assert "/api/flight/appraisal" in page
     assert "/api/flight/trade-pnl" in page
     assert "/api/flight/planetary" in page
     assert "/flight/login" in page
@@ -449,6 +568,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-buyer-scan\"" not in flight_section
     assert "data-tab-target=\"hauling\"" in page
     assert "data-tab-target=\"acquisition\"" in page
+    assert "data-tab-target=\"appraisal\"" in page
     assert "class=\"ops-launcher\"" in page
     assert "Tester operations launcher" in page
     assert "Test Session" in page
@@ -638,6 +758,19 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "writeAcquisitionSettings" in page
     assert "appendAcquisitionProgress" in page
     assert "renderAcquisitionOpportunities" in page
+    assert "id=\"tab-appraisal\"" in page
+    assert "id=\"bulk-appraisal-form\"" in page
+    assert "id=\"bulk-appraisal-hub\"" in page
+    assert "id=\"bulk-appraisal-mode\"" in page
+    assert "id=\"bulk-appraisal-text\"" in page
+    assert "id=\"bulk-appraisal-results\" class=\"decision-output\"" in page
+    assert "id=\"bulk-appraisal-warning-list\"" in page
+    assert "id=\"bulk-appraisal-copy-export\" class=\"secondary\" type=\"button\"" in page
+    assert "Copy Share Text" in page
+    assert "renderBulkAppraisalSummary" in page
+    assert "renderBulkAppraisalRows" in page
+    assert "renderBulkAppraisalWarnings" in page
+    assert "No character ESI scope is used by this tab" in page
     assert "data-tab-target=\"trade-pnl\"" in page
     assert "data-tab-target=\"planetary\"" in page
     assert "id=\"trade-pnl-form\"" in page
