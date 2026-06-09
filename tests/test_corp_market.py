@@ -457,6 +457,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-route-summary\"" in page
     assert "id=\"haul-load-plan\" class=\"load-plan-output\"" in page
     assert "Manual Load Plan" in page
+    assert "renderHaulLoadPlanRouteCard" in page
+    assert "Route Card" in page
+    assert "Stop Order" in page
+    assert "Route Cost" in page
+    assert "Pickup stop details" in page
     assert "renderHaulCargoLoader" in page
     assert "cargo-loader-scene" in page
     assert "Loading route cargo" in page

@@ -17833,6 +17833,67 @@ def _render_flight_attendant_dashboard() -> str:
       margin-bottom: 8px;
     }
     .load-plan-head strong { color: var(--text); font-size: 16px; line-height: 1.25; }
+    .haul-route-card {
+      border: 1px solid rgba(97, 199, 217, .42);
+      border-radius: 7px;
+      background: rgba(5, 10, 12, .58);
+      padding: 10px;
+      margin: 9px 0;
+      display: grid;
+      gap: 9px;
+    }
+    .haul-route-card-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: start;
+    }
+    .haul-route-card-head strong { color: var(--text); line-height: 1.25; }
+    .haul-route-cost-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .haul-route-cost {
+      border: 1px solid rgba(63, 85, 80, .46);
+      border-radius: 6px;
+      padding: 8px;
+      background: rgba(17, 24, 25, .56);
+      min-width: 0;
+    }
+    .haul-route-cost span,
+    .haul-route-stop span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .haul-route-cost b,
+    .haul-route-stop b {
+      display: block;
+      color: var(--text);
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .haul-route-stop-list { display: grid; gap: 6px; }
+    .haul-route-stop {
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid rgba(63, 85, 80, .42);
+      border-radius: 6px;
+      padding: 8px;
+      background: rgba(8, 13, 15, .42);
+    }
+    .haul-route-stop-number {
+      color: var(--amber);
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
     .load-plan-list { display: grid; gap: 7px; margin-top: 8px; }
     .load-plan-row {
       display: grid;
@@ -18947,6 +19008,9 @@ def _render_flight_attendant_dashboard() -> str:
       .discord-direct-fields .span-3 { grid-column: 1; }
       .discord-advanced-teaser { grid-template-columns: 1fr; }
       .haul-checklist { grid-template-columns: 1fr; }
+      .haul-route-cost-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .haul-route-stop { grid-template-columns: 44px minmax(0, 1fr); }
+      .haul-route-stop > b { grid-column: 2; text-align: left; }
       .haul-opportunity-layout { grid-template-columns: 1fr; }
       .haul-opportunity-detail-region { display: none; }
       .haul-opportunity-summary-panel { padding: 10px; }
@@ -24464,6 +24528,48 @@ help</textarea>
       `;
     }
 
+    function renderHaulLoadPlanRouteCard(plan) {
+      const routeCost = Number(plan.pickup_cost || 0) + Number(plan.sales_tax_total || 0);
+      const stops = Array.isArray(plan.stops) ? plan.stops : [];
+      const stopRows = stops.map((stop, index) => {
+        const items = Array.isArray(stop.items) ? stop.items : [];
+        const itemText = items.slice(0, 3)
+          .map((item) => `${formatNumber(item.units)} ${item.item_name || "item"}`)
+          .join("; ");
+        const extraItems = items.length > 3 ? `; +${formatNumber(items.length - 3)} more` : "";
+        const jumps = stop.jumps == null ? "unknown jumps" : `${formatNumber(stop.jumps)} jumps`;
+        return `
+          <div class="haul-route-stop">
+            <div class="haul-route-stop-number">Stop ${formatNumber(index + 1)}</div>
+            <div>
+              <span>${escapeHtml(jumps)}</span>
+              <b>${escapeHtml(stop.system_name || "Pickup system")}</b>
+              <div class="meta">${escapeHtml((itemText || "No item rows") + extraItems)}.</div>
+            </div>
+            <b>${formatIsk(stop.pickup_cost)}</b>
+          </div>
+        `;
+      }).join("");
+      return `
+        <section class="haul-route-card" aria-label="Hauler load plan route card">
+          <div class="haul-route-card-head">
+            <div>
+              <strong>Route Card</strong>
+              <div class="meta">Stop Order: nearest planned pickup stops first; verify the final route in EVE.</div>
+            </div>
+            <span class="pill decision-source">${formatNumber(plan.stop_count)} stop${Number(plan.stop_count || 0) === 1 ? "" : "s"}</span>
+          </div>
+          <div class="haul-route-cost-grid">
+            <div class="haul-route-cost"><span>Route Cost</span><b>${formatIsk(routeCost)}</b><small>Pickup cost plus expected sales tax.</small></div>
+            <div class="haul-route-cost"><span>Pickup Cost</span><b>${formatIsk(plan.pickup_cost)}</b><small>ISK needed before undocking.</small></div>
+            <div class="haul-route-cost"><span>Expected Tax</span><b>${formatIsk(plan.sales_tax_total)}</b><small>Estimated after destination sale.</small></div>
+            <div class="haul-route-cost"><span>Expected Profit</span><b>${formatSignedIsk(plan.net_profit)}</b><small>After pickup cost and sales tax.</small></div>
+          </div>
+          <div class="haul-route-stop-list">${stopRows || '<div class="decision-empty">No pickup stops.</div>'}</div>
+        </section>
+      `;
+    }
+
     function renderHaulLoadPlan(plan) {
       if (!plan || !plan.available) {
         const skipped = [];
@@ -24510,6 +24616,7 @@ help</textarea>
             </div>
             <span class="pill decision-build">${formatSignedIsk(plan.net_profit)}</span>
           </div>
+          ${renderHaulLoadPlanRouteCard(plan)}
           ${renderHaulCargoLoader(plan)}
           <div class="profit-stats">
             <div class="profit-stat"><span>Cargo Used</span><b>${formatVolume(plan.used_cargo_m3)}</b></div>
@@ -24521,8 +24628,8 @@ help</textarea>
           <div class="meta">${escapeHtml(plan.manual_note || "Verify in EVE before buying.")}</div>
           ${skippedNote}
           ${depthNote}
-          <details class="profit-details" open>
-            <summary>Pickup order</summary>
+          <details class="profit-details">
+            <summary>Pickup stop details</summary>
             <div class="load-plan-list">${stopRows || '<div class="decision-empty">No pickup stops.</div>'}</div>
           </details>
           <details class="profit-details">
