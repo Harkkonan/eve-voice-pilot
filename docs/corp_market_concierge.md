@@ -34,6 +34,8 @@ The `Shared Fittings` tab is a corp fitting library for user-pasted EVE fitting 
 - The concierge parses the header to label the hull and fit name, then stores the full copy/paste block in the ignored `profiles/corp_market.sqlite3` database.
 - Entries can include optional tags, a submitter name, and a website fitting link such as an EVE Workbench, forum, or doctrine page.
 - Members copy the saved fitting block back out and import or simulate it manually in EVE.
+- Admins can save a separate Discord webhook for the `Fittings` forum channel in ignored local JSON at `profiles/corp_fitting_discord_post_settings.json`.
+- Each saved fit has a manual `Post Discord` action that posts the exact EVE fitting clipboard block as the Discord message content, with mentions disabled and optional forum tags.
 - The tab does not use ESI, read the EVE client, scrape files, send keys, click buttons, create contracts, or place market orders.
 
 ## Flight Attendant Tab
@@ -387,6 +389,22 @@ wts:WTS_TAG_ID,wtb:WTB_TAG_ID,buyback:BUYBACK_TAG_ID,minerals:MINERALS_TAG_ID,ha
 ```
 
 The direct post form is useful when the market entry should go straight to Discord without creating a local board listing first. Use it for one-off WTS/WTB posts, buyback announcements, hauling offers, service ads, or contract notices that will be completed manually in EVE.
+
+## Fittings Discord Posting
+
+The `Shared Fittings` tab has its own Discord posting settings so fitting doctrines do not have to share the market-post webhook.
+
+- Create a Discord webhook from the Discord forum channel named `Fittings`.
+- Save that webhook in the Shared Fittings tab's `Fittings Discord Channel` panel.
+- Leave forum-post mode enabled for a Discord forum/media channel; Discord uses `thread_name` to create one post per fit.
+- Optional default tag ids and tag-map entries can classify fits by keys such as `fitting`, hull names like `hawk`, or saved fitting tags such as `abyss`.
+- The `Post Discord` button sends the fitting block exactly as stored, in EVE's standard clipboard text format, so pilots can copy it back into EVE manually.
+
+The fitting Discord settings file is ignored by Git:
+
+```powershell
+.\scripts\run_corp_market.ps1 serve --discord-fitting-post-settings-path ".\profiles\corp_fitting_discord_post_settings_test.json"
+```
 
 ## Legacy Discord Market Posting
 

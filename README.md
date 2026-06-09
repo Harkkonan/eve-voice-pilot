@@ -199,7 +199,7 @@ For an Internet-accessible Flight Attendant link, use `--public-hosting-mode` wi
 
 Listings are stored in ignored local SQLite data at `profiles/corp_market.sqlite3`. More detail is in `docs/corp_market_concierge.md`.
 
-The `Shared Fittings` tab stores user-pasted EVE fitting clipboard blocks in the same ignored local SQLite database. Each entry can include optional tags, a submitter, and a website fitting link; pilots still copy/import the fit manually in EVE.
+The `Shared Fittings` tab stores user-pasted EVE fitting clipboard blocks in the same ignored local SQLite database. Each entry can include optional tags, a submitter, and a website fitting link; pilots still copy/import the fit manually in EVE. The tab can also save a separate ignored Discord webhook settings file at `profiles/corp_fitting_discord_post_settings.json` for a `Fittings` forum channel, then manually post the exact EVE clipboard-format fitting block with mentions disabled.
 
 The Flight Attendant tab includes a `Static Cache Preflight` panel. Run `python .\scripts\update_industry_recipe_cache.py` on the same machine or container that serves the website before inviting testers; generated cache files under `cache\` are ignored and are not copied by Git pushes.
 

@@ -31,6 +31,7 @@ from eve_voice_pilot.corp_market import (
     RouteSystem,
     analyze_trade_pnl_transactions,
     build_discord_alert_webhook_payload,
+    build_discord_fitting_webhook_payload,
     build_discord_webhook_payload,
     build_flight_planetary_payload,
     build_flight_reprocessing_locations_payload,
@@ -149,6 +150,63 @@ def test_market_store_rejects_non_eve_fitting_text(tmp_path):
 
     with pytest.raises(ValueError, match="standard EVE fitting clipboard format"):
         store.create_shared_fitting({"fitting_text": "Hawk\nBallistic Control System II"})
+
+
+def test_discord_fitting_payload_posts_exact_eve_clipboard_block_to_forum(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    fitting = store.create_shared_fitting(
+        {
+            "fitting_text": HAWK_FIT,
+            "website_url": "https://www.eveworkbench.com/fitting/hawk/example",
+            "tags": "Abyss T0",
+            "submitted_by": "Fitting Pilot",
+        }
+    )
+    settings = corp_market.DiscordPostSettings(
+        destination_label="Fittings",
+        sender_name="Fittings Desk",
+        forum_posts=True,
+        forum_tag_ids=("111111111111111111",),
+        forum_tag_map={
+            "fitting": ("222222222222222222",),
+            "hawk": ("333333333333333333",),
+            "abyss": ("444444444444444444",),
+        },
+    )
+
+    payload = build_discord_fitting_webhook_payload(fitting, settings)
+
+    assert payload["username"] == "Fittings Desk"
+    assert payload["content"] == fitting.fitting_text
+    assert payload["allowed_mentions"] == {"parse": []}
+    assert payload["thread_name"] == "Hawk - Hawkaw T0 blitz dark abyss"
+    assert payload["applied_tags"] == [
+        "111111111111111111",
+        "222222222222222222",
+        "333333333333333333",
+        "444444444444444444",
+    ]
+    embed = payload["embeds"][0]
+    assert embed["title"] == "Hawk - Hawkaw T0 blitz dark abyss"
+    assert embed["footer"]["text"] == "Fittings · manual EVE fitting import"
+    assert next(field for field in embed["fields"] if field["name"] == "Website Fit")["value"] == (
+        "[Open link](https://www.eveworkbench.com/fitting/hawk/example)"
+    )
+
+
+def test_discord_fitting_payload_rejects_blocks_that_exceed_discord_content_limit(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    fitting = store.create_shared_fitting(
+        {
+            "fitting_text": "[Hawk, Long copy]\n" + "\n".join(["Rocket Launcher II"] * 160),
+        }
+    )
+
+    with pytest.raises(ValueError, match="2000 character message limit"):
+        build_discord_fitting_webhook_payload(
+            fitting,
+            corp_market.default_discord_fitting_post_settings(),
+        )
 
 
 def test_market_store_creates_and_lists_offer(tmp_path):
@@ -315,9 +373,14 @@ def test_dashboard_includes_shared_fittings_tab():
     assert "name=\"website_url\"" in page
     assert "id=\"fittings-list\"" in page
     assert "id=\"fitting-search\"" in page
+    assert "id=\"fitting-discord-form\"" in page
+    assert "id=\"fitting-discord-webhook-url\"" in page
+    assert "/api/fitting-discord/settings" in page
+    assert "/discord" in page
     assert "/api/fittings" in page
     assert "loadFittings" in page
     assert "data-copy-fitting" in page
+    assert "data-post-fitting-discord" in page
     assert "data-fitting-status-id" in page
     assert "standard EVE fitting format" in page
     assert "does not read the EVE client" in page

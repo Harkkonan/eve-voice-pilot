@@ -58,6 +58,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MARKET_DB_PATH = ROOT / "profiles" / "corp_market.sqlite3"
 DEFAULT_DISCORD_ALERT_SETTINGS_PATH = ROOT / "profiles" / "corp_discord_alert_settings.json"
 DEFAULT_DISCORD_POST_SETTINGS_PATH = ROOT / "profiles" / "corp_discord_post_settings.json"
+DEFAULT_DISCORD_FITTING_POST_SETTINGS_PATH = ROOT / "profiles" / "corp_fitting_discord_post_settings.json"
 DEFAULT_INDUSTRY_RECIPE_CACHE_PATH = ROOT / "cache" / "eve_industry_recipes.json"
 DEFAULT_ROUTE_GRAPH_CACHE_PATH = ROOT / "cache" / "eve_route_graph.json"
 DEFAULT_REPROCESSING_CACHE_PATH = ROOT / "cache" / "eve_reprocessing.json"
@@ -76,6 +77,8 @@ DEFAULT_DISCORD_ALERT_DESTINATION = "Configured Discord alert channel"
 DEFAULT_DISCORD_ALERT_WEBHOOK_ENV_VAR = "CORP_MARKET_DISCORD_WEBHOOK_URL"
 DEFAULT_DISCORD_POST_SENDER_NAME = "Corp Market Concierge"
 DEFAULT_DISCORD_POST_DESTINATION = "Corp buy-or-sell channel"
+DEFAULT_DISCORD_FITTING_POST_SENDER_NAME = "Fittings Desk"
+DEFAULT_DISCORD_FITTING_POST_DESTINATION = "Fittings"
 DISCORD_ALERT_ROUTE_TYPES = frozenset({"webhook", "user_oauth_future"})
 DISCORD_ALERT_EVENT_TYPES = frozenset({"intel", "help", "market", "location", "combat", "custom"})
 DISCORD_ALERT_SEVERITIES = frozenset({"critical", "high", "medium", "info"})
@@ -87,6 +90,7 @@ MAX_DISCORD_ALERT_RULES = 24
 MAX_DISCORD_ALERT_PHRASES = 24
 MAX_DISCORD_ALERT_EVENT_TEXT = 700
 MAX_DISCORD_DIRECT_POST_DETAILS = 1800
+DISCORD_CONTENT_MAX_LENGTH = 2000
 DEFAULT_FLIGHT_MAX_JUMPS = 5
 MAX_FLIGHT_MAX_JUMPS = 25
 MAX_FLIGHT_BUYER_SCAN_PRODUCTS = 40
@@ -2856,6 +2860,14 @@ def default_discord_post_settings() -> DiscordPostSettings:
     return DiscordPostSettings()
 
 
+def default_discord_fitting_post_settings() -> DiscordPostSettings:
+    return DiscordPostSettings(
+        destination_label=DEFAULT_DISCORD_FITTING_POST_DESTINATION,
+        sender_name=DEFAULT_DISCORD_FITTING_POST_SENDER_NAME,
+        forum_posts=True,
+    )
+
+
 def clean_discord_post_settings_payload(
     payload: Mapping[str, Any],
     *,
@@ -2881,6 +2893,17 @@ def clean_discord_post_settings_payload(
     )
 
 
+def clean_discord_fitting_post_settings_payload(
+    payload: Mapping[str, Any],
+    *,
+    existing: DiscordPostSettings | None = None,
+) -> DiscordPostSettings:
+    return clean_discord_post_settings_payload(
+        payload,
+        existing=existing or default_discord_fitting_post_settings(),
+    )
+
+
 def load_discord_post_settings(path: Path = DEFAULT_DISCORD_POST_SETTINGS_PATH) -> DiscordPostSettings:
     if not path.exists():
         return default_discord_post_settings()
@@ -2893,6 +2916,20 @@ def load_discord_post_settings(path: Path = DEFAULT_DISCORD_POST_SETTINGS_PATH) 
     return clean_discord_post_settings_payload(payload)
 
 
+def load_discord_fitting_post_settings(
+    path: Path = DEFAULT_DISCORD_FITTING_POST_SETTINGS_PATH,
+) -> DiscordPostSettings:
+    if not path.exists():
+        return default_discord_fitting_post_settings()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CorpMarketError(f"Could not read Discord fitting posting settings: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise CorpMarketError("Discord fitting posting settings file must contain a JSON object.")
+    return clean_discord_fitting_post_settings_payload(payload)
+
+
 def save_discord_post_settings(
     settings: DiscordPostSettings,
     path: Path = DEFAULT_DISCORD_POST_SETTINGS_PATH,
@@ -2903,6 +2940,13 @@ def save_discord_post_settings(
     temporary_path.write_text(json.dumps(saved.to_dict(include_webhook_url=True), indent=2, sort_keys=True), encoding="utf-8")
     temporary_path.replace(path)
     return saved
+
+
+def save_discord_fitting_post_settings(
+    settings: DiscordPostSettings,
+    path: Path = DEFAULT_DISCORD_FITTING_POST_SETTINGS_PATH,
+) -> DiscordPostSettings:
+    return save_discord_post_settings(settings, path)
 
 
 def redacted_discord_webhook_url(webhook_url: str) -> str:
@@ -3078,6 +3122,114 @@ def build_direct_discord_post_payload(post: DirectDiscordPost, settings: Discord
         payload["thread_name"] = title if len(title) <= DISCORD_THREAD_NAME_MAX_LENGTH else title[: DISCORD_THREAD_NAME_MAX_LENGTH - 3].rstrip() + "..."
         tag_ids = resolve_direct_post_forum_tag_ids(
             post,
+            default_tag_ids=settings.forum_tag_ids,
+            tag_map=settings.forum_tag_map,
+        )
+        if tag_ids:
+            payload["applied_tags"] = list(tag_ids)
+    return payload
+
+
+def discord_fitting_title(fitting: SharedFitting) -> str:
+    title = fitting.display_name if fitting.hull or fitting.fit_name else "Shared fitting"
+    return sanitize_discord_text(SPACE_RE.sub(" ", title).strip(), max_length=180)
+
+
+def discord_fitting_thread_name(fitting: SharedFitting) -> str:
+    title = discord_fitting_title(fitting)
+    if len(title) <= DISCORD_THREAD_NAME_MAX_LENGTH:
+        return title
+    return title[: DISCORD_THREAD_NAME_MAX_LENGTH - 3].rstrip() + "..."
+
+
+def fitting_forum_tag_keys(fitting: SharedFitting) -> tuple[str, ...]:
+    keys: list[str] = ["fitting", "fittings", "shared_fitting"]
+    for value in (fitting.hull, fitting.fit_name, fitting.tags):
+        normalized = SPACE_RE.sub(" ", str(value or "").strip().lower())
+        if normalized and normalized not in keys:
+            keys.append(normalized)
+    for tag in parse_csv(fitting.tags):
+        normalized = tag.strip().lower()
+        if normalized and normalized not in keys:
+            keys.append(normalized)
+    return tuple(keys)
+
+
+def resolve_fitting_forum_tag_ids(
+    fitting: SharedFitting,
+    *,
+    default_tag_ids: Iterable[str],
+    tag_map: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    tag_ids: list[str] = []
+    for raw_id in default_tag_ids:
+        tag_id = raw_id.strip()
+        if tag_id and tag_id not in tag_ids:
+            tag_ids.append(tag_id)
+    for key in fitting_forum_tag_keys(fitting):
+        for tag_id in tag_map.get(key, ()):
+            if tag_id and tag_id not in tag_ids:
+                tag_ids.append(tag_id)
+    return tuple(tag_ids)
+
+
+def discord_fitting_line_summary(fit_note: FitNoteSummary | None) -> str:
+    if fit_note is None:
+        return "EVE fitting block"
+    parts = []
+    if fit_note.fitted_lines:
+        parts.append(f"{len(fit_note.fitted_lines)} fitted")
+    if fit_note.empty_slots:
+        parts.append(f"{fit_note.empty_slots} empty")
+    if fit_note.cargo_lines:
+        parts.append(f"{len(fit_note.cargo_lines)} cargo")
+    return ", ".join(parts) or "Parsed EVE fitting block"
+
+
+def build_discord_fitting_webhook_payload(
+    fitting: SharedFitting,
+    settings: DiscordPostSettings,
+) -> dict[str, Any]:
+    fitting_text = clean_fitting_text(fitting.fitting_text)
+    if len(fitting_text) > DISCORD_CONTENT_MAX_LENGTH:
+        raise ValueError(
+            "This fitting block is too long for Discord's 2000 character message limit. "
+            "Post the website fitting link or shorten the saved block before sending."
+        )
+    fit_note = parse_fit_note(fitting_text)
+    title = discord_fitting_title(fitting)
+    fields = [
+        {"name": "Hull", "value": sanitize_discord_text(fitting.hull or "Unknown", max_length=120), "inline": True},
+        {
+            "name": "Lines",
+            "value": discord_fitting_line_summary(fit_note),
+            "inline": True,
+        },
+    ]
+    if fitting.tags:
+        fields.append({"name": "Tags", "value": sanitize_discord_text(fitting.tags, max_length=180), "inline": True})
+    if fitting.submitted_by:
+        fields.append({"name": "Submitted By", "value": sanitize_discord_text(fitting.submitted_by, max_length=120), "inline": True})
+    if fitting.website_url:
+        fields.append({"name": "Website Fit", "value": f"[Open link]({fitting.website_url})", "inline": True})
+    embed: dict[str, Any] = {
+        "title": title,
+        "color": 0x61C7D9,
+        "description": "EVE fitting clipboard format for manual import.",
+        "fields": fields,
+        "footer": {"text": f"{settings.destination_label or DEFAULT_DISCORD_FITTING_POST_DESTINATION} · manual EVE fitting import"},
+        "timestamp": fitting.updated_at or fitting.created_at or now_iso(),
+    }
+    payload: dict[str, Any] = {
+        "username": sanitize_discord_text(settings.sender_name or DEFAULT_DISCORD_FITTING_POST_SENDER_NAME, max_length=80),
+        "content": fitting_text,
+        "embeds": [embed],
+        "allowed_mentions": {"parse": []},
+    }
+    if settings.forum_posts:
+        payload["thread_name"] = discord_fitting_thread_name(fitting)
+        tag_ids = resolve_fitting_forum_tag_ids(
+            fitting,
             default_tag_ids=settings.forum_tag_ids,
             tag_map=settings.forum_tag_map,
         )
@@ -13244,6 +13396,7 @@ def build_http_server(
     discord_webhook_url: str = "",
     discord_alert_settings_path: Path = DEFAULT_DISCORD_ALERT_SETTINGS_PATH,
     discord_post_settings_path: Path = DEFAULT_DISCORD_POST_SETTINGS_PATH,
+    discord_fitting_post_settings_path: Path = DEFAULT_DISCORD_FITTING_POST_SETTINGS_PATH,
     discord_timeout_seconds: float = DEFAULT_WEBHOOK_TIMEOUT_SECONDS,
     discord_forum_posts: bool = False,
     discord_forum_tag_ids: Iterable[str] = (),
@@ -13287,6 +13440,11 @@ def build_http_server(
                 if not self._require_public_read_access():
                     return
                 self._handle_discord_post_settings()
+                return
+            if path == "/api/fitting-discord/settings":
+                if not self._require_public_read_access():
+                    return
+                self._handle_fitting_discord_settings()
                 return
             if path == "/api/fittings":
                 if not self._require_public_read_access():
@@ -13405,6 +13563,11 @@ def build_http_server(
                     return
                 self._handle_discord_post_settings_save()
                 return
+            if path == "/api/fitting-discord/settings":
+                if not self._require_write_access():
+                    return
+                self._handle_fitting_discord_settings_save()
+                return
             if path == "/api/discord-post/direct":
                 if not self._require_public_read_access():
                     return
@@ -13419,6 +13582,11 @@ def build_http_server(
                 if not self._require_write_access():
                     return
                 self._handle_offer_status(path)
+                return
+            if path.startswith("/api/fittings/") and path.endswith("/discord"):
+                if not self._require_write_access():
+                    return
+                self._handle_fitting_discord_post(path)
                 return
             if path.startswith("/api/fittings/") and path.endswith("/status"):
                 if not self._require_write_access():
@@ -13531,6 +13699,54 @@ def build_http_server(
                     settings,
                     effective_settings=effective_settings,
                     settings_path=discord_post_settings_path,
+                )
+            )
+
+        def _load_effective_discord_fitting_post_settings(self) -> tuple[DiscordPostSettings, DiscordPostSettings]:
+            settings = load_discord_fitting_post_settings(discord_fitting_post_settings_path)
+            return settings, settings
+
+        def _handle_fitting_discord_settings(self) -> None:
+            try:
+                settings, effective_settings = self._load_effective_discord_fitting_post_settings()
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=500)
+                return
+            self._send_json(
+                build_discord_post_settings_response(
+                    settings,
+                    effective_settings=effective_settings,
+                    settings_path=discord_fitting_post_settings_path,
+                )
+            )
+
+        def _handle_fitting_discord_settings_save(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, Mapping):
+                self._send_json({"ok": False, "error": "Discord fitting posting settings payload must be a JSON object."}, status=400)
+                return
+            raw_settings = payload.get("settings", payload)
+            if not isinstance(raw_settings, Mapping):
+                self._send_json({"ok": False, "error": "Discord fitting posting settings must be a JSON object."}, status=400)
+                return
+            try:
+                existing = load_discord_fitting_post_settings(discord_fitting_post_settings_path)
+                settings = save_discord_fitting_post_settings(
+                    clean_discord_fitting_post_settings_payload(raw_settings, existing=existing),
+                    discord_fitting_post_settings_path,
+                )
+            except (ValueError, CorpMarketError, OSError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(
+                build_discord_post_settings_response(
+                    settings,
+                    effective_settings=settings,
+                    settings_path=discord_fitting_post_settings_path,
                 )
             )
 
@@ -14321,6 +14537,37 @@ def build_http_server(
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
             self._send_json({"ok": True, "fitting": fitting.to_dict()}, status=201)
+
+        def _handle_fitting_discord_post(self, path: str) -> None:
+            fitting_id = path.removeprefix("/api/fittings/").removesuffix("/discord")
+            try:
+                fitting = store.get_shared_fitting(fitting_id)
+                _settings, effective_settings = self._load_effective_discord_fitting_post_settings()
+                if not effective_settings.webhook_url:
+                    raise CorpMarketError("Save a Fittings Discord webhook URL before posting shared fittings.")
+                discord_payload = build_discord_fitting_webhook_payload(fitting, effective_settings)
+                result = post_discord_webhook(
+                    effective_settings.webhook_url,
+                    discord_payload,
+                    timeout_seconds=discord_timeout_seconds,
+                )
+            except (ValueError, CorpMarketError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            thread_id = ""
+            message_id = ""
+            if result:
+                message_id = result.message_id
+                thread_id = result.thread_id or (result.channel_id if effective_settings.forum_posts else "")
+            self._send_json(
+                {
+                    "ok": True,
+                    "posted_to_discord": bool(result),
+                    "message_id": message_id,
+                    "thread_id": thread_id,
+                    "fitting": fitting.to_dict(),
+                }
+            )
 
         def _handle_offer_reserve(self, path: str) -> None:
             listing_id = path.removeprefix("/api/offers/").removesuffix("/reserve")
@@ -19503,6 +19750,54 @@ help</textarea>
           <section class="panel">
             <div class="panel-header">
               <div>
+                <h2>Fittings Discord Channel</h2>
+                <div class="meta">Post saved fitting blocks to the Discord forum channel named Fittings.</div>
+              </div>
+              <span id="fitting-discord-status" class="pill reserved">Checking</span>
+            </div>
+            <form id="fitting-discord-form" class="discord-alert-form">
+              <label>Fittings forum webhook URL
+                <input id="fitting-discord-webhook-url" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/...">
+              </label>
+              <div class="row">
+                <label>Destination label
+                  <input id="fitting-discord-destination" autocomplete="off" value="Fittings" maxlength="140">
+                </label>
+                <label>Sender name
+                  <input id="fitting-discord-sender" autocomplete="off" value="Fittings Desk" maxlength="80">
+                </label>
+              </div>
+              <label class="checkline">
+                <input id="fitting-discord-clear-webhook" type="checkbox">
+                <span>Clear saved Fittings webhook URL</span>
+                <small>Stored only in an ignored local profile file.</small>
+              </label>
+              <label class="checkline">
+                <input id="fitting-discord-forum-posts" type="checkbox" checked>
+                <span>Create one forum post per fit</span>
+                <small>The webhook must belong to the Discord forum or media channel named Fittings.</small>
+              </label>
+              <div class="discord-tag-well">
+                <label>Default forum tag IDs
+                  <input id="fitting-discord-forum-tag-ids" autocomplete="off" placeholder="123456789012345678, 234567890123456789">
+                </label>
+                <label>Tag map
+                  <textarea id="fitting-discord-forum-tag-map" placeholder="fitting:123456789012345678&#10;hawk:234567890123456789&#10;abyss:345678901234567890"></textarea>
+                </label>
+                <div id="fitting-discord-tag-chips" class="discord-chip-row" aria-label="Configured Fittings Discord tags">
+                  <span class="discord-chip muted">No tags configured</span>
+                </div>
+              </div>
+              <div id="fitting-discord-message" class="discord-alert-status-line" aria-live="polite"></div>
+              <div class="discord-alert-toolbar">
+                <button id="fitting-discord-save" type="button">Save Fittings Discord</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
                 <h2>Shared Fittings</h2>
                 <div class="meta">Copy fits back into EVE or open the tagged website link for extra context.</div>
               </div>
@@ -20780,6 +21075,18 @@ help</textarea>
     const directDiscordMessage = document.querySelector("#direct-discord-message");
     const fittingForm = document.querySelector("#fitting-form");
     const fittingErrorEl = document.querySelector("#fitting-form-error");
+    const fittingDiscordForm = document.querySelector("#fitting-discord-form");
+    const fittingDiscordWebhookUrl = document.querySelector("#fitting-discord-webhook-url");
+    const fittingDiscordClearWebhook = document.querySelector("#fitting-discord-clear-webhook");
+    const fittingDiscordDestination = document.querySelector("#fitting-discord-destination");
+    const fittingDiscordSender = document.querySelector("#fitting-discord-sender");
+    const fittingDiscordForumPosts = document.querySelector("#fitting-discord-forum-posts");
+    const fittingDiscordForumTagIds = document.querySelector("#fitting-discord-forum-tag-ids");
+    const fittingDiscordForumTagMap = document.querySelector("#fitting-discord-forum-tag-map");
+    const fittingDiscordTagChips = document.querySelector("#fitting-discord-tag-chips");
+    const fittingDiscordSave = document.querySelector("#fitting-discord-save");
+    const fittingDiscordMessage = document.querySelector("#fitting-discord-message");
+    const fittingDiscordStatus = document.querySelector("#fitting-discord-status");
     const fittingsEl = document.querySelector("#fittings-list");
     const fittingsStatusEl = document.querySelector("#fittings-status");
     const fittingSearch = document.querySelector("#fitting-search");
@@ -21394,11 +21701,31 @@ help</textarea>
       };
     }
 
+    function fittingDiscordSettingsFromForm() {
+      return {
+        webhook_url: String(fittingDiscordWebhookUrl?.value || "").trim(),
+        clear_webhook_url: Boolean(fittingDiscordClearWebhook?.checked),
+        destination_label: String(fittingDiscordDestination?.value || "Fittings").trim() || "Fittings",
+        sender_name: String(fittingDiscordSender?.value || "Fittings Desk").trim() || "Fittings Desk",
+        public_base_url: "",
+        forum_posts: Boolean(fittingDiscordForumPosts?.checked),
+        forum_tag_ids: discordPostValues(fittingDiscordForumTagIds),
+        forum_tag_map: String(fittingDiscordForumTagMap?.value || "").trim(),
+      };
+    }
+
     function setDiscordPostMessage(message, kind = "") {
       if (!discordPostMessage) return;
       discordPostMessage.textContent = message || "";
       discordPostMessage.classList.toggle("ok", kind === "ok");
       discordPostMessage.classList.toggle("error", kind === "error");
+    }
+
+    function setFittingDiscordMessage(message, kind = "") {
+      if (!fittingDiscordMessage) return;
+      fittingDiscordMessage.textContent = message || "";
+      fittingDiscordMessage.classList.toggle("ok", kind === "ok");
+      fittingDiscordMessage.classList.toggle("error", kind === "error");
     }
 
     function setDirectDiscordMessage(message, kind = "") {
@@ -21443,6 +21770,31 @@ help</textarea>
         return;
       }
       discordPostTagChips.innerHTML = labels.map((label) => {
+        const chipClass = discordTagClass(label);
+        return `<span class="discord-chip ${chipClass}">${escapeHtml(shortDiscordTagLabel(label))}</span>`;
+      }).join("");
+    }
+
+    function renderFittingDiscordTagChips(data = null) {
+      if (!fittingDiscordTagChips) return;
+      const settings = data?.effective_settings || data?.settings || {};
+      const mapText = String(fittingDiscordForumTagMap?.value || settings.forum_tag_map_text || "").trim();
+      const defaultIds = discordPostValues(fittingDiscordForumTagIds).length
+        ? discordPostValues(fittingDiscordForumTagIds)
+        : (settings.forum_tag_ids || []);
+      const entries = mapText
+        .split(/[\\n,]+/)
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      const labels = [
+        ...entries,
+        ...Array.from(defaultIds || []).map((tagId) => `default:${tagId}`),
+      ].slice(0, 12);
+      if (!labels.length) {
+        fittingDiscordTagChips.innerHTML = '<span class="discord-chip muted">No tags configured</span>';
+        return;
+      }
+      fittingDiscordTagChips.innerHTML = labels.map((label) => {
         const chipClass = discordTagClass(label);
         return `<span class="discord-chip ${chipClass}">${escapeHtml(shortDiscordTagLabel(label))}</span>`;
       }).join("");
@@ -21531,6 +21883,60 @@ help</textarea>
       if (discordPostForumTagIds) discordPostForumTagIds.value = (settings.forum_tag_ids || effective.forum_tag_ids || []).join(", ");
       if (discordPostForumTagMap) discordPostForumTagMap.value = settings.forum_tag_map_text || effective.forum_tag_map_text || "";
       updateDiscordPostStatus(data);
+    }
+
+    function updateFittingDiscordStatus(data) {
+      const settings = data?.effective_settings || data?.settings || fittingDiscordSettingsFromForm();
+      if (fittingDiscordStatus) fittingDiscordStatus.textContent = data?.webhook_configured ? "Configured" : "Missing";
+      if (fittingDiscordWebhookUrl && data?.webhook_url_preview) {
+        fittingDiscordWebhookUrl.placeholder = `Configured: ${data.webhook_url_preview}`;
+      }
+      if (fittingDiscordForumPosts) fittingDiscordForumPosts.checked = Boolean(settings.forum_posts);
+      renderFittingDiscordTagChips(data);
+    }
+
+    function applyFittingDiscordSettings(data) {
+      if (!fittingDiscordForm || !data) return;
+      const settings = data.settings || {};
+      const effective = data.effective_settings || settings;
+      if (fittingDiscordWebhookUrl) fittingDiscordWebhookUrl.value = "";
+      if (fittingDiscordClearWebhook) fittingDiscordClearWebhook.checked = false;
+      if (fittingDiscordDestination) fittingDiscordDestination.value = settings.destination_label || effective.destination_label || "Fittings";
+      if (fittingDiscordSender) fittingDiscordSender.value = settings.sender_name || effective.sender_name || "Fittings Desk";
+      if (fittingDiscordForumPosts) fittingDiscordForumPosts.checked = Boolean(settings.forum_posts ?? effective.forum_posts);
+      if (fittingDiscordForumTagIds) fittingDiscordForumTagIds.value = (settings.forum_tag_ids || effective.forum_tag_ids || []).join(", ");
+      if (fittingDiscordForumTagMap) fittingDiscordForumTagMap.value = settings.forum_tag_map_text || effective.forum_tag_map_text || "";
+      updateFittingDiscordStatus(data);
+    }
+
+    async function loadFittingDiscordSettings() {
+      if (!fittingDiscordForm) return;
+      try {
+        setFittingDiscordMessage("Loading Fittings Discord settings...");
+        const response = await fetch("/api/fitting-discord/settings");
+        const data = await readJsonApiResponse(response, "Could not load Fittings Discord settings");
+        applyFittingDiscordSettings(data);
+        setFittingDiscordMessage(`Settings file: ${data.settings_file || "local profile data"}`, "ok");
+      } catch (error) {
+        setFittingDiscordMessage(error.message, "error");
+      }
+    }
+
+    async function saveFittingDiscordSettings() {
+      if (!fittingDiscordForm) return;
+      try {
+        setFittingDiscordMessage("Saving Fittings Discord settings...");
+        const response = await fetch("/api/fitting-discord/settings", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({settings: fittingDiscordSettingsFromForm()}),
+        });
+        const data = await readJsonApiResponse(response, "Could not save Fittings Discord settings");
+        applyFittingDiscordSettings(data);
+        setFittingDiscordMessage(`Saved. ${data.webhook_configured ? "Webhook is configured." : "Webhook is not configured."}`, "ok");
+      } catch (error) {
+        setFittingDiscordMessage(error.message, "error");
+      }
     }
 
     async function loadDiscordPostSettings() {
@@ -22236,6 +22642,7 @@ help</textarea>
             </div>
             <div class="actions">
               <button type="button" data-copy-fitting="1">Copy Fit</button>
+              <button type="button" data-post-fitting-discord="${escapeHtml(fitting.id)}">Post Discord</button>
               ${fittingStatusControls(fitting)}
             </div>
           </div>
@@ -28414,6 +28821,38 @@ help</textarea>
           return;
         }
 
+        const discordButton = event.target.closest("button[data-post-fitting-discord]");
+        if (discordButton) {
+          const card = discordButton.closest("[data-fitting-card]");
+          const status = card ? card.querySelector(".fitting-copy-status") : null;
+          const previousText = discordButton.textContent;
+          try {
+            discordButton.disabled = true;
+            discordButton.textContent = "Posting...";
+            const response = await fetch(`/api/fittings/${discordButton.dataset.postFittingDiscord}/discord`, {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({}),
+            });
+            const data = await readJsonApiResponse(response, "Could not post fitting to Discord");
+            if (status) {
+              status.textContent = data.thread_id ? "Posted to Fittings forum." : "Posted to Discord.";
+              status.classList.remove("error");
+            }
+          } catch (error) {
+            if (status) {
+              status.textContent = error.message || "Discord post failed.";
+              status.classList.add("error");
+            } else {
+              window.alert(error.message || "Discord post failed.");
+            }
+          } finally {
+            discordButton.disabled = false;
+            discordButton.textContent = previousText;
+          }
+          return;
+        }
+
         const statusButton = event.target.closest("button[data-fitting-status-id]");
         if (!statusButton) return;
         const nextStatus = statusButton.dataset.fittingStatus;
@@ -28977,6 +29416,23 @@ help</textarea>
       discordPostSave.addEventListener("click", saveDiscordPostSettings);
     }
 
+    if (fittingDiscordForm) {
+      [
+        fittingDiscordWebhookUrl,
+        fittingDiscordClearWebhook,
+        fittingDiscordDestination,
+        fittingDiscordSender,
+        fittingDiscordForumPosts,
+        fittingDiscordForumTagIds,
+        fittingDiscordForumTagMap,
+      ].forEach((control) => {
+        if (!control) return;
+        control.addEventListener("input", () => renderFittingDiscordTagChips());
+        control.addEventListener("change", () => renderFittingDiscordTagChips());
+      });
+      fittingDiscordSave.addEventListener("click", saveFittingDiscordSettings);
+    }
+
     if (directDiscordPostForm) {
       syncDirectDiscordTypeSegments();
       if (directDiscordTypeSegments) {
@@ -29039,6 +29495,7 @@ help</textarea>
     renderNotes();
     loadDiscordAlertSettings();
     loadDiscordPostSettings();
+    loadFittingDiscordSettings();
     loadFlightStatus();
     loadFlightDiagnostics();
     loadOffers().catch((error) => {
@@ -29306,6 +29763,7 @@ def run_server(args: argparse.Namespace) -> int:
         discord_webhook_url=args.discord_webhook_url,
         discord_alert_settings_path=args.discord_alert_settings_path,
         discord_post_settings_path=args.discord_post_settings_path,
+        discord_fitting_post_settings_path=args.discord_fitting_post_settings_path,
         discord_timeout_seconds=args.discord_timeout,
         discord_forum_posts=args.discord_forum_posts,
         discord_forum_tag_ids=parse_csv(args.discord_forum_tag_ids),
@@ -29345,6 +29803,7 @@ def run_server(args: argparse.Namespace) -> int:
         print("Discord webhook posting is disabled. Set --discord-webhook-url to post new offers.")
     print(f"Discord alert settings file: {args.discord_alert_settings_path}")
     print(f"Discord posting settings file: {args.discord_post_settings_path}")
+    print(f"Discord fitting posting settings file: {args.discord_fitting_post_settings_path}")
     if args.admin_token:
         print("Remote offer creation/status writes require the market admin token.")
     if args.trusted_members_can_write_market:
@@ -29392,6 +29851,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path(os.environ.get("CORP_MARKET_DISCORD_POST_SETTINGS_PATH", DEFAULT_DISCORD_POST_SETTINGS_PATH)),
         help="Local JSON file used to persist Discord market-posting settings.",
+    )
+    serve.add_argument(
+        "--discord-fitting-post-settings-path",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "CORP_MARKET_DISCORD_FITTING_POST_SETTINGS_PATH",
+                DEFAULT_DISCORD_FITTING_POST_SETTINGS_PATH,
+            )
+        ),
+        help="Local JSON file used to persist Discord shared-fitting posting settings.",
     )
     serve.add_argument(
         "--discord-timeout",
