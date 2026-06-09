@@ -18722,7 +18722,7 @@ help</textarea>
                 </label>
                 <label>Broker fee estimate
                   <input id="acq-broker-fee" name="broker_fee_percent" type="number" min="0" max="20" step="0.1" inputmode="decimal" value="3">
-                  <small class="input-note">Adjust this to your character and structure. This version does not read wallet/order skills.</small>
+                  <small class="input-note">To avoid requesting wallet scopes, enter this manually; broker fees can change from station to station.</small>
                 </label>
               </div>
               <div class="row">

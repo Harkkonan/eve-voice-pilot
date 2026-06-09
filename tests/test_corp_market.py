@@ -390,6 +390,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Route scan rehearsal" in page
     assert "Run This Portfolio Test" in page
     assert "Buy-order rehearsal" in page
+    assert "To avoid requesting wallet scopes, enter this manually" in page
     assert "id=\"haul-route-form\"" in page
     assert "id=\"haul-origin\"" in page
     assert "id=\"haul-origin-suggestions\"" in page
