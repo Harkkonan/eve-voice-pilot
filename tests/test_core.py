@@ -17,7 +17,17 @@ from eve_voice_pilot.commands import (
     strip_response_call_sign,
 )
 from eve_voice_pilot.input_sender import INPUT, INPUT_UNION, KEYBDINPUT, parse_key_chord
-from eve_voice_pilot.local_transcription import command_phrases_for_grammar
+from eve_voice_pilot.local_transcription import (
+    DEFAULT_MODEL_LABEL,
+    DEFAULT_MODEL_PATH,
+    RECOMMENDED_MODEL_LABEL,
+    RECOMMENDED_MODEL_PATH,
+    clean_model_path,
+    command_phrases_for_grammar,
+    model_display,
+    model_path_from_setting,
+    model_status,
+)
 from eve_voice_pilot.speech_responses import (
     DEFAULT_POWER_BALLAD_INSTRUCTIONS,
     DEFAULT_RESPONSE_ENGINE,
@@ -259,6 +269,14 @@ def test_voice_standard_orbit_sends_one_keypress():
     assert orbit.press_count == DEFAULT_PRESS_COUNT
     assert orbit.repeat_gap_seconds == DEFAULT_REPEAT_GAP_SECONDS
     assert "press_count" not in orbit.to_dict()
+
+
+def test_local_model_helpers_use_default_and_recommended_paths():
+    assert clean_model_path(DEFAULT_MODEL_LABEL) == ""
+    assert model_path_from_setting("") == DEFAULT_MODEL_PATH
+    assert clean_model_path(RECOMMENDED_MODEL_LABEL) == str(RECOMMENDED_MODEL_PATH)
+    assert model_display(str(RECOMMENDED_MODEL_PATH)) == RECOMMENDED_MODEL_LABEL
+    assert str(DEFAULT_MODEL_PATH) in model_status("")
 
 
 def test_local_grammar_uses_normalized_unique_phrases():

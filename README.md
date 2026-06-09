@@ -20,10 +20,27 @@ The first run creates a local `.venv` folder, installs the Python packages, and 
 
 ## Speech Engine
 
-The `Speech engine` setting has two choices:
+The `Speech engine` setting has three choices:
 
 - `Local (offline)`: uses the downloaded Vosk model. This is the default, does not use OpenAI credits, and should feel quick once the model is loaded.
+- `Whisper local dictation`: uses optional local Whisper through `faster-whisper`. Use it for note-style speech or testing better language recognition. It does not support fast partial command firing, and command sending still requires an exact configured phrase match.
 - `OpenAI realtime`: uses OpenAI transcription. Use this if you want to compare recognition quality or use it as a fallback.
+
+For better offline command recognition, install the recommended larger Vosk model:
+
+```powershell
+.\scripts\download-vosk-model.ps1 -ModelName vosk-model-en-us-0.22-lgraph
+```
+
+Then choose `Recommended lgraph (vosk-model-en-us-0.22-lgraph)` in `Local model`.
+
+For optional local Whisper dictation, install the extra package:
+
+```powershell
+.\scripts\install-whisper-dictation.ps1
+```
+
+The first Whisper use may download the `base.en` model into the normal user model cache. The app records a short temporary WAV for the phrase, transcribes it locally, and deletes the temporary file.
 
 For `OpenAI realtime`, paste your API key into the app. A ChatGPT subscription does not automatically pay for API usage. If you check `Remember on this PC`, the app saves it in your Windows user profile using Windows data protection.
 

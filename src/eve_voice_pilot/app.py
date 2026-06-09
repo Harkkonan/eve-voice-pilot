@@ -24,7 +24,15 @@ from .commands import (
 from .config import load_settings, save_settings
 from .hotkey import GlobalHotkey
 from .input_sender import active_window_title, parse_key_chord, send_key_chord
-from .local_transcription import LocalVoskTranscriber
+from .local_transcription import (
+    LocalVoskTranscriber,
+    clean_model_path,
+    installed_model_labels,
+    model_display,
+    model_path_from_setting,
+    model_status,
+)
+from .local_whisper import LocalWhisperTranscriber
 from .speech_responses import (
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
@@ -51,8 +59,9 @@ DEFAULT_PROFILE = ROOT / "profiles" / "eve_sample.json"
 USER_PROFILE = ROOT / "profiles" / "my_eve_commands.json"
 DEFAULT_HOTKEY = "PAUSE"
 ENGINE_LOCAL = "Local (offline)"
+ENGINE_WHISPER = "Whisper local dictation"
 ENGINE_OPENAI = "OpenAI realtime"
-SPEECH_ENGINES = [ENGINE_LOCAL, ENGINE_OPENAI]
+SPEECH_ENGINES = [ENGINE_LOCAL, ENGINE_WHISPER, ENGINE_OPENAI]
 
 
 class CommandDialog(simpledialog.Dialog):
@@ -171,9 +180,10 @@ class EveVoicePilotApp(tk.Tk):
         self.profile_path = Path(self.settings.get("profile_path", str(USER_PROFILE)))
         self.profile = self._load_profile()
         self.hotkey: GlobalHotkey | None = None
-        self.transcriber: RealtimeTranscriber | LocalVoskTranscriber | None = None
+        self.transcriber: RealtimeTranscriber | LocalVoskTranscriber | LocalWhisperTranscriber | None = None
         self.transcriber_api_key = ""
         self.transcriber_engine = ""
+        self.transcriber_model_path = ""
         self.transcriber_command_signature: tuple[tuple[str, tuple[str, ...], str, float, int, float], ...] = ()
         self.transcriber_input_device_index: int | None = None
         self.transcriber_response_call_sign = ""
@@ -383,6 +393,8 @@ class EveVoicePilotApp(tk.Tk):
         if saved_engine not in SPEECH_ENGINES:
             saved_engine = ENGINE_LOCAL
         self.engine_var = tk.StringVar(value=saved_engine)
+        self.voice_model_var = tk.StringVar(value=model_display(self.settings.get("voice_model_path", "")))
+        self.voice_model_status_var = tk.StringVar(value=model_status(self.settings.get("voice_model_path", "")))
         self.api_key_var = tk.StringVar(value=self.settings.get("api_key", ""))
         self.remember_key_var = tk.BooleanVar(value=bool(self.settings.get("api_key_protected")))
         saved_hotkey = str(self.settings.get("hotkey", DEFAULT_HOTKEY)).strip().upper() or DEFAULT_HOTKEY
@@ -416,49 +428,67 @@ class EveVoicePilotApp(tk.Tk):
             pady=5,
         )
 
-        ttk.Label(settings, text="OpenAI API key").grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Entry(settings, textvariable=self.api_key_var, show="*", width=28).grid(row=1, column=1, sticky="ew", pady=5)
-        ttk.Checkbutton(settings, text="Remember on this PC", variable=self.remember_key_var).grid(row=2, column=1, sticky="w")
+        ttk.Label(settings, text="Local model").grid(row=1, column=0, sticky="w", pady=5)
+        self.voice_model_combo = ttk.Combobox(
+            settings,
+            textvariable=self.voice_model_var,
+            values=installed_model_labels(),
+        )
+        self.voice_model_combo.grid(row=1, column=1, sticky="ew", pady=5)
+        self.voice_model_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_voice_model_status())
+        ttk.Button(settings, text="Refresh", command=self._refresh_voice_model_choices).grid(row=1, column=2, sticky="e", padx=(6, 0), pady=5)
+        ttk.Label(settings, textvariable=self.voice_model_status_var, wraplength=360).grid(
+            row=2,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(0, 8),
+        )
 
-        ttk.Label(settings, text="Microphone").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Label(settings, text="OpenAI API key").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Entry(settings, textvariable=self.api_key_var, show="*", width=28).grid(row=3, column=1, columnspan=2, sticky="ew", pady=5)
+        ttk.Checkbutton(settings, text="Remember on this PC", variable=self.remember_key_var).grid(row=4, column=1, columnspan=2, sticky="w")
+
+        ttk.Label(settings, text="Microphone").grid(row=5, column=0, sticky="w", pady=5)
         self.mic_combo = ttk.Combobox(settings, textvariable=self.mic_var, values=self._input_device_labels(), state="readonly")
-        self.mic_combo.grid(row=3, column=1, sticky="ew", pady=5)
+        self.mic_combo.grid(row=5, column=1, columnspan=2, sticky="ew", pady=5)
         mic_buttons = ttk.Frame(settings)
-        mic_buttons.grid(row=4, column=0, columnspan=2, sticky="ew")
+        mic_buttons.grid(row=6, column=0, columnspan=3, sticky="ew")
         self.mic_test_button = ttk.Button(mic_buttons, text="Test Mic", command=self.test_microphone)
         self.mic_test_button.pack(side="left")
         ttk.Button(mic_buttons, text="Refresh Mics", command=self.refresh_microphones).pack(side="left", padx=5)
-        ttk.Progressbar(settings, variable=self.mic_level_var, maximum=100).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        ttk.Label(settings, textvariable=self.mic_status_var, wraplength=360).grid(row=6, column=0, columnspan=2, sticky="ew", pady=(2, 8))
+        ttk.Progressbar(settings, variable=self.mic_level_var, maximum=100).grid(row=7, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        ttk.Label(settings, textvariable=self.mic_status_var, wraplength=360).grid(row=8, column=0, columnspan=3, sticky="ew", pady=(2, 8))
 
-        ttk.Label(settings, text="Hotkey").grid(row=7, column=0, sticky="w", pady=5)
-        ttk.Entry(settings, textvariable=self.hotkey_var, width=16).grid(row=7, column=1, sticky="w", pady=5)
+        ttk.Label(settings, text="Hotkey").grid(row=9, column=0, sticky="w", pady=5)
+        ttk.Entry(settings, textvariable=self.hotkey_var, width=16).grid(row=9, column=1, sticky="w", pady=5)
 
-        ttk.Checkbutton(settings, text="Practice mode", variable=self.practice_mode_var).grid(row=8, column=0, columnspan=2, sticky="w", pady=4)
-        ttk.Checkbutton(settings, text="Only when this window title is active", variable=self.require_target_var).grid(row=9, column=0, columnspan=2, sticky="w", pady=4)
-        ttk.Entry(settings, textvariable=self.target_title_var).grid(row=10, column=0, columnspan=2, sticky="ew", pady=4)
+        ttk.Checkbutton(settings, text="Practice mode", variable=self.practice_mode_var).grid(row=10, column=0, columnspan=3, sticky="w", pady=4)
+        ttk.Checkbutton(settings, text="Only when this window title is active", variable=self.require_target_var).grid(row=11, column=0, columnspan=3, sticky="w", pady=4)
+        ttk.Entry(settings, textvariable=self.target_title_var).grid(row=12, column=0, columnspan=3, sticky="ew", pady=4)
 
-        ttk.Label(settings, text="Voice responses").grid(row=11, column=0, sticky="w", pady=5)
+        ttk.Label(settings, text="Voice responses").grid(row=13, column=0, sticky="w", pady=5)
         ttk.Combobox(settings, textvariable=self.response_engine_var, values=RESPONSE_ENGINES, state="readonly").grid(
-            row=11,
+            row=13,
             column=1,
+            columnspan=2,
             sticky="ew",
             pady=5,
         )
-        ttk.Label(settings, text="Response call sign").grid(row=12, column=0, sticky="w", pady=5)
-        ttk.Entry(settings, textvariable=self.response_call_sign_var).grid(row=12, column=1, sticky="ew", pady=5)
-        ttk.Label(settings, text="OpenAI voice").grid(row=13, column=0, sticky="w", pady=5)
-        ttk.Combobox(settings, textvariable=self.response_voice_var, values=OPENAI_TTS_VOICES).grid(row=13, column=1, sticky="ew", pady=5)
-        ttk.Label(settings, text="Voice style").grid(row=14, column=0, sticky="w", pady=5)
-        ttk.Entry(settings, textvariable=self.response_style_var).grid(row=14, column=1, sticky="ew", pady=5)
+        ttk.Label(settings, text="Response call sign").grid(row=14, column=0, sticky="w", pady=5)
+        ttk.Entry(settings, textvariable=self.response_call_sign_var).grid(row=14, column=1, columnspan=2, sticky="ew", pady=5)
+        ttk.Label(settings, text="OpenAI voice").grid(row=15, column=0, sticky="w", pady=5)
+        ttk.Combobox(settings, textvariable=self.response_voice_var, values=OPENAI_TTS_VOICES).grid(row=15, column=1, columnspan=2, sticky="ew", pady=5)
+        ttk.Label(settings, text="Voice style").grid(row=16, column=0, sticky="w", pady=5)
+        ttk.Entry(settings, textvariable=self.response_style_var).grid(row=16, column=1, columnspan=2, sticky="ew", pady=5)
         ttk.Button(settings, text="Regenerate Voice Clips", command=self.regenerate_voice_clips).grid(
-            row=15,
+            row=17,
             column=0,
-            columnspan=2,
+            columnspan=3,
             sticky="ew",
             pady=(6, 0),
         )
-        ttk.Button(settings, text="Save Settings", command=self.save_settings).grid(row=16, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Button(settings, text="Save Settings", command=self.save_settings).grid(row=18, column=0, columnspan=3, sticky="ew", pady=(10, 0))
 
         log_frame = ttk.LabelFrame(right, text="System Log", padding=8)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
@@ -607,6 +637,14 @@ class EveVoicePilotApp(tk.Tk):
             self.mic_var.set(self._preferred_input_device_label())
         self.mic_status_var.set("Microphone list refreshed.")
 
+    def _refresh_voice_model_status(self) -> None:
+        self.voice_model_status_var.set(model_status(self.voice_model_var.get()))
+
+    def _refresh_voice_model_choices(self) -> None:
+        self.voice_model_combo.configure(values=installed_model_labels())
+        self._refresh_voice_model_status()
+        self.log("Local speech model list refreshed.")
+
     def test_microphone(self) -> None:
         if self.armed or (self.listening_thread and self.listening_thread.is_alive()):
             messagebox.showinfo("Pause first", "Pause Armed Listening before testing the microphone.", parent=self)
@@ -670,6 +708,7 @@ class EveVoicePilotApp(tk.Tk):
         settings = {
             "api_key": self.api_key_var.get().strip(),
             "speech_engine": self.engine_var.get(),
+            "voice_model_path": clean_model_path(self.voice_model_var.get()),
             "hotkey": self.hotkey_var.get().strip().upper() or DEFAULT_HOTKEY,
             "input_device": self.mic_var.get().strip(),
             "practice_mode": self.practice_mode_var.get(),
@@ -693,8 +732,17 @@ class EveVoicePilotApp(tk.Tk):
         selected_device = self._selected_input_device_index()
         if self.transcriber and self.transcriber_input_device_index != selected_device:
             self._close_transcriber()
+        selected_model_signature = (
+            str(model_path_from_setting(settings["voice_model_path"]))
+            if settings["speech_engine"] == ENGINE_LOCAL
+            else ""
+        )
+        if self.transcriber and self.transcriber_model_path != selected_model_signature:
+            self._close_transcriber()
         if self.transcriber and self.transcriber_response_call_sign != settings["response_call_sign"]:
             self._close_transcriber()
+        self.voice_model_var.set(model_display(settings["voice_model_path"]))
+        self.voice_model_status_var.set(model_status(settings["voice_model_path"]))
         self._configure_speech_responses()
         self.speech_responses.prepare_commands_async(self.profile.commands)
         self._register_hotkey()
@@ -740,10 +788,21 @@ class EveVoicePilotApp(tk.Tk):
         require_target = self.require_target_var.get()
         target_title = self.target_title_var.get().strip() or "EVE"
         input_device_index = self._selected_input_device_index()
+        voice_model_path_setting = clean_model_path(self.voice_model_var.get())
         response_call_sign = self.response_call_sign_var.get().strip() or DEFAULT_RESPONSE_CALL_SIGN
         self.listening_thread = threading.Thread(
             target=self._listen_worker,
-            args=(api_key, speech_engine, commands, practice_mode, require_target, target_title, input_device_index, response_call_sign),
+            args=(
+                api_key,
+                speech_engine,
+                commands,
+                practice_mode,
+                require_target,
+                target_title,
+                input_device_index,
+                voice_model_path_setting,
+                response_call_sign,
+            ),
             name="listen-worker",
             daemon=True,
         )
@@ -769,6 +828,7 @@ class EveVoicePilotApp(tk.Tk):
         require_target: bool,
         target_title: str,
         input_device_index: int | None,
+        voice_model_path_setting: str,
         response_call_sign: str,
     ) -> None:
         fast_result: dict | None = None
@@ -804,7 +864,14 @@ class EveVoicePilotApp(tk.Tk):
             return not self._should_listen_for_response_call_sign(match.command, response_requested, call_signs)
 
         try:
-            transcriber = self._get_transcriber(api_key, speech_engine, commands, input_device_index, response_call_sign)
+            transcriber = self._get_transcriber(
+                api_key,
+                speech_engine,
+                commands,
+                input_device_index,
+                voice_model_path_setting,
+                response_call_sign,
+            )
             transcript = transcriber.record_until_stopped(
                 self.stop_listening,
                 on_ready=self._listening_ready,
@@ -852,14 +919,18 @@ class EveVoicePilotApp(tk.Tk):
         speech_engine: str,
         commands: list[VoiceCommand],
         input_device_index: int | None,
+        voice_model_path_setting: str,
         response_call_sign: str,
-    ) -> RealtimeTranscriber | LocalVoskTranscriber:
+    ) -> RealtimeTranscriber | LocalVoskTranscriber | LocalWhisperTranscriber:
         command_signature = self._command_signature(commands)
+        selected_model_path = model_path_from_setting(voice_model_path_setting)
+        selected_model_signature = str(selected_model_path) if speech_engine == ENGINE_LOCAL else ""
         with self.transcriber_lock:
             if (
                 not self.transcriber
                 or self.transcriber_engine != speech_engine
                 or self.transcriber_api_key != api_key
+                or self.transcriber_model_path != selected_model_signature
                 or self.transcriber_input_device_index != input_device_index
                 or self.transcriber_command_signature != command_signature
                 or self.transcriber_response_call_sign != response_call_sign
@@ -870,12 +941,19 @@ class EveVoicePilotApp(tk.Tk):
                         commands,
                         self.log_threadsafe,
                         input_device_index=input_device_index,
+                        model_path=selected_model_path,
                         response_call_signs=response_call_signs(response_call_sign),
+                    )
+                elif speech_engine == ENGINE_WHISPER:
+                    self.transcriber = LocalWhisperTranscriber(
+                        self.log_threadsafe,
+                        input_device_index=input_device_index,
                     )
                 else:
                     self.transcriber = RealtimeTranscriber(api_key, self.log_threadsafe, input_device_index=input_device_index)
                 self.transcriber_api_key = api_key
                 self.transcriber_engine = speech_engine
+                self.transcriber_model_path = selected_model_signature
                 self.transcriber_command_signature = command_signature
                 self.transcriber_input_device_index = input_device_index
                 self.transcriber_response_call_sign = response_call_sign
@@ -894,6 +972,7 @@ class EveVoicePilotApp(tk.Tk):
             self.transcriber = None
             self.transcriber_api_key = ""
             self.transcriber_engine = ""
+            self.transcriber_model_path = ""
             self.transcriber_command_signature = ()
             self.transcriber_input_device_index = None
             self.transcriber_response_call_sign = ""
@@ -907,10 +986,11 @@ class EveVoicePilotApp(tk.Tk):
             return
         commands = list(self.profile.commands)
         input_device_index = self._selected_input_device_index()
+        voice_model_path_setting = clean_model_path(self.voice_model_var.get())
         response_call_sign = self.response_call_sign_var.get().strip() or DEFAULT_RESPONSE_CALL_SIGN
         threading.Thread(
             target=self._warm_connection_worker,
-            args=(api_key, speech_engine, commands, input_device_index, response_call_sign),
+            args=(api_key, speech_engine, commands, input_device_index, voice_model_path_setting, response_call_sign),
             name="warm-speech-worker",
             daemon=True,
         ).start()
@@ -921,10 +1001,18 @@ class EveVoicePilotApp(tk.Tk):
         speech_engine: str,
         commands: list[VoiceCommand],
         input_device_index: int | None,
+        voice_model_path_setting: str,
         response_call_sign: str,
     ) -> None:
         try:
-            self._get_transcriber(api_key, speech_engine, commands, input_device_index, response_call_sign).warm_up()
+            self._get_transcriber(
+                api_key,
+                speech_engine,
+                commands,
+                input_device_index,
+                voice_model_path_setting,
+                response_call_sign,
+            ).warm_up()
         except Exception as exc:
             self.events.put(("log", f"Could not warm {speech_engine} connection: {exc}"))
 

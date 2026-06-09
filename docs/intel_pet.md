@@ -224,9 +224,9 @@ To return to practice mode:
 .\scripts\run_intel_pet.ps1 --enable-voice-listener --no-voice-command-sending
 ```
 
-The listener uses your saved EVE Voice Pilot command profile when available, then falls back to the sample profile. You can choose the speech engine, microphone, and call sign in `Options` > `Voice`.
+The listener uses your saved EVE Voice Pilot command profile when available, then falls back to the sample profile. You can choose the speech engine, microphone, local Vosk model, and call sign in `Options` > `Voice`.
 
-OpenAI realtime transcription needs a saved EVE Voice Pilot API key on this PC, or one of the same local environment variables used for spoken pet messages. Local/offline transcription needs the Vosk model from setup.
+Use `Local (offline)` plus the recommended Vosk model for command phrases. Use `Whisper local dictation` when you want better note-style language recognition; it is slower, does not do fast partial command firing, and still routes final text through the same exact-match command checks. OpenAI realtime transcription needs a saved EVE Voice Pilot API key on this PC, or one of the same local environment variables used for spoken pet messages. Local/offline transcription needs the Vosk model from setup.
 
 ### Local Recognition Models
 
@@ -249,6 +249,20 @@ Recommended lgraph (vosk-model-en-us-0.22-lgraph)
 ```
 
 The status line shows whether the selected model is installed. Model files stay under the ignored local `models\` folder and should not be committed.
+
+For optional local Whisper dictation:
+
+```powershell
+.\scripts\install-whisper-dictation.ps1
+```
+
+Then choose:
+
+```text
+Whisper local dictation
+```
+
+The first Whisper use may download the `base.en` model into the normal user model cache. The pet records one short temporary phrase WAV, transcribes it locally, deletes the temporary WAV, and does not save transcripts unless you deliberately send a Discord note.
 
 ### Voice Lab
 

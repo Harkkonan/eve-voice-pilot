@@ -33,6 +33,7 @@ from eve_voice_pilot.intel_pet import (
     DEFAULT_VOICE_TARGET_TITLE,
     RECOMMENDED_VOICE_MODEL_LABEL,
     USER_VOICE_PROFILE,
+    VOICE_ENGINE_WHISPER,
     IDLE_SPRITE_SEQUENCE,
     KILL_SPRITE_STEPS,
     LONG_COMBAT_SPRITE_STEPS,
@@ -455,6 +456,7 @@ def test_spoken_pet_text_collapses_bubble_newlines():
 def test_voice_input_device_display_uses_system_default_label():
     assert clean_voice_input_device(DEFAULT_INPUT_DEVICE_LABEL) == ""
     assert voice_input_device_display("") == DEFAULT_INPUT_DEVICE_LABEL
+    assert clean_voice_engine(VOICE_ENGINE_WHISPER) == VOICE_ENGINE_WHISPER
     assert clean_voice_engine("not-real") == DEFAULT_VOICE_ENGINE
     assert clean_voice_target_title("") == DEFAULT_VOICE_TARGET_TITLE
 

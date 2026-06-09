@@ -36,6 +36,8 @@ DEFAULT_MODEL_NAME = "vosk-model-small-en-us-0.15"
 RECOMMENDED_MODEL_NAME = "vosk-model-en-us-0.22-lgraph"
 DEFAULT_MODEL_PATH = MODELS_ROOT / DEFAULT_MODEL_NAME
 RECOMMENDED_MODEL_PATH = MODELS_ROOT / RECOMMENDED_MODEL_NAME
+DEFAULT_MODEL_LABEL = f"Default small ({DEFAULT_MODEL_NAME})"
+RECOMMENDED_MODEL_LABEL = f"Recommended lgraph ({RECOMMENDED_MODEL_NAME})"
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,57 @@ def command_phrases_for_grammar(commands: list[VoiceCommand], response_call_sign
             phrases.add(f"{phrase} {normalized_call_sign}")
             phrases.add(f"{normalized_call_sign} {phrase}")
     return sorted(phrases)
+
+
+def clean_model_path(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text == DEFAULT_MODEL_LABEL:
+        return ""
+    if text == RECOMMENDED_MODEL_LABEL:
+        return str(RECOMMENDED_MODEL_PATH)
+    if text.startswith("Installed: "):
+        text = text.split("Installed: ", maxsplit=1)[1].strip()
+    return text
+
+
+def model_path_from_setting(settings_value: object) -> Path:
+    cleaned = clean_model_path(settings_value)
+    if not cleaned:
+        return DEFAULT_MODEL_PATH
+    path = Path(cleaned).expanduser()
+    return path if path.is_absolute() else ROOT / path
+
+
+def model_display(settings_value: object) -> str:
+    cleaned = clean_model_path(settings_value)
+    if not cleaned:
+        return DEFAULT_MODEL_LABEL
+    path = model_path_from_setting(cleaned)
+    try:
+        if path.resolve() == RECOMMENDED_MODEL_PATH.resolve():
+            return RECOMMENDED_MODEL_LABEL
+    except OSError:
+        pass
+    return cleaned
+
+
+def installed_model_labels() -> tuple[str, ...]:
+    labels = [DEFAULT_MODEL_LABEL, RECOMMENDED_MODEL_LABEL]
+    if MODELS_ROOT.exists():
+        for path in sorted(MODELS_ROOT.iterdir()):
+            if path.is_dir() and (path / "conf" / "model.conf").exists():
+                label = DEFAULT_MODEL_LABEL if path == DEFAULT_MODEL_PATH else f"Installed: {path}"
+                if label not in labels:
+                    labels.append(label)
+    return tuple(labels)
+
+
+def model_status(settings_value: object) -> str:
+    path = model_path_from_setting(settings_value)
+    config = path / "conf" / "model.conf"
+    if config.exists():
+        return f"Model ready: {path}"
+    return f"Model missing: {path}. Run .\\scripts\\download-vosk-model.ps1 -ModelName {path.name}"
 
 
 class LocalVoskTranscriber:

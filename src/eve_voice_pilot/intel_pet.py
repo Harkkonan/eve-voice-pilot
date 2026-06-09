@@ -68,6 +68,7 @@ from eve_voice_pilot.local_transcription import (
     LocalRecognitionDiagnostic,
     LocalVoskTranscriber,
 )
+from eve_voice_pilot.local_whisper import LocalWhisperTranscriber
 from eve_voice_pilot.speech_responses import (
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
@@ -94,8 +95,9 @@ DEFAULT_VOICE_PREVIEW_TEXT = "Intel Pet voice online. Systems are green."
 DEFAULT_VOICE_PROFILE = ROOT / "profiles" / "eve_sample.json"
 USER_VOICE_PROFILE = ROOT / "profiles" / "my_eve_commands.json"
 VOICE_ENGINE_LOCAL = "Local (offline)"
+VOICE_ENGINE_WHISPER = "Whisper local dictation"
 VOICE_ENGINE_OPENAI = "OpenAI realtime"
-VOICE_ENGINES = (VOICE_ENGINE_LOCAL, VOICE_ENGINE_OPENAI)
+VOICE_ENGINES = (VOICE_ENGINE_LOCAL, VOICE_ENGINE_WHISPER, VOICE_ENGINE_OPENAI)
 DEFAULT_VOICE_ENGINE = VOICE_ENGINE_LOCAL
 DEFAULT_INPUT_DEVICE_LABEL = "System default"
 DEFAULT_VOICE_TARGET_TITLE = "EVE"
@@ -2622,7 +2624,7 @@ def run_overlay(
         threading.Thread(target=location_watcher, daemon=True).start()
 
     def voice_practice_watcher() -> None:
-        transcriber: LocalVoskTranscriber | RealtimeTranscriber | None = None
+        transcriber: LocalVoskTranscriber | LocalWhisperTranscriber | RealtimeTranscriber | None = None
         transcriber_signature: tuple[Any, ...] | None = None
         pending_note_capture = False
         ready_announced = False
@@ -2663,6 +2665,11 @@ def run_overlay(
                     if voice_engine == VOICE_ENGINE_OPENAI:
                         transcriber = RealtimeTranscriber(
                             api_key,
+                            lambda text: alert_queue.put(f"Voice listener: {text}"),
+                            input_device_index=input_device_index,
+                        )
+                    elif voice_engine == VOICE_ENGINE_WHISPER:
+                        transcriber = LocalWhisperTranscriber(
                             lambda text: alert_queue.put(f"Voice listener: {text}"),
                             input_device_index=input_device_index,
                         )
