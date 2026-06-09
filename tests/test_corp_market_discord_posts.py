@@ -1,6 +1,8 @@
 import json
+import http.client
 from pathlib import Path
 import sys
+import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -13,6 +15,55 @@ WEBHOOK_URL = "https://discord.com/api/webhooks/111111111111111111/test-token-va
 DEFAULT_TAG_ID = "222222222222222222"
 WTS_TAG_ID = "333333333333333333"
 MINERALS_TAG_ID = "444444444444444444"
+
+
+def _start_public_discord_post_server(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    session_store = corp_market.FlightEsiSessionStore()
+    pilot = corp_market.VerifiedPilot(
+        character_id=12345,
+        character_name="Dandin Ridderston",
+        corporation_id=98811080,
+        corporation_name="Test Corp",
+        membership_ok=True,
+    )
+    session_id = session_store.create(pilot, access_token="test-access-token")
+    server = corp_market.build_http_server(
+        "127.0.0.1",
+        0,
+        store,
+        public_base_url="https://market.example.test",
+        public_hosting_mode=True,
+        sso_config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://market.example.test/flight/callback",
+            allowed_corporation_ids=(98811080,),
+        ),
+        flight_session_store=session_store,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, session_id
+
+
+def _post_json(server, path, payload, *, session_id=""):
+    host, port = server.server_address
+    headers = {"Content-Type": "application/json"}
+    if session_id:
+        headers["Cookie"] = f"{corp_market.FLIGHT_SESSION_COOKIE_NAME}={session_id}"
+    connection = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        connection.request("POST", path, body=json.dumps(payload), headers=headers)
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+    finally:
+        connection.close()
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        data = {}
+    return response.status, data, body
 
 
 def test_discord_post_settings_round_trip_redacts_webhook_from_response(tmp_path):
@@ -136,6 +187,66 @@ def test_direct_discord_market_order_post_stays_manual():
     assert "Market Order Mexallon x500,000 at Amarr | Regional sell order" in payload["content"]
     assert "market order" in payload_text
     assert "manually" in payload_text
+
+
+def test_direct_discord_post_preview_uses_read_access_in_public_mode(tmp_path):
+    server, thread, session_id = _start_public_discord_post_server(tmp_path)
+    try:
+        status, data, body = _post_json(
+            server,
+            "/api/discord-post/direct",
+            {
+                "send": False,
+                "post": {
+                    "post_type": "wtb",
+                    "category": "minerals",
+                    "item_name": "Isogen",
+                    "quantity": "1,000,000",
+                    "price_text": "290 ISK per unit",
+                    "location": "Dihra 24",
+                    "details": "Contract manually in EVE.",
+                },
+            },
+            session_id=session_id,
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert status == 200, body
+    assert data["ok"] is True
+    assert data["sent_to_discord"] is False
+    assert data["preview_payload"]["embeds"][0]["title"] == "WTB Isogen x1,000,000 at Dihra 24 | 290 ISK per unit"
+
+
+def test_direct_discord_post_send_still_requires_write_access_in_public_mode(tmp_path):
+    server, thread, session_id = _start_public_discord_post_server(tmp_path)
+    try:
+        status, data, body = _post_json(
+            server,
+            "/api/discord-post/direct",
+            {
+                "send": True,
+                "settings": {"webhook_url": WEBHOOK_URL},
+                "post": {
+                    "post_type": "wtb",
+                    "category": "minerals",
+                    "item_name": "Isogen",
+                    "quantity": "1,000,000",
+                    "price_text": "290 ISK per unit",
+                },
+            },
+            session_id=session_id,
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert status == 403, body
+    assert data["ok"] is False
+    assert "market admin token or trusted SSO member write access" in data["error"]
 
 
 def test_discord_market_listing_payload_accepts_sender_name(tmp_path):

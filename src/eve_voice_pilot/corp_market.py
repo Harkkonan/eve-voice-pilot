@@ -13406,7 +13406,7 @@ def build_http_server(
                 self._handle_discord_post_settings_save()
                 return
             if path == "/api/discord-post/direct":
-                if not self._require_write_access():
+                if not self._require_public_read_access():
                     return
                 self._handle_direct_discord_post()
                 return
@@ -13636,6 +13636,8 @@ def build_http_server(
                 send = query_bool(payload.get("send"), default=False)
                 result = None
                 if send:
+                    if not self._require_write_access():
+                        return
                     if not effective_settings.webhook_url:
                         raise CorpMarketError("Discord webhook is not configured for direct posts.")
                     result = post_discord_webhook(
