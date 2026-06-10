@@ -62,7 +62,7 @@ profiles/flight_workbench_actions.jsonl
 The first version allows fixed, allowlisted actions only:
 
 - Start or stop the local Corp Market server through `scripts/run_corp_market.ps1`.
-- Start or stop a managed SSH tunnel from the saved config.
+- Start or stop a managed SSH tunnel from the saved config. The local app host and tunnel remote host must stay loopback-only.
 - Check local `/api/health` and `/api/flight/diagnostics`.
 - Check static cache preflight.
 - Run local `git status --short --branch` and `git diff --check`.
@@ -87,3 +87,5 @@ Keep these outside the workbench for now:
 This is a local operator tool. Do not expose it publicly.
 
 POST actions require an in-memory operator token embedded only in the served local page. The server also refuses non-loopback binds and local browser requests from non-loopback clients. Action logs redact common secret shapes and configured sensitive environment values.
+
+The served page uses a per-run Content Security Policy nonce for its local script and style tags. It also denies framing. This does not make the tool safe for public exposure; it only reduces damage from accidental local HTML/script injection.

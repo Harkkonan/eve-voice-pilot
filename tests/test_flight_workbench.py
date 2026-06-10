@@ -50,6 +50,19 @@ def test_load_config_reads_vm_fields_without_secrets_in_public_dict(tmp_path):
     assert "oci.key" not in json.dumps(public)
 
 
+def test_load_config_rejects_non_loopback_local_targets(tmp_path):
+    config_path = tmp_path / "flight_workbench.local.json"
+    config_path.write_text(json.dumps({"local_app_host": "0.0.0.0"}), encoding="utf-8")
+
+    with pytest.raises(flight_workbench.WorkbenchError, match="Local app host"):
+        flight_workbench.load_config(config_path)
+
+    config_path.write_text(json.dumps({"tunnel_remote_host": "example.com"}), encoding="utf-8")
+
+    with pytest.raises(flight_workbench.WorkbenchError, match="Tunnel remote host"):
+        flight_workbench.load_config(config_path)
+
+
 def test_redact_text_hides_webhooks_tokens_and_extra_values(monkeypatch):
     monkeypatch.setenv("CORP_MARKET_SSO_CLIENT_SECRET", "secret-value-123")
 
@@ -109,6 +122,20 @@ def test_tunnel_start_requires_vm_config():
     assert result_error == "VM SSH is not configured in profiles/flight_workbench.local.json."
 
 
+def test_tunnel_start_rejects_non_loopback_remote_host(tmp_path):
+    key_path = tmp_path / "oci.key"
+    key_path.write_text("private", encoding="utf-8")
+    config = flight_workbench.WorkbenchConfig(
+        ssh_host="203.0.113.10",
+        ssh_user="ubuntu",
+        ssh_key_path=str(key_path),
+        tunnel_remote_host="example.com",
+    )
+
+    with pytest.raises(flight_workbench.WorkbenchError, match="Tunnel remote host"):
+        flight_workbench.tunnel_start(config)
+
+
 def test_vm_git_status_rejects_unsafe_remote_path(tmp_path):
     key_path = tmp_path / "oci.key"
     key_path.write_text("private", encoding="utf-8")
@@ -128,8 +155,27 @@ def test_operator_origin_rules_accept_same_origin_and_reject_other_origin():
     assert flight_workbench.origin_is_allowed("https://evil.example", "", "127.0.0.1:8790") is False
 
 
+def test_summarize_git_status_uses_plain_git_state_words():
+    assert flight_workbench.summarize_git_status(
+        flight_workbench.CommandResult(ok=True, summary="ok", output="## master...origin/master")
+    ) == "Clean"
+    assert flight_workbench.summarize_git_status(
+        flight_workbench.CommandResult(ok=True, summary="ok", output="## master...origin/master [ahead 1]\n M README.md")
+    ) == "Dirty, Ahead"
+    assert flight_workbench.summarize_git_status(
+        flight_workbench.CommandResult(ok=False, summary="failed", output="")
+    ) == "Check failed"
+
+
+def test_make_csp_nonce_uses_standard_base64_charset():
+    nonce = flight_workbench.make_csp_nonce()
+
+    assert len(nonce) >= 20
+    assert all(char.isalnum() or char in "+/=" for char in nonce)
+
+
 def test_build_http_server_refuses_non_loopback_bind():
-    state = flight_workbench.WorkbenchState(flight_workbench.WorkbenchConfig(), "token")
+    state = flight_workbench.WorkbenchState(flight_workbench.WorkbenchConfig(), "token", "nonce")
 
     with pytest.raises(flight_workbench.WorkbenchError):
         flight_workbench.build_http_server("0.0.0.0", 8790, state)
@@ -137,7 +183,7 @@ def test_build_http_server_refuses_non_loopback_bind():
 
 def test_post_action_requires_operator_token_and_accepts_valid_token(tmp_path, monkeypatch):
     config = flight_workbench.WorkbenchConfig(action_log_path=tmp_path / "actions.jsonl")
-    state = flight_workbench.WorkbenchState(config, "operator-token")
+    state = flight_workbench.WorkbenchState(config, "operator-token", "nonce")
     server = flight_workbench.build_http_server("127.0.0.1", 0, state)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -163,6 +209,39 @@ def test_post_action_requires_operator_token_and_accepts_valid_token(tmp_path, m
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_http_security_headers_use_nonce_and_deny_framing(tmp_path):
+    config = flight_workbench.WorkbenchConfig(action_log_path=tmp_path / "actions.jsonl")
+    state = flight_workbench.WorkbenchState(config, "operator-token", "YWJjMTIz")
+    server = flight_workbench.build_http_server("127.0.0.1", 0, state)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+
+    try:
+        response = urlopen(Request(url, method="GET"), timeout=5)
+        body = response.read().decode("utf-8")
+        csp = response.headers["Content-Security-Policy"]
+
+        assert 'nonce="YWJjMTIz"' in body
+        assert "script-src 'nonce-YWJjMTIz'" in csp
+        assert "style-src 'nonce-YWJjMTIz'" in csp
+        assert "'unsafe-inline'" not in csp
+        assert response.headers["X-Frame-Options"] == "DENY"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_render_dashboard_includes_initial_action_metadata():
+    html = flight_workbench.render_dashboard(flight_workbench.WorkbenchConfig(), "operator-token", "YWJjMTIz")
+
+    assert 'nonce="YWJjMTIz"' in html
+    assert "const initialActions =" in html
+    assert "Git Status" in html
+    assert "operator-token" in html
 
 
 def test_append_action_log_redacts_output(tmp_path, monkeypatch):

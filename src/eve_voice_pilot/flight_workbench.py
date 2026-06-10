@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import html
@@ -33,6 +34,7 @@ DEFAULT_VM_APP_DIR = "/home/ubuntu/apps/eve-voice-pilot"
 DEFAULT_VM_SERVICE_NAME = "eve-flight.service"
 ACTION_OUTPUT_LIMIT = 8000
 RECENT_ACTION_LIMIT = 20
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 SENSITIVE_ENV_NAMES = (
     "CORP_MARKET_SSO_CLIENT_ID",
@@ -86,11 +88,11 @@ class WorkbenchConfig:
 
     @property
     def local_base_url(self) -> str:
-        return f"http://{self.local_app_host}:{self.local_app_port}"
+        return f"http://{url_host(self.local_app_host)}:{self.local_app_port}"
 
     @property
     def tunnel_forward(self) -> str:
-        return f"{self.tunnel_local_port}:{self.tunnel_remote_host}:{self.tunnel_remote_port}"
+        return f"{self.tunnel_local_port}:{ssh_forward_host(self.tunnel_remote_host)}:{self.tunnel_remote_port}"
 
     @property
     def ssh_target(self) -> str:
@@ -146,6 +148,10 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def make_csp_nonce() -> str:
+    return base64.b64encode(secrets.token_bytes(18)).decode("ascii")
+
+
 def clean_int(value: Any, default: int, *, minimum: int = 1, maximum: int = 65535) -> int:
     try:
         number = int(value)
@@ -181,13 +187,17 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> WorkbenchConfig:
         if not isinstance(parsed, dict):
             raise WorkbenchError("Workbench config must be a JSON object.")
         data = parsed
+    local_app_host = clean_text(data.get("local_app_host"), DEFAULT_LOCAL_APP_HOST, max_length=80)
+    tunnel_remote_host = clean_text(data.get("tunnel_remote_host"), "127.0.0.1", max_length=80)
+    require_loopback_host(local_app_host, "Local app host")
+    require_loopback_host(tunnel_remote_host, "Tunnel remote host")
     return WorkbenchConfig(
         config_path=path,
         action_log_path=DEFAULT_ACTION_LOG_PATH,
-        local_app_host=clean_text(data.get("local_app_host"), DEFAULT_LOCAL_APP_HOST, max_length=80),
+        local_app_host=local_app_host,
         local_app_port=clean_int(data.get("local_app_port"), DEFAULT_CORP_MARKET_PORT),
         tunnel_local_port=clean_int(data.get("tunnel_local_port"), DEFAULT_TUNNEL_LOCAL_PORT),
-        tunnel_remote_host=clean_text(data.get("tunnel_remote_host"), "127.0.0.1", max_length=80),
+        tunnel_remote_host=tunnel_remote_host,
         tunnel_remote_port=clean_int(data.get("tunnel_remote_port"), DEFAULT_TUNNEL_REMOTE_PORT),
         ssh_host=clean_text(data.get("ssh_host"), "", max_length=180),
         ssh_user=clean_text(data.get("ssh_user"), "ubuntu", max_length=80),
@@ -206,7 +216,20 @@ def repo_relative_path(path: Path) -> str:
 
 
 def is_loopback_host(host: str) -> bool:
-    return host in {"127.0.0.1", "localhost", "::1"}
+    return host in LOOPBACK_HOSTS
+
+
+def require_loopback_host(host: str, label: str) -> None:
+    if not is_loopback_host(host):
+        raise WorkbenchError(f"{label} must be 127.0.0.1, localhost, or ::1.")
+
+
+def url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def ssh_forward_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
 
 
 def client_is_loopback(address: str) -> bool:
@@ -393,6 +416,7 @@ def fetch_json(url: str, *, timeout_seconds: float = 3.0) -> dict[str, Any]:
 
 
 def check_local_health(config: WorkbenchConfig) -> dict[str, Any]:
+    require_loopback_host(config.local_app_host, "Local app host")
     payload = fetch_json(f"{config.local_base_url}/api/health", timeout_seconds=2.5)
     return {
         "ok": bool(payload.get("ok")),
@@ -402,6 +426,7 @@ def check_local_health(config: WorkbenchConfig) -> dict[str, Any]:
 
 
 def check_flight_diagnostics(config: WorkbenchConfig) -> dict[str, Any]:
+    require_loopback_host(config.local_app_host, "Local app host")
     payload = fetch_json(f"{config.local_base_url}/api/flight/diagnostics", timeout_seconds=4.0)
     return {
         "ok": bool(payload.get("ok")),
@@ -441,6 +466,24 @@ def git_diff_check(config: WorkbenchConfig) -> CommandResult:
     return run_command(["git", "diff", "--check"], timeout_seconds=config.command_timeout_seconds)
 
 
+def summarize_git_status(result: CommandResult) -> str:
+    if not result.ok:
+        return "Check failed"
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    branch_line = lines[0] if lines else ""
+    dirty = any(not line.startswith("##") for line in lines)
+    states = []
+    if dirty:
+        states.append("dirty")
+    else:
+        states.append("clean")
+    if "[ahead" in branch_line:
+        states.append("ahead")
+    if "[behind" in branch_line:
+        states.append("behind")
+    return ", ".join(states).title()
+
+
 def local_health_action(config: WorkbenchConfig) -> CommandResult:
     health = check_local_health(config)
     diagnostics = check_flight_diagnostics(config) if health["ok"] else {"ok": False, "skipped": True}
@@ -465,6 +508,7 @@ def cache_preflight_action(config: WorkbenchConfig) -> CommandResult:
 
 
 def local_server_start(config: WorkbenchConfig) -> CommandResult:
+    require_loopback_host(config.local_app_host, "Local app host")
     health = check_local_health(config)
     if health["ok"]:
         return CommandResult(ok=True, summary="Corp Market is already answering on the configured local URL.")
@@ -588,8 +632,7 @@ def tunnel_start(config: WorkbenchConfig) -> CommandResult:
     validate_ssh_config(config)
     if process_is_running("ssh tunnel"):
         return CommandResult(ok=True, summary="SSH tunnel is already managed by this workbench.")
-    if not HOST_RE.match(config.tunnel_remote_host):
-        raise WorkbenchError("Tunnel remote host contains unsupported characters.")
+    require_loopback_host(config.tunnel_remote_host, "Tunnel remote host")
     forward = config.tunnel_forward
     args = ssh_base_args(config)[:-1] + [
         "-N",
@@ -706,6 +749,7 @@ def build_status_payload(config: WorkbenchConfig) -> dict[str, Any]:
         "git": {
             "ok": git_status.ok,
             "summary": git_status.summary,
+            "display": summarize_git_status(git_status),
             "output": git_status.output,
         },
         "environment": environment_status(),
@@ -724,15 +768,17 @@ def escape_attr(value: Any) -> str:
     return html.escape(str(value or ""), quote=True)
 
 
-def render_dashboard(config: WorkbenchConfig, operator_token: str) -> str:
+def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: str) -> str:
     token = escape_attr(operator_token)
+    nonce = escape_attr(csp_nonce)
+    initial_actions_json = json.dumps(public_action_definitions()).replace("</", "<\\/")
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flight Attendant Workbench</title>
-  <style>
+  <style nonce="{nonce}">
     :root {{
       color-scheme: light;
       --bg: #f6f7f5;
@@ -978,9 +1024,9 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str) -> str:
           </div>
         </div>
         <div class="panel">
-          <div class="panel-head"><h2>Last Result</h2><span id="result-status" class="pill neutral">Idle</span></div>
+          <div class="panel-head"><h2>Last Result</h2><span id="result-status" class="pill neutral" aria-live="polite">Idle</span></div>
           <div class="panel-body">
-            <pre id="action-output" class="output">No action has run yet.</pre>
+            <pre id="action-output" class="output" aria-live="polite">No action has run yet.</pre>
           </div>
         </div>
       </div>
@@ -1006,8 +1052,9 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str) -> str:
       </aside>
     </section>
   </main>
-  <script>
+  <script nonce="{nonce}">
     const operatorToken = "{token}";
+    const initialActions = {initial_actions_json};
     const actionOutput = document.querySelector("#action-output");
     const resultStatus = document.querySelector("#result-status");
     const actionGroups = document.querySelector("#action-groups");
@@ -1054,7 +1101,7 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str) -> str:
       setText("#tunnel-status", tunnelManaged.running ? `Managed PID ${{tunnelManaged.pid}}` : (tunnel.configured ? "Configured" : "Not configured"));
       setText("#sso-status", data.environment?.sso_ready ? "Configured" : "Missing");
       document.querySelector("#sso-status").style.color = data.environment?.sso_ready ? "var(--green)" : "var(--amber)";
-      setText("#git-status", data.git?.ok ? "Clean check ran" : "Check failed");
+      setText("#git-status", data.git?.display || (data.git?.ok ? "Checked" : "Check failed"));
       renderActions(data.actions || []);
 
       const config = data.config || {{}};
@@ -1115,6 +1162,7 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str) -> str:
       if (button) runAction(button.dataset.action);
     }});
     document.querySelector("#refresh-button").addEventListener("click", refreshStatus);
+    renderActions(initialActions);
     refreshStatus();
   </script>
 </body>
@@ -1122,9 +1170,10 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str) -> str:
 
 
 class WorkbenchState:
-    def __init__(self, config: WorkbenchConfig, operator_token: str) -> None:
+    def __init__(self, config: WorkbenchConfig, operator_token: str, csp_nonce: str) -> None:
         self.config = config
         self.operator_token = operator_token
+        self.csp_nonce = csp_nonce
 
 
 def build_http_server(host: str, port: int, state: WorkbenchState) -> ThreadingHTTPServer:
@@ -1139,7 +1188,7 @@ def build_http_server(host: str, port: int, state: WorkbenchState) -> ThreadingH
                 return
             path = urlparse(self.path).path
             if path in {"/", "/index.html"}:
-                self._send_html(render_dashboard(state.config, state.operator_token))
+                self._send_html(render_dashboard(state.config, state.operator_token, state.csp_nonce))
                 return
             if path == "/api/status":
                 self._send_json(build_status_payload(state.config))
@@ -1225,8 +1274,13 @@ def build_http_server(host: str, port: int, state: WorkbenchState) -> ThreadingH
 
         def _send_security_headers(self) -> None:
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "same-origin")
-            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+            self.send_header(
+                "Content-Security-Policy",
+                f"default-src 'self'; connect-src 'self'; style-src 'nonce-{state.csp_nonce}'; script-src 'nonce-{state.csp_nonce}'; base-uri 'none'; frame-ancestors 'none'",
+            )
 
         def log_message(self, format: str, *args: Any) -> None:
             sys.stderr.write(f"[flight-workbench] {self.address_string()} - {format % args}\n")
@@ -1237,9 +1291,9 @@ def build_http_server(host: str, port: int, state: WorkbenchState) -> ThreadingH
 def run_server(args: argparse.Namespace) -> int:
     config = load_config(args.config_path)
     token = secrets.token_urlsafe(32)
-    state = WorkbenchState(config=config, operator_token=token)
+    state = WorkbenchState(config=config, operator_token=token, csp_nonce=make_csp_nonce())
     server = build_http_server(args.host, args.port, state)
-    url = f"http://{args.host}:{args.port}/"
+    url = f"http://{url_host(args.host)}:{args.port}/"
     print(f"Flight Attendant Workbench listening at {url}")
     print(f"Config file: {config.config_path}")
     print("Operator token is held in memory and required for button actions.")
