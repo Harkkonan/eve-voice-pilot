@@ -30,6 +30,7 @@ from eve_voice_pilot.corp_market import (
     RouteGraphCache,
     RouteSystem,
     analyze_trade_pnl_transactions,
+    build_asset_ledger_payload,
     build_discord_alert_webhook_payload,
     build_discord_fitting_webhook_payload,
     build_discord_webhook_payload,
@@ -550,6 +551,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/hauling/progress" in page
     assert "/api/flight/acquisition" in page
     assert "/api/flight/acquisition/progress" in page
+    assert "/api/flight/asset-ledger" in page
     assert "/api/flight/appraisal" in page
     assert "/api/flight/trade-pnl" in page
     assert "/api/flight/planetary" in page
@@ -585,9 +587,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-tab-target=\"asset-ledger\"" in page
     assert "id=\"tab-asset-ledger\"" in page
     assert "Trade Asset Ledger" in page
+    assert "id=\"asset-ledger-refresh\"" in page
     assert "id=\"asset-ledger-preview-duck\"" in page
     assert "id=\"asset-ledger-document\" class=\"decision-output\" data-managed-document=\"trade-asset-ledger\" data-managed-document-watch" in page
     assert "id=\"asset-ledger-preview-version\"" in page
+    assert "loadAssetLedger" in page
     assert "previewAssetLedgerDuck" in page
     assert "@@TAB_SCOPE_ASSET_LEDGER@@" not in page
     assert "id=\"flight-blueprint-summary\"" in industry_section
@@ -3398,6 +3402,132 @@ def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypa
     assert payload["industry"]["assets"]["total_units"] == 9000
     assert payload["industry"]["assets"]["locations"] == 2
     assert payload["industry"]["assets"]["top_types"][0]["name"] == "Tritanium"
+
+
+def test_fetch_flight_asset_names_uses_private_asset_name_endpoint(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Ledger Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-assets.read_assets.v1",),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+    requests = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                [
+                    {"item_id": 100, "name": "CM-ASSET-JITA-01"},
+                    {"item_id": 200, "name": "asset12"},
+                ]
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr(corp_market, "urlopen", fake_urlopen)
+
+    names = corp_market.fetch_flight_asset_names(
+        corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session,
+        [200, 100, 100],
+    )
+
+    assert names == {100: "CM-ASSET-JITA-01", 200: "asset12"}
+    request, timeout = requests[0]
+    assert timeout == 45.0
+    assert request.full_url == "https://esi.test/latest/characters/123456789/assets/names/?datasource=tranquility"
+    assert json.loads(request.data.decode("utf-8")) == [100, 200]
+    assert request.headers["Accept"] == "application/json"
+    assert request.headers["Authorization"] == "Bearer access-token"
+
+
+def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Ledger Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-assets.read_assets.v1",),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_assets",
+        lambda config, session: [
+            {"item_id": 100, "type_id": 3296, "quantity": 1, "location_id": 60008494, "location_flag": "Hangar", "location_type": "station"},
+            {"item_id": 101, "type_id": 34, "quantity": 5000, "location_id": 100, "location_flag": "Unlocked", "location_type": "item"},
+            {"item_id": 102, "type_id": 35, "quantity": 200, "location_id": 100, "location_flag": "Unlocked", "location_type": "item"},
+            {"item_id": 200, "type_id": 3296, "quantity": 1, "location_id": 60008494, "location_flag": "Hangar", "location_type": "station"},
+            {"item_id": 300, "type_id": 3296, "quantity": 1, "location_id": 60003760, "location_flag": "Hangar", "location_type": "station"},
+            {"item_id": 301, "type_id": 36, "quantity": 300, "location_id": 300, "location_flag": "Unlocked", "location_type": "item"},
+            {"item_id": 400, "type_id": 3296, "quantity": 1, "location_id": 60008494, "location_flag": "Hangar", "location_type": "station"},
+        ],
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_asset_names",
+        lambda config, session, item_ids: {
+            100: "CM-ASSET-JITA-01",
+            200: "asset12",
+            300: "CM-READY-HAUL",
+            400: "Personal Notes",
+        },
+    )
+
+    def fake_fetch_universe_names(config, ids):
+        return {
+            34: "Tritanium",
+            35: "Pyerite",
+            36: "Mexallon",
+            3296: "Large Standard Container",
+            60008494: "Jita 4-4",
+            60003760: "Amarr VIII",
+        }
+
+    monkeypatch.setattr(corp_market, "fetch_universe_names", fake_fetch_universe_names)
+
+    payload = build_asset_ledger_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+    )
+
+    ledger = payload["ledger"]
+    assert payload["ok"] is True
+    assert ledger["source"] == "esi-assets.read_assets.v1"
+    assert ledger["scanned_asset_count"] == 7
+    assert ledger["named_asset_count"] == 4
+    assert ledger["container_count"] == 3
+    assert ledger["stack_count"] == 3
+    assert ledger["total_units"] == 5500
+    names = {row["container_name"]: row for row in ledger["rows"]}
+    assert set(names) == {"CM-ASSET-JITA-01", "asset12", "CM-READY-HAUL"}
+    assert names["CM-ASSET-JITA-01"]["status_label"] == "Managed asset"
+    assert names["CM-ASSET-JITA-01"]["location_name"] == "Jita 4-4"
+    assert names["CM-ASSET-JITA-01"]["stack_count"] == 2
+    assert [item["type_name"] for item in names["CM-ASSET-JITA-01"]["items"]] == ["Pyerite", "Tritanium"]
+    assert names["asset12"]["stack_count"] == 0
+    assert "no direct child assets" in names["asset12"]["notes"][0]
+    assert names["CM-READY-HAUL"]["status_key"] == "ready-to-haul"
+    assert names["CM-READY-HAUL"]["items"][0]["type_name"] == "Mexallon"
 
 
 def test_load_industry_recipe_cache_reads_compact_cache(tmp_path):

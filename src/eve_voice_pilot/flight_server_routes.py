@@ -22,6 +22,7 @@ FLIGHT_GET_ROUTE_METHODS: dict[str, str] = {
     "/api/flight/hauling/progress": "_handle_flight_hauling_progress",
     "/api/flight/acquisition": "_handle_flight_acquisition",
     "/api/flight/acquisition/progress": "_handle_flight_acquisition_progress",
+    "/api/flight/asset-ledger": "_handle_flight_asset_ledger",
     "/api/flight/trade-pnl": "_handle_flight_trade_pnl",
     "/api/flight/planetary": "_handle_flight_planetary",
     "/api/flight/reprocessing": "_handle_flight_reprocessing",

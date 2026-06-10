@@ -219,6 +219,8 @@ HAUL_SORT_LABELS = {
 }
 MAX_HAUL_EFFICIENCY_FLOOR_ISK = 1_000_000_000_000.0
 PLAYER_STRUCTURE_LOCATION_ID_MIN = 1_000_000_000_000
+ASSET_LEDGER_NAME_LOOKUP_CHUNK_SIZE = 1000
+ASSET_LEDGER_ITEM_PREVIEW_LIMIT = 8
 DEFAULT_ACQUISITION_BUDGET_ISK = 50_000_000.0
 MAX_ACQUISITION_BUDGET_ISK = 10_000_000_000.0
 DEFAULT_ACQUISITION_PICKUP_JUMPS = 2
@@ -1932,6 +1934,46 @@ def fetch_flight_assets(config: EveSsoConfig, session: FlightEsiSession) -> list
         headers=flight_esi_headers(session.access_token),
         label="ESI character assets",
     )
+
+
+def fetch_flight_asset_names(
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    item_ids: Iterable[int],
+) -> dict[int, str]:
+    require_flight_scopes(session, (FLIGHT_ASSETS_SCOPE,))
+    clean_ids = sorted({clean for item in item_ids for clean in [clean_optional_int(item)] if clean})
+    if not clean_ids:
+        return {}
+    base_url = config.esi_base_url.rstrip("/")
+    names: dict[int, str] = {}
+    for index in range(0, len(clean_ids), ASSET_LEDGER_NAME_LOOKUP_CHUNK_SIZE):
+        chunk = clean_ids[index : index + ASSET_LEDGER_NAME_LOOKUP_CHUNK_SIZE]
+        request = Request(
+            f"{base_url}/characters/{session.character_id}/assets/names/?datasource=tranquility",
+            data=json.dumps(chunk).encode("utf-8"),
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                **flight_esi_headers(session.access_token),
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=45.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise CorpMarketError(f"ESI asset-name lookup failed: {exc}") from exc
+        if not isinstance(payload, list):
+            raise CorpMarketError("ESI asset-name lookup returned unexpected data.")
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            item_id = clean_optional_int(item.get("item_id"))
+            name = str(item.get("name") or "").strip()
+            if item_id and name:
+                names[item_id] = name
+    return names
 
 
 def fetch_flight_skills(config: EveSsoConfig, session: FlightEsiSession) -> dict[str, Any]:
@@ -4334,6 +4376,155 @@ def fetch_universe_names(config: EveSsoConfig, ids: Iterable[int]) -> dict[int, 
                 if item_id > 0 and name:
                     names[item_id] = name
     return names
+
+
+def asset_ledger_container_status(name: str) -> dict[str, str] | None:
+    compact = re.sub(r"[\s_-]+", "", str(name or "").strip().casefold())
+    if not compact:
+        return None
+    if compact.startswith("cmreadyhaul") or compact.startswith("readyhaul"):
+        return {"key": "ready-to-haul", "label": "Ready to haul", "reason": "ready-haul container name"}
+    if compact.startswith("cmasset") or compact.startswith("cmledger"):
+        return {"key": "asset", "label": "Managed asset", "reason": "CM asset container name"}
+    if compact.startswith("asset"):
+        return {"key": "asset", "label": "Managed asset", "reason": "asset container name"}
+    return None
+
+
+def asset_ledger_location_name(location_id: int, names: Mapping[int, str]) -> str:
+    if location_id <= 0:
+        return "Unknown location"
+    if location_id >= PLAYER_STRUCTURE_LOCATION_ID_MIN:
+        return f"Structure {location_id}"
+    return names.get(location_id) or f"Location {location_id}"
+
+
+def build_asset_ledger_items(
+    children: Iterable[dict[str, Any]],
+    *,
+    type_names: Mapping[int, str],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for child in children:
+        type_id = clean_optional_int(child.get("type_id")) or 0
+        quantity = clean_int(child.get("quantity"), 0)
+        item_id = clean_optional_int(child.get("item_id")) or 0
+        items.append(
+            {
+                "item_id": item_id,
+                "type_id": type_id,
+                "type_name": type_names.get(type_id) or f"Type {type_id}",
+                "quantity": max(0, quantity),
+                "location_flag": str(child.get("location_flag") or ""),
+                "location_type": str(child.get("location_type") or ""),
+                "is_singleton": bool(child.get("is_singleton")),
+            }
+        )
+    return sorted(items, key=lambda item: (str(item.get("type_name") or ""), int(item.get("item_id") or 0)))
+
+
+def build_asset_ledger_payload(*, config: EveSsoConfig, session: FlightEsiSession) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_ASSETS_SCOPE,))
+    assets = [item for item in fetch_flight_assets(config, session) if isinstance(item, dict)]
+    asset_item_ids = [item_id for asset in assets for item_id in [clean_optional_int(asset.get("item_id"))] if item_id]
+    asset_names = fetch_flight_asset_names(config, session, asset_item_ids)
+    children_by_location_id: dict[int, list[dict[str, Any]]] = {}
+    for asset in assets:
+        location_id = clean_optional_int(asset.get("location_id"))
+        if location_id:
+            children_by_location_id.setdefault(location_id, []).append(asset)
+
+    managed_containers: list[tuple[dict[str, Any], str, dict[str, str]]] = []
+    for asset in assets:
+        item_id = clean_optional_int(asset.get("item_id"))
+        if not item_id:
+            continue
+        name = asset_names.get(item_id, "")
+        status = asset_ledger_container_status(name)
+        if status is not None:
+            managed_containers.append((asset, name, status))
+
+    child_assets = [
+        child
+        for container, _name, _status in managed_containers
+        for child in children_by_location_id.get(clean_optional_int(container.get("item_id")) or 0, [])
+        if child is not container
+    ]
+    type_ids = sorted({clean_optional_int(item.get("type_id")) or 0 for item in child_assets if clean_optional_int(item.get("type_id"))})
+    container_type_ids = sorted(
+        {clean_optional_int(container.get("type_id")) or 0 for container, _name, _status in managed_containers if clean_optional_int(container.get("type_id"))}
+    )
+    location_ids = sorted(
+        {
+            clean_optional_int(container.get("location_id")) or 0
+            for container, _name, _status in managed_containers
+            if (clean_optional_int(container.get("location_id")) or 0) < PLAYER_STRUCTURE_LOCATION_ID_MIN
+        }
+    )
+    lookup_names: dict[int, str] = {}
+    lookup_errors: list[str] = []
+    for lookup_ids, label in ((type_ids + container_type_ids, "item type"), (location_ids, "location")):
+        if not lookup_ids:
+            continue
+        try:
+            lookup_names.update(fetch_universe_names(config, lookup_ids))
+        except CorpMarketError as exc:
+            lookup_errors.append(f"Could not resolve {label} names: {exc}")
+
+    rows: list[dict[str, Any]] = []
+    for container, name, status in managed_containers:
+        container_item_id = clean_optional_int(container.get("item_id")) or 0
+        location_id = clean_optional_int(container.get("location_id")) or 0
+        children = [
+            child
+            for child in children_by_location_id.get(container_item_id, [])
+            if (clean_optional_int(child.get("item_id")) or 0) != container_item_id
+        ]
+        items = build_asset_ledger_items(children, type_names=lookup_names)
+        total_units = sum(int(item.get("quantity") or 0) for item in items)
+        rows.append(
+            {
+                "container_item_id": container_item_id,
+                "container_name": name,
+                "container_type_id": clean_optional_int(container.get("type_id")) or 0,
+                "container_type_name": lookup_names.get(clean_optional_int(container.get("type_id")) or 0)
+                or f"Type {clean_optional_int(container.get('type_id')) or 0}",
+                "status_key": status["key"],
+                "status_label": status["label"],
+                "match_reason": status["reason"],
+                "location_id": location_id,
+                "location_name": asset_ledger_location_name(location_id, lookup_names),
+                "location_flag": str(container.get("location_flag") or ""),
+                "location_type": str(container.get("location_type") or ""),
+                "stack_count": len(items),
+                "unique_types": len({int(item.get("type_id") or 0) for item in items if int(item.get("type_id") or 0) > 0}),
+                "total_units": total_units,
+                "items": items[:ASSET_LEDGER_ITEM_PREVIEW_LIMIT],
+                "item_preview_limit": ASSET_LEDGER_ITEM_PREVIEW_LIMIT,
+                "truncated_items": max(0, len(items) - ASSET_LEDGER_ITEM_PREVIEW_LIMIT),
+                "notes": [] if items else ["Container is tracked but has no direct child assets in the latest ESI asset tree."],
+            }
+        )
+    rows.sort(key=lambda row: (str(row.get("status_key") or ""), str(row.get("container_name") or "").casefold()))
+    notes = list(lookup_errors)
+    if not rows:
+        notes.append("No managed asset containers were found. Rename a freight container to asset, asset12, CM-ASSET-*, or CM-READY-HAUL and refresh.")
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "ledger": {
+            "source": FLIGHT_ASSETS_SCOPE,
+            "scanned_asset_count": len(assets),
+            "named_asset_count": len(asset_names),
+            "container_count": len(rows),
+            "stack_count": sum(int(row.get("stack_count") or 0) for row in rows),
+            "total_units": sum(int(row.get("total_units") or 0) for row in rows),
+            "rows": rows,
+            "naming_hint": "Rename freight containers as asset, asset12, CM-ASSET-*, or CM-READY-HAUL to include them here.",
+            "notes": notes,
+        },
+    }
 
 
 def build_flight_industry_payload(*, config: EveSsoConfig, session: FlightEsiSession) -> dict[str, Any]:
@@ -13292,6 +13483,17 @@ def build_http_server(
                 return
             self._send_json(appraisal)
 
+        def _handle_flight_asset_ledger(self) -> None:
+            session = self._require_flight_session("loading the trade asset ledger")
+            if session is None:
+                return
+            try:
+                payload = build_asset_ledger_payload(config=sso_config, session=session)
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
         def _handle_flight_trade_pnl(self) -> None:
             session = self._require_flight_session("analyzing trade profit and loss")
             if session is None:
@@ -20112,6 +20314,7 @@ help</textarea>
               <span>For the next backend slice, freight containers named like <code>CM-ASSET-JITA-01</code> or <code>CM-READY-HAUL</code> can become the source buckets for Hauler route planning.</span>
             </div>
             <div class="completed-run-actions">
+              <button id="asset-ledger-refresh" class="primary" type="button">Refresh Ledger</button>
               <button id="asset-ledger-preview-duck" class="secondary" type="button" data-no-plex>Preview Duck</button>
               <a class="button-link ghost-link" href="#acquisition">Open Portfolio</a>
               <a class="button-link ghost-link" href="#hauling">Open Hauler</a>
@@ -21030,6 +21233,7 @@ help</textarea>
     const acqPostTestStatus = document.querySelector("#acq-post-test-status");
     const acqPostTestResults = document.querySelector("#acq-post-test-results");
     const acqResults = document.querySelector("#acq-results");
+    const assetLedgerRefresh = document.querySelector("#asset-ledger-refresh");
     const assetLedgerPreviewDuck = document.querySelector("#asset-ledger-preview-duck");
     const assetLedgerStatus = document.querySelector("#asset-ledger-status");
     const assetLedgerDocument = document.querySelector("#asset-ledger-document");
@@ -30291,6 +30495,101 @@ help</textarea>
       selectHaulOpportunity(card.dataset.haulOpportunityIndex);
     });
 
+    function triggerAssetLedgerDocumentChanged() {
+      if (!assetLedgerDocument) return;
+      window.dispatchEvent(new CustomEvent("eve-managed-document-change", { detail: { target: assetLedgerDocument } }));
+    }
+
+    function renderAssetLedgerItemPreview(items, truncatedItems) {
+      const safeItems = Array.isArray(items) ? items : [];
+      if (!safeItems.length) {
+        return renderDashboardEmptyState("No direct child assets found inside this managed container.");
+      }
+      const rows = safeItems.map((item) => `
+        <div class="completed-run-row">
+          <strong>${escapeHtml(item.type_name || `Type ${item.type_id || ""}`)}</strong>
+          <b>${formatNumber(item.quantity)} units</b>
+          <span>${escapeHtml(item.location_flag || item.location_type || "container item")}</span>
+        </div>
+      `).join("");
+      const truncated = Number(truncatedItems || 0) > 0
+        ? `<div class="meta">Plus ${formatNumber(truncatedItems)} more stack${Number(truncatedItems || 0) === 1 ? "" : "s"} not shown in this preview.</div>`
+        : "";
+      return `<div class="completed-run-row-list">${rows}</div>${truncated}`;
+    }
+
+    function renderAssetLedgerRows(ledger) {
+      const rows = Array.isArray(ledger?.rows) ? ledger.rows : [];
+      if (!rows.length) {
+        return renderDashboardEmptyState("No managed asset containers found.", {
+          label: "No ledger rows",
+          detail: ledger?.naming_hint || "Rename a freight container to asset, asset12, CM-ASSET-*, or CM-READY-HAUL, then refresh.",
+        });
+      }
+      return rows.map((row) => `
+        <div class="decision-row">
+          <div class="decision-head">
+            <strong>${escapeHtml(row.container_name || "Managed container")}</strong>
+            <span class="pill decision-source">${escapeHtml(row.status_label || "Managed")}</span>
+            <span class="pill reserved">Read-only</span>
+          </div>
+          <div class="decision-lede">${escapeHtml(row.location_name || "Unknown location")} · ${formatNumber(row.stack_count)} stack${Number(row.stack_count || 0) === 1 ? "" : "s"} · ${formatNumber(row.total_units)} unit${Number(row.total_units || 0) === 1 ? "" : "s"}</div>
+          <div class="profit-detail-grid">
+            <div class="profit-detail-row"><span>Container type</span><b>${escapeHtml(row.container_type_name || "Unknown container")}</b><small>${escapeHtml(row.match_reason || "Matched by container name.")}</small></div>
+            <div class="profit-detail-row"><span>Location flag</span><b>${escapeHtml(row.location_flag || "unknown")}</b><small>${escapeHtml(row.location_type || "unknown location type")}</small></div>
+            <div class="profit-detail-row"><span>Unique item types</span><b>${formatNumber(row.unique_types)}</b><small>Direct child assets only for this first ledger pass.</small></div>
+            <div class="profit-detail-row"><span>Hauler handoff</span><b>${escapeHtml(row.status_key === "ready-to-haul" ? "Ready bucket" : "Asset bucket")}</b><small>Future slice can pass these actual assets into the hauler load planner.</small></div>
+          </div>
+          ${renderAssetLedgerItemPreview(row.items || [], row.truncated_items || 0)}
+          ${(row.notes || []).map((note) => `<div class="meta">${escapeHtml(note)}</div>`).join("")}
+        </div>
+      `).join("");
+    }
+
+    function renderAssetLedgerPayload(data) {
+      const ledger = data?.ledger || {};
+      if (!assetLedgerDocument) return;
+      assetLedgerDocument.innerHTML = renderAssetLedgerRows(ledger);
+      if (assetLedgerStatus) {
+        const containerCount = Number(ledger.container_count || 0);
+        assetLedgerStatus.textContent = containerCount
+          ? `Loaded ${formatNumber(containerCount)} managed container${containerCount === 1 ? "" : "s"} from ${formatNumber(ledger.scanned_asset_count)} ESI asset row${Number(ledger.scanned_asset_count || 0) === 1 ? "" : "s"}.`
+          : "No managed containers found yet. Rename a freight container to asset or CM-ASSET-* and refresh.";
+        assetLedgerStatus.classList.remove("error");
+      }
+      triggerAssetLedgerDocumentChanged();
+    }
+
+    async function loadAssetLedger() {
+      if (!assetLedgerDocument) return;
+      const previousText = assetLedgerRefresh ? assetLedgerRefresh.textContent : "";
+      try {
+        if (assetLedgerRefresh) {
+          assetLedgerRefresh.disabled = true;
+          assetLedgerRefresh.textContent = "Refreshing...";
+        }
+        if (assetLedgerStatus) {
+          assetLedgerStatus.textContent = "Reading ESI assets and named containers...";
+          assetLedgerStatus.classList.remove("error");
+        }
+        const response = await fetch("/api/flight/asset-ledger");
+        const data = await readJsonApiResponse(response, "Could not load the trade asset ledger");
+        renderAssetLedgerPayload(data);
+      } catch (error) {
+        assetLedgerDocument.innerHTML = renderDashboardErrorState(error.message || "Could not load the trade asset ledger.");
+        if (assetLedgerStatus) {
+          assetLedgerStatus.textContent = error.message || "Could not load the trade asset ledger.";
+          assetLedgerStatus.classList.add("error");
+        }
+        triggerAssetLedgerDocumentChanged();
+      } finally {
+        if (assetLedgerRefresh) {
+          assetLedgerRefresh.disabled = false;
+          assetLedgerRefresh.textContent = previousText || "Refresh Ledger";
+        }
+      }
+    }
+
     function previewAssetLedgerDuck() {
       if (!assetLedgerDocument) return;
       assetLedgerPreviewCount += 1;
@@ -30301,7 +30600,7 @@ help</textarea>
       } else if (typeof window.eveVoiceManagedDocumentChanged === "function") {
         window.eveVoiceManagedDocumentChanged({ target: assetLedgerDocument });
       }
-      window.dispatchEvent(new CustomEvent("eve-managed-document-change", { detail: { target: assetLedgerDocument } }));
+      triggerAssetLedgerDocumentChanged();
       if (assetLedgerStatus) {
         assetLedgerStatus.textContent = `Managed ledger preview changed at ${previewLabel}.`;
         assetLedgerStatus.classList.remove("error");
@@ -30370,6 +30669,9 @@ help</textarea>
     });
     if (assetLedgerPreviewDuck) {
       assetLedgerPreviewDuck.addEventListener("click", previewAssetLedgerDuck);
+    }
+    if (assetLedgerRefresh) {
+      assetLedgerRefresh.addEventListener("click", loadAssetLedger);
     }
 
     document.addEventListener("click", (event) => {

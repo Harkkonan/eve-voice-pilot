@@ -274,6 +274,14 @@ For investment report rows, `Location to Post Order` is the suggested buy-order 
 
 This tab does not place, update, or cancel market orders. The pilot still creates every buy order manually in EVE.
 
+### Trade Asset Ledger
+
+The `Trade Asset Ledger` tab is a read-only managed document for assets the app can see through `esi-assets.read_assets.v1`. The first pass recognizes character-owned containers whose custom names start with `asset`, `asset12`, `CM-ASSET-*`, `CM-LEDGER-*`, or `CM-READY-HAUL`.
+
+When the pilot clicks `Refresh Ledger`, the server reads ESI assets, asks ESI for custom asset names, groups direct child assets under those named containers, and shows the result as managed ledger rows. The page is intentionally browseable and copyable but not hand editable, so it can later become a trustworthy bridge from filled portfolio orders to hauler load planning and expected-vs-actual review.
+
+The ledger does not move items, create contracts, place market orders, or write to EVE. It only reads the connected pilot's asset tree and custom asset names.
+
 ### Industry Library And Blueprint Profitability
 
 Version 1 is intentionally focused on manufacturing recipes. It does not yet rank reactions, invention, copying, or research jobs.
