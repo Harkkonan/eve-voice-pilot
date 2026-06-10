@@ -603,6 +603,15 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"acq-order-duration\"" in page
     assert "Planned order duration" in page
     assert "Tracking field only" in page
+    assert "id=\"acq-history-analysis\"" in page
+    assert "Fast shortlist" in page
+    assert "Basic guardrails" in page
+    assert "Advanced trap audit" in page
+    assert "eve-flight-acq-history-analysis-v1" in page
+    assert "history_analysis_mode" in page
+    assert "renderAcquisitionTheoryPills" in page
+    assert "renderAcquisitionWhyMightFail" in page
+    assert "renderHistoryWindowComparison" in page
     assert "Buy Order Price To Enter" in page
     assert "Estimated Broker Fee ISK" in page
     assert "Reason For Entry" in page
@@ -778,6 +787,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "writeAcquisitionSettings" in page
     assert "appendAcquisitionProgress" in page
     assert "renderAcquisitionOpportunities" in page
+    assert "Liquidity confidence" in page
+    assert "Buyer concentration" in page
+    assert "Competition pressure" in page
+    assert "Why this might fail" in page
     assert "id=\"tab-appraisal\"" in page
     assert "id=\"bulk-appraisal-form\"" in page
     assert "id=\"bulk-appraisal-hub\"" in page
@@ -2833,7 +2846,8 @@ def test_acquisition_scan_request_parses_query_contract():
         parse_qs(
             "origin_name=Rens&destination=Amarr&budget_isk=75000000&pickup_jumps=5"
             "&portfolio_jumps=80&min_margin_percent=22&broker_fee_percent=4.5"
-            "&target_days=7&order_duration_days=90&item_workers=6&route_preference=lesssecure&common_materials=0"
+            "&target_days=7&order_duration_days=90&history_analysis_mode=advanced-trap-audit"
+            "&item_workers=6&route_preference=lesssecure&common_materials=0"
             "&market_group_ids=20&market_type_ids=44992,34&market_type_names=Epithal%0APLEX"
         )
     )
@@ -2847,6 +2861,7 @@ def test_acquisition_scan_request_parses_query_contract():
     assert request.broker_fee_percent == pytest.approx(4.5)
     assert request.target_days == 7
     assert request.order_duration_days == 90
+    assert request.history_analysis_mode == "advanced"
     assert request.item_workers == 6
     assert request.route_preference == "less_secure"
     assert request.include_common_materials is False
@@ -2855,6 +2870,7 @@ def test_acquisition_scan_request_parses_query_contract():
     assert request.market_type_names == ("Epithal", "PLEX")
     assert request.payload_kwargs()["destination_name"] == "Amarr"
     assert request.payload_kwargs()["order_duration_days"] == 90
+    assert request.payload_kwargs()["history_analysis_mode"] == "advanced"
 
 
 def test_market_order_location_guardrail_labels_station_structure_and_unknown():
@@ -4944,6 +4960,8 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
     acquisition = payload["acquisition"]
     assert acquisition["opportunity_count"] == 1
     assert acquisition["possible_trap_count"] == 1
+    assert acquisition["history_analysis_mode"] == "basic"
+    assert acquisition["history_analysis_label"] == "Basic guardrails"
     opportunity = acquisition["opportunities"][0]
     assert opportunity["item_name"] == "Tritanium"
     assert opportunity["risk_level"] == "possible-trap"
@@ -4955,9 +4973,18 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
     assert opportunity["estimated_sales_tax"] == pytest.approx(168.75)
     assert opportunity["estimated_net_revenue"] == pytest.approx(4831.25)
     assert opportunity["history_flags"][0]["label"] == "Possible trap: price spike"
+    assert opportunity["history_analysis_mode"] == "basic"
+    assert opportunity["history_analysis_label"] == "Basic guardrails"
+    assert opportunity["liquidity_confidence"]["label"] == "Moderate liquidity"
+    assert opportunity["buyer_concentration"]["level"] == "single-order"
+    assert opportunity["competition_pressure"]["highest_source_buy"] == pytest.approx(50.0)
+    assert set(opportunity["source_history_windows"]) == {"7_day", "30_day", "90_day"}
+    assert opportunity["source_history_windows"]["7_day"]["days"] == 7
+    assert any("buyer" in reason.lower() or "Current orders" in reason for reason in opportunity["why_might_fail"])
     assert acquisition["strategy"]["best"]["item_name"] == "Tritanium"
     assert "manual public buy-order budget" in acquisition["strategy"]["plain_language"]
     assert "Safe ceiling" in acquisition["strategy"]["math_note"]
+    assert "History analysis: Basic guardrails" in acquisition["strategy"]["history_note"]
     assert "possible trap" in acquisition["pricing_note"]
     assert acquisition["portfolio"]["available"] is False
     assert acquisition["portfolio"]["possible_trap_excluded_count"] == 1
@@ -5046,6 +5073,102 @@ def test_acquisition_item_scan_skips_destination_history_without_source_signal(m
     assert result.history_request_count == 1
     assert result.source_history_gated_count == 1
     assert history_calls == [(100, 34)]
+    assert "history_skip" in [event for event, _payload in progress_events]
+
+
+def test_acquisition_item_scan_fast_mode_skips_history_and_marks_audit_needed(monkeypatch):
+    origin = RouteSystem(solar_system_id=1, name="Start", region_id=100, security_status=0.9)
+    destination = RouteSystem(solar_system_id=30000142, name="Jita", region_id=200, security_status=0.9)
+    systems = {
+        1: origin,
+        2: RouteSystem(solar_system_id=2, name="One Jump", region_id=100, security_status=0.8),
+        30000142: destination,
+    }
+
+    def fake_fetch_acquisition_order_batch(**kwargs):
+        return (
+            {
+                100: [
+                    {
+                        "order_id": 10,
+                        "is_buy_order": True,
+                        "system_id": 2,
+                        "location_id": 60008494,
+                        "price": 50.0,
+                        "volume_remain": 1000,
+                        "min_volume": 1,
+                    }
+                ]
+            },
+            {
+                100: [
+                    {
+                        "order_id": 30,
+                        "is_buy_order": False,
+                        "system_id": 2,
+                        "location_id": 60008494,
+                        "price": 80.0,
+                        "volume_remain": 1000,
+                        "min_volume": 1,
+                    }
+                ]
+            },
+            [
+                {
+                    "order_id": 20,
+                    "is_buy_order": True,
+                    "system_id": 30000142,
+                    "location_id": 60003760,
+                    "price": 500.0,
+                    "volume_remain": 10,
+                    "min_volume": 1,
+                }
+            ],
+            [],
+        )
+
+    history_calls = []
+
+    def fake_fetch_market_history(config, *, region_id, type_id):
+        history_calls.append((region_id, type_id))
+        raise AssertionError("Fast shortlist should not fetch market history")
+
+    monkeypatch.setattr(corp_market, "fetch_acquisition_order_batch", fake_fetch_acquisition_order_batch)
+    monkeypatch.setattr(corp_market, "fetch_market_history", fake_fetch_market_history)
+
+    progress_events = []
+    result = corp_market.scan_acquisition_item_opportunity(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        target={"type_id": 34, "name": "Tritanium"},
+        item_index=1,
+        item_count=1,
+        pickup_region_ids=(100,),
+        region_count=1,
+        origin=origin,
+        destination=destination,
+        systems=systems,
+        pickup_distances={1: 0, 2: 1},
+        destination_distances={30000142: 0},
+        budget_isk=1_000_000,
+        pickup_jumps=1,
+        min_margin_percent=10,
+        broker_fee_rate=0.03,
+        sales_tax_rate=0.03375,
+        target_days=3,
+        history_analysis_mode="fast",
+        progress_percent=lambda item_index, stage_fraction=0.0: 50,
+        progress=lambda event, payload: progress_events.append((event, payload)),
+    )
+
+    assert history_calls == []
+    assert result.history_request_count == 0
+    assert result.opportunity is not None
+    assert result.opportunity["history_analysis_mode"] == "fast"
+    assert result.opportunity["history_flags"][0]["label"] == "Needs history audit"
+    assert result.opportunity["liquidity_confidence"]["level"] == "needs-audit"
+    assert result.opportunity["recommended_units"] == 1
+    assert result.opportunity["source_history_windows"]["30_day"]["days"] == 0
+    assert "Fast shortlist skipped" in result.opportunity["why_might_fail"][0]
     assert "history_skip" in [event for event, _payload in progress_events]
 
 

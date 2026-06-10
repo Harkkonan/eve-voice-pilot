@@ -44,10 +44,12 @@ def scan_acquisition_item_opportunity(
     broker_fee_rate: float,
     sales_tax_rate: float,
     target_days: int,
+    history_analysis_mode: str,
     progress_percent: Callable[[int, float], int],
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> AcquisitionItemScanResult:
     result = AcquisitionItemScanResult()
+    clean_history_analysis_mode = deps.normalize_acquisition_history_analysis_mode(history_analysis_mode)
     type_id = int(target["type_id"])
     item_name = str(target.get("name") or f"Type {type_id}")
     source_buy_orders: list[dict[str, Any]] = []
@@ -163,7 +165,19 @@ def scan_acquisition_item_opportunity(
     source_history: list[dict[str, Any]] = []
     destination_history: list[dict[str, Any]] = []
     has_source_order_signal = bool(source_buy_orders or source_sell_orders)
-    if has_source_order_signal:
+    if clean_history_analysis_mode == "fast":
+        if progress is not None:
+            progress(
+                "history_skip",
+                {
+                    "message": f"{item_name}: fast shortlist skipped market-history audit.",
+                    "item_index": item_index,
+                    "item_count": item_count,
+                    "item_name": item_name,
+                    "percent": progress_percent(item_index, 0.75),
+                },
+            )
+    elif has_source_order_signal:
         timed_started_at = time.monotonic()
         source_history, destination_history, history_errors = deps.fetch_acquisition_history_batch(
             config=config,
@@ -216,7 +230,7 @@ def scan_acquisition_item_opportunity(
         result.history_region_ids.add(int(source_region_id))
     if destination_history:
         result.history_region_ids.add(int(destination.region_id))
-    if progress is not None:
+    if progress is not None and clean_history_analysis_mode != "fast":
         progress(
             "history",
             {
@@ -255,6 +269,25 @@ def scan_acquisition_item_opportunity(
         units = min(limit for limit in (budget_units, destination_units, history_units) if limit >= 0)
         if units <= 0:
             return result
+        min_profitable_destination_price = (suggested_bid * (1.0 + broker_fee_rate)) / max(1.0 - sales_tax_rate, 0.0001)
+        liquidity_confidence = deps.acquisition_liquidity_confidence(
+            source_stats,
+            units=units,
+            target_days=target_days,
+            history_analysis_mode=clean_history_analysis_mode,
+        )
+        competition_pressure = deps.acquisition_competition_pressure(
+            best_source_buy,
+            max_safe_bid=max_safe_bid,
+            suggested_bid=suggested_bid,
+        )
+        buyer_concentration = deps.acquisition_buyer_concentration(
+            destination_buy_orders,
+            min_profitable_destination_price=min_profitable_destination_price,
+            units=units,
+        )
+        source_history_windows = deps.market_history_window_comparison(source_history)
+        destination_history_windows = deps.market_history_window_comparison(destination_history)
         broker_fee_total = suggested_bid * units * broker_fee_rate
         bid_total = suggested_bid * units
         gross_destination_revenue = float(best_destination_buy["price"]) * units
@@ -274,6 +307,19 @@ def scan_acquisition_item_opportunity(
             suggested_bid=suggested_bid,
             units=units,
             target_days=target_days,
+            history_analysis_mode=clean_history_analysis_mode,
+            liquidity_confidence=liquidity_confidence,
+            buyer_concentration=buyer_concentration,
+            competition_pressure=competition_pressure,
+        )
+        failure_reasons = deps.acquisition_failure_reasons(
+            history_analysis_mode=clean_history_analysis_mode,
+            flags=flags,
+            liquidity=liquidity_confidence,
+            buyer_concentration=buyer_concentration,
+            competition_pressure=competition_pressure,
+            best_source_sell=best_source_sell,
+            best_destination_buy=best_destination_buy,
         )
         risk_level = deps.acquisition_risk_level(flags)
         range_recommendation = deps.acquisition_range_recommendation(
@@ -298,6 +344,8 @@ def scan_acquisition_item_opportunity(
             "placement_system": origin.name,
             "pickup_jumps": pickup_jumps,
             "target_days": target_days,
+            "history_analysis_mode": clean_history_analysis_mode,
+            "history_analysis_label": deps.acquisition_history_analysis_label(clean_history_analysis_mode),
             "suggested_bid": suggested_bid,
             "max_safe_bid": max_safe_bid,
             "recommended_units": units,
@@ -318,6 +366,12 @@ def scan_acquisition_item_opportunity(
             "best_destination_buy": best_destination_buy,
             "source_history": source_stats,
             "destination_history": destination_stats,
+            "source_history_windows": source_history_windows,
+            "destination_history_windows": destination_history_windows,
+            "liquidity_confidence": liquidity_confidence,
+            "buyer_concentration": buyer_concentration,
+            "competition_pressure": competition_pressure,
+            "why_might_fail": failure_reasons,
             "history_flags": flags,
         }
         return result
@@ -339,6 +393,7 @@ def scan_market_acquisition_opportunities(
     min_margin_percent: float,
     broker_fee_percent: float,
     target_days: int,
+    history_analysis_mode: str,
     sales_tax: dict[str, Any],
     include_common_materials: bool,
     market_group_ids: Iterable[int],
@@ -356,6 +411,7 @@ def scan_market_acquisition_opportunities(
     clean_min_margin_percent = deps.clamp_haul_min_detour_margin_percent(min_margin_percent)
     clean_broker_fee_percent = deps.clamp_acquisition_broker_fee_percent(broker_fee_percent)
     clean_target_days = deps.clamp_acquisition_target_days(target_days)
+    clean_history_analysis_mode = deps.normalize_acquisition_history_analysis_mode(history_analysis_mode)
     clean_item_workers = deps.clamp_acquisition_item_workers(item_workers)
     broker_fee_rate = clean_broker_fee_percent / 100.0
     sales_tax_rate = deps.clean_optional_float(sales_tax.get("rate")) or 0.0
@@ -431,11 +487,16 @@ def scan_market_acquisition_opportunities(
             {
                 "message": (
                     f"Scanning {item_count} item types across {region_count} pickup market regions, "
-                    f"then checking destination orders and market history."
+                    + (
+                        "then building a fast current-order shortlist."
+                        if clean_history_analysis_mode == "fast"
+                        else "then checking destination orders and market history."
+                    )
                 ),
                 "item_count": item_count,
                 "region_count": region_count,
                 "pickup_system_count": len(pickup_distances),
+                "history_analysis_mode": clean_history_analysis_mode,
                 "percent": 10,
             },
         )
@@ -478,6 +539,7 @@ def scan_market_acquisition_opportunities(
             broker_fee_rate=broker_fee_rate,
             sales_tax_rate=sales_tax_rate,
             target_days=clean_target_days,
+            history_analysis_mode=clean_history_analysis_mode,
             progress_percent=progress_percent,
             progress=progress,
         )
@@ -529,6 +591,8 @@ def scan_market_acquisition_opportunities(
         item_types=len(scan_targets),
         pickup_regions=region_count,
         item_workers=item_worker_count,
+        history_analysis_mode=clean_history_analysis_mode,
+        history_analysis_label=deps.acquisition_history_analysis_label(clean_history_analysis_mode),
         source_buy_orders=total_source_buy_order_count,
         source_sell_orders=total_source_sell_order_count,
         destination_buy_orders=total_destination_buy_order_count,
@@ -582,6 +646,8 @@ def scan_market_acquisition_opportunities(
         "min_margin_percent": clean_min_margin_percent,
         "broker_fee_percent": clean_broker_fee_percent,
         "target_days": clean_target_days,
+        "history_analysis_mode": clean_history_analysis_mode,
+        "history_analysis_label": deps.acquisition_history_analysis_label(clean_history_analysis_mode),
         "item_workers": clean_item_workers,
         "pickup_system_count": len(pickup_distances),
         "pickup_regions_scanned": len(scan_pickup_region_ids),
@@ -614,6 +680,7 @@ def scan_market_acquisition_opportunities(
             min_margin_percent=clean_min_margin_percent,
             broker_fee_percent=clean_broker_fee_percent,
             target_days=clean_target_days,
+            history_analysis_mode=clean_history_analysis_mode,
             scanned_item_types=len(scan_targets),
             total_item_types=len(item_targets),
             pickup_regions_scanned=len(scan_pickup_region_ids),
@@ -630,7 +697,8 @@ def scan_market_acquisition_opportunities(
         "pricing_note": (
             "This portfolio assumes manual public buy orders near the source, later hauling, and manual sales into "
             "the current destination buy orders. Suggested bid ceilings back out sales tax, estimated broker fee, "
-            "and the target margin. A possible trap flag means recent history does not support the apparent spread "
-            "or fill volume; verify the item in EVE before posting an order. The page does not place orders."
+            "and the target margin. Market history is completed regional trade data, not proof of future buyers. "
+            "A possible trap flag means recent history does not support the apparent spread or fill volume; verify "
+            "the item in EVE before posting an order. The page does not place orders."
         ),
     }

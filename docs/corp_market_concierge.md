@@ -250,13 +250,21 @@ It recommends:
 - a scaled first-order unit count capped by total investment, destination buy-order depth, and recent market-history volume;
 - a narrow or wider buy-order range;
 - invested ISK, estimated net profit, category weights, and planning jumps used;
-- visible history warnings.
+- visible history warnings, liquidity confidence, buyer concentration, competition pressure, and a plain-language "why this might fail" checklist.
 
 The portfolio model follows the useful Goonmetrics-style trading idea: do not judge only the single highest markup row. It also looks at recent volume, visible demand, category spread, and how much work the spread creates. The total planning-jump budget is an effort cap, not a guaranteed route optimizer, because future buy-order fills may land in different stations or systems than current orders show.
 
 The item scope picker is shared with `Hauler Routes`. When the local SDE market data is available, each top-level market category and subcategory is labeled from that cache, shows the published item count, and includes collapsed item checkboxes with a show-more control. Use a whole category when you want broad coverage, or expand a subcategory such as Bombs and select exact item types when you want a narrow scan. The portfolio defaults to a 50,000,000 ISK budget and a 50-jump planning budget, and accepts manual budgets from 1 ISK through 10,000,000,000 ISK. Common materials uses a smaller top-industry-input scan in the hosted planner so broad scans are less likely to time out; use market categories or exact items for a more targeted family of items.
 
-History warnings are intentionally plain-language. A `Possible trap` signal means the top-of-book spread is not supported by recent market history, the competing buy side is already above the safe ceiling, or another market-history/current-order mismatch needs manual checking. It is not proof of bad intent by another player. Treat it as a reason to verify the item in EVE before posting a buy order.
+History analysis has three modes:
+
+- `Fast shortlist` skips market-history calls for speed and marks candidates as needing a later audit. Use it to narrow a large idea list, not to commit ISK.
+- `Basic guardrails` is the default. It checks current public orders against recent regional market history and flags obvious traps or weak history.
+- `Advanced trap audit` keeps the same math but adds stronger warnings for thin liquidity, buyer concentration, and tight source buy competition.
+
+History warnings are intentionally plain-language. A `Possible trap` signal means the top-of-book spread is not supported by recent market history, the competing buy side is already above the safe ceiling, or another market-history/current-order mismatch needs manual checking. It is not proof of bad intent by another player. Treat it as a reason to verify the item in EVE before posting a buy order. The history window comparison shows 7-day, 30-day, and 90-day views so a tester can see whether the market is stable, cooling off, or only recently active.
+
+Liquidity confidence labels are beginner-facing risk language, not guarantees. `Strong` and `Moderate` mean recent source-region completed trades appear able to support the suggested test size. `Thin` and `Sparse/unreliable` mean the app may still show the idea, but the tester should use a smaller order or skip it. Buyer concentration warns when expected resale depends mostly on one destination buy order. Competition pressure shows the highest visible source buy, safe bid ceiling, suggested bid, and remaining headroom so the pilot can avoid bidding away the expected profit.
 
 Portfolio recommendations, hauler route opportunities, and Planetary Industry input/output lists include Quickbar copy buttons. Those buttons copy plain market item names, one per line, for EVE's Market Quickbar import flow. They do not copy quantities, place orders, write EVE settings files, or touch the EVE client; the pilot still opens the market window, uses `Quickbar > Import Quickbar`, chooses the add/import option, and verifies the item list manually in EVE.
 

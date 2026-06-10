@@ -232,6 +232,13 @@ DEFAULT_ACQUISITION_TARGET_DAYS = 3
 MAX_ACQUISITION_TARGET_DAYS = 30
 DEFAULT_ACQUISITION_ORDER_DURATION_DAYS = 30
 ACQUISITION_ORDER_DURATION_DAYS = (1, 3, 7, 14, 30, 90)
+DEFAULT_ACQUISITION_HISTORY_ANALYSIS_MODE = "basic"
+ACQUISITION_HISTORY_ANALYSIS_MODES = frozenset({"fast", "basic", "advanced"})
+ACQUISITION_HISTORY_ANALYSIS_LABELS = {
+    "fast": "Fast shortlist",
+    "basic": "Basic guardrails",
+    "advanced": "Advanced trap audit",
+}
 MARKET_GROUP_ITEM_PREVIEW_LIMIT = 8
 DEFAULT_HAUL_ROUTE_PREFERENCE = "safer"
 HAUL_ROUTE_PREFERENCES = {"shorter", "safer", "less_secure"}
@@ -5140,6 +5147,7 @@ def build_flight_acquisition_payload(
     broker_fee_percent: float = DEFAULT_ACQUISITION_BROKER_FEE_PERCENT,
     target_days: int = DEFAULT_ACQUISITION_TARGET_DAYS,
     order_duration_days: int = DEFAULT_ACQUISITION_ORDER_DURATION_DAYS,
+    history_analysis_mode: str = DEFAULT_ACQUISITION_HISTORY_ANALYSIS_MODE,
     route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE,
     include_common_materials: bool = True,
     market_group_ids: Iterable[int] = (),
@@ -5213,6 +5221,7 @@ def build_flight_acquisition_payload(
         min_margin_percent=min_margin_percent,
         broker_fee_percent=broker_fee_percent,
         target_days=target_days,
+        history_analysis_mode=history_analysis_mode,
         sales_tax=sales_tax,
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
@@ -7159,6 +7168,7 @@ def scan_acquisition_item_opportunity(
     sales_tax_rate: float,
     target_days: int,
     progress_percent: Callable[[int, float], int],
+    history_analysis_mode: str = DEFAULT_ACQUISITION_HISTORY_ANALYSIS_MODE,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> AcquisitionItemScanResult:
     from eve_voice_pilot.corp_market_acquisition import scan_acquisition_item_opportunity as scan_impl
@@ -7182,6 +7192,7 @@ def scan_acquisition_item_opportunity(
         broker_fee_rate=broker_fee_rate,
         sales_tax_rate=sales_tax_rate,
         target_days=target_days,
+        history_analysis_mode=history_analysis_mode,
         progress_percent=progress_percent,
         progress=progress,
     )
@@ -7205,6 +7216,7 @@ def scan_market_acquisition_opportunities(
     market_group_ids: Iterable[int],
     market_type_ids: Iterable[int],
     market_type_names: Iterable[Any] = (),
+    history_analysis_mode: str = DEFAULT_ACQUISITION_HISTORY_ANALYSIS_MODE,
     item_workers: int = DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -7223,6 +7235,7 @@ def scan_market_acquisition_opportunities(
         min_margin_percent=min_margin_percent,
         broker_fee_percent=broker_fee_percent,
         target_days=target_days,
+        history_analysis_mode=history_analysis_mode,
         sales_tax=sales_tax,
         include_common_materials=include_common_materials,
         market_group_ids=market_group_ids,
@@ -7248,7 +7261,10 @@ def build_acquisition_strategy_summary(
     pickup_regions_scanned: int,
     item_truncated: bool,
     portfolio: dict[str, Any],
+    history_analysis_mode: str = DEFAULT_ACQUISITION_HISTORY_ANALYSIS_MODE,
 ) -> dict[str, Any]:
+    clean_history_mode = normalize_acquisition_history_analysis_mode(history_analysis_mode)
+    history_label = acquisition_history_analysis_label(clean_history_mode)
     ranked = list(opportunities)
     best = ranked[0] if ranked else None
     portfolio_lines = list(portfolio.get("lines") or []) if isinstance(portfolio, dict) else []
@@ -7313,8 +7329,20 @@ def build_acquisition_strategy_summary(
             f"Safe ceiling starts with the destination buy price after sales tax, then backs out the "
             f"{broker_fee_percent:g}% broker-fee estimate and {min_margin_percent:g}% target margin. "
             f"Units are capped by the {format_isk(budget_isk)} budget, visible destination demand, and "
-            f"{target_days:g} day(s) of recent source-region volume. Portfolio rows are then scaled to the total "
-            f"investment and jump budget."
+            + (
+                "a conservative one-unit shortlist cap because market-history audit is off. "
+                if clean_history_mode == "fast"
+                else f"{target_days:g} day(s) of recent source-region completed-trade volume. "
+            )
+            + "Portfolio rows are then scaled to the total investment and jump budget."
+        ),
+        "history_note": (
+            f"History analysis: {history_label}. "
+            + (
+                "Fast shortlist skips market-history calls and marks candidates for later audit."
+                if clean_history_mode == "fast"
+                else "Market history is regional completed-trade statistics; it supports or contradicts the current order book, but it does not guarantee future buyers."
+            )
         ),
         "scope_note": scope_note,
         "timeout_note": timeout_note,
@@ -7423,6 +7451,14 @@ def acquisition_portfolio_line(
         "best_destination_buy": opportunity.get("best_destination_buy"),
         "source_history": opportunity.get("source_history"),
         "destination_history": opportunity.get("destination_history"),
+        "source_history_windows": opportunity.get("source_history_windows"),
+        "destination_history_windows": opportunity.get("destination_history_windows"),
+        "history_analysis_mode": opportunity.get("history_analysis_mode"),
+        "history_analysis_label": opportunity.get("history_analysis_label"),
+        "liquidity_confidence": opportunity.get("liquidity_confidence"),
+        "buyer_concentration": opportunity.get("buyer_concentration"),
+        "competition_pressure": opportunity.get("competition_pressure"),
+        "why_might_fail": list(opportunity.get("why_might_fail") or []),
         "history_flags": opportunity.get("history_flags"),
     }
 
@@ -7453,6 +7489,10 @@ def acquisition_portfolio_exclusion_row(
         "net_profit": opportunity.get("net_profit"),
         "margin_percent": opportunity.get("margin_percent"),
         "estimated_collection_jumps": jump_cost,
+        "liquidity_confidence": opportunity.get("liquidity_confidence"),
+        "buyer_concentration": opportunity.get("buyer_concentration"),
+        "competition_pressure": opportunity.get("competition_pressure"),
+        "why_might_fail": list(opportunity.get("why_might_fail") or []),
         "history_flags": opportunity.get("history_flags"),
     }
 
@@ -7763,6 +7803,7 @@ def market_history_stats(history: Iterable[dict[str, Any]], *, days: int = 30) -
     rows = sorted((item for item in history if isinstance(item, dict)), key=lambda item: str(item.get("date") or ""))
     recent = rows[-max(1, int(days)) :]
     volumes = [float(item.get("volume") or 0.0) for item in recent]
+    positive_volumes = [volume for volume in volumes if volume > 0]
     order_counts = [float(item.get("order_count") or 0.0) for item in recent]
     averages = [float(item.get("average") or 0.0) for item in recent if clean_optional_float(item.get("average"))]
     lows = [float(item.get("lowest") or 0.0) for item in recent if clean_optional_float(item.get("lowest"))]
@@ -7775,10 +7816,22 @@ def market_history_stats(history: Iterable[dict[str, Any]], *, days: int = 30) -
         "latest_order_count": clean_optional_int(latest.get("order_count")) or 0,
         "latest_average": clean_optional_float(latest.get("average")),
         "avg_daily_volume": (sum(volumes) / len(volumes)) if volumes else 0.0,
+        "median_daily_volume": median_number(positive_volumes) or 0.0,
+        "days_with_volume": len(positive_volumes),
+        "zero_volume_days": max(0, len(recent) - len(positive_volumes)),
         "avg_daily_order_count": (sum(order_counts) / len(order_counts)) if order_counts else 0.0,
         "median_average": median_number(averages),
         "median_low": median_number(lows),
         "median_high": median_number(highs),
+    }
+
+
+def market_history_window_comparison(history: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    rows = list(history or [])
+    return {
+        "7_day": market_history_stats(rows, days=7),
+        "30_day": market_history_stats(rows, days=30),
+        "90_day": market_history_stats(rows, days=90),
     }
 
 
@@ -7843,6 +7896,194 @@ def median_number(values: Iterable[float]) -> float | None:
     return (clean_values[middle - 1] + clean_values[middle]) / 2.0
 
 
+def acquisition_liquidity_confidence(
+    source_stats: dict[str, Any],
+    *,
+    units: int,
+    target_days: int,
+    history_analysis_mode: str,
+) -> dict[str, Any]:
+    clean_mode = normalize_acquisition_history_analysis_mode(history_analysis_mode)
+    days = int(source_stats.get("days") or 0)
+    avg_daily_volume = clean_optional_float(source_stats.get("avg_daily_volume")) or 0.0
+    median_daily_volume = clean_optional_float(source_stats.get("median_daily_volume")) or 0.0
+    avg_daily_orders = clean_optional_float(source_stats.get("avg_daily_order_count")) or 0.0
+    baseline_volume = min(value for value in (avg_daily_volume, median_daily_volume) if value > 0) if any(
+        value > 0 for value in (avg_daily_volume, median_daily_volume)
+    ) else 0.0
+    clean_units = max(1, int(units or 1))
+    volume_window = baseline_volume * max(1, clamp_acquisition_target_days(target_days))
+    coverage_ratio = volume_window / clean_units if clean_units > 0 else 0.0
+    if clean_mode == "fast":
+        level = "needs-audit"
+        label = "Needs history audit"
+        detail = "Fast shortlist skipped market-history checks, so liquidity is not verified yet."
+    elif days < 7 or avg_daily_orders < 0.5 or coverage_ratio < 0.75:
+        level = "sparse"
+        label = "Sparse / unreliable history"
+        detail = "Recent completed-trade history is too thin to treat the first order as reliable."
+    elif avg_daily_orders < 1.5 or coverage_ratio < 1.25:
+        level = "thin"
+        label = "Thin market"
+        detail = "History supports only a cautious test size; fills may be slow or uneven."
+    elif avg_daily_orders >= 5 and coverage_ratio >= 3:
+        level = "strong"
+        label = "Strong liquidity"
+        detail = "Recent source-region volume and order count comfortably cover the suggested test size."
+    else:
+        level = "moderate"
+        label = "Moderate liquidity"
+        detail = "Recent source-region history supports the size, but this is still a manual test candidate."
+    return {
+        "level": level,
+        "label": label,
+        "detail": detail,
+        "coverage_ratio": coverage_ratio,
+        "avg_daily_volume": avg_daily_volume,
+        "median_daily_volume": median_daily_volume,
+        "avg_daily_order_count": avg_daily_orders,
+        "history_days": days,
+    }
+
+
+def acquisition_competition_pressure(
+    best_source_buy: dict[str, Any] | None,
+    *,
+    max_safe_bid: float,
+    suggested_bid: float,
+) -> dict[str, Any]:
+    highest_source_buy = clean_optional_float((best_source_buy or {}).get("price"))
+    safe_bid = max(0.0, float(max_safe_bid or 0.0))
+    suggested = max(0.0, float(suggested_bid or 0.0))
+    suggested_headroom = max(0.0, safe_bid - suggested)
+    if highest_source_buy is None or highest_source_buy <= 0:
+        return {
+            "level": "none-visible",
+            "label": "No visible source buy competition",
+            "detail": "No reachable competing source buy order was visible in the scanned pickup area.",
+            "highest_source_buy": None,
+            "safe_bid_ceiling": safe_bid,
+            "suggested_bid": suggested,
+            "bid_headroom": suggested_headroom,
+            "bid_headroom_percent": None,
+            "suggested_bid_headroom": suggested_headroom,
+        }
+    bid_headroom = safe_bid - highest_source_buy
+    bid_headroom_percent = (bid_headroom / safe_bid * 100.0) if safe_bid > 0 else None
+    if bid_headroom <= 0:
+        level = "no-headroom"
+        label = "No bid headroom"
+        detail = "The highest visible source buy order is already at or above the safe bid ceiling."
+    elif bid_headroom_percent is not None and bid_headroom_percent < 3:
+        level = "tight"
+        label = "Tight competition"
+        detail = "Visible source buy competition leaves very little room below the safe bid ceiling."
+    elif bid_headroom_percent is not None and bid_headroom_percent < 10:
+        level = "moderate"
+        label = "Moderate competition"
+        detail = "There is some bid headroom, but verify the current order stack before posting."
+    else:
+        level = "room"
+        label = "Bid headroom"
+        detail = "The current source buy side leaves room below the safe bid ceiling."
+    return {
+        "level": level,
+        "label": label,
+        "detail": detail,
+        "highest_source_buy": highest_source_buy,
+        "safe_bid_ceiling": safe_bid,
+        "suggested_bid": suggested,
+        "bid_headroom": bid_headroom,
+        "bid_headroom_percent": bid_headroom_percent,
+        "suggested_bid_headroom": suggested_headroom,
+    }
+
+
+def acquisition_buyer_concentration(
+    destination_buy_orders: Iterable[dict[str, Any]],
+    *,
+    min_profitable_destination_price: float,
+    units: int,
+) -> dict[str, Any]:
+    clean_units = max(1, int(units or 1))
+    supporting_orders = [
+        order
+        for order in destination_buy_orders
+        if (clean_optional_float(order.get("price")) or 0.0) >= float(min_profitable_destination_price or 0.0)
+    ]
+    supporting_volume = sum(max(0, clean_optional_int(order.get("volume_remain")) or 0) for order in supporting_orders)
+    largest_order_units = max([max(0, clean_optional_int(order.get("volume_remain")) or 0) for order in supporting_orders] or [0])
+    units_from_largest = min(clean_units, largest_order_units)
+    largest_order_share_percent = (units_from_largest / clean_units * 100.0) if clean_units > 0 else 0.0
+    if not supporting_orders:
+        level = "unsupported"
+        label = "No supporting buyer depth"
+        detail = "No visible destination buy order remained above the profitable sale price after fees."
+    elif len(supporting_orders) == 1 or largest_order_share_percent >= 80:
+        level = "single-order"
+        label = "Single-buyer dependency"
+        detail = "Most expected resale depends on one destination buy order; verify it in EVE before posting."
+    elif largest_order_share_percent >= 50:
+        level = "concentrated"
+        label = "Concentrated buyer depth"
+        detail = "A large share of the expected resale depends on one visible destination buyer."
+    else:
+        level = "distributed"
+        label = "Distributed buyer depth"
+        detail = "Expected resale is spread across more than one visible destination buy order."
+    return {
+        "level": level,
+        "label": label,
+        "detail": detail,
+        "supporting_order_count": len(supporting_orders),
+        "supporting_volume": supporting_volume,
+        "largest_order_units": largest_order_units,
+        "largest_order_share_percent": largest_order_share_percent,
+        "min_profitable_destination_price": float(min_profitable_destination_price or 0.0),
+    }
+
+
+def acquisition_failure_reasons(
+    *,
+    history_analysis_mode: str,
+    flags: Iterable[dict[str, str]],
+    liquidity: Mapping[str, Any],
+    buyer_concentration: Mapping[str, Any],
+    competition_pressure: Mapping[str, Any],
+    best_source_sell: Mapping[str, Any] | None,
+    best_destination_buy: Mapping[str, Any] | None,
+) -> list[str]:
+    reasons: list[str] = []
+    clean_mode = normalize_acquisition_history_analysis_mode(history_analysis_mode)
+    if clean_mode == "fast":
+        reasons.append("Fast shortlist skipped market-history analysis; run Basic or Advanced before committing ISK.")
+    for flag in flags:
+        severity = str(flag.get("severity") or "")
+        if severity in {"trap", "caution"}:
+            detail = str(flag.get("detail") or flag.get("label") or "").strip()
+            if detail and detail not in reasons:
+                reasons.append(detail)
+    if str(liquidity.get("level") or "") in {"needs-audit", "thin", "sparse"}:
+        detail = str(liquidity.get("detail") or "").strip()
+        if detail and detail not in reasons:
+            reasons.append(detail)
+    if str(buyer_concentration.get("level") or "") in {"single-order", "concentrated", "unsupported"}:
+        detail = str(buyer_concentration.get("detail") or "").strip()
+        if detail and detail not in reasons:
+            reasons.append(detail)
+    if str(competition_pressure.get("level") or "") in {"no-headroom", "tight"}:
+        detail = str(competition_pressure.get("detail") or "").strip()
+        if detail and detail not in reasons:
+            reasons.append(detail)
+    for label, order in (("Source sell", best_source_sell), ("Destination buy", best_destination_buy)):
+        kind = str((order or {}).get("location_kind") or "")
+        note = str((order or {}).get("location_access_note") or "")
+        if kind in {"player-structure", "unknown"} and note:
+            reasons.append(f"{label} access risk: {note}")
+    reasons.append("Current orders can be changed, filled, or canceled before your manual order fills.")
+    return reasons[:8]
+
+
 def acquisition_suggested_bid(
     *,
     max_safe_bid: float,
@@ -7884,11 +8125,24 @@ def acquisition_history_flags(
     suggested_bid: float,
     units: int,
     target_days: int,
+    history_analysis_mode: str = DEFAULT_ACQUISITION_HISTORY_ANALYSIS_MODE,
+    liquidity_confidence: Mapping[str, Any] | None = None,
+    buyer_concentration: Mapping[str, Any] | None = None,
+    competition_pressure: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     flags: list[dict[str, str]] = []
+    clean_mode = normalize_acquisition_history_analysis_mode(history_analysis_mode)
+    if clean_mode == "fast":
+        flags.append(
+            {
+                "severity": "caution",
+                "label": "Needs history audit",
+                "detail": "Fast shortlist skipped market-history checks; run Basic guardrails or Advanced trap audit before committing ISK.",
+            }
+        )
     source_days = int(source_stats.get("days") or 0)
     destination_days = int(destination_stats.get("days") or 0)
-    if source_days < 7:
+    if clean_mode != "fast" and source_days < 7:
         flags.append(
             {
                 "severity": "caution",
@@ -7948,12 +8202,37 @@ def acquisition_history_flags(
                 "detail": "The downstream buy order has limited remaining volume; recheck it before committing ISK.",
             }
         )
+    if buyer_concentration is not None and str(buyer_concentration.get("level") or "") in {"single-order", "unsupported"}:
+        flags.append(
+            {
+                "severity": "caution",
+                "label": str(buyer_concentration.get("label") or "Buyer concentration"),
+                "detail": str(buyer_concentration.get("detail") or "Expected resale depends on thin destination buyer depth."),
+            }
+        )
+    if clean_mode == "advanced":
+        if liquidity_confidence is not None and str(liquidity_confidence.get("level") or "") in {"thin", "sparse"}:
+            flags.append(
+                {
+                    "severity": "caution",
+                    "label": str(liquidity_confidence.get("label") or "Liquidity caution"),
+                    "detail": str(liquidity_confidence.get("detail") or "Recent completed-trade history is thin."),
+                }
+            )
+        if competition_pressure is not None and str(competition_pressure.get("level") or "") == "tight":
+            flags.append(
+                {
+                    "severity": "caution",
+                    "label": "Tight competition pressure",
+                    "detail": str(competition_pressure.get("detail") or "Source buy competition leaves little bid headroom."),
+                }
+            )
     if not flags:
         flags.append(
             {
                 "severity": "clear",
-                "label": "History supports a cautious test",
-                "detail": "Recent history and current orders do not show an obvious trap signal.",
+                "label": "No obvious contradiction",
+                "detail": "Current orders and completed-trade history do not show an obvious trap signal.",
             }
         )
     return flags
@@ -9618,6 +9897,26 @@ def clamp_acquisition_item_workers(value: Any) -> int:
     return max(1, min(MAX_FLIGHT_ACQUISITION_ITEM_WORKERS, workers))
 
 
+def normalize_acquisition_history_analysis_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "fast-shortlist": "fast",
+        "shortlist": "fast",
+        "basic-guardrails": "basic",
+        "guardrails": "basic",
+        "advanced-trap-audit": "advanced",
+        "trap-audit": "advanced",
+        "audit": "advanced",
+    }
+    mode = aliases.get(mode, mode)
+    return mode if mode in ACQUISITION_HISTORY_ANALYSIS_MODES else DEFAULT_ACQUISITION_HISTORY_ANALYSIS_MODE
+
+
+def acquisition_history_analysis_label(mode: Any) -> str:
+    clean_mode = normalize_acquisition_history_analysis_mode(mode)
+    return ACQUISITION_HISTORY_ANALYSIS_LABELS.get(clean_mode, ACQUISITION_HISTORY_ANALYSIS_LABELS["basic"])
+
+
 def clamp_trade_pnl_days(value: Any) -> int:
     try:
         days = int(value)
@@ -9792,6 +10091,7 @@ class AcquisitionScanRequest:
     broker_fee_percent: float = DEFAULT_ACQUISITION_BROKER_FEE_PERCENT
     target_days: int = DEFAULT_ACQUISITION_TARGET_DAYS
     order_duration_days: int = DEFAULT_ACQUISITION_ORDER_DURATION_DAYS
+    history_analysis_mode: str = DEFAULT_ACQUISITION_HISTORY_ANALYSIS_MODE
     item_workers: int = DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS
     route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE
     include_common_materials: bool = True
@@ -9819,6 +10119,9 @@ class AcquisitionScanRequest:
             order_duration_days=clamp_acquisition_order_duration_days(
                 query_first(query, "order_duration_days", DEFAULT_ACQUISITION_ORDER_DURATION_DAYS)
             ),
+            history_analysis_mode=normalize_acquisition_history_analysis_mode(
+                query_first(query, "history_analysis_mode", DEFAULT_ACQUISITION_HISTORY_ANALYSIS_MODE)
+            ),
             item_workers=clamp_acquisition_item_workers(
                 query_first(query, "item_workers", DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS)
             ),
@@ -9842,6 +10145,7 @@ class AcquisitionScanRequest:
             "broker_fee_percent": self.broker_fee_percent,
             "target_days": self.target_days,
             "order_duration_days": self.order_duration_days,
+            "history_analysis_mode": self.history_analysis_mode,
             "item_workers": self.item_workers,
             "route_preference": self.route_preference,
             "include_common_materials": self.include_common_materials,
@@ -17067,6 +17371,16 @@ def _render_flight_attendant_dashboard() -> str:
       background: rgba(8, 13, 15, .34);
     }
     .profit-detail-row b { color: var(--text); text-align: right; overflow-wrap: anywhere; }
+    .profit-detail-row small { grid-column: 1 / -1; color: var(--muted); overflow-wrap: anywhere; }
+    .acquisition-theory-pills .pill { max-width: 100%; overflow-wrap: anywhere; }
+    .acquisition-failure-list {
+      display: grid;
+      gap: 6px;
+      margin: 8px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+    }
+    .acquisition-failure-list li { padding-left: 2px; overflow-wrap: anywhere; }
     .decision-empty { border: 1px dashed rgba(63, 85, 80, .85); border-radius: 7px; padding: 24px; color: var(--muted); text-align: center; background: rgba(8, 13, 15, .34); }
     .decision-counts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .decision-build { background: rgba(100, 196, 125, .16); color: var(--green); }
@@ -19618,6 +19932,14 @@ help</textarea>
                   <input id="acq-target-days" name="target_days" type="number" min="1" max="30" step="1" value="3">
                   <small class="input-note">History volume caps the first order size to this many days of recent volume.</small>
                 </label>
+                <label>History analysis
+                  <select id="acq-history-analysis" name="history_analysis_mode">
+                    <option value="fast">Fast shortlist</option>
+                    <option value="basic" selected>Basic guardrails</option>
+                    <option value="advanced">Advanced trap audit</option>
+                  </select>
+                  <small class="input-note">Fast skips market history. Advanced adds liquidity, buyer concentration, and competition-pressure warnings.</small>
+                </label>
                 <label>Planned order duration
                   <select id="acq-order-duration" name="order_duration_days">
                     <option value="1">1 day</option>
@@ -20591,6 +20913,7 @@ help</textarea>
     const acqPickupJumps = document.querySelector("#acq-pickup-jumps");
     const acqPortfolioJumps = document.querySelector("#acq-portfolio-jumps");
     const acqTargetDays = document.querySelector("#acq-target-days");
+    const acqHistoryAnalysis = document.querySelector("#acq-history-analysis");
     const acqOrderDuration = document.querySelector("#acq-order-duration");
     const acqItemWorkers = document.querySelector("#acq-item-workers");
     const acqMinMargin = document.querySelector("#acq-min-margin");
@@ -20738,6 +21061,7 @@ help</textarea>
     const acqPickupJumpsKey = "eve-flight-acq-pickup-jumps-v1";
     const acqPortfolioJumpsKey = "eve-flight-acq-portfolio-jumps-v1";
     const acqTargetDaysKey = "eve-flight-acq-target-days-v1";
+    const acqHistoryAnalysisKey = "eve-flight-acq-history-analysis-v1";
     const acqOrderDurationKey = "eve-flight-acq-order-duration-v1";
     const acqItemWorkersKey = "eve-flight-acq-item-workers-v1";
     const acqMinMarginKey = "eve-flight-acq-min-margin-v1";
@@ -23891,6 +24215,22 @@ help</textarea>
       return Math.max(1, Math.min(30, Math.round(days)));
     }
 
+    function normalizeAcquisitionHistoryAnalysis(value) {
+      const mode = String(value || "").trim().toLowerCase().replaceAll("_", "-");
+      if (["fast", "basic", "advanced"].includes(mode)) return mode;
+      if (["fast-shortlist", "shortlist"].includes(mode)) return "fast";
+      if (["basic-guardrails", "guardrails"].includes(mode)) return "basic";
+      if (["advanced-trap-audit", "trap-audit", "audit"].includes(mode)) return "advanced";
+      return "basic";
+    }
+
+    function acquisitionHistoryAnalysisLabel(mode) {
+      const cleanMode = normalizeAcquisitionHistoryAnalysis(mode);
+      if (cleanMode === "fast") return "Fast shortlist";
+      if (cleanMode === "advanced") return "Advanced trap audit";
+      return "Basic guardrails";
+    }
+
     function clampAcquisitionOrderDuration(value) {
       const days = Math.round(Number(value));
       return [1, 3, 7, 14, 30, 90].includes(days) ? days : 30;
@@ -23998,12 +24338,17 @@ help</textarea>
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
         pastedItemNames: acqPastedItems ? acqPastedItems.value : "",
         pastedItemsOnly: acqPastedItemsOnly ? acqPastedItemsOnly.checked : true,
+        historyAnalysisMode: acqHistoryAnalysis ? acqHistoryAnalysis.value : "basic",
       };
       const scopeLabel = acquisitionItemScopeLabel(activeSettings);
+      const historyMode = normalizeAcquisitionHistoryAnalysis(activeSettings.historyAnalysisMode || (acqHistoryAnalysis ? acqHistoryAnalysis.value : "basic"));
+      const historyText = historyMode === "fast"
+        ? "History audit is off for speed; results are shortlist candidates."
+        : `${acquisitionHistoryAnalysisLabel(historyMode)} checks market-history evidence for every scanned item type.`;
       updateAcqPastedItemsStatus(activeSettings.pastedItemNames || "");
       acqItemScopeSummary.textContent = acquisitionPastedOnlyActive(activeSettings)
-        ? `${scopeLabel}. Fast mode is on; Common materials and market categories are ignored for this scan.`
-        : `${scopeLabel}. Market history is checked for every scanned item type.`;
+        ? `${scopeLabel}. Fast item-scope mode is on; Common materials and market categories are ignored for this scan. ${historyText}`
+        : `${scopeLabel}. ${historyText}`;
     }
 
     function acquisitionStartLabel(settings) {
@@ -24018,6 +24363,7 @@ help</textarea>
       const pickupJumps = Number(window.localStorage.getItem(acqPickupJumpsKey) || acqPickupJumps.value || 2);
       const portfolioJumps = Number(window.localStorage.getItem(acqPortfolioJumpsKey) || acqPortfolioJumps.value || 50);
       const targetDays = Number(window.localStorage.getItem(acqTargetDaysKey) || acqTargetDays.value || 3);
+      const historyAnalysisMode = normalizeAcquisitionHistoryAnalysis(window.localStorage.getItem(acqHistoryAnalysisKey) || acqHistoryAnalysis.value || "basic");
       const orderDurationDays = Number(window.localStorage.getItem(acqOrderDurationKey) || acqOrderDuration.value || 30);
       const itemWorkers = Number(window.localStorage.getItem(acqItemWorkersKey) || acqItemWorkers.value || 4);
       const minMargin = Number(window.localStorage.getItem(acqMinMarginKey) || acqMinMargin.value || 10);
@@ -24032,6 +24378,7 @@ help</textarea>
         pickupJumps: clampAcquisitionPickupJumps(Number.isFinite(pickupJumps) ? pickupJumps : 2),
         portfolioJumps: clampAcquisitionPortfolioJumps(Number.isFinite(portfolioJumps) ? portfolioJumps : 50),
         targetDays: clampAcquisitionTargetDays(Number.isFinite(targetDays) ? targetDays : 3),
+        historyAnalysisMode,
         orderDurationDays: clampAcquisitionOrderDuration(Number.isFinite(orderDurationDays) ? orderDurationDays : 30),
         itemWorkers: clampAcquisitionItemWorkers(Number.isFinite(itemWorkers) ? itemWorkers : 4),
         minMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
@@ -24051,6 +24398,7 @@ help</textarea>
       const pickupJumps = clampAcquisitionPickupJumps(settings.pickupJumps);
       const portfolioJumps = clampAcquisitionPortfolioJumps(settings.portfolioJumps);
       const targetDays = clampAcquisitionTargetDays(settings.targetDays);
+      const historyAnalysisMode = normalizeAcquisitionHistoryAnalysis(settings.historyAnalysisMode == null ? acqHistoryAnalysis.value : settings.historyAnalysisMode);
       const orderDurationDays = clampAcquisitionOrderDuration(settings.orderDurationDays);
       const itemWorkers = clampAcquisitionItemWorkers(settings.itemWorkers == null ? acqItemWorkers.value : settings.itemWorkers);
       const minMarginPercent = clampHaulMinMargin(settings.minMarginPercent);
@@ -24066,6 +24414,7 @@ help</textarea>
       acqPickupJumps.value = String(pickupJumps);
       acqPortfolioJumps.value = String(portfolioJumps);
       acqTargetDays.value = String(targetDays);
+      acqHistoryAnalysis.value = historyAnalysisMode;
       acqOrderDuration.value = String(orderDurationDays);
       acqItemWorkers.value = String(itemWorkers);
       acqMinMargin.value = String(minMarginPercent);
@@ -24078,7 +24427,7 @@ help</textarea>
       applyAcqMarketGroupIds(marketGroupIds);
       applyAcqMarketTypeIds(marketTypeIds);
       acqMinMarginValue.textContent = `${formatNumber(minMarginPercent)}%`;
-      updateAcquisitionItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly});
+      updateAcquisitionItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly, historyAnalysisMode});
       window.localStorage.setItem(acqOriginKey, originName);
       window.localStorage.setItem(acqDestinationKey, destination);
       window.localStorage.setItem(acqBudgetKey, String(budgetIsk));
@@ -24086,6 +24435,7 @@ help</textarea>
       window.localStorage.setItem(acqPickupJumpsKey, String(pickupJumps));
       window.localStorage.setItem(acqPortfolioJumpsKey, String(portfolioJumps));
       window.localStorage.setItem(acqTargetDaysKey, String(targetDays));
+      window.localStorage.setItem(acqHistoryAnalysisKey, historyAnalysisMode);
       window.localStorage.setItem(acqOrderDurationKey, String(orderDurationDays));
       window.localStorage.setItem(acqItemWorkersKey, String(itemWorkers));
       window.localStorage.setItem(acqMinMarginKey, String(minMarginPercent));
@@ -24094,7 +24444,7 @@ help</textarea>
       window.localStorage.setItem(acqMarketTypeIdsKey, JSON.stringify(marketTypeIds));
       window.localStorage.setItem(acqPastedItemsKey, pastedItemNames);
       window.localStorage.setItem(acqPastedItemsOnlyKey, pastedItemsOnly ? "1" : "0");
-      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, orderDurationDays, itemWorkers, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly};
+      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, historyAnalysisMode, orderDurationDays, itemWorkers, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly};
     }
 
     async function loadFlightStatus() {
@@ -25927,12 +26277,13 @@ help</textarea>
       const percent = Math.max(0, Math.min(100, Math.round(Number(acquisitionProgressPercent || 0))));
       const meterPercent = Math.max(4, percent);
       const itemScope = acquisitionItemScopeLabel(activeSettings);
+      const historyLabel = acquisitionHistoryAnalysisLabel(activeSettings.historyAnalysisMode || "basic");
       acqSummary.innerHTML = `
         <div class="progress-status" aria-live="polite">
           <span class="progress-spinner" aria-hidden="true"></span>
           <div class="progress-copy">
             <strong>${escapeHtml(acquisitionProgressMessage || `Building ${itemScope} portfolio`)}</strong>
-            <span><strong>${formatNumber(percent)}%</strong> complete &middot; ${escapeHtml(itemScope)}; destination ${escapeHtml(activeSettings.destination)}; budget ${formatIsk(activeSettings.budgetIsk)}; elapsed ${escapeHtml(elapsed)}.</span>
+            <span><strong>${formatNumber(percent)}%</strong> complete &middot; ${escapeHtml(itemScope)}; ${escapeHtml(historyLabel)}; destination ${escapeHtml(activeSettings.destination)}; budget ${formatIsk(activeSettings.budgetIsk)}; elapsed ${escapeHtml(elapsed)}.</span>
           </div>
         </div>
         <div class="progress-bar is-meter" aria-label="${formatNumber(percent)}% complete" style="--progress-percent: ${meterPercent}%"><span></span></div>
@@ -25960,6 +26311,7 @@ help</textarea>
         pickupJumps: acqPickupJumps.value,
         portfolioJumps: acqPortfolioJumps.value,
         targetDays: acqTargetDays.value,
+        historyAnalysisMode: acqHistoryAnalysis.value,
         orderDurationDays: acqOrderDuration.value,
         itemWorkers: acqItemWorkers.value,
         minMarginPercent: acqMinMargin.value,
@@ -25990,6 +26342,7 @@ help</textarea>
         pickup_jumps: String(scanSettings.pickupJumps),
         portfolio_jumps: String(scanSettings.portfolioJumps),
         target_days: String(scanSettings.targetDays),
+        history_analysis_mode: scanSettings.historyAnalysisMode,
         order_duration_days: String(scanSettings.orderDurationDays),
         item_workers: String(scanSettings.itemWorkers),
         min_margin_percent: String(scanSettings.minMarginPercent),
@@ -26196,10 +26549,11 @@ help</textarea>
       const regionLimit = acquisition.pickup_region_truncated ? ` Limited to ${formatNumber(acquisition.pickup_regions_scanned)} of ${formatNumber(acquisition.pickup_regions_total)} pickup regions.` : "";
       const routeWarning = route.route_warning ? `<div class="meta">${escapeHtml(route.route_warning)}</div>` : "";
       const stageTiming = renderScanStageTiming(data.server_timing || {}, acquisition.stage_timing || {}, "Portfolio stage timing");
+      const historyAnalysisLabel = acquisition.history_analysis_label || acquisitionHistoryAnalysisLabel(acquisition.history_analysis_mode || "basic");
       acqRoute.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> buy-order area toward
         <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>.
-        <div class="meta">Total investment ${formatIsk(acquisition.budget_isk)}; collection range ${formatNumber(acquisition.pickup_jumps)} jumps; portfolio jump budget ${formatNumber(acquisition.portfolio_jumps)}; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; planned order duration ${formatNumber(acquisition.order_duration_days || 30)} days; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days; scan speed ${formatNumber(acquisition.item_workers || 4)} workers.</div>
+        <div class="meta">Total investment ${formatIsk(acquisition.budget_isk)}; collection range ${formatNumber(acquisition.pickup_jumps)} jumps; portfolio jump budget ${formatNumber(acquisition.portfolio_jumps)}; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; planned order duration ${formatNumber(acquisition.order_duration_days || 30)} days; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days; history analysis ${escapeHtml(historyAnalysisLabel)}; scan speed ${formatNumber(acquisition.item_workers || 4)} workers.</div>
         ${routeWarning}
         ${stageTiming}
       `;
@@ -26248,6 +26602,7 @@ help</textarea>
           <div class="meta">${escapeHtml(strategy.plain_language || "Recommendations use public market orders, market history, budget, and fee assumptions.")}</div>
           <div class="meta">${escapeHtml(portfolioText)}</div>
           <div class="meta">${escapeHtml(strategy.scope_note || "Narrower scopes usually finish faster and give cleaner recommendations.")}</div>
+          <div class="meta">${escapeHtml(strategy.history_note || "History analysis is a confidence aid, not proof that orders will remain.")}</div>
         </div>
         <div class="acquisition-strategy-card">
           <strong>${bestText}</strong>
@@ -26390,6 +26745,7 @@ help</textarea>
               <span class="pill decision-source">${escapeHtml(row.category || "Selected scope")}</span>
             </div>
             <div class="decision-lede">${escapeHtml(row.detail || "Excluded from the funded portfolio.")}</div>
+            ${renderAcquisitionTheoryPills(row)}
             <div class="profit-detail-grid">
               <div class="profit-detail-row"><span>Suggested bid</span><b>${formatIsk(row.suggested_bid)}</b></div>
               <div class="profit-detail-row"><span>Safe ceiling</span><b>${formatIsk(row.max_safe_bid)}</b></div>
@@ -26399,6 +26755,11 @@ help</textarea>
               <div class="profit-detail-row"><span>Planning jumps</span><b>${row.estimated_collection_jumps == null ? "unknown" : formatNumber(row.estimated_collection_jumps)}</b></div>
             </div>
             ${flags}
+            <details class="profit-details">
+              <summary>Why this might fail</summary>
+              ${renderAcquisitionWhyMightFail(row)}
+              ${renderAcquisitionTheoryDetails(row)}
+            </details>
           </div>
         `;
       }).join("");
@@ -26443,6 +26804,7 @@ help</textarea>
                 <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
               </div>
               <div class="decision-lede">${escapeHtml(decision.label || "Review")} at ${formatIsk(item.suggested_bid)} or less; ${escapeHtml(range.range || "station")} range. ${escapeHtml(scaledNote)}</div>
+              ${renderAcquisitionTheoryPills(item)}
               <div class="decision-metrics">
                 <div class="decision-metric"><span>Investment</span><b>${formatIsk(item.estimated_isk_committed)}</b><small>${formatPercent(item.portfolio_weight_percent)} of total budget.</small></div>
                 <div class="decision-metric"><span>Units</span><b>${formatNumber(item.recommended_units)}</b><small>Safe ceiling ${formatIsk(item.max_safe_bid)}.</small></div>
@@ -26459,6 +26821,11 @@ help</textarea>
               <details class="profit-details">
                 <summary>Why selected</summary>
                 ${renderAcquisitionWhySelected(item)}
+              </details>
+              <details class="profit-details" open>
+                <summary>Why this might fail</summary>
+                ${renderAcquisitionWhyMightFail(item)}
+                ${renderAcquisitionTheoryDetails(item)}
               </details>
               <details class="profit-details">
                 <summary>Portfolio math details</summary>
@@ -26504,6 +26871,7 @@ help</textarea>
               <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
             </div>
             <div class="decision-lede">${escapeHtml(decision.label || "Review")} in ${escapeHtml(item.placement_system || "source")} at ${formatIsk(item.suggested_bid)} or less; ${escapeHtml(range.range || "station")} range.</div>
+            ${renderAcquisitionTheoryPills(item)}
             <div class="decision-metrics">
               <div class="decision-metric"><span>Suggested Bid</span><b>${formatIsk(item.suggested_bid)}</b><small>Safe ceiling ${formatIsk(item.max_safe_bid)}.</small></div>
               <div class="decision-metric"><span>Units</span><b>${formatNumber(item.recommended_units)}</b><small>Estimated ISK committed ${formatIsk(item.estimated_isk_committed)}.</small></div>
@@ -26512,6 +26880,11 @@ help</textarea>
             </div>
             <div class="decision-lede">${escapeHtml(decision.reason || "Verify current orders in EVE before posting.")}</div>
             ${renderAcquisitionHistoryFlags(item.history_flags || [])}
+            <details class="profit-details" open>
+              <summary>Why this might fail</summary>
+              ${renderAcquisitionWhyMightFail(item)}
+              ${renderAcquisitionTheoryDetails(item)}
+            </details>
             <details class="profit-details">
               <summary>Bid, range, and market math details</summary>
               <div class="profit-detail-grid">
@@ -26544,6 +26917,90 @@ help</textarea>
             const cls = flag.severity === "trap" ? "decision-price" : flag.severity === "caution" ? "decision-watch" : "decision-build";
             return `<span class="pill ${cls}" title="${escapeHtml(flag.detail || "")}">${escapeHtml(flag.label || "History signal")}</span>`;
           }).join("")}
+        </div>
+      `;
+    }
+
+    function acquisitionTheoryPillClass(level) {
+      const cleanLevel = String(level || "").toLowerCase();
+      if (["strong", "distributed", "room"].includes(cleanLevel)) return "decision-build";
+      if (["sparse", "unsupported", "no-headroom"].includes(cleanLevel)) return "decision-price";
+      if (["thin", "needs-audit", "single-order", "concentrated", "tight", "moderate"].includes(cleanLevel)) return "decision-watch";
+      return "decision-source";
+    }
+
+    function renderAcquisitionTheoryPills(item) {
+      const liquidity = item.liquidity_confidence || {};
+      const buyer = item.buyer_concentration || {};
+      const pressure = item.competition_pressure || {};
+      const historyLabel = item.history_analysis_label || acquisitionHistoryAnalysisLabel(item.history_analysis_mode || "basic");
+      const pills = [
+        `<span class="pill decision-source" title="History analysis mode">${escapeHtml(historyLabel)}</span>`,
+      ];
+      if (liquidity.label) {
+        pills.push(`<span class="pill ${acquisitionTheoryPillClass(liquidity.level)}" title="${escapeHtml(liquidity.detail || "")}">${escapeHtml(liquidity.label)}</span>`);
+      }
+      if (buyer.label) {
+        pills.push(`<span class="pill ${acquisitionTheoryPillClass(buyer.level)}" title="${escapeHtml(buyer.detail || "")}">${escapeHtml(buyer.label)}</span>`);
+      }
+      if (pressure.label) {
+        pills.push(`<span class="pill ${acquisitionTheoryPillClass(pressure.level)}" title="${escapeHtml(pressure.detail || "")}">${escapeHtml(pressure.label)}</span>`);
+      }
+      return `<div class="decision-counts acquisition-theory-pills">${pills.join("")}</div>`;
+    }
+
+    function renderHistoryWindowValue(stats) {
+      if (!stats || !Number(stats.days || 0)) return "no data";
+      const volume = formatNumber(stats.avg_daily_volume || 0);
+      const orders = Number(stats.avg_daily_order_count || 0).toLocaleString(undefined, {maximumFractionDigits: 1});
+      const median = stats.median_average == null ? "median unknown" : `median ${formatIsk(stats.median_average)}`;
+      return `${volume}/day; ${orders} orders/day; ${median}`;
+    }
+
+    function renderHistoryWindowComparison(label, windows) {
+      if (!windows || typeof windows !== "object") return "";
+      return `
+        <div class="profit-detail-row">
+          <span>${escapeHtml(label)}</span>
+          <b>7d ${escapeHtml(renderHistoryWindowValue(windows["7_day"] || {}))}</b>
+          <small>30d ${escapeHtml(renderHistoryWindowValue(windows["30_day"] || {}))}; 90d ${escapeHtml(renderHistoryWindowValue(windows["90_day"] || {}))}</small>
+        </div>
+      `;
+    }
+
+    function renderAcquisitionWhyMightFail(item) {
+      const reasons = Array.isArray(item.why_might_fail)
+        ? item.why_might_fail.map((reason) => String(reason || "").trim()).filter(Boolean)
+        : [];
+      if (!reasons.length) {
+        return `<div class="meta">No failure notes were returned, but current orders can still change before a manual buy order fills.</div>`;
+      }
+      return `
+        <div class="decision-lede">Why this might fail: treat these as checks before placing or updating the order.</div>
+        <ul class="acquisition-failure-list">
+          ${reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}
+        </ul>
+      `;
+    }
+
+    function renderAcquisitionTheoryDetails(item) {
+      const liquidity = item.liquidity_confidence || {};
+      const buyer = item.buyer_concentration || {};
+      const pressure = item.competition_pressure || {};
+      const headroomPercent = pressure.bid_headroom_percent == null ? "unknown" : `${formatNumber(pressure.bid_headroom_percent)}%`;
+      const supportingVolume = buyer.supporting_volume == null ? "unknown" : formatNumber(buyer.supporting_volume);
+      const largestShare = buyer.largest_order_share_percent == null ? "unknown" : `${formatNumber(buyer.largest_order_share_percent)}%`;
+      return `
+        <div class="profit-detail-grid">
+          <div class="profit-detail-row"><span>History mode</span><b>${escapeHtml(item.history_analysis_label || acquisitionHistoryAnalysisLabel(item.history_analysis_mode || "basic"))}</b><small>${escapeHtml(item.history_analysis_mode === "fast" ? "Fast mode skips market-history calls for speed." : "History is used as evidence, not a promise that future buyers remain.")}</small></div>
+          <div class="profit-detail-row"><span>Liquidity confidence</span><b>${escapeHtml(liquidity.label || "Unknown")}</b><small>${escapeHtml(liquidity.detail || "No liquidity detail returned.")}</small></div>
+          <div class="profit-detail-row"><span>History coverage</span><b>${formatNumber(liquidity.coverage_ratio || 0)}x</b><small>Avg ${formatNumber(liquidity.avg_daily_volume || 0)}/day; median ${formatNumber(liquidity.median_daily_volume || 0)}/day; ${formatNumber(liquidity.avg_daily_order_count || 0)} orders/day.</small></div>
+          <div class="profit-detail-row"><span>Buyer concentration</span><b>${escapeHtml(buyer.label || "Unknown")}</b><small>${escapeHtml(buyer.detail || "No buyer-depth detail returned.")}</small></div>
+          <div class="profit-detail-row"><span>Buyer support</span><b>${supportingVolume} units</b><small>${formatNumber(buyer.supporting_order_count || 0)} supporting order(s); largest order covers ${largestShare} of the suggested size.</small></div>
+          <div class="profit-detail-row"><span>Competition pressure</span><b>${escapeHtml(pressure.label || "Unknown")}</b><small>${escapeHtml(pressure.detail || "No competition detail returned.")}</small></div>
+          <div class="profit-detail-row"><span>Bid headroom</span><b>${formatIsk(pressure.bid_headroom)}</b><small>Highest source buy ${pressure.highest_source_buy == null ? "none visible" : formatIsk(pressure.highest_source_buy)}; safe ceiling ${formatIsk(pressure.safe_bid_ceiling)}; suggested bid ${formatIsk(pressure.suggested_bid)}; headroom ${headroomPercent}.</small></div>
+          ${renderHistoryWindowComparison("Source history windows", item.source_history_windows || {})}
+          ${renderHistoryWindowComparison("Destination history windows", item.destination_history_windows || {})}
         </div>
       `;
     }
