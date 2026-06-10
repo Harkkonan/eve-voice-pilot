@@ -500,6 +500,11 @@ def test_dashboard_includes_plex_button_press_effect():
     assert "event.isTrusted" in page
     assert "ui_perf" in page
     assert "/api/ui-performance" in page
+    assert "managed-document-duck-layer" in page
+    assert "eve-managed-document-change" in page
+    assert "eveVoiceManagedDocumentChanged" in page
+    assert "5 * 60 * 1000" in page
+    assert "managed-document-duck" in page
 
 
 def test_dashboard_includes_shared_fittings_tab():
