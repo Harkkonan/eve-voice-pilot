@@ -335,6 +335,8 @@ Drag the ship to move the pet around your screen. You can also drag the `Options
 
 Click `Options` to open the full settings window.
 
+The top of the window shows a compact live status strip for alert terms, voice-command mode, Discord notes, ESI location, and in-memory history.
+
 In the `Alerts` tab, add, change, or remove:
 
 - your pilot names for mention alerts;
@@ -362,6 +364,8 @@ In the `Behaviors` tab, choose the ship animation for each alert type:
 Each row has a small animated preview next to the selector. The behavior choices include short alert, happy flight, combat burst, long flight, long shooting, long combo, calm wiggle, and no animation. Behavior changes are saved immediately to the same local settings file.
 
 In the `Voice` tab, turn spoken pet messages on or off and choose the voice engine/style. You can also enable the voice-command listener there. `Allow command sending` is off by default; when it is on, the active-window guard is still on by default.
+
+In the `Notes` tab, the current voice-note phrase preview follows your saved call sign and trigger phrase. Use `Use Tap Tap Trigger` if you want to put `tap tap` first while keeping any other note triggers.
 
 In the `Voice Lab` tab, edit the command profile and test phrases without sending keys. Command changes are local profile changes and are shared with the main EVE Voice Pilot app.
 

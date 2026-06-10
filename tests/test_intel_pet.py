@@ -48,6 +48,7 @@ from eve_voice_pilot.intel_pet import (
     IntelPetLocationCheer,
     IntelPetLocationSession,
     IntelPetEngine,
+    IntelPetOptionsSummaryCard,
     IntelPetSettings,
     IntelPetVoiceStatus,
     alert_behavior_key,
@@ -78,6 +79,7 @@ from eve_voice_pilot.intel_pet import (
     display_message_from_mission_cheer,
     display_message_from_voice_status,
     default_spoken_alert_kinds,
+    discord_note_example_phrases,
     duplicate_voice_command,
     editable_voice_profile_path,
     execute_voice_command,
@@ -92,6 +94,7 @@ from eve_voice_pilot.intel_pet import (
     history_item_from_status,
     history_item_from_voice_status,
     intel_pet_diagnostics_report,
+    intel_pet_options_summary_cards,
     is_kill_event_text,
     is_happy_system,
     listener_filter_from_args,
@@ -329,6 +332,65 @@ def test_discord_note_settings_round_trip_and_stay_out_of_export(tmp_path):
     assert loaded.trigger_phrases == ("take a note", "remember")
     assert "webhook" not in json.dumps(exported).casefold()
     assert DEFAULT_DISCORD_NOTE_SETTINGS_PATH.name == "intel_pet_discord_notes.json"
+
+
+def test_discord_note_phrase_preview_uses_call_sign_and_first_trigger():
+    settings = IntelPetDiscordNoteSettings(trigger_phrases=("tap tap", "take a note"))
+
+    inline, armed = discord_note_example_phrases(
+        settings,
+        call_sign="Merlin",
+        sample_note="gate camp near Amarr",
+    )
+
+    assert inline == "Merlin tap tap gate camp near Amarr"
+    assert armed == "Merlin tap tap"
+
+
+def test_options_summary_cards_show_useful_runtime_state():
+    settings = IntelPetSettings(
+        pilot_names=("Dandin",),
+        help_phrases=("need armor",),
+        extra_keywords=("buy order",),
+        enable_voice_listener=True,
+        voice_engine=VOICE_ENGINE_WHISPER,
+        allow_voice_command_sending=True,
+        require_voice_target_window=True,
+    )
+    note_settings = IntelPetDiscordNoteSettings(
+        enabled=True,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
+        trigger_phrases=("tap tap",),
+    )
+    session = IntelPetLocationSession(
+        character_id=123,
+        character_name="Dandin Ridderston",
+        scopes=(LOCATION_SCOPE,),
+        access_token="token",
+        expires_at=9999999999.0,
+    )
+
+    cards = intel_pet_options_summary_cards(
+        settings=settings,
+        note_settings=note_settings,
+        location_session=session,
+        current_system="Amarr",
+        history_count=4,
+    )
+    by_key = {card.key: card for card in cards}
+
+    assert all(isinstance(card, IntelPetOptionsSummaryCard) for card in cards)
+    assert by_key["alerts"].value == "3 watch terms"
+    assert by_key["alerts"].state == "good"
+    assert by_key["voice"].value == VOICE_ENGINE_WHISPER
+    assert by_key["voice"].state == "warn"
+    assert "guard on" in by_key["voice"].detail
+    assert by_key["notes"].value == "Discord notes on"
+    assert by_key["notes"].state == "good"
+    assert "tap tap" in by_key["notes"].detail
+    assert by_key["location"].value == "Dandin Ridderston"
+    assert by_key["location"].detail == "Current system: Amarr."
+    assert by_key["history"].value == "4 events"
 
 
 def test_import_settings_accepts_raw_profile_json_and_rejects_unrelated_json(tmp_path):

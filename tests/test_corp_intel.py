@@ -673,6 +673,7 @@ def test_event_store_counts_watchlist_hits():
 
 
 def test_event_store_persists_events_to_sqlite(tmp_path):
+    recorded_at = corp_intel.now_iso()
     database = EventDatabase(tmp_path / "events.sqlite3")
     store = IntelEventStore(max_events=10, database=database)
     store.add(
@@ -686,8 +687,8 @@ def test_event_store_persists_events_to_sqlite(tmp_path):
             severity="high",
             systems=("Tama",),
             keywords=("pilot: Bad Pilot",),
-            observed_at="2026-06-03T02:10:11Z",
-            reported_at="2026-06-03T02:10:12Z",
+            observed_at=recorded_at,
+            reported_at=recorded_at,
             log_path=r"C:\Users\Pilot\Documents\EVE\logs\Chatlogs\Local.txt",
         )
     )

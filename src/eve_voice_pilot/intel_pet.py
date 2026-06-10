@@ -1978,6 +1978,97 @@ def diagnostic_count_label(count: int, singular: str, plural: str | None = None)
     return f"{count} {singular if count == 1 else plural or singular + 's'}"
 
 
+@dataclass(frozen=True)
+class IntelPetOptionsSummaryCard:
+    key: str
+    title: str
+    value: str
+    detail: str
+    state: str = "muted"
+
+
+def discord_note_example_phrases(
+    settings: IntelPetDiscordNoteSettings,
+    *,
+    call_sign: str,
+    sample_note: str = "gate camp near Amarr",
+) -> tuple[str, str]:
+    trigger_phrases = clean_discord_note_phrases(
+        settings.trigger_phrases,
+        default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+    )
+    trigger = trigger_phrases[0]
+    prefix = f"{clean_voice_call_sign(call_sign)} {trigger}".strip()
+    note = clean_discord_note_text(sample_note) or "gate camp near Amarr"
+    return f"{prefix} {note}", prefix
+
+
+def intel_pet_options_summary_cards(
+    *,
+    settings: IntelPetSettings,
+    note_settings: IntelPetDiscordNoteSettings,
+    location_session: IntelPetLocationSession | None = None,
+    current_system: str = "",
+    history_count: int = 0,
+) -> tuple[IntelPetOptionsSummaryCard, ...]:
+    alert_count = len(settings.pilot_names) + len(settings.help_phrases) + len(settings.extra_keywords)
+    alert_state = "good" if alert_count else "warn"
+    alert_detail = (
+        f"{diagnostic_count_label(len(settings.pilot_names), 'pilot name')}, "
+        f"{diagnostic_count_label(len(settings.help_phrases), 'help phrase')}, "
+        f"{diagnostic_count_label(len(settings.extra_keywords), 'keyword')}"
+    )
+
+    if settings.enable_voice_listener:
+        if settings.allow_voice_command_sending:
+            guard = "guard on" if settings.require_voice_target_window else "guard off"
+            voice_state = "warn" if settings.require_voice_target_window else "danger"
+            voice_detail = f"Exact matches can send keys; {guard}."
+        else:
+            voice_state = "good"
+            voice_detail = "Practice listener only; no keys sent."
+        voice_value = clean_voice_engine(settings.voice_engine)
+    else:
+        voice_state = "muted"
+        voice_value = "Listener off"
+        voice_detail = "Voice commands are idle."
+
+    note_trigger = clean_discord_note_phrases(
+        note_settings.trigger_phrases,
+        default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+    )[0]
+    if note_settings.enabled and note_settings.webhook_url:
+        note_state = "good"
+        note_value = "Discord notes on"
+        note_detail = f"Webhook configured; trigger: {note_trigger}."
+    elif note_settings.enabled:
+        note_state = "warn"
+        note_value = "Notes need webhook"
+        note_detail = f"Trigger: {note_trigger}; webhook missing."
+    else:
+        note_state = "muted"
+        note_value = "Notes off"
+        note_detail = f"Saved trigger: {note_trigger}."
+
+    if location_session is not None:
+        location_value = location_session.character_name
+        location_detail = f"Current system: {current_system or 'waiting for ESI'}."
+        location_state = "good"
+    else:
+        location_value = "Location cheer off"
+        location_detail = "No ESI location session active."
+        location_state = "muted"
+
+    history_state = "good" if history_count else "muted"
+    return (
+        IntelPetOptionsSummaryCard("alerts", "Alerts", diagnostic_count_label(alert_count, "watch term"), alert_detail, alert_state),
+        IntelPetOptionsSummaryCard("voice", "Voice", voice_value, voice_detail, voice_state),
+        IntelPetOptionsSummaryCard("notes", "Notes", note_value, note_detail, note_state),
+        IntelPetOptionsSummaryCard("location", "Location", location_value, location_detail, location_state),
+        IntelPetOptionsSummaryCard("history", "History", diagnostic_count_label(history_count, "event"), "In-memory for this pet run.", history_state),
+    )
+
+
 def latest_history_detail(items: Iterable[IntelPetHistoryItem], *, meta: str) -> str:
     for item in reversed(tuple(items)):
         if item.meta == meta:
@@ -2986,13 +3077,103 @@ def run_overlay(
         editor.transient(root)
         editor.attributes("-topmost", True)
 
+        ui_colors = {
+            "bg": "#0b1120",
+            "surface": "#111827",
+            "panel": "#162033",
+            "panel_edge": "#334155",
+            "text": "#e5e7eb",
+            "muted": "#94a3b8",
+            "good": "#86efac",
+            "warn": "#fde68a",
+            "danger": "#fca5a5",
+            "accent": "#7dd3fc",
+            "field": "#f8fafc",
+        }
+
+        def apply_options_style() -> None:
+            style = ttk.Style(editor)
+            try:
+                style.theme_use("clam")
+            except tk.TclError:
+                pass
+            style.configure(".", font=("Segoe UI", 9))
+            style.configure("TFrame", background=ui_colors["surface"])
+            style.configure("TLabel", background=ui_colors["surface"], foreground=ui_colors["text"])
+            style.configure("TCheckbutton", background=ui_colors["surface"], foreground=ui_colors["text"])
+            style.map(
+                "TCheckbutton",
+                background=[("active", ui_colors["surface"])],
+                foreground=[("disabled", ui_colors["muted"])],
+            )
+            style.configure("TButton", padding=(10, 6))
+            style.configure("TEntry", fieldbackground=ui_colors["field"])
+            style.configure("TCombobox", fieldbackground=ui_colors["field"], arrowsize=14)
+            style.configure(
+                "Treeview",
+                background=ui_colors["panel"],
+                fieldbackground=ui_colors["panel"],
+                foreground=ui_colors["text"],
+                rowheight=24,
+                bordercolor=ui_colors["panel_edge"],
+            )
+            style.configure(
+                "Treeview.Heading",
+                background="#1f2937",
+                foreground=ui_colors["text"],
+                font=("Segoe UI", 9, "bold"),
+            )
+            style.map("Treeview", background=[("selected", "#2563eb")], foreground=[("selected", "#ffffff")])
+            style.configure(
+                "TLabelframe",
+                background=ui_colors["surface"],
+                bordercolor=ui_colors["panel_edge"],
+                relief="solid",
+            )
+            style.configure(
+                "TLabelframe.Label",
+                background=ui_colors["surface"],
+                foreground=ui_colors["accent"],
+                font=("Segoe UI", 9, "bold"),
+            )
+            style.configure("IntelPet.Root.TFrame", background=ui_colors["bg"])
+            style.configure("IntelPet.Header.TFrame", background=ui_colors["bg"])
+            style.configure("IntelPet.Surface.TFrame", background=ui_colors["surface"])
+            style.configure("IntelPet.Card.TFrame", background=ui_colors["panel"], relief="solid", borderwidth=1)
+            style.configure("IntelPet.Title.TLabel", background=ui_colors["bg"], foreground="#f8fafc", font=("Segoe UI", 16, "bold"))
+            style.configure("IntelPet.Subtitle.TLabel", background=ui_colors["bg"], foreground=ui_colors["muted"])
+            style.configure("IntelPet.CardTitle.TLabel", background=ui_colors["panel"], foreground=ui_colors["muted"], font=("Segoe UI", 8, "bold"))
+            style.configure("IntelPet.CardDetail.TLabel", background=ui_colors["panel"], foreground="#cbd5e1")
+            style.configure("IntelPet.CardValueMuted.TLabel", background=ui_colors["panel"], foreground=ui_colors["muted"], font=("Segoe UI", 10, "bold"))
+            style.configure("IntelPet.CardValueGood.TLabel", background=ui_colors["panel"], foreground=ui_colors["good"], font=("Segoe UI", 10, "bold"))
+            style.configure("IntelPet.CardValueWarn.TLabel", background=ui_colors["panel"], foreground=ui_colors["warn"], font=("Segoe UI", 10, "bold"))
+            style.configure("IntelPet.CardValueDanger.TLabel", background=ui_colors["panel"], foreground=ui_colors["danger"], font=("Segoe UI", 10, "bold"))
+            style.configure("IntelPet.Phrase.TLabel", background=ui_colors["panel"], foreground="#f8fafc", font=("Segoe UI", 10, "bold"))
+            style.configure("IntelPet.Muted.TLabel", background=ui_colors["surface"], foreground=ui_colors["muted"])
+            style.configure("IntelPet.TNotebook", background=ui_colors["bg"], borderwidth=0)
+            style.configure(
+                "IntelPet.TNotebook.Tab",
+                padding=(12, 7),
+                background=ui_colors["panel"],
+                foreground=ui_colors["muted"],
+            )
+            style.map(
+                "IntelPet.TNotebook.Tab",
+                background=[("selected", ui_colors["surface"]), ("active", "#1f2937")],
+                foreground=[("selected", ui_colors["accent"]), ("active", ui_colors["text"])],
+            )
+
+        apply_options_style()
+        editor.configure(background=ui_colors["bg"])
+        editor_status_var = tk.StringVar(value="Saved locally only.")
+
         def scrollable_tab(parent: ttk.Notebook) -> tuple[ttk.Frame, ttk.Frame]:
-            tab_frame = ttk.Frame(parent)
+            tab_frame = ttk.Frame(parent, style="IntelPet.Surface.TFrame")
             tab_frame.columnconfigure(0, weight=1)
             tab_frame.rowconfigure(0, weight=1)
-            canvas = tk.Canvas(tab_frame, borderwidth=0, highlightthickness=0)
+            canvas = tk.Canvas(tab_frame, borderwidth=0, highlightthickness=0, background=ui_colors["surface"])
             scrollbar = ttk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview)
-            content = ttk.Frame(canvas, padding=12)
+            content = ttk.Frame(canvas, padding=14, style="IntelPet.Surface.TFrame")
             content_id = canvas.create_window((0, 0), window=content, anchor="nw")
 
             def update_scrollregion(_event: Any | None = None) -> None:
@@ -3013,9 +3194,70 @@ def run_overlay(
             scrollbar.grid(row=0, column=1, sticky="ns")
             return tab_frame, content
 
-        editor_frame = ttk.Frame(editor, padding=12)
+        editor_frame = ttk.Frame(editor, padding=12, style="IntelPet.Root.TFrame")
         editor_frame.pack(fill="both", expand=True)
-        notebook = ttk.Notebook(editor_frame)
+
+        header = ttk.Frame(editor_frame, padding=(16, 14), style="IntelPet.Header.TFrame")
+        header.pack(fill="x", pady=(0, 10))
+        ttk.Label(header, text="Intel Pet Ops", style="IntelPet.Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Local overlay controls, voice readiness, Discord note routing, and run history.",
+            style="IntelPet.Subtitle.TLabel",
+        ).pack(anchor="w", pady=(2, 10))
+
+        summary_frame = ttk.Frame(header, style="IntelPet.Header.TFrame")
+        summary_frame.pack(fill="x")
+        summary_card_widgets: dict[str, dict[str, Any]] = {}
+        summary_value_styles = {
+            "good": "IntelPet.CardValueGood.TLabel",
+            "warn": "IntelPet.CardValueWarn.TLabel",
+            "danger": "IntelPet.CardValueDanger.TLabel",
+            "muted": "IntelPet.CardValueMuted.TLabel",
+        }
+
+        def refresh_option_summary() -> None:
+            cards = intel_pet_options_summary_cards(
+                settings=engine.current_settings(),
+                note_settings=current_discord_note_settings(),
+                location_session=location_session,
+                current_system=current_local_system(),
+                history_count=len(history_items),
+            )
+            for card in cards:
+                widgets = summary_card_widgets.get(card.key)
+                if not widgets:
+                    continue
+                widgets["value"].set(card.value)
+                widgets["detail"].set(card.detail)
+                widgets["value_label"].configure(style=summary_value_styles.get(card.state, "IntelPet.CardValueMuted.TLabel"))
+
+        for column, card in enumerate(
+            intel_pet_options_summary_cards(
+                settings=engine.current_settings(),
+                note_settings=current_discord_note_settings(),
+                location_session=location_session,
+                current_system=current_local_system(),
+                history_count=len(history_items),
+            )
+        ):
+            summary_frame.columnconfigure(column, weight=1, uniform="summary")
+            card_frame = ttk.Frame(summary_frame, padding=(10, 8), style="IntelPet.Card.TFrame")
+            card_frame.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
+            value_var = tk.StringVar(value=card.value)
+            detail_var = tk.StringVar(value=card.detail)
+            ttk.Label(card_frame, text=card.title.upper(), style="IntelPet.CardTitle.TLabel").pack(anchor="w")
+            value_label = ttk.Label(
+                card_frame,
+                textvariable=value_var,
+                style=summary_value_styles.get(card.state, "IntelPet.CardValueMuted.TLabel"),
+                wraplength=150,
+            )
+            value_label.pack(anchor="w", pady=(4, 2))
+            ttk.Label(card_frame, textvariable=detail_var, style="IntelPet.CardDetail.TLabel", wraplength=150).pack(anchor="w")
+            summary_card_widgets[card.key] = {"value": value_var, "detail": detail_var, "value_label": value_label}
+
+        notebook = ttk.Notebook(editor_frame, style="IntelPet.TNotebook")
         notebook.pack(fill="both", expand=True)
         settings_tab, settings_frame = scrollable_tab(notebook)
         behavior_tab, behavior_frame = scrollable_tab(notebook)
@@ -3031,8 +3273,6 @@ def run_overlay(
         notebook.add(voice_lab_tab, text="Voice Lab")
         notebook.add(diagnostics_tab, text="Diagnostics")
         notebook.add(history_tab, text="History")
-
-        editor_status_var = tk.StringVar(value="Saved locally only.")
 
         ttk.Label(settings_frame, text="Local alert settings", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(
@@ -3075,6 +3315,7 @@ def run_overlay(
                 f"{len(settings.extra_keywords)} keyword{'s' if len(settings.extra_keywords) != 1 else ''}",
             )
             editor_status_var.set(f"{action}. {', '.join(counts)} saved.")
+            refresh_option_summary()
 
         def add_term(name: str) -> None:
             term_var = term_vars[name]
@@ -3151,7 +3392,18 @@ def run_overlay(
 
             list_frame = ttk.Frame(section)
             list_frame.pack(fill="both", expand=True)
-            term_list = tk.Listbox(list_frame, height=4, exportselection=False)
+            term_list = tk.Listbox(
+                list_frame,
+                height=4,
+                exportselection=False,
+                bg=ui_colors["panel"],
+                fg=ui_colors["text"],
+                selectbackground="#2563eb",
+                selectforeground="#ffffff",
+                highlightthickness=1,
+                highlightbackground=ui_colors["panel_edge"],
+                relief="flat",
+            )
             term_list.pack(side="left", fill="both", expand=True)
             scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=term_list.yview)
             scrollbar.pack(side="right", fill="y")
@@ -3216,6 +3468,7 @@ def run_overlay(
             refresh_behavior_vars(settings)
             label = next((item_label for item_kind, item_label, _description in ALERT_BEHAVIOR_KINDS if item_kind == kind), kind)
             editor_status_var.set(f"{label} behavior saved as {behavior_label(settings.alert_behaviors[kind])}.")
+            refresh_option_summary()
 
         def draw_behavior_preview(canvas: Any, behavior: str, step: int) -> None:
             canvas.delete("preview")
@@ -3429,6 +3682,7 @@ def run_overlay(
             state = "on" if settings.speak_alerts else "off"
             command_state = "enabled" if settings.allow_voice_command_sending else "practice only"
             editor_status_var.set(f"{action}. Spoken pet messages are {state}; commands are {command_state}.")
+            refresh_option_summary()
 
         def set_all_spoken_kinds(value: bool) -> None:
             for var in spoken_alert_kind_vars.values():
@@ -3663,13 +3917,23 @@ def run_overlay(
         note_cancel_var = tk.StringVar(value=", ".join(note_settings.cancel_phrases))
         note_test_var = tk.StringVar(value="gate camp near the Amarr undock")
         note_status_var = tk.StringVar(value=f"Notes settings file: {discord_note_settings_path}")
+        note_inline_example_var = tk.StringVar()
+        note_armed_example_var = tk.StringVar()
 
-        def refresh_discord_note_fields(settings: IntelPetDiscordNoteSettings) -> None:
-            note_enabled_var.set(settings.enabled)
-            note_webhook_var.set(settings.webhook_url)
-            note_sender_var.set(clean_discord_note_sender(settings.sender_name))
-            note_trigger_var.set(", ".join(settings.trigger_phrases))
-            note_cancel_var.set(", ".join(settings.cancel_phrases))
+        def discord_note_preview_settings_from_form() -> IntelPetDiscordNoteSettings:
+            return IntelPetDiscordNoteSettings(
+                enabled=note_enabled_var.get(),
+                webhook_url="",
+                sender_name=clean_discord_note_sender(note_sender_var.get()),
+                trigger_phrases=clean_discord_note_phrases(
+                    note_trigger_var.get(),
+                    default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+                ),
+                cancel_phrases=clean_discord_note_phrases(
+                    note_cancel_var.get(),
+                    default=DEFAULT_DISCORD_NOTE_CANCEL_PHRASES,
+                ),
+            )
 
         def discord_note_settings_from_form() -> IntelPetDiscordNoteSettings:
             return IntelPetDiscordNoteSettings(
@@ -3686,6 +3950,29 @@ def run_overlay(
                 ),
             )
 
+        def refresh_note_phrase_preview(
+            *,
+            settings_override: IntelPetSettings | None = None,
+            note_settings_override: IntelPetDiscordNoteSettings | None = None,
+        ) -> None:
+            preview_settings = settings_override or engine.current_settings()
+            preview_note_settings = note_settings_override or discord_note_preview_settings_from_form()
+            inline, armed = discord_note_example_phrases(
+                preview_note_settings,
+                call_sign=preview_settings.voice_call_sign,
+                sample_note=note_test_var.get(),
+            )
+            note_inline_example_var.set(inline)
+            note_armed_example_var.set(armed)
+
+        def refresh_discord_note_fields(settings: IntelPetDiscordNoteSettings) -> None:
+            note_enabled_var.set(settings.enabled)
+            note_webhook_var.set(settings.webhook_url)
+            note_sender_var.set(clean_discord_note_sender(settings.sender_name))
+            note_trigger_var.set(", ".join(settings.trigger_phrases))
+            note_cancel_var.set(", ".join(settings.cancel_phrases))
+            refresh_note_phrase_preview(note_settings_override=settings)
+
         def persist_discord_note_settings(action: str = "Discord note settings saved") -> IntelPetDiscordNoteSettings | None:
             try:
                 settings = discord_note_settings_from_form()
@@ -3700,6 +3987,8 @@ def run_overlay(
             enabled = "on" if settings.enabled else "off"
             note_status_var.set(f"{action}. Notes are {enabled}; webhook is {configured}.")
             editor_status_var.set(note_status_var.get())
+            refresh_note_phrase_preview(note_settings_override=settings)
+            refresh_option_summary()
             return settings
 
         def send_test_discord_note() -> None:
@@ -3714,6 +4003,46 @@ def run_overlay(
             alert_queue.put(status)
             note_status_var.set(status.detail)
             editor_status_var.set(status.title)
+
+        def use_tap_tap_trigger() -> None:
+            triggers = clean_discord_note_phrases(
+                note_trigger_var.get(),
+                default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+            )
+            promoted = ("tap tap", *(trigger for trigger in triggers if trigger != "tap tap"))
+            note_trigger_var.set(", ".join(promoted))
+            persist_discord_note_settings("Tap tap trigger saved")
+
+        for preview_var in (note_trigger_var, note_test_var, voice_call_sign_var):
+            preview_var.trace_add("write", lambda *_args: refresh_note_phrase_preview())
+
+        phrase_frame = ttk.LabelFrame(notes_frame, text="Current voice phrase", padding=10)
+        phrase_frame.pack(fill="x", pady=(0, 12))
+        phrase_frame.columnconfigure(1, weight=1)
+        ttk.Label(phrase_frame, text="Inline note").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Label(phrase_frame, textvariable=note_inline_example_var, style="IntelPet.Phrase.TLabel", wraplength=520).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(10, 0),
+            pady=3,
+        )
+        ttk.Label(phrase_frame, text="Arm capture").grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Label(phrase_frame, textvariable=note_armed_example_var, style="IntelPet.Phrase.TLabel", wraplength=520).grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            padx=(10, 0),
+            pady=3,
+        )
+        ttk.Button(phrase_frame, text="Use Tap Tap Trigger", command=use_tap_tap_trigger).grid(
+            row=2,
+            column=1,
+            sticky="w",
+            padx=(10, 0),
+            pady=(8, 0),
+        )
+        refresh_note_phrase_preview(note_settings_override=note_settings)
 
         ttk.Checkbutton(
             discord_note_form,
@@ -3737,7 +4066,7 @@ def run_overlay(
         ttk.Entry(discord_note_form, textvariable=note_trigger_var).grid(row=4, column=1, sticky="ew", pady=5)
         ttk.Label(
             discord_note_form,
-            text="Examples: Aura take a note gate camp in Dihra, or Aura take a note then speak the note next.",
+            text="Use the live phrase preview above; uncommon trigger pairs such as tap tap are easier to distinguish.",
             wraplength=560,
         ).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 8))
 
@@ -4344,7 +4673,18 @@ def run_overlay(
             text="Local runtime summary for troubleshooting. This does not include raw chat lines or alert message text.",
             wraplength=520,
         ).pack(anchor="w", pady=(2, 8))
-        diagnostics_text = tk.Text(diagnostics_frame, height=26, wrap="word", state="disabled")
+        diagnostics_text = tk.Text(
+            diagnostics_frame,
+            height=26,
+            wrap="word",
+            state="disabled",
+            bg=ui_colors["panel"],
+            fg=ui_colors["text"],
+            insertbackground=ui_colors["text"],
+            relief="flat",
+            padx=10,
+            pady=8,
+        )
         diagnostics_text.pack(fill="both", expand=True)
 
         def voice_profile_path_for_diagnostics() -> Path | str:
@@ -4404,7 +4744,18 @@ def run_overlay(
         ).pack(anchor="w", pady=(2, 8))
         history_body = ttk.Frame(history_frame)
         history_body.pack(fill="both", expand=True)
-        history_text = tk.Text(history_body, height=20, wrap="word", state="disabled")
+        history_text = tk.Text(
+            history_body,
+            height=20,
+            wrap="word",
+            state="disabled",
+            bg=ui_colors["panel"],
+            fg=ui_colors["text"],
+            insertbackground=ui_colors["text"],
+            relief="flat",
+            padx=10,
+            pady=8,
+        )
         history_text.pack(side="left", fill="both", expand=True)
         history_scrollbar = ttk.Scrollbar(history_body, orient="vertical", command=history_text.yview)
         history_scrollbar.pack(side="right", fill="y")
@@ -4426,6 +4777,7 @@ def run_overlay(
             history_items.clear()
             refresh_history_text()
             refresh_heard_phrases()
+            refresh_option_summary()
 
         history_buttons = ttk.Frame(history_frame)
         history_buttons.pack(fill="x", pady=(8, 0))
@@ -4461,6 +4813,8 @@ def run_overlay(
             require_target_window_var.set(settings.require_voice_target_window)
             voice_target_title_var.set(clean_voice_target_title(settings.voice_target_title))
             refresh_heard_phrases()
+            refresh_note_phrase_preview(settings_override=settings)
+            refresh_option_summary()
 
         def export_pet_settings() -> None:
             default_name = f"intel_pet_settings_{time.strftime('%Y%m%d_%H%M%S')}.json"
@@ -4501,18 +4855,20 @@ def run_overlay(
                 return
             editor_status_var.set(f"Imported settings from {Path(import_path).name}. Saved to local profile.")
 
+        history_refreshers.append(refresh_option_summary)
+
         def forget_history_refresher(event: Any) -> None:
             if event.widget is not editor:
                 return
-            for refresher in (refresh_history_text, refresh_heard_phrases, refresh_diagnostics_text):
+            for refresher in (refresh_history_text, refresh_heard_phrases, refresh_diagnostics_text, refresh_option_summary):
                 if refresher in history_refreshers:
                     history_refreshers.remove(refresher)
 
         editor.bind("<Destroy>", forget_history_refresher, add="+")
 
-        footer = ttk.Frame(editor_frame)
-        footer.pack(fill="x")
-        ttk.Label(footer, textvariable=editor_status_var, wraplength=380).pack(side="left", anchor="w")
+        footer = ttk.Frame(editor_frame, style="IntelPet.Root.TFrame")
+        footer.pack(fill="x", pady=(10, 0))
+        ttk.Label(footer, textvariable=editor_status_var, style="IntelPet.Subtitle.TLabel", wraplength=420).pack(side="left", anchor="w")
         ttk.Button(footer, text="Quit Pet", command=on_close).pack(side="right", padx=(6, 0))
         ttk.Button(footer, text="Close", command=editor.destroy).pack(side="right")
         ttk.Button(footer, text="Import Settings", command=import_pet_settings).pack(side="right", padx=(6, 0))
