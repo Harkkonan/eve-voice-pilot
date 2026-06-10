@@ -141,7 +141,9 @@ Use the diagnostics endpoint after startup:
 https://YOUR-DOMAIN-OR-TUNNEL/api/flight/diagnostics
 ```
 
-The Industry Library tab also shows a **Static Cache Preflight** panel. Check it before inviting testers or after deploying a new server/container. If it reports a missing cache, run the cache refresh on the same host that serves the website, then restart or refresh the page.
+The dashboard also includes a **Tester Cockpit** tab at `#tester`. Check it before inviting testers or after deploying a new server/container. It summarizes whether EVE SSO is configured, the member allowlist is active, the server mode and public base URL look right, the SSO callback matches the public URL, Discord destinations are configured, local settings/database paths are ignored by Git, and static cache files are present.
+
+The Industry Library tab also shows a **Static Cache Preflight** panel. If the cockpit or preflight panel reports a missing cache, run the cache refresh on the same host that serves the website, then restart or refresh the page.
 
 Remote market listing writes are locked down in public hosting mode. Add an admin token for operator-only writes, or add `--trusted-members-can-write-market` if allowlisted EVE SSO members should be able to create, reserve, and update market listings from the shared site:
 

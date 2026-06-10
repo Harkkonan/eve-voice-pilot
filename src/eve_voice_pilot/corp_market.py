@@ -7,6 +7,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+import fnmatch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
 import io
@@ -11826,55 +11827,304 @@ def static_cache_row(
     }
 
 
+def repo_relative_path(path: Path) -> str:
+    candidate = path if path.is_absolute() else (ROOT / path)
+    try:
+        return str(candidate.resolve().relative_to(ROOT)).replace("\\", "/")
+    except ValueError:
+        return path.name if path.name else str(path).replace("\\", "/")
+
+
+def gitignore_patterns(path: Path = ROOT / ".gitignore") -> list[str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return [line.strip().replace("\\", "/") for line in lines if line.strip() and not line.lstrip().startswith("#")]
+
+
+def gitignore_pattern_matches(pattern: str, relative_path: str) -> bool:
+    clean_pattern = pattern.removeprefix("!").strip()
+    if not clean_pattern:
+        return False
+    if clean_pattern.endswith("/"):
+        directory = clean_pattern.rstrip("/")
+        return relative_path == directory or relative_path.startswith(f"{directory}/")
+    if "/" not in clean_pattern:
+        return fnmatch.fnmatchcase(Path(relative_path).name, clean_pattern)
+    return fnmatch.fnmatchcase(relative_path, clean_pattern)
+
+
+def gitignore_status_for_path(path: Path) -> dict[str, Any]:
+    relative_path = repo_relative_path(path)
+    ignored = False
+    matched_pattern = ""
+    for pattern in gitignore_patterns():
+        if not gitignore_pattern_matches(pattern, relative_path):
+            continue
+        ignored = not pattern.startswith("!")
+        matched_pattern = pattern
+    return {
+        "relative_path": relative_path,
+        "ignored": ignored,
+        "pattern": matched_pattern if ignored else "",
+    }
+
+
+def local_settings_path_row(*, key: str, label: str, path: Path) -> dict[str, Any]:
+    candidate = path if path.is_absolute() else (ROOT / path)
+    ignore_status = gitignore_status_for_path(candidate)
+    exists = candidate.exists()
+    ignored = bool(ignore_status["ignored"])
+    return {
+        "key": key,
+        "label": label,
+        "relative_path": ignore_status["relative_path"],
+        "exists": bool(exists),
+        "ignored_by_git": ignored,
+        "gitignore_pattern": ignore_status["pattern"],
+        "ok": ignored,
+        "detail": (
+            f"Ignored by Git via {ignore_status['pattern']}."
+            if ignored and ignore_status["pattern"]
+            else "This path does not match the current .gitignore rules."
+        ),
+    }
+
+
+def discord_destinations_summary(destinations: Iterable[DiscordWebhookDestination]) -> dict[str, Any]:
+    destination_list = list(destinations)
+    configured = [destination for destination in destination_list if destination.webhook_url]
+    return {
+        "configured_count": len(configured),
+        "destination_count": len(destination_list),
+        "previews": [
+            {
+                "label": destination.label,
+                "webhook_url_preview": redacted_discord_webhook_url(destination.webhook_url),
+                "forum_posts": destination.forum_posts,
+            }
+            for destination in configured[:4]
+        ],
+    }
+
+
+def discord_post_destination_diagnostics(
+    *,
+    key: str,
+    label: str,
+    settings_path: Path,
+    settings_loader: Callable[[Path], DiscordPostSettings],
+    effective_builder: Callable[[DiscordPostSettings, bool], DiscordPostSettings],
+) -> dict[str, Any]:
+    try:
+        settings = settings_loader(settings_path)
+        effective_settings = effective_builder(settings, settings_path.exists())
+    except (ValueError, CorpMarketError, OSError) as exc:
+        return {
+            "key": key,
+            "label": label,
+            "ok": False,
+            "configured_count": 0,
+            "destination_count": 0,
+            "settings_file": repo_relative_path(settings_path),
+            "detail": str(exc),
+            "previews": [],
+        }
+    summary = discord_destinations_summary(effective_settings.webhook_destinations)
+    configured_count = int(summary["configured_count"])
+    return {
+        "key": key,
+        "label": label,
+        "ok": configured_count > 0,
+        "configured_count": configured_count,
+        "destination_count": int(summary["destination_count"]),
+        "settings_file": repo_relative_path(settings_path),
+        "detail": (
+            f"{configured_count} configured destination{'s' if configured_count != 1 else ''} available."
+            if configured_count
+            else "No Discord destination is configured for this surface yet."
+        ),
+        "previews": summary["previews"],
+    }
+
+
+def build_discord_destination_diagnostics(
+    *,
+    discord_webhook_url: str,
+    discord_alert_settings_path: Path,
+    discord_post_settings_path: Path,
+    discord_fitting_post_settings_path: Path,
+    discord_forum_posts: bool,
+    discord_forum_tag_ids: Iterable[str],
+    discord_forum_tag_map: dict[str, tuple[str, ...]] | None,
+    public_base_url: str,
+) -> dict[str, Any]:
+    alert_ok = False
+    alert_detail = "Server Discord webhook is not configured."
+    if discord_webhook_url:
+        try:
+            clean_discord_webhook_url(discord_webhook_url)
+            alert_ok = True
+            alert_detail = "Server Discord webhook is configured."
+        except CorpMarketError as exc:
+            alert_detail = str(exc)
+
+    market_row = discord_post_destination_diagnostics(
+        key="market_posts",
+        label="Market Discord posts",
+        settings_path=discord_post_settings_path,
+        settings_loader=load_discord_post_settings,
+        effective_builder=lambda settings, saved: effective_discord_post_settings(
+            settings,
+            saved_settings_exists=saved,
+            server_webhook_url=discord_webhook_url,
+            server_forum_posts=discord_forum_posts,
+            server_forum_tag_ids=discord_forum_tag_ids,
+            server_forum_tag_map=discord_forum_tag_map or {},
+            server_public_base_url=public_base_url,
+        ),
+    )
+    fitting_row = discord_post_destination_diagnostics(
+        key="fittings_posts",
+        label="Fittings Discord posts",
+        settings_path=discord_fitting_post_settings_path,
+        settings_loader=load_discord_fitting_post_settings,
+        effective_builder=lambda settings, _saved: settings,
+    )
+    alert_row = {
+        "key": "alert_route",
+        "label": "Intel Pet alert route",
+        "ok": alert_ok,
+        "configured_count": 1 if alert_ok else 0,
+        "destination_count": 1 if discord_webhook_url else 0,
+        "settings_file": repo_relative_path(discord_alert_settings_path),
+        "detail": alert_detail,
+        "previews": [
+            {"label": "Server configured webhook", "webhook_url_preview": redacted_discord_webhook_url(discord_webhook_url)}
+        ]
+        if alert_ok
+        else [],
+    }
+    surfaces = [market_row, fitting_row, alert_row]
+    configured_destination_count = sum(int(surface["configured_count"]) for surface in surfaces)
+    attention_count = sum(1 for surface in surfaces if not surface["ok"])
+    return {
+        "ok": configured_destination_count > 0 and attention_count == 0,
+        "configured_destination_count": configured_destination_count,
+        "attention_count": attention_count,
+        "surfaces": surfaces,
+        "note": "Webhook URLs are redacted here. Use the existing manual test-send buttons for live Discord checks.",
+    }
+
+
 def build_flight_hosting_diagnostics(
     *,
     public_base_url: str,
     sso_config: EveSsoConfig,
     public_hosting_mode: bool,
     secure_cookies: bool,
+    market_db_path: Path = DEFAULT_MARKET_DB_PATH,
+    discord_webhook_url: str = "",
+    discord_alert_settings_path: Path = DEFAULT_DISCORD_ALERT_SETTINGS_PATH,
+    discord_post_settings_path: Path = DEFAULT_DISCORD_POST_SETTINGS_PATH,
+    discord_fitting_post_settings_path: Path = DEFAULT_DISCORD_FITTING_POST_SETTINGS_PATH,
+    discord_forum_posts: bool = False,
+    discord_forum_tag_ids: Iterable[str] = (),
+    discord_forum_tag_map: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     static_caches = build_static_cache_diagnostics()
     caches_by_key = {cache["key"]: cache for cache in static_caches["caches"]}
+    expected_callback_url = f"{public_base_url.rstrip('/')}/flight/callback" if public_base_url else ""
+    callback_matches_public_base = (
+        not expected_callback_url
+        or sso_config.callback_url.rstrip("/") == expected_callback_url.rstrip("/")
+    )
+    discord_destinations = build_discord_destination_diagnostics(
+        discord_webhook_url=discord_webhook_url,
+        discord_alert_settings_path=discord_alert_settings_path,
+        discord_post_settings_path=discord_post_settings_path,
+        discord_fitting_post_settings_path=discord_fitting_post_settings_path,
+        discord_forum_posts=discord_forum_posts,
+        discord_forum_tag_ids=discord_forum_tag_ids,
+        discord_forum_tag_map=discord_forum_tag_map,
+        public_base_url=public_base_url,
+    )
+    local_paths = [
+        local_settings_path_row(key="market_database", label="Market SQLite database", path=market_db_path),
+        local_settings_path_row(key="discord_alerts", label="Discord alert settings", path=discord_alert_settings_path),
+        local_settings_path_row(key="discord_posts", label="Market Discord posting settings", path=discord_post_settings_path),
+        local_settings_path_row(
+            key="fitting_discord_posts",
+            label="Fittings Discord posting settings",
+            path=discord_fitting_post_settings_path,
+        ),
+    ]
+    all_local_paths_ignored = all(row["ignored_by_git"] for row in local_paths)
     checks = [
         {
+            "key": "public_base_url",
             "name": "HTTPS public URL",
             "ok": (not public_hosting_mode) or is_https_url(public_base_url),
             "detail": "Public hosting mode should use an HTTPS tunnel or domain.",
         },
         {
+            "key": "sso_configured",
             "name": "EVE SSO configured",
             "ok": sso_config.enabled,
             "detail": "Flight Attendant needs an EVE SSO app client id, secret, and callback URL.",
         },
         {
+            "key": "allowlist_active",
             "name": "Member allowlist",
             "ok": (not public_hosting_mode) or sso_config.membership_restricted,
             "detail": "Use allowed corporation or alliance ids before sharing a public link.",
         },
         {
+            "key": "secure_cookies",
             "name": "Secure cookies",
             "ok": (not public_hosting_mode) or secure_cookies,
             "detail": "HTTPS public URLs receive Secure session cookies.",
         },
         {
-            "name": "Recipe cache",
-            "ok": caches_by_key["industry_recipes"]["available"],
-            "detail": caches_by_key["industry_recipes"]["detail"],
+            "key": "callback_matches_public_base",
+            "name": "Callback matches public URL",
+            "ok": callback_matches_public_base,
+            "detail": (
+                f"Expected callback: {expected_callback_url}."
+                if expected_callback_url
+                else "Set a public base URL before public tester hosting."
+            ),
         },
         {
-            "name": "Route graph cache",
-            "ok": caches_by_key["route_graph"]["available"],
-            "detail": caches_by_key["route_graph"]["detail"],
+            "key": "static_caches",
+            "name": "Static caches present",
+            "ok": static_caches["ok"],
+            "detail": (
+                "All static cache files are present."
+                if static_caches["ok"]
+                else f"{static_caches['missing_count']} static cache file(s) need refresh."
+            ),
         },
         {
-            "name": "Reprocessing cache",
-            "ok": caches_by_key["reprocessing"]["available"],
-            "detail": caches_by_key["reprocessing"]["detail"],
+            "key": "discord_destinations",
+            "name": "Discord destinations valid",
+            "ok": discord_destinations["ok"],
+            "detail": (
+                f"{discord_destinations['configured_destination_count']} configured Discord destination(s) found."
+                if discord_destinations["configured_destination_count"]
+                else "No Discord destination is configured yet."
+            ),
         },
         {
-            "name": "Planetary industry cache",
-            "ok": caches_by_key["planetary_industry"]["available"],
-            "detail": caches_by_key["planetary_industry"]["detail"],
+            "key": "local_paths_ignored",
+            "name": "Local settings ignored by Git",
+            "ok": all_local_paths_ignored,
+            "detail": (
+                "Market database and Discord settings paths match .gitignore."
+                if all_local_paths_ignored
+                else "One or more local state paths does not match .gitignore."
+            ),
         },
     ]
     return {
@@ -11884,6 +12134,8 @@ def build_flight_hosting_diagnostics(
             "public_hosting_mode": bool(public_hosting_mode),
             "public_base_url": public_base_url,
             "public_base_url_https": is_https_url(public_base_url),
+            "expected_callback_url": expected_callback_url,
+            "callback_matches_public_base": callback_matches_public_base,
             "secure_cookies": bool(secure_cookies),
             "token_storage": "server-memory-only",
             "market_write_policy": (
@@ -11891,6 +12143,7 @@ def build_flight_hosting_diagnostics(
                 if public_hosting_mode
                 else "local-loopback-or-admin-token"
             ),
+            "server_mode_label": "Public hosting mode" if public_hosting_mode else "Local/LAN mode",
         },
         "sso": {
             "configured": sso_config.enabled,
@@ -11914,10 +12167,16 @@ def build_flight_hosting_diagnostics(
             "reprocessing_cache_available": caches_by_key["reprocessing"]["available"],
             "planetary_cache_available": caches_by_key["planetary_industry"]["available"],
         },
+        "discord": discord_destinations,
+        "local_paths": {
+            "ok": all_local_paths_ignored,
+            "paths": local_paths,
+        },
         "checks": checks,
         "notes": [
             "Flight Attendant is advisory only; pilots perform all EVE actions manually.",
             "No EVE refresh token or token file is stored by this process.",
+            "Diagnostics redact webhook URLs, client secrets, access tokens, and authorization headers.",
         ],
     }
 
@@ -12472,6 +12731,14 @@ def build_http_server(
                     sso_config=sso_config,
                     public_hosting_mode=public_hosting_mode,
                     secure_cookies=secure_flight_cookies,
+                    market_db_path=store.path,
+                    discord_webhook_url=discord_webhook_url,
+                    discord_alert_settings_path=discord_alert_settings_path,
+                    discord_post_settings_path=discord_post_settings_path,
+                    discord_fitting_post_settings_path=discord_fitting_post_settings_path,
+                    discord_forum_posts=discord_forum_posts,
+                    discord_forum_tag_ids=discord_forum_tag_ids,
+                    discord_forum_tag_map=discord_forum_tag_map or {},
                 )
             )
 
@@ -14312,6 +14579,50 @@ def _render_flight_attendant_dashboard() -> str:
     .fitting-share-panel { grid-area: fitting-share; }
     .fitting-list-panel { grid-area: fitting-list; }
     .flight-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; min-width: 0; }
+    .tester-cockpit-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, .52fr);
+      gap: 16px;
+      min-width: 0;
+    }
+    .tester-cockpit-readouts {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin: 10px 0 12px;
+    }
+    .tester-cockpit-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .tester-cockpit-note {
+      background: rgba(5, 9, 11, .48);
+      border: 1px solid rgba(63, 85, 80, .62);
+      border-radius: 7px;
+      color: var(--muted);
+      display: grid;
+      gap: 8px;
+      line-height: 1.45;
+      padding: 12px;
+    }
+    .tester-cockpit-note strong { color: var(--text); }
+    .tester-cockpit-path {
+      display: grid;
+      gap: 6px;
+    }
+    .tester-cockpit-path code {
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .tester-cockpit-surface {
+      display: grid;
+      gap: 6px;
+    }
+    .tester-cockpit-preview {
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
     .full-span { grid-column: 1 / -1; }
     .reprocess-page {
       display: grid;
@@ -18033,7 +18344,7 @@ def _render_flight_attendant_dashboard() -> str:
     }
     @media (max-width: 1040px) {
       .ops-launcher { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .market-grid, #tab-market > .market-grid, .flight-grid, .briefing, .industry-library-grid { grid-template-columns: 1fr; }
+      .market-grid, #tab-market > .market-grid, .flight-grid, .briefing, .industry-library-grid, .tester-cockpit-grid { grid-template-columns: 1fr; }
       .fitting-grid {
         grid-template-columns: 1fr;
         grid-template-areas:
@@ -18095,7 +18406,7 @@ def _render_flight_attendant_dashboard() -> str:
       h1 { font-size: 24px; }
       .scope-panel { grid-template-columns: 1fr; }
       .scope-chip-row { justify-content: flex-start; }
-      .row, .discord-alert-section .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .bulk-appraisal-summary-grid, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
+      .row, .discord-alert-section .row, .offer-grid, .ops-strip, .tester-cockpit-readouts, .profit-stats, .decision-metrics, .bulk-appraisal-summary-grid, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
       #tab-market .discord-page-status,
       .workflow-discord-destination,
       .discord-post-settings-grid,
@@ -18213,6 +18524,7 @@ def _render_flight_attendant_dashboard() -> str:
         <div class="ops-launcher-stat"><span>Mode</span><b>Read-only</b></div>
         <div class="ops-launcher-actions">
           <a class="button-link" href="/flight/login">Connect ESI</a>
+          <a class="button-link ghost-link" href="#tester">Tester Cockpit</a>
           <a class="button-link ghost-link" href="#flight">ESI Status</a>
         </div>
       </div>
@@ -18244,6 +18556,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     <nav class="tabbar" aria-label="Dashboard tabs">
       <button type="button" data-tab-target="market" aria-selected="true">Market Posts</button>
+      <button type="button" data-tab-target="tester" aria-selected="false">Tester Cockpit</button>
       <button type="button" data-tab-target="fittings" aria-selected="false">Shared Fittings</button>
       <button type="button" data-tab-target="flight" aria-selected="false">Flight Attendant</button>
       <button type="button" data-tab-target="industry" aria-selected="false">Industry Library</button>
@@ -18256,6 +18569,89 @@ def _render_flight_attendant_dashboard() -> str:
     </nav>
 
     <main>
+      <section id="tab-tester" class="tab-panel" data-tab-panel="tester" hidden>
+        <div class="tester-cockpit-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Tester Readiness Cockpit</h2>
+                <div class="meta">One test-bench view for public hosting, ESI, Discord, cache, callback, and local-state readiness.</div>
+              </div>
+              <span id="tester-overall-pill" class="pill reserved">Checking</span>
+            </div>
+            <div class="ops-strip tester-cockpit-readouts">
+              <div class="ops-tile"><span>Server mode</span><strong id="tester-server-mode">Checking</strong></div>
+              <div class="ops-tile"><span>ESI</span><strong id="tester-esi-status">Checking</strong></div>
+              <div class="ops-tile"><span>Allowlist</span><strong id="tester-allowlist-status">Checking</strong></div>
+              <div class="ops-tile"><span>Public URL</span><strong id="tester-public-url-status">Checking</strong></div>
+              <div class="ops-tile"><span>Callback</span><strong id="tester-callback-status">Checking</strong></div>
+              <div class="ops-tile"><span>Discord</span><strong id="tester-discord-status">Checking</strong></div>
+            </div>
+            <div id="tester-cockpit-summary" class="profit-summary">Checking tester readiness...</div>
+            <div class="tester-cockpit-actions">
+              <a class="button-link" href="/flight/login">Connect ESI</a>
+              <a class="button-link ghost-link" href="#flight">Flight Status</a>
+              <a class="button-link ghost-link" href="#market">Discord Settings</a>
+              <a class="button-link ghost-link" href="#industry">Static Cache Preflight</a>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>How To Use This With A Tester</h2>
+                <div class="meta">Quick checks before you ask someone else to click through the app.</div>
+              </div>
+            </div>
+            <div class="tester-cockpit-note">
+              <strong>Green means ready for a live tester. Yellow means local testing can continue, but fix it before sharing the public URL.</strong>
+              <span>Use Connect ESI first, then check this cockpit. For Discord, this page verifies configuration shape only; use the manual Discord test buttons when you want an actual message sent.</span>
+              <span>Local paths are shown repo-relative and should stay ignored so databases, webhooks, and settings do not get committed.</span>
+            </div>
+          </section>
+
+          <section class="panel full-span">
+            <div class="panel-header">
+              <div>
+                <h2>Readiness Checks</h2>
+                <div class="meta">Hosting and configuration checks from the current running server.</div>
+              </div>
+            </div>
+            <div id="tester-check-list" class="cache-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Discord Destinations</h2>
+                <div class="meta">Redacted webhook destination readiness for market posts, fittings posts, and alert routes.</div>
+              </div>
+            </div>
+            <div id="tester-discord-list" class="cache-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Ignored Local Paths</h2>
+                <div class="meta">Local files that can contain operational state, webhook settings, or test data.</div>
+              </div>
+            </div>
+            <div id="tester-local-path-list" class="cache-list"></div>
+          </section>
+
+          <section class="panel full-span">
+            <div class="panel-header">
+              <div>
+                <h2>Static Cache Files</h2>
+                <div class="meta">Same host-side cache check used by Industry Library, shown here for tester setup.</div>
+              </div>
+            </div>
+            <div id="tester-static-cache-list" class="cache-list"></div>
+          </section>
+        </div>
+      </section>
+
       <section id="tab-market" class="tab-panel" data-tab-panel="market">
         <div class="discord-page">
           <div class="ops-strip discord-page-status">
@@ -20303,6 +20699,18 @@ help</textarea>
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
+    const testerOverallPill = document.querySelector("#tester-overall-pill");
+    const testerServerMode = document.querySelector("#tester-server-mode");
+    const testerEsiStatus = document.querySelector("#tester-esi-status");
+    const testerAllowlistStatus = document.querySelector("#tester-allowlist-status");
+    const testerPublicUrlStatus = document.querySelector("#tester-public-url-status");
+    const testerCallbackStatus = document.querySelector("#tester-callback-status");
+    const testerDiscordStatus = document.querySelector("#tester-discord-status");
+    const testerCockpitSummary = document.querySelector("#tester-cockpit-summary");
+    const testerCheckList = document.querySelector("#tester-check-list");
+    const testerDiscordList = document.querySelector("#tester-discord-list");
+    const testerLocalPathList = document.querySelector("#tester-local-path-list");
+    const testerStaticCacheList = document.querySelector("#tester-static-cache-list");
     const notesKey = "eve-flight-attendant-notes-v1";
     const jumpsKey = "eve-flight-attendant-max-jumps-v1";
     const industryBuildSystemKey = "eve-flight-industry-build-system-v1";
@@ -20375,11 +20783,15 @@ help</textarea>
     const optionalReprocessingScopeNames = new Set(Object.values(flightScopeMetadata)
       .filter((entry) => entry && entry.optional_reprocessing && entry.scope)
       .map((entry) => entry.scope));
-    const validTabs = new Set(["market", "fittings", "flight", "industry", "hauling", "acquisition", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
+    const validTabs = new Set(["market", "tester", "fittings", "flight", "industry", "hauling", "acquisition", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
     const tabAliases = new Map([
       ["discord-alerts", "market"],
       ["discord", "market"],
       ["alerts", "market"],
+      ["diagnostics", "tester"],
+      ["test-bench", "tester"],
+      ["readiness", "tester"],
+      ["cockpit", "tester"],
     ]);
     let filterType = "";
     let includeClosed = false;
@@ -21982,21 +22394,25 @@ help</textarea>
     }
 
     async function loadFlightDiagnostics() {
-      flightCacheSummary.textContent = "Checking static cache readiness...";
-      flightCacheList.innerHTML = "";
+      if (flightCacheSummary) flightCacheSummary.textContent = "Checking static cache readiness...";
+      if (flightCacheList) flightCacheList.innerHTML = "";
+      if (testerCockpitSummary) testerCockpitSummary.textContent = "Checking tester readiness...";
       try {
         const data = await readJsonApiResponse(
           await fetch("/api/flight/diagnostics"),
           "Could not load Flight Attendant diagnostics",
         );
         renderStaticCachePreflight(data.static_caches || {});
+        renderTesterCockpit(data);
       } catch (error) {
-        flightCacheSummary.textContent = error.message;
-        flightCacheList.innerHTML = "";
+        if (flightCacheSummary) flightCacheSummary.textContent = error.message;
+        if (flightCacheList) flightCacheList.innerHTML = "";
+        renderTesterCockpitError(error.message);
       }
     }
 
     function renderStaticCachePreflight(staticCaches) {
+      if (!flightCacheSummary || !flightCacheList) return;
       const caches = Array.isArray(staticCaches.caches) ? staticCaches.caches : [];
       const missingCount = Number(staticCaches.missing_count || caches.filter((cache) => !cache.available).length);
       const refreshCommand = staticCaches.refresh_command || "python .\\\\scripts\\\\update_industry_recipe_cache.py";
@@ -22038,6 +22454,124 @@ help</textarea>
             ${counts ? `<div class="cache-counts">${counts}</div>` : ""}
           </div>
           <span class="pill ${statusClass}">${statusText}</span>
+        </article>
+      `;
+    }
+
+    function renderTesterCockpit(data) {
+      if (!testerCockpitSummary) return;
+      const checks = Array.isArray(data.checks) ? data.checks : [];
+      const attention = checks.filter((check) => !check.ok);
+      const hosting = data.hosting || {};
+      const sso = data.sso || {};
+      const discord = data.discord || {};
+      const staticCaches = data.static_caches || {};
+      const localPaths = data.local_paths || {};
+      const allowlistCount = Number(sso.corporation_allowlist_count || 0) + Number(sso.alliance_allowlist_count || 0);
+
+      if (testerOverallPill) {
+        testerOverallPill.textContent = attention.length ? "Needs Attention" : "Ready";
+        testerOverallPill.className = `pill ${attention.length ? "decision-price" : "decision-build"}`;
+      }
+      if (testerServerMode) testerServerMode.textContent = hosting.server_mode_label || (hosting.public_hosting_mode ? "Public" : "Local");
+      if (testerEsiStatus) testerEsiStatus.textContent = sso.configured ? "Configured" : "Missing";
+      if (testerAllowlistStatus) {
+        testerAllowlistStatus.textContent = sso.membership_restricted
+          ? `${formatNumber(allowlistCount)} ID${allowlistCount === 1 ? "" : "s"}`
+          : (hosting.public_hosting_mode ? "Missing" : "Local");
+      }
+      if (testerPublicUrlStatus) {
+        testerPublicUrlStatus.textContent = hosting.public_base_url_https ? "HTTPS" : (hosting.public_base_url ? "HTTP" : "Missing");
+      }
+      if (testerCallbackStatus) testerCallbackStatus.textContent = hosting.callback_matches_public_base ? "Matches" : "Check";
+      if (testerDiscordStatus) {
+        testerDiscordStatus.textContent = discord.configured_destination_count
+          ? `${formatNumber(discord.configured_destination_count)} configured`
+          : "Missing";
+      }
+
+      testerCockpitSummary.innerHTML = attention.length
+        ? `<strong>${formatNumber(attention.length)}</strong> readiness check${attention.length === 1 ? " needs" : "s need"} attention before a clean public tester session.`
+        : `<strong>Tester bench is ready.</strong> ESI, hosting, cache, Discord, callback, and local path checks are clean.`;
+
+      if (testerCheckList) {
+        testerCheckList.innerHTML = checks.length
+          ? checks.map(renderTesterCheckRow).join("")
+          : `<div class="decision-empty">No readiness checks were returned.</div>`;
+      }
+      if (testerDiscordList) {
+        const surfaces = Array.isArray(discord.surfaces) ? discord.surfaces : [];
+        testerDiscordList.innerHTML = surfaces.length
+          ? surfaces.map(renderTesterDiscordSurface).join("")
+          : `<div class="decision-empty">No Discord destination diagnostics were returned.</div>`;
+      }
+      if (testerLocalPathList) {
+        const paths = Array.isArray(localPaths.paths) ? localPaths.paths : [];
+        testerLocalPathList.innerHTML = paths.length
+          ? paths.map(renderTesterPathRow).join("")
+          : `<div class="decision-empty">No local path diagnostics were returned.</div>`;
+      }
+      if (testerStaticCacheList) {
+        const caches = Array.isArray(staticCaches.caches) ? staticCaches.caches : [];
+        testerStaticCacheList.innerHTML = caches.length
+          ? caches.map(renderStaticCacheRow).join("")
+          : `<div class="decision-empty">No static cache diagnostics were returned.</div>`;
+      }
+    }
+
+    function renderTesterCockpitError(message) {
+      if (testerOverallPill) {
+        testerOverallPill.textContent = "Error";
+        testerOverallPill.className = "pill decision-price";
+      }
+      if (testerCockpitSummary) testerCockpitSummary.textContent = message || "Could not load tester readiness diagnostics.";
+      [testerCheckList, testerDiscordList, testerLocalPathList, testerStaticCacheList].forEach((target) => {
+        if (target) target.innerHTML = "";
+      });
+    }
+
+    function renderTesterCheckRow(check) {
+      const ready = Boolean(check.ok);
+      return `
+        <article class="cache-row">
+          <div>
+            <strong>${escapeHtml(check.name || "Readiness check")}</strong>
+            <div class="meta">${escapeHtml(check.detail || "")}</div>
+          </div>
+          <span class="pill ${ready ? "decision-build" : "decision-price"}">${ready ? "Ready" : "Check"}</span>
+        </article>
+      `;
+    }
+
+    function renderTesterDiscordSurface(surface) {
+      const ready = Boolean(surface.ok);
+      const previews = (surface.previews || [])
+        .map((preview) => `<div class="tester-cockpit-preview">${escapeHtml(preview.label || "Discord destination")}: ${escapeHtml(preview.webhook_url_preview || "configured webhook")}</div>`)
+        .join("");
+      return `
+        <article class="cache-row">
+          <div class="tester-cockpit-surface">
+            <strong>${escapeHtml(surface.label || "Discord surface")}</strong>
+            <div class="meta">${escapeHtml(surface.detail || "")}</div>
+            <code>${escapeHtml(surface.settings_file || "")}</code>
+            ${previews || `<div class="tester-cockpit-preview">No redacted webhook preview available.</div>`}
+          </div>
+          <span class="pill ${ready ? "decision-build" : "decision-price"}">${ready ? "Configured" : "Missing"}</span>
+        </article>
+      `;
+    }
+
+    function renderTesterPathRow(row) {
+      const ready = Boolean(row.ignored_by_git);
+      const exists = row.exists ? "exists" : "not created yet";
+      return `
+        <article class="cache-row">
+          <div class="tester-cockpit-path">
+            <strong>${escapeHtml(row.label || "Local path")}</strong>
+            <code>${escapeHtml(row.relative_path || "")}</code>
+            <div class="meta">${escapeHtml(row.detail || "")} File is ${exists}.</div>
+          </div>
+          <span class="pill ${ready ? "decision-build" : "decision-price"}">${ready ? "Ignored" : "Check"}</span>
         </article>
       `;
     }

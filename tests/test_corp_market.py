@@ -43,6 +43,7 @@ from eve_voice_pilot.corp_market import (
     build_flight_industry_payload,
     build_flight_profitability_payload,
     build_flight_status_payload,
+    build_flight_hosting_diagnostics,
     build_flight_trade_pnl_payload,
     build_mail_draft,
     clean_multiline,
@@ -469,6 +470,25 @@ def test_dashboard_keeps_market_posts_as_primary_market_workflow():
     assert "id=\"direct-discord-webhook-select\"" in page
     assert "id=\"offer-form\"" not in page
     assert "Legacy Market Board" not in page
+
+
+def test_dashboard_includes_tester_readiness_cockpit():
+    page = render_dashboard()
+    tester_section = page.split('<section id="tab-tester"', 1)[1].split('<section id="tab-market"', 1)[0]
+
+    assert "data-tab-target=\"tester\"" in page
+    assert "Tester Cockpit" in page
+    assert "Tester Readiness Cockpit" in tester_section
+    assert "id=\"tester-cockpit-summary\"" in tester_section
+    assert "id=\"tester-check-list\" class=\"cache-list\"" in tester_section
+    assert "id=\"tester-discord-list\" class=\"cache-list\"" in tester_section
+    assert "id=\"tester-local-path-list\" class=\"cache-list\"" in tester_section
+    assert "id=\"tester-static-cache-list\" class=\"cache-list\"" in tester_section
+    assert "ESI, hosting, cache, Discord, callback, and local path checks" in page
+    assert "renderTesterCockpit" in page
+    assert "renderTesterDiscordSurface" in page
+    assert "[\"diagnostics\", \"tester\"]" in page
+    assert "[\"test-bench\", \"tester\"]" in page
 
 
 def test_dashboard_includes_plex_button_press_effect():
@@ -3479,6 +3499,81 @@ def test_static_cache_diagnostics_identifies_missing_planetary_cache(monkeypatch
     assert planetary["file_name"] == "eve_planetary_industry.json"
     assert planetary["detail"] == "Planetary cache file is missing."
     assert "same machine or container" in diagnostics["same_host_note"]
+
+
+def test_flight_hosting_diagnostics_reports_tester_readiness(monkeypatch):
+    def cache_row(key, label):
+        return {
+            "key": key,
+            "label": label,
+            "file_name": f"{key}.json",
+            "path": f"cache/{key}.json",
+            "available": True,
+            "status": "ready",
+            "detail": "Ready.",
+            "error": "",
+            "build_number": 1,
+            "release_date": "",
+            "generated_at": "",
+            "counts": {},
+            "unlocks": [],
+        }
+
+    monkeypatch.setattr(
+        corp_market,
+        "build_static_cache_diagnostics",
+        lambda: {
+            "ok": True,
+            "missing_count": 0,
+            "cache_count": 4,
+            "refresh_command": r"python .\scripts\update_industry_recipe_cache.py",
+            "same_host_note": "",
+            "ignored_note": "",
+            "caches": [
+                cache_row("industry_recipes", "Blueprint recipe cache"),
+                cache_row("route_graph", "Route graph cache"),
+                cache_row("reprocessing", "Ore reprocessing cache"),
+                cache_row("planetary_industry", "Planetary industry cache"),
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "load_discord_fitting_post_settings",
+        lambda path=corp_market.DEFAULT_DISCORD_FITTING_POST_SETTINGS_PATH: (
+            corp_market.default_discord_fitting_post_settings()
+        ),
+    )
+
+    payload = build_flight_hosting_diagnostics(
+        public_base_url="https://flight.example.test",
+        sso_config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://flight.example.test/flight/callback",
+            allowed_corporation_ids=(98811080,),
+        ),
+        public_hosting_mode=True,
+        secure_cookies=True,
+        discord_webhook_url="https://discord.com/api/webhooks/123456789012345678/secret-token",
+    )
+
+    checks = {check["key"]: check for check in payload["checks"]}
+    assert checks["sso_configured"]["ok"] is True
+    assert checks["allowlist_active"]["ok"] is True
+    assert checks["callback_matches_public_base"]["ok"] is True
+    assert checks["static_caches"]["ok"] is True
+    assert checks["discord_destinations"]["ok"] is False
+    assert payload["hosting"]["server_mode_label"] == "Public hosting mode"
+    assert payload["hosting"]["expected_callback_url"] == "https://flight.example.test/flight/callback"
+    assert payload["sso"]["corporation_allowlist_count"] == 1
+    assert payload["discord"]["configured_destination_count"] >= 1
+    assert payload["discord"]["attention_count"] == 1
+    assert "secret-token" not in json.dumps(payload)
+    assert payload["local_paths"]["ok"] is True
+    paths = {row["key"]: row for row in payload["local_paths"]["paths"]}
+    assert paths["market_database"]["relative_path"] == "profiles/corp_market.sqlite3"
+    assert paths["discord_posts"]["ignored_by_git"] is True
 
 
 def test_build_flight_planetary_payload_displays_customs_transfer_cost(monkeypatch, tmp_path):
