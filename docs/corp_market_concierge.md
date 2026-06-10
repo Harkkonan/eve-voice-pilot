@@ -280,6 +280,8 @@ The `Trade Asset Ledger` tab is a read-only managed document for assets the app 
 
 When the pilot clicks `Refresh Ledger`, the server reads ESI assets, asks ESI for custom asset names, groups direct child assets under those named containers, and shows the result as managed ledger rows. The page is intentionally browseable and copyable but not hand editable, so it can later become a trustworthy bridge from filled portfolio orders to hauler load planning and expected-vs-actual review.
 
+Ledger rows with item names include `Use In Hauler`. That button sends the row's unique item type names into the `Hauler Routes` pasted-items field and enables pasted-items-only quick mode. It does not account for exact owned quantities yet; the pilot still reviews route opportunities and cargo limits manually.
+
 The ledger does not move items, create contracts, place market orders, or write to EVE. It only reads the connected pilot's asset tree and custom asset names.
 
 ### Industry Library And Blueprint Profitability

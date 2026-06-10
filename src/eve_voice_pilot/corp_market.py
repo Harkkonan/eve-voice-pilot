@@ -4481,6 +4481,10 @@ def build_asset_ledger_payload(*, config: EveSsoConfig, session: FlightEsiSessio
             if (clean_optional_int(child.get("item_id")) or 0) != container_item_id
         ]
         items = build_asset_ledger_items(children, type_names=lookup_names)
+        handoff_item_names = sorted(
+            {str(item.get("type_name") or "").strip() for item in items if str(item.get("type_name") or "").strip()},
+            key=str.casefold,
+        )
         total_units = sum(int(item.get("quantity") or 0) for item in items)
         rows.append(
             {
@@ -4500,6 +4504,7 @@ def build_asset_ledger_payload(*, config: EveSsoConfig, session: FlightEsiSessio
                 "unique_types": len({int(item.get("type_id") or 0) for item in items if int(item.get("type_id") or 0) > 0}),
                 "total_units": total_units,
                 "items": items[:ASSET_LEDGER_ITEM_PREVIEW_LIMIT],
+                "handoff_item_names": handoff_item_names,
                 "item_preview_limit": ASSET_LEDGER_ITEM_PREVIEW_LIMIT,
                 "truncated_items": max(0, len(items) - ASSET_LEDGER_ITEM_PREVIEW_LIMIT),
                 "notes": [] if items else ["Container is tracked but has no direct child assets in the latest ESI asset tree."],
@@ -21447,6 +21452,7 @@ help</textarea>
     let acquisitionQuickbarItems = [];
     let acquisitionReportRows = [];
     let assetLedgerPreviewCount = 0;
+    let assetLedgerHandoffRows = [];
     let bulkAppraisalLastExportText = "";
     let planetaryShoppingQuickbarItems = [];
     let planetarySellQuickbarItems = [];
@@ -30520,13 +30526,19 @@ help</textarea>
 
     function renderAssetLedgerRows(ledger) {
       const rows = Array.isArray(ledger?.rows) ? ledger.rows : [];
+      assetLedgerHandoffRows = rows;
       if (!rows.length) {
         return renderDashboardEmptyState("No managed asset containers found.", {
           label: "No ledger rows",
           detail: ledger?.naming_hint || "Rename a freight container to asset, asset12, CM-ASSET-*, or CM-READY-HAUL, then refresh.",
         });
       }
-      return rows.map((row) => `
+      return rows.map((row, index) => {
+        const handoffCount = Array.isArray(row.handoff_item_names) ? row.handoff_item_names.length : 0;
+        const handoffButton = handoffCount
+          ? `<button class="secondary" type="button" data-asset-ledger-hauler="${index}">Use In Hauler</button>`
+          : "";
+        return `
         <div class="decision-row">
           <div class="decision-head">
             <strong>${escapeHtml(row.container_name || "Managed container")}</strong>
@@ -30542,8 +30554,13 @@ help</textarea>
           </div>
           ${renderAssetLedgerItemPreview(row.items || [], row.truncated_items || 0)}
           ${(row.notes || []).map((note) => `<div class="meta">${escapeHtml(note)}</div>`).join("")}
+          <div class="completed-run-actions">
+            ${handoffButton}
+            <span class="meta">${handoffCount ? `${formatNumber(handoffCount)} unique item type${handoffCount === 1 ? "" : "s"} ready for Hauler pasted-item mode.` : "No item names ready for Hauler handoff yet."}</span>
+          </div>
         </div>
-      `).join("");
+      `;
+      }).join("");
     }
 
     function renderAssetLedgerPayload(data) {
@@ -30558,6 +30575,39 @@ help</textarea>
         assetLedgerStatus.classList.remove("error");
       }
       triggerAssetLedgerDocumentChanged();
+    }
+
+    function useAssetLedgerRowInHauler(indexValue) {
+      const index = Number(indexValue);
+      const row = Number.isInteger(index) ? assetLedgerHandoffRows[index] : null;
+      const itemNames = Array.isArray(row?.handoff_item_names)
+        ? row.handoff_item_names.map((name) => String(name || "").trim()).filter(Boolean)
+        : [];
+      if (!row || !itemNames.length) {
+        if (assetLedgerStatus) {
+          assetLedgerStatus.textContent = "That ledger row has no item names ready for Hauler handoff.";
+          assetLedgerStatus.classList.add("error");
+        }
+        return;
+      }
+      const pastedText = itemNames.join("\\n");
+      if (haulPastedItems) {
+        haulPastedItems.value = pastedText;
+        window.localStorage.setItem(haulPastedItemsKey, pastedText);
+      }
+      if (haulPastedItemsOnly) {
+        haulPastedItemsOnly.checked = true;
+        haulPastedItemsOnly.disabled = false;
+        window.localStorage.setItem(haulPastedItemsOnlyKey, "1");
+      }
+      updateHaulScopeAndReset();
+      showTab("hauling");
+      scrollTabIntoView("hauling");
+      window.location.hash = "hauling";
+      if (assetLedgerStatus) {
+        assetLedgerStatus.textContent = `Sent ${formatNumber(itemNames.length)} item type${itemNames.length === 1 ? "" : "s"} from ${row.container_name || "the ledger"} to Hauler pasted-item mode.`;
+        assetLedgerStatus.classList.remove("error");
+      }
     }
 
     async function loadAssetLedger() {
@@ -30675,6 +30725,11 @@ help</textarea>
     }
 
     document.addEventListener("click", (event) => {
+      const assetLedgerHaulerButton = event.target.closest("button[data-asset-ledger-hauler]");
+      if (assetLedgerHaulerButton) {
+        useAssetLedgerRowInHauler(assetLedgerHaulerButton.dataset.assetLedgerHauler);
+        return;
+      }
       const button = event.target.closest("button[data-copy-quickbar]");
       if (!button) return;
       copyQuickbarItems(button.dataset.copyQuickbar, button);

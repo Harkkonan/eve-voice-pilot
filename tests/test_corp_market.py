@@ -592,6 +592,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"asset-ledger-document\" class=\"decision-output\" data-managed-document=\"trade-asset-ledger\" data-managed-document-watch" in page
     assert "id=\"asset-ledger-preview-version\"" in page
     assert "loadAssetLedger" in page
+    assert "Use In Hauler" in page
+    assert "data-asset-ledger-hauler" in page
+    assert "useAssetLedgerRowInHauler" in page
     assert "previewAssetLedgerDuck" in page
     assert "@@TAB_SCOPE_ASSET_LEDGER@@" not in page
     assert "id=\"flight-blueprint-summary\"" in industry_section
@@ -3524,9 +3527,12 @@ def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
     assert names["CM-ASSET-JITA-01"]["location_name"] == "Jita 4-4"
     assert names["CM-ASSET-JITA-01"]["stack_count"] == 2
     assert [item["type_name"] for item in names["CM-ASSET-JITA-01"]["items"]] == ["Pyerite", "Tritanium"]
+    assert names["CM-ASSET-JITA-01"]["handoff_item_names"] == ["Pyerite", "Tritanium"]
     assert names["asset12"]["stack_count"] == 0
+    assert names["asset12"]["handoff_item_names"] == []
     assert "no direct child assets" in names["asset12"]["notes"][0]
     assert names["CM-READY-HAUL"]["status_key"] == "ready-to-haul"
+    assert names["CM-READY-HAUL"]["handoff_item_names"] == ["Mexallon"]
     assert names["CM-READY-HAUL"]["items"][0]["type_name"] == "Mexallon"
 
 
