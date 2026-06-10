@@ -42,6 +42,8 @@ profiles/corp_intel_watchlist.json
 profiles/corp_discord_alert_settings*.json
 profiles/corp_discord_post_settings*.json
 profiles/corp_fitting_discord_post_settings*.json
+profiles/flight_workbench.local.json
+profiles/flight_workbench_actions.jsonl
 profiles/intel_pet_settings.json
 profiles/intel_pet_discord_notes*.json
 profiles/chatlog_knowledge_link_review.md

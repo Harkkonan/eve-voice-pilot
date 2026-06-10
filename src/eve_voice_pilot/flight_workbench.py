@@ -1,0 +1,1279 @@
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import html
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import subprocess
+import sys
+import threading
+import time
+from typing import Any, Callable, Iterable
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+import webbrowser
+
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = ROOT / "profiles" / "flight_workbench.local.json"
+DEFAULT_ACTION_LOG_PATH = ROOT / "profiles" / "flight_workbench_actions.jsonl"
+DEFAULT_PORT = 8790
+DEFAULT_CORP_MARKET_PORT = 8770
+DEFAULT_TUNNEL_LOCAL_PORT = 8770
+DEFAULT_TUNNEL_REMOTE_PORT = 8770
+DEFAULT_LOCAL_APP_HOST = "127.0.0.1"
+DEFAULT_VM_APP_DIR = "/home/ubuntu/apps/eve-voice-pilot"
+DEFAULT_VM_SERVICE_NAME = "eve-flight.service"
+ACTION_OUTPUT_LIMIT = 8000
+RECENT_ACTION_LIMIT = 20
+
+SENSITIVE_ENV_NAMES = (
+    "CORP_MARKET_SSO_CLIENT_ID",
+    "CORP_MARKET_SSO_CLIENT_SECRET",
+    "EVE_SSO_CLIENT_ID",
+    "EVE_SSO_CLIENT_SECRET",
+    "CORP_MARKET_ADMIN_TOKEN",
+    "CORP_MARKET_DISCORD_WEBHOOK_URL",
+    "CORP_MARKET_DISCORD_FORUM_TAG_IDS",
+    "CORP_MARKET_DISCORD_FORUM_TAG_MAP",
+)
+CONFIG_ENV_NAMES = (
+    "CORP_MARKET_PUBLIC_BASE_URL",
+    "CORP_MARKET_SSO_CALLBACK_URL",
+    "CORP_MARKET_ALLOWED_CORPORATION_IDS",
+    "CORP_MARKET_ALLOWED_ALLIANCE_IDS",
+    "CORP_MARKET_PUBLIC_HOSTING_MODE",
+    "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET",
+)
+SECRET_NAME_MARKERS = ("SECRET", "TOKEN", "WEBHOOK", "PASSWORD", "AUTHORIZATION", "KEY")
+DISCORD_WEBHOOK_RE = re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9._-]+")
+KEY_VALUE_SECRET_RE = re.compile(
+    r"(?i)\b(client[_ -]?secret|admin[_ -]?token|access[_ -]?token|refresh[_ -]?token|webhook[_ -]?url|authorization)"
+    r"(\s*[:=]\s*)([^\s\"']+)"
+)
+REMOTE_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_./~+-]+$")
+REMOTE_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]+$")
+HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+USER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+class WorkbenchError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class WorkbenchConfig:
+    config_path: Path = DEFAULT_CONFIG_PATH
+    action_log_path: Path = DEFAULT_ACTION_LOG_PATH
+    local_app_host: str = DEFAULT_LOCAL_APP_HOST
+    local_app_port: int = DEFAULT_CORP_MARKET_PORT
+    tunnel_local_port: int = DEFAULT_TUNNEL_LOCAL_PORT
+    tunnel_remote_host: str = "127.0.0.1"
+    tunnel_remote_port: int = DEFAULT_TUNNEL_REMOTE_PORT
+    ssh_host: str = ""
+    ssh_user: str = "ubuntu"
+    ssh_key_path: str = ""
+    vm_app_dir: str = DEFAULT_VM_APP_DIR
+    vm_service_name: str = DEFAULT_VM_SERVICE_NAME
+    command_timeout_seconds: float = 25.0
+
+    @property
+    def local_base_url(self) -> str:
+        return f"http://{self.local_app_host}:{self.local_app_port}"
+
+    @property
+    def tunnel_forward(self) -> str:
+        return f"{self.tunnel_local_port}:{self.tunnel_remote_host}:{self.tunnel_remote_port}"
+
+    @property
+    def ssh_target(self) -> str:
+        return f"{self.ssh_user}@{self.ssh_host}" if self.ssh_host else ""
+
+    @property
+    def vm_configured(self) -> bool:
+        return bool(self.ssh_host and self.ssh_user and self.ssh_key_path)
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "config_path": repo_relative_path(self.config_path),
+            "config_exists": self.config_path.exists(),
+            "action_log_path": repo_relative_path(self.action_log_path),
+            "local_base_url": self.local_base_url,
+            "local_app_host": self.local_app_host,
+            "local_app_port": self.local_app_port,
+            "tunnel_forward": self.tunnel_forward,
+            "ssh_configured": self.vm_configured,
+            "ssh_host_configured": bool(self.ssh_host),
+            "ssh_user": self.ssh_user if self.ssh_user else "",
+            "ssh_key_configured": bool(self.ssh_key_path),
+            "ssh_key_exists": Path(self.ssh_key_path).expanduser().is_file() if self.ssh_key_path else False,
+            "vm_app_dir": self.vm_app_dir,
+            "vm_service_name": self.vm_service_name,
+        }
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    ok: bool
+    summary: str
+    output: str = ""
+    returncode: int | None = None
+    data: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ActionDefinition:
+    action_id: str
+    label: str
+    group: str
+    description: str
+    runner: Callable[[WorkbenchConfig], CommandResult]
+    changes_process: bool = False
+
+
+_process_lock = threading.Lock()
+_managed_processes: dict[str, subprocess.Popen[Any]] = {}
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def clean_int(value: Any, default: int, *, minimum: int = 1, maximum: int = 65535) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, number))
+
+
+def clean_float(value: Any, default: float, *, minimum: float = 1.0, maximum: float = 120.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, number))
+
+
+def clean_text(value: Any, default: str = "", *, max_length: int = 500) -> str:
+    if value is None:
+        return default
+    text = str(value or "").strip()
+    if len(text) > max_length:
+        return text[:max_length]
+    return text
+
+
+def load_config(path: Path = DEFAULT_CONFIG_PATH) -> WorkbenchConfig:
+    data: dict[str, Any] = {}
+    if path.exists():
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise WorkbenchError(f"Could not read workbench config: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise WorkbenchError("Workbench config must be a JSON object.")
+        data = parsed
+    return WorkbenchConfig(
+        config_path=path,
+        action_log_path=DEFAULT_ACTION_LOG_PATH,
+        local_app_host=clean_text(data.get("local_app_host"), DEFAULT_LOCAL_APP_HOST, max_length=80),
+        local_app_port=clean_int(data.get("local_app_port"), DEFAULT_CORP_MARKET_PORT),
+        tunnel_local_port=clean_int(data.get("tunnel_local_port"), DEFAULT_TUNNEL_LOCAL_PORT),
+        tunnel_remote_host=clean_text(data.get("tunnel_remote_host"), "127.0.0.1", max_length=80),
+        tunnel_remote_port=clean_int(data.get("tunnel_remote_port"), DEFAULT_TUNNEL_REMOTE_PORT),
+        ssh_host=clean_text(data.get("ssh_host"), "", max_length=180),
+        ssh_user=clean_text(data.get("ssh_user"), "ubuntu", max_length=80),
+        ssh_key_path=clean_text(data.get("ssh_key_path"), "", max_length=500),
+        vm_app_dir=clean_text(data.get("vm_app_dir"), DEFAULT_VM_APP_DIR, max_length=500),
+        vm_service_name=clean_text(data.get("vm_service_name"), DEFAULT_VM_SERVICE_NAME, max_length=120),
+        command_timeout_seconds=clean_float(data.get("command_timeout_seconds"), 25.0),
+    )
+
+
+def repo_relative_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT.resolve())).replace("\\", "/")
+    except ValueError:
+        return str(path)
+
+
+def is_loopback_host(host: str) -> bool:
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def client_is_loopback(address: str) -> bool:
+    return address in {"127.0.0.1", "::1"} or address.startswith("127.")
+
+
+def origin_is_allowed(origin_header: str, referer_header: str, host_header: str) -> bool:
+    candidates = [origin_header, referer_header]
+    allowed_host = str(host_header or "").split(",", 1)[0].strip().lower()
+    if not any(candidates):
+        return True
+    for candidate in candidates:
+        if not candidate:
+            continue
+        parsed = urlparse(candidate)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return False
+        if parsed.netloc.lower() == allowed_host:
+            return True
+    return False
+
+
+def name_is_sensitive(name: str) -> bool:
+    upper = name.upper()
+    return any(marker in upper for marker in SECRET_NAME_MARKERS)
+
+
+def redacted_env_values() -> list[str]:
+    values = []
+    for name, value in os.environ.items():
+        if value and (name in SENSITIVE_ENV_NAMES or name_is_sensitive(name)):
+            values.append(value)
+    return sorted(values, key=len, reverse=True)
+
+
+def redact_text(value: Any, extra_values: Iterable[str] = ()) -> str:
+    text = str(value or "")
+    text = DISCORD_WEBHOOK_RE.sub("[redacted-discord-webhook]", text)
+    text = KEY_VALUE_SECRET_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}[redacted]", text)
+    for secret_value in list(extra_values) + redacted_env_values():
+        if secret_value and len(secret_value) >= 6:
+            text = text.replace(secret_value, "[redacted]")
+    return text
+
+
+def compact_output(output: str, *, limit: int = ACTION_OUTPUT_LIMIT) -> str:
+    clean_output = output.strip()
+    if len(clean_output) <= limit:
+        return clean_output
+    return clean_output[:limit] + "\n[output truncated]"
+
+
+def run_command(
+    args: list[str],
+    *,
+    cwd: Path = ROOT,
+    timeout_seconds: float = 25.0,
+    extra_secret_values: Iterable[str] = (),
+) -> CommandResult:
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            shell=False,
+        )
+    except FileNotFoundError as exc:
+        return CommandResult(ok=False, summary=f"Command not found: {args[0]}", output=str(exc))
+    except subprocess.TimeoutExpired as exc:
+        output = "\n".join(part for part in (exc.stdout or "", exc.stderr or "") if part)
+        return CommandResult(
+            ok=False,
+            summary=f"Timed out after {timeout_seconds:g} seconds.",
+            output=compact_output(redact_text(output, extra_secret_values)),
+            returncode=None,
+        )
+    output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+    clean = compact_output(redact_text(output, extra_secret_values))
+    return CommandResult(
+        ok=completed.returncode == 0,
+        summary="Command completed." if completed.returncode == 0 else f"Command exited {completed.returncode}.",
+        output=clean,
+        returncode=completed.returncode,
+    )
+
+
+def ensure_ignored_dirs() -> None:
+    (ROOT / "profiles").mkdir(exist_ok=True)
+    (ROOT / "logs").mkdir(exist_ok=True)
+
+
+def process_is_running(name: str) -> bool:
+    with _process_lock:
+        process = _managed_processes.get(name)
+        if process is None:
+            return False
+        if process.poll() is None:
+            return True
+        _managed_processes.pop(name, None)
+        return False
+
+
+def managed_process_status(name: str) -> dict[str, Any]:
+    with _process_lock:
+        process = _managed_processes.get(name)
+        if process is None:
+            return {"managed": False, "running": False, "pid": None}
+        returncode = process.poll()
+        running = returncode is None
+        if not running:
+            _managed_processes.pop(name, None)
+        return {"managed": True, "running": running, "pid": process.pid if running else None, "returncode": returncode}
+
+
+def start_managed_process(name: str, args: list[str], *, log_name: str) -> CommandResult:
+    ensure_ignored_dirs()
+    with _process_lock:
+        existing = _managed_processes.get(name)
+        if existing is not None and existing.poll() is None:
+            return CommandResult(ok=True, summary=f"{name} is already managed by this workbench.", data={"pid": existing.pid})
+        log_path = ROOT / "logs" / log_name
+        log_file = log_path.open("a", encoding="utf-8")
+        try:
+            process = subprocess.Popen(
+                args,
+                cwd=str(ROOT),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                shell=False,
+            )
+        finally:
+            log_file.close()
+        _managed_processes[name] = process
+        return CommandResult(
+            ok=True,
+            summary=f"Started {name}.",
+            output=f"Log: {repo_relative_path(log_path)}",
+            data={"pid": process.pid, "log_path": repo_relative_path(log_path)},
+        )
+
+
+def stop_managed_process(name: str) -> CommandResult:
+    with _process_lock:
+        process = _managed_processes.get(name)
+        if process is None or process.poll() is not None:
+            _managed_processes.pop(name, None)
+            return CommandResult(ok=False, summary=f"{name} is not managed by this workbench.")
+        pid = process.pid
+        process.terminate()
+    try:
+        process.wait(timeout=8)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=8)
+        summary = f"Stopped {name} after forcing the managed process to exit."
+    else:
+        summary = f"Stopped {name}."
+    with _process_lock:
+        _managed_processes.pop(name, None)
+    return CommandResult(ok=True, summary=summary, data={"pid": pid})
+
+
+def fetch_json(url: str, *, timeout_seconds: float = 3.0) -> dict[str, Any]:
+    request = Request(url, headers={"Accept": "application/json", "User-Agent": "FlightWorkbench/0.1"})
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read(1024 * 1024).decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        return {"ok": False, "status": exc.code, "error": f"HTTP {exc.code}"}
+    except URLError as exc:
+        return {"ok": False, "error": str(exc.reason)}
+    except TimeoutError:
+        return {"ok": False, "error": "Timed out."}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "Endpoint did not return JSON."}
+    if isinstance(parsed, dict):
+        return parsed
+    return {"ok": False, "error": "Endpoint returned an unexpected payload."}
+
+
+def check_local_health(config: WorkbenchConfig) -> dict[str, Any]:
+    payload = fetch_json(f"{config.local_base_url}/api/health", timeout_seconds=2.5)
+    return {
+        "ok": bool(payload.get("ok")),
+        "url": f"{config.local_base_url}/api/health",
+        "detail": "Corp Market is answering." if payload.get("ok") else str(payload.get("error") or "Not reachable."),
+    }
+
+
+def check_flight_diagnostics(config: WorkbenchConfig) -> dict[str, Any]:
+    payload = fetch_json(f"{config.local_base_url}/api/flight/diagnostics", timeout_seconds=4.0)
+    return {
+        "ok": bool(payload.get("ok")),
+        "url": f"{config.local_base_url}/api/flight/diagnostics",
+        "payload": payload,
+    }
+
+
+def environment_status() -> dict[str, Any]:
+    rows = []
+    for name in SENSITIVE_ENV_NAMES + CONFIG_ENV_NAMES:
+        configured = bool(os.environ.get(name))
+        rows.append(
+            {
+                "name": name,
+                "configured": configured,
+                "secret": name in SENSITIVE_ENV_NAMES or name_is_sensitive(name),
+                "value": "[set]" if configured else "",
+            }
+        )
+    sso_ready = bool(
+        (os.environ.get("CORP_MARKET_SSO_CLIENT_ID") or os.environ.get("EVE_SSO_CLIENT_ID"))
+        and (os.environ.get("CORP_MARKET_SSO_CLIENT_SECRET") or os.environ.get("EVE_SSO_CLIENT_SECRET"))
+    )
+    return {
+        "sso_ready": sso_ready,
+        "rows": rows,
+        "note": "Values are intentionally not displayed.",
+    }
+
+
+def local_git_status(config: WorkbenchConfig) -> CommandResult:
+    return run_command(["git", "status", "--short", "--branch"], timeout_seconds=config.command_timeout_seconds)
+
+
+def git_diff_check(config: WorkbenchConfig) -> CommandResult:
+    return run_command(["git", "diff", "--check"], timeout_seconds=config.command_timeout_seconds)
+
+
+def local_health_action(config: WorkbenchConfig) -> CommandResult:
+    health = check_local_health(config)
+    diagnostics = check_flight_diagnostics(config) if health["ok"] else {"ok": False, "skipped": True}
+    return CommandResult(
+        ok=bool(health["ok"]),
+        summary="Local Corp Market health checked." if health["ok"] else "Local Corp Market is not reachable.",
+        output=json.dumps({"health": health, "diagnostics": diagnostics}, indent=2),
+        data={"health": health, "diagnostics": diagnostics},
+    )
+
+
+def cache_preflight_action(config: WorkbenchConfig) -> CommandResult:
+    from eve_voice_pilot.corp_market import build_static_cache_diagnostics
+
+    diagnostics = build_static_cache_diagnostics()
+    return CommandResult(
+        ok=bool(diagnostics.get("ok")),
+        summary="Static caches are ready." if diagnostics.get("ok") else "One or more static caches are missing.",
+        output=json.dumps(diagnostics, indent=2),
+        data=diagnostics,
+    )
+
+
+def local_server_start(config: WorkbenchConfig) -> CommandResult:
+    health = check_local_health(config)
+    if health["ok"]:
+        return CommandResult(ok=True, summary="Corp Market is already answering on the configured local URL.")
+    script = ROOT / "scripts" / "run_corp_market.ps1"
+    args = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "serve",
+        "--host",
+        config.local_app_host,
+        "--port",
+        str(config.local_app_port),
+    ]
+    return start_managed_process("local server", args, log_name="flight_workbench_corp_market.log")
+
+
+def local_server_stop(config: WorkbenchConfig) -> CommandResult:
+    return stop_managed_process("local server")
+
+
+def validate_ssh_config(config: WorkbenchConfig) -> None:
+    if not config.vm_configured:
+        raise WorkbenchError("VM SSH is not configured in profiles/flight_workbench.local.json.")
+    if not HOST_RE.match(config.ssh_host):
+        raise WorkbenchError("VM host contains unsupported characters.")
+    if not USER_RE.match(config.ssh_user):
+        raise WorkbenchError("VM user contains unsupported characters.")
+    key_path = Path(config.ssh_key_path).expanduser()
+    if not key_path.is_file():
+        raise WorkbenchError("SSH key file was not found.")
+
+
+def validate_remote_path(value: str, label: str) -> str:
+    clean = value.strip()
+    if not clean or not REMOTE_SAFE_PATH_RE.match(clean):
+        raise WorkbenchError(f"{label} contains unsupported characters.")
+    return clean
+
+
+def validate_remote_name(value: str, label: str) -> str:
+    clean = value.strip()
+    if not clean or not REMOTE_SAFE_NAME_RE.match(clean):
+        raise WorkbenchError(f"{label} contains unsupported characters.")
+    return clean
+
+
+def ssh_base_args(config: WorkbenchConfig) -> list[str]:
+    validate_ssh_config(config)
+    return [
+        "ssh",
+        "-i",
+        str(Path(config.ssh_key_path).expanduser()),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=8",
+        "-o",
+        "ServerAliveInterval=30",
+        config.ssh_target,
+    ]
+
+
+def run_ssh_command(config: WorkbenchConfig, remote_command: str, *, timeout_seconds: float | None = None) -> CommandResult:
+    args = ssh_base_args(config) + [remote_command]
+    return run_command(
+        args,
+        timeout_seconds=timeout_seconds or config.command_timeout_seconds,
+        extra_secret_values=(config.ssh_key_path,),
+    )
+
+
+def vm_health(config: WorkbenchConfig) -> CommandResult:
+    return run_ssh_command(config, "hostname && uptime && free -h")
+
+
+def vm_service_status(config: WorkbenchConfig) -> CommandResult:
+    service = validate_remote_name(config.vm_service_name, "VM service name")
+    return run_ssh_command(
+        config,
+        f"systemctl is-active {service}; systemctl status --no-pager --lines=24 {service}",
+        timeout_seconds=max(20.0, config.command_timeout_seconds),
+    )
+
+
+def vm_service_restart(config: WorkbenchConfig) -> CommandResult:
+    service = validate_remote_name(config.vm_service_name, "VM service name")
+    return run_ssh_command(
+        config,
+        (
+            'if [ -x "$HOME/bin/eve-flight-restart" ]; then '
+            '"$HOME/bin/eve-flight-restart"; '
+            f"else sudo -n systemctl restart {service}; fi"
+        ),
+        timeout_seconds=max(30.0, config.command_timeout_seconds),
+    )
+
+
+def vm_logs_tail(config: WorkbenchConfig) -> CommandResult:
+    service = validate_remote_name(config.vm_service_name, "VM service name")
+    return run_ssh_command(
+        config,
+        (
+            'if [ -x "$HOME/bin/eve-flight-logs" ]; then '
+            '"$HOME/bin/eve-flight-logs" | tail -n 120; '
+            f"else journalctl -u {service} -n 120 --no-pager; fi"
+        ),
+        timeout_seconds=max(30.0, config.command_timeout_seconds),
+    )
+
+
+def vm_git_status(config: WorkbenchConfig) -> CommandResult:
+    app_dir = validate_remote_path(config.vm_app_dir, "VM app directory")
+    return run_ssh_command(config, f"cd {app_dir} && git status --short --branch")
+
+
+def tunnel_start(config: WorkbenchConfig) -> CommandResult:
+    validate_ssh_config(config)
+    if process_is_running("ssh tunnel"):
+        return CommandResult(ok=True, summary="SSH tunnel is already managed by this workbench.")
+    if not HOST_RE.match(config.tunnel_remote_host):
+        raise WorkbenchError("Tunnel remote host contains unsupported characters.")
+    forward = config.tunnel_forward
+    args = ssh_base_args(config)[:-1] + [
+        "-N",
+        "-L",
+        forward,
+        config.ssh_target,
+    ]
+    return start_managed_process("ssh tunnel", args, log_name="flight_workbench_tunnel.log")
+
+
+def tunnel_stop(config: WorkbenchConfig) -> CommandResult:
+    return stop_managed_process("ssh tunnel")
+
+
+def action_definitions() -> dict[str, ActionDefinition]:
+    actions = [
+        ActionDefinition("local_health", "Check Local Health", "Health Checks", "Fetch /api/health and diagnostics.", local_health_action),
+        ActionDefinition("cache_preflight", "Check Static Caches", "Health Checks", "Read local cache preflight status.", cache_preflight_action),
+        ActionDefinition("git_status", "Git Status", "Git", "Show local Git branch and dirty state.", local_git_status),
+        ActionDefinition("git_diff_check", "Diff Whitespace Check", "Git", "Run git diff --check.", git_diff_check),
+        ActionDefinition("local_server_start", "Start Local Server", "Local Server", "Start Corp Market through the existing wrapper.", local_server_start, True),
+        ActionDefinition("local_server_stop", "Stop Managed Server", "Local Server", "Stop only the server started by this workbench.", local_server_stop, True),
+        ActionDefinition("tunnel_start", "Start SSH Tunnel", "SSH Tunnel", "Start the configured local SSH tunnel.", tunnel_start, True),
+        ActionDefinition("tunnel_stop", "Stop Managed Tunnel", "SSH Tunnel", "Stop only the tunnel started by this workbench.", tunnel_stop, True),
+        ActionDefinition("vm_health", "VM Health", "VM App Service", "Run hostname, uptime, and memory checks over SSH.", vm_health),
+        ActionDefinition("vm_service_status", "Service Status", "VM App Service", "Read systemd service status over SSH.", vm_service_status),
+        ActionDefinition("vm_service_restart", "Restart VM Service", "VM App Service", "Restart the configured app service over SSH.", vm_service_restart, True),
+        ActionDefinition("vm_logs_tail", "Tail VM Logs", "VM App Service", "Read recent service logs over SSH.", vm_logs_tail),
+        ActionDefinition("vm_git_status", "VM Git Status", "VM App Service", "Show Git status in the VM app directory.", vm_git_status),
+    ]
+    return {action.action_id: action for action in actions}
+
+
+def public_action_definitions() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": action.action_id,
+            "label": action.label,
+            "group": action.group,
+            "description": action.description,
+            "changes_process": action.changes_process,
+        }
+        for action in action_definitions().values()
+    ]
+
+
+def run_action(action_id: str, config: WorkbenchConfig) -> CommandResult:
+    action = action_definitions().get(action_id)
+    if action is None:
+        raise WorkbenchError("Action is not in the workbench allowlist.")
+    return action.runner(config)
+
+
+def command_result_payload(action_id: str, result: CommandResult) -> dict[str, Any]:
+    return {
+        "action_id": action_id,
+        "ok": result.ok,
+        "summary": result.summary,
+        "output": result.output,
+        "returncode": result.returncode,
+        "data": result.data or {},
+        "generated_at": now_iso(),
+    }
+
+
+def append_action_log(config: WorkbenchConfig, payload: dict[str, Any]) -> None:
+    ensure_ignored_dirs()
+    entry = {
+        "action_id": payload.get("action_id"),
+        "ok": bool(payload.get("ok")),
+        "summary": redact_text(payload.get("summary", ""), extra_values=(config.ssh_key_path,)),
+        "output": compact_output(redact_text(payload.get("output", ""), extra_values=(config.ssh_key_path,)), limit=3000),
+        "returncode": payload.get("returncode"),
+        "generated_at": payload.get("generated_at") or now_iso(),
+    }
+    with config.action_log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+
+
+def recent_action_log(config: WorkbenchConfig, limit: int = RECENT_ACTION_LIMIT) -> list[dict[str, Any]]:
+    if not config.action_log_path.exists():
+        return []
+    try:
+        lines = config.action_log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in lines[-limit:]:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            entries.append(parsed)
+    return entries
+
+
+def build_status_payload(config: WorkbenchConfig) -> dict[str, Any]:
+    health = check_local_health(config)
+    git_status = local_git_status(config)
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "config": config.public_dict(),
+        "local_server": {
+            "managed": managed_process_status("local server"),
+            "health": health,
+        },
+        "ssh_tunnel": {
+            "managed": managed_process_status("ssh tunnel"),
+            "configured": config.vm_configured,
+            "forward": config.tunnel_forward,
+        },
+        "git": {
+            "ok": git_status.ok,
+            "summary": git_status.summary,
+            "output": git_status.output,
+        },
+        "environment": environment_status(),
+        "actions": public_action_definitions(),
+        "recent_actions": recent_action_log(config),
+        "manual_only": [
+            "Rotate SSO secrets and Discord webhooks outside this workbench.",
+            "Change EVE Developer callbacks in the EVE Developers portal.",
+            "Create, terminate, or firewall Oracle resources in the Oracle console.",
+            "Push Git commits only from your normal Git workflow.",
+        ],
+    }
+
+
+def escape_attr(value: Any) -> str:
+    return html.escape(str(value or ""), quote=True)
+
+
+def render_dashboard(config: WorkbenchConfig, operator_token: str) -> str:
+    token = escape_attr(operator_token)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flight Attendant Workbench</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f6f7f5;
+      --ink: #18201d;
+      --muted: #5d6861;
+      --line: #d9dfda;
+      --panel: #ffffff;
+      --soft: #eef2ef;
+      --green: #16785a;
+      --red: #ba3d32;
+      --amber: #a96800;
+      --blue: #1f5f99;
+      --shadow: 0 16px 42px rgba(24, 32, 29, 0.08);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }}
+    header {{
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfb;
+    }}
+    .wrap {{
+      width: min(1280px, calc(100% - 36px));
+      margin: 0 auto;
+    }}
+    .topbar {{
+      min-height: 76px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: clamp(1.35rem, 2.5vw, 2.1rem);
+      line-height: 1.1;
+      letter-spacing: 0;
+    }}
+    .subtitle {{
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }}
+    main {{
+      padding: 24px 0 34px;
+    }}
+    .status-strip {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }}
+    .tile, .panel {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }}
+    .tile {{
+      min-height: 88px;
+      padding: 15px;
+    }}
+    .tile span {{
+      display: block;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }}
+    .tile strong {{
+      display: block;
+      margin-top: 8px;
+      font-size: 1.08rem;
+      line-height: 1.25;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 18px;
+      align-items: start;
+    }}
+    .panel {{
+      margin-bottom: 18px;
+      overflow: hidden;
+    }}
+    .panel h2 {{
+      margin: 0;
+      font-size: 1rem;
+      line-height: 1.25;
+    }}
+    .panel-head {{
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: #fbfcfb;
+    }}
+    .panel-body {{
+      padding: 16px 18px 18px;
+    }}
+    .actions {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    .action-group {{
+      padding: 12px 0;
+      border-top: 1px solid var(--soft);
+    }}
+    .action-group:first-child {{
+      padding-top: 0;
+      border-top: 0;
+    }}
+    .action-group h3 {{
+      margin: 0 0 10px;
+      font-size: 0.88rem;
+      line-height: 1.2;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }}
+    button {{
+      min-height: 40px;
+      border: 1px solid #b9c3bc;
+      border-radius: 8px;
+      background: #ffffff;
+      color: var(--ink);
+      font: 700 0.92rem/1.1 "Segoe UI", system-ui, sans-serif;
+      cursor: pointer;
+      padding: 10px 12px;
+      text-align: left;
+    }}
+    button:hover {{ border-color: var(--green); color: var(--green); }}
+    button:disabled {{ cursor: wait; color: #87908a; border-color: #d7ddd8; }}
+    .primary {{
+      background: var(--green);
+      border-color: var(--green);
+      color: #fff;
+      text-align: center;
+    }}
+    .primary:hover {{ background: #0f684c; color: #fff; }}
+    .danger {{ border-color: #e2b5ae; color: var(--red); }}
+    .muted {{
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }}
+    .rows {{
+      display: grid;
+      gap: 8px;
+    }}
+    .row {{
+      display: grid;
+      grid-template-columns: minmax(160px, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--soft);
+      font-size: 0.92rem;
+    }}
+    .row:last-child {{ border-bottom: 0; }}
+    code, pre {{
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 0.86rem;
+    }}
+    .pill {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 800;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }}
+    .ok {{ color: var(--green); background: #e8f4ee; border-color: #b8ddcd; }}
+    .warn {{ color: var(--amber); background: #fff5df; border-color: #e9cf91; }}
+    .bad {{ color: var(--red); background: #fff0ed; border-color: #eab8ae; }}
+    .neutral {{ color: var(--blue); background: #eaf2f8; border-color: #bfd4e8; }}
+    .output {{
+      min-height: 220px;
+      max-height: 520px;
+      overflow: auto;
+      background: #111713;
+      color: #e8f1ea;
+      border-radius: 8px;
+      padding: 14px;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }}
+    .action-log {{
+      display: grid;
+      gap: 10px;
+      max-height: 360px;
+      overflow: auto;
+    }}
+    .log-entry {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fbfcfb;
+    }}
+    .log-entry strong {{ display: block; margin-bottom: 4px; }}
+    .small {{ font-size: 0.8rem; color: var(--muted); }}
+    @media (max-width: 920px) {{
+      .status-strip, .grid {{ grid-template-columns: 1fr; }}
+      .actions {{ grid-template-columns: 1fr; }}
+      .topbar {{ align-items: flex-start; flex-direction: column; padding: 18px 0; }}
+    }}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap topbar">
+      <div>
+        <h1>Flight Attendant Workbench</h1>
+        <div class="subtitle">Local operator panel for server, tunnel, VM, Git, SSO, and health checks.</div>
+      </div>
+      <button class="primary" id="refresh-button" type="button">Refresh Status</button>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="status-strip" aria-label="Workbench status">
+      <div class="tile"><span>Local Server</span><strong id="local-status">Checking</strong></div>
+      <div class="tile"><span>SSH Tunnel</span><strong id="tunnel-status">Checking</strong></div>
+      <div class="tile"><span>SSO Env</span><strong id="sso-status">Checking</strong></div>
+      <div class="tile"><span>Git</span><strong id="git-status">Checking</strong></div>
+    </section>
+    <section class="grid">
+      <div>
+        <div class="panel">
+          <div class="panel-head"><h2>Actions</h2><span class="pill neutral">Allowlisted</span></div>
+          <div class="panel-body">
+            <div id="action-groups"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Last Result</h2><span id="result-status" class="pill neutral">Idle</span></div>
+          <div class="panel-body">
+            <pre id="action-output" class="output">No action has run yet.</pre>
+          </div>
+        </div>
+      </div>
+      <aside>
+        <div class="panel">
+          <div class="panel-head"><h2>Configuration</h2><span id="config-status" class="pill neutral">Local</span></div>
+          <div class="panel-body">
+            <div class="rows" id="config-rows"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>SSO / Env</h2><span id="env-status" class="pill neutral">Hidden</span></div>
+          <div class="panel-body">
+            <div class="rows" id="env-rows"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Recent Actions</h2><span id="log-count" class="pill neutral">0</span></div>
+          <div class="panel-body">
+            <div class="action-log" id="action-log"></div>
+          </div>
+        </div>
+      </aside>
+    </section>
+  </main>
+  <script>
+    const operatorToken = "{token}";
+    const actionOutput = document.querySelector("#action-output");
+    const resultStatus = document.querySelector("#result-status");
+    const actionGroups = document.querySelector("#action-groups");
+
+    function pillClass(ok) {{
+      return ok ? "pill ok" : "pill bad";
+    }}
+
+    function setText(selector, value) {{
+      const element = document.querySelector(selector);
+      if (element) element.textContent = value;
+    }}
+
+    function row(label, value, cls = "pill neutral") {{
+      return `<div class="row"><span>${{escapeHtml(label)}}</span><span class="${{cls}}">${{escapeHtml(value)}}</span></div>`;
+    }}
+
+    function escapeHtml(value) {{
+      return String(value ?? "").replace(/[&<>"']/g, ch => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[ch]));
+    }}
+
+    function renderActions(actions) {{
+      const byGroup = new Map();
+      for (const action of actions || []) {{
+        if (!byGroup.has(action.group)) byGroup.set(action.group, []);
+        byGroup.get(action.group).push(action);
+      }}
+      actionGroups.innerHTML = Array.from(byGroup.entries()).map(([group, items]) => `
+        <section class="action-group">
+          <h3>${{escapeHtml(group)}}</h3>
+          <div class="actions">
+            ${{items.map(action => `<button type="button" data-action="${{escapeHtml(action.id)}}">${{escapeHtml(action.label)}}</button>`).join("")}}
+          </div>
+        </section>
+      `).join("");
+    }}
+
+    function renderStatus(data) {{
+      const health = data.local_server?.health || {{}};
+      setText("#local-status", health.ok ? "Answering" : "Offline");
+      document.querySelector("#local-status").style.color = health.ok ? "var(--green)" : "var(--red)";
+      const tunnel = data.ssh_tunnel || {{}};
+      const tunnelManaged = tunnel.managed || {{}};
+      setText("#tunnel-status", tunnelManaged.running ? `Managed PID ${{tunnelManaged.pid}}` : (tunnel.configured ? "Configured" : "Not configured"));
+      setText("#sso-status", data.environment?.sso_ready ? "Configured" : "Missing");
+      document.querySelector("#sso-status").style.color = data.environment?.sso_ready ? "var(--green)" : "var(--amber)";
+      setText("#git-status", data.git?.ok ? "Clean check ran" : "Check failed");
+      renderActions(data.actions || []);
+
+      const config = data.config || {{}};
+      document.querySelector("#config-rows").innerHTML = [
+        row("Config file", config.config_exists ? "Found" : "Missing", config.config_exists ? "pill ok" : "pill warn"),
+        row("Local URL", config.local_base_url || ""),
+        row("Tunnel", config.tunnel_forward || ""),
+        row("SSH host", config.ssh_host_configured ? "Set" : "Missing", config.ssh_host_configured ? "pill ok" : "pill warn"),
+        row("SSH key", config.ssh_key_exists ? "Found" : (config.ssh_key_configured ? "Missing file" : "Missing"), config.ssh_key_exists ? "pill ok" : "pill warn"),
+        row("VM service", config.vm_service_name || "")
+      ].join("");
+
+      const envRows = data.environment?.rows || [];
+      document.querySelector("#env-rows").innerHTML = envRows.map(item => row(item.name, item.configured ? "Set" : "Missing", item.configured ? "pill ok" : "pill warn")).join("");
+      const logs = data.recent_actions || [];
+      setText("#log-count", String(logs.length));
+      document.querySelector("#action-log").innerHTML = logs.length ? logs.slice().reverse().map(entry => `
+        <div class="log-entry">
+          <strong>${{escapeHtml(entry.action_id || "action")}} <span class="${{entry.ok ? "pill ok" : "pill bad"}}">${{entry.ok ? "OK" : "Check"}}</span></strong>
+          <div>${{escapeHtml(entry.summary || "")}}</div>
+          <div class="small">${{escapeHtml(entry.generated_at || "")}}</div>
+        </div>
+      `).join("") : `<div class="muted">No actions logged yet.</div>`;
+    }}
+
+    async function refreshStatus() {{
+      const response = await fetch("/api/status", {{headers: {{"Accept": "application/json"}}}});
+      const data = await response.json();
+      renderStatus(data);
+    }}
+
+    async function runAction(actionId) {{
+      resultStatus.textContent = "Running";
+      resultStatus.className = "pill warn";
+      actionOutput.textContent = `Running ${{actionId}}`;
+      for (const button of document.querySelectorAll("button")) button.disabled = true;
+      try {{
+        const response = await fetch(`/api/actions/${{encodeURIComponent(actionId)}}`, {{
+          method: "POST",
+          headers: {{"Accept": "application/json", "X-Workbench-Token": operatorToken}}
+        }});
+        const data = await response.json();
+        resultStatus.textContent = data.ok ? "OK" : "Check";
+        resultStatus.className = data.ok ? "pill ok" : "pill bad";
+        actionOutput.textContent = [data.summary || "", data.output || ""].filter(Boolean).join("\\n\\n") || JSON.stringify(data, null, 2);
+      }} catch (error) {{
+        resultStatus.textContent = "Error";
+        resultStatus.className = "pill bad";
+        actionOutput.textContent = error.message || String(error);
+      }} finally {{
+        for (const button of document.querySelectorAll("button")) button.disabled = false;
+        await refreshStatus();
+      }}
+    }}
+
+    document.addEventListener("click", event => {{
+      const button = event.target.closest("button[data-action]");
+      if (button) runAction(button.dataset.action);
+    }});
+    document.querySelector("#refresh-button").addEventListener("click", refreshStatus);
+    refreshStatus();
+  </script>
+</body>
+</html>"""
+
+
+class WorkbenchState:
+    def __init__(self, config: WorkbenchConfig, operator_token: str) -> None:
+        self.config = config
+        self.operator_token = operator_token
+
+
+def build_http_server(host: str, port: int, state: WorkbenchState) -> ThreadingHTTPServer:
+    if not is_loopback_host(host):
+        raise WorkbenchError("Flight Attendant Workbench only binds to 127.0.0.1, localhost, or ::1.")
+
+    class WorkbenchHandler(BaseHTTPRequestHandler):
+        server_version = "FlightWorkbench/0.1"
+
+        def do_GET(self) -> None:
+            if not self._require_loopback():
+                return
+            path = urlparse(self.path).path
+            if path in {"/", "/index.html"}:
+                self._send_html(render_dashboard(state.config, state.operator_token))
+                return
+            if path == "/api/status":
+                self._send_json(build_status_payload(state.config))
+                return
+            if path == "/api/health":
+                self._send_json({"ok": True, "generated_at": now_iso()})
+                return
+            self.send_error(404, "Not found")
+
+        def do_POST(self) -> None:
+            if not self._require_loopback():
+                return
+            if not self._require_operator_token():
+                return
+            if not origin_is_allowed(
+                self.headers.get("Origin", ""),
+                self.headers.get("Referer", ""),
+                self.headers.get("Host", ""),
+            ):
+                self._send_json({"ok": False, "error": "Origin was not allowed."}, status=403)
+                return
+            path = urlparse(self.path).path
+            prefix = "/api/actions/"
+            if not path.startswith(prefix):
+                self.send_error(404, "Not found")
+                return
+            action_id = path.removeprefix(prefix).strip("/")
+            try:
+                result = run_action(action_id, state.config)
+            except WorkbenchError as exc:
+                payload = {
+                    "action_id": action_id,
+                    "ok": False,
+                    "summary": str(exc),
+                    "output": "",
+                    "generated_at": now_iso(),
+                }
+            except Exception as exc:  # defensive boundary for local operator UI
+                payload = {
+                    "action_id": action_id,
+                    "ok": False,
+                    "summary": f"Action failed: {exc}",
+                    "output": "",
+                    "generated_at": now_iso(),
+                }
+            else:
+                payload = command_result_payload(action_id, result)
+            append_action_log(state.config, payload)
+            self._send_json(payload, status=200 if payload.get("ok") else 400)
+
+        def _require_loopback(self) -> bool:
+            if client_is_loopback(str(self.client_address[0])):
+                return True
+            self._send_json({"ok": False, "error": "Workbench accepts local browser requests only."}, status=403)
+            return False
+
+        def _require_operator_token(self) -> bool:
+            token = self.headers.get("X-Workbench-Token", "")
+            if secrets.compare_digest(token, state.operator_token):
+                return True
+            self._send_json({"ok": False, "error": "Missing or invalid workbench token."}, status=403)
+            return False
+
+        def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
+            body = json.dumps(payload, indent=2).encode("utf-8")
+            self.send_response(status)
+            self._send_security_headers()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_html(self, markup: str, *, status: int = 200) -> None:
+            body = markup.encode("utf-8")
+            self.send_response(status)
+            self._send_security_headers()
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_security_headers(self) -> None:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "same-origin")
+            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+
+        def log_message(self, format: str, *args: Any) -> None:
+            sys.stderr.write(f"[flight-workbench] {self.address_string()} - {format % args}\n")
+
+    return ThreadingHTTPServer((host, port), WorkbenchHandler)
+
+
+def run_server(args: argparse.Namespace) -> int:
+    config = load_config(args.config_path)
+    token = secrets.token_urlsafe(32)
+    state = WorkbenchState(config=config, operator_token=token)
+    server = build_http_server(args.host, args.port, state)
+    url = f"http://{args.host}:{args.port}/"
+    print(f"Flight Attendant Workbench listening at {url}")
+    print(f"Config file: {config.config_path}")
+    print("Operator token is held in memory and required for button actions.")
+    if args.open_browser:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("Stopped.")
+        return 0
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the local Flight Attendant Workbench.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    serve = subparsers.add_parser("serve", help="Start the localhost-only workbench.")
+    serve.add_argument("--host", default="127.0.0.1", help="Loopback bind address.")
+    serve.add_argument("--port", type=int, default=DEFAULT_PORT, help="Workbench port.")
+    serve.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH, help="Ignored local JSON config path.")
+    serve.add_argument("--open-browser", action="store_true", help="Open the workbench in your default browser.")
+    serve.set_defaults(func=run_server)
+    return parser
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    try:
+        return int(args.func(args))
+    except WorkbenchError as exc:
+        print(f"Flight workbench error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
