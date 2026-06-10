@@ -68,15 +68,19 @@ from eve_voice_pilot.local_transcription import (
     LocalRecognitionDiagnostic,
     LocalVoskTranscriber,
 )
-from eve_voice_pilot.local_whisper import LocalWhisperTranscriber
+from eve_voice_pilot.local_whisper import DEFAULT_LOCAL_WHISPER_MODEL, LOCAL_WHISPER_MODELS, LocalWhisperTranscriber
 from eve_voice_pilot.speech_responses import (
+    DEFAULT_ELEVENLABS_TTS_MODEL,
+    DEFAULT_ELEVENLABS_TTS_VOICE_ID,
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
     DEFAULT_POWER_BALLAD_INSTRUCTIONS,
     OPENAI_TTS_VOICES,
+    RESPONSE_ENGINE_ELEVENLABS,
     RESPONSE_ENGINE_WINDOWS,
     RESPONSE_ENGINES,
     SpeechResponseManager,
+    elevenlabs_voice_id,
     normalize_response_text,
 )
 from eve_voice_pilot.transcription import RealtimeTranscriber, list_input_devices, resolve_input_device_label
@@ -363,6 +367,11 @@ def clean_voice_engine(value: Any) -> str:
     return engine if engine in VOICE_ENGINES else DEFAULT_VOICE_ENGINE
 
 
+def clean_voice_whisper_model(value: Any) -> str:
+    model = str(value or "").strip()
+    return model if model in LOCAL_WHISPER_MODELS else DEFAULT_LOCAL_WHISPER_MODEL
+
+
 def clean_voice_model_path(value: Any) -> str:
     text = str(value or "").strip()
     if not text or text == DEFAULT_VOICE_MODEL_LABEL:
@@ -495,6 +504,32 @@ def pet_openai_api_key() -> str:
         return str(load_app_settings().get("api_key", "")).strip()
     except Exception:
         return ""
+
+
+def pet_elevenlabs_api_key() -> str:
+    for name in ("INTEL_PET_ELEVENLABS_API_KEY", "ELEVENLABS_API_KEY", "ELEVEN_LABS_API_KEY"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def pet_response_api_key(engine: str) -> str:
+    if clean_response_engine(engine) == RESPONSE_ENGINE_ELEVENLABS:
+        return pet_elevenlabs_api_key()
+    return pet_openai_api_key()
+
+
+def pet_response_model(engine: str) -> str:
+    if clean_response_engine(engine) == RESPONSE_ENGINE_ELEVENLABS:
+        return DEFAULT_ELEVENLABS_TTS_MODEL
+    return DEFAULT_OPENAI_TTS_MODEL
+
+
+def pet_response_voice(engine: str, voice: str) -> str:
+    if clean_response_engine(engine) == RESPONSE_ENGINE_ELEVENLABS:
+        return elevenlabs_voice_id(voice)
+    return clean_response_voice(voice)
 
 
 def spoken_pet_text(text: str) -> str:
@@ -718,6 +753,7 @@ def voice_status_from_transcript(
     allow_command_sending: bool = False,
     require_target_window: bool = True,
     target_title: str = DEFAULT_VOICE_TARGET_TITLE,
+    voice_engine: str = "",
     active_window_lookup: Callable[[], str] = active_window_title,
     key_sender: Callable[[str, float], None] = send_key_chord,
     sleeper: Callable[[float], None] = time.sleep,
@@ -750,12 +786,31 @@ def voice_status_from_transcript(
             title = "Voice command matched"
         else:
             title = "Voice command blocked"
-        return IntelPetVoiceStatus(title=title, detail=detail, severity=severity, recorded_at=now_iso())
+        return IntelPetVoiceStatus(
+            title=title,
+            detail=detail,
+            severity=severity,
+            recorded_at=now_iso(),
+            heard=heard,
+            engine=clean_voice_engine(voice_engine) if voice_engine else "",
+            active_window_check=active_window_check_summary(
+                allow_command_sending=allow_command_sending,
+                require_target_window=require_target_window,
+                target_title=target_title,
+            ),
+        )
     return IntelPetVoiceStatus(
         title="Voice heard",
         detail=f"Heard: {heard}\nNo exact command matched.",
         severity="info",
         recorded_at=now_iso(),
+        heard=heard,
+        engine=clean_voice_engine(voice_engine) if voice_engine else "",
+        active_window_check=active_window_check_summary(
+            allow_command_sending=allow_command_sending,
+            require_target_window=require_target_window,
+            target_title=target_title,
+        ),
     )
 
 
@@ -878,10 +933,22 @@ def discord_note_status_from_transcript(
     pending_capture: bool,
     response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
     pilot_name: str = "",
+    voice_engine: str = "",
+    active_window_check: str = "",
     poster: Callable[..., Any] = post_discord_note_webhook,
 ) -> tuple[IntelPetVoiceStatus | None, bool]:
     heard = normalize_response_text(transcript)
     cleaned, _response_requested = strip_response_call_sign(heard, response_call_signs(response_call_sign))
+    clean_engine = clean_voice_engine(voice_engine) if voice_engine else ""
+
+    def with_voice_context(status: IntelPetVoiceStatus) -> IntelPetVoiceStatus:
+        return replace(
+            status,
+            heard=heard,
+            engine=clean_engine,
+            active_window_check=active_window_check,
+        )
+
     intent = discord_note_intent_from_transcript(
         transcript,
         settings,
@@ -890,50 +957,58 @@ def discord_note_status_from_transcript(
     if pending_capture:
         if intent and intent.action == "cancel":
             return (
-                IntelPetVoiceStatus(
-                    title="Discord note canceled",
-                    detail="Note capture canceled.",
-                    severity="info",
-                    recorded_at=now_iso(),
+                with_voice_context(
+                    IntelPetVoiceStatus(
+                        title="Discord note canceled",
+                        detail="Note capture canceled.",
+                        severity="info",
+                        recorded_at=now_iso(),
+                    )
                 ),
                 False,
             )
         note_text = clean_discord_note_text(cleaned)
         if not note_text:
             return (
-                IntelPetVoiceStatus(
-                    title="Discord note waiting",
-                    detail="Still waiting for note text.",
-                    severity="info",
-                    recorded_at=now_iso(),
+                with_voice_context(
+                    IntelPetVoiceStatus(
+                        title="Discord note waiting",
+                        detail="Still waiting for note text.",
+                        severity="info",
+                        recorded_at=now_iso(),
+                    )
                 ),
                 True,
             )
-        return send_discord_note(note_text, settings, pilot_name=pilot_name, poster=poster), False
+        return with_voice_context(send_discord_note(note_text, settings, pilot_name=pilot_name, poster=poster)), False
 
     if intent is None:
         return None, False
     if intent.action == "cancel":
         return (
-            IntelPetVoiceStatus(
-                title="Discord note canceled",
-                detail="No note capture was active.",
-                severity="info",
-                recorded_at=now_iso(),
+            with_voice_context(
+                IntelPetVoiceStatus(
+                    title="Discord note canceled",
+                    detail="No note capture was active.",
+                    severity="info",
+                    recorded_at=now_iso(),
+                )
             ),
             False,
         )
     if intent.action == "arm":
         return (
-            IntelPetVoiceStatus(
-                title="Discord note ready",
-                detail="Note capture armed. Speak the note next, or say cancel note.",
-                severity="info",
-                recorded_at=now_iso(),
+            with_voice_context(
+                IntelPetVoiceStatus(
+                    title="Discord note ready",
+                    detail=discord_note_ready_detail(settings),
+                    severity="info",
+                    recorded_at=now_iso(),
+                )
             ),
             True,
         )
-    return send_discord_note(intent.note_text, settings, pilot_name=pilot_name, poster=poster), False
+    return with_voice_context(send_discord_note(intent.note_text, settings, pilot_name=pilot_name, poster=poster)), False
 
 
 @dataclass(frozen=True)
@@ -1190,6 +1265,7 @@ class IntelPetSettings:
     voice_preview_text: str = DEFAULT_VOICE_PREVIEW_TEXT
     enable_voice_listener: bool = False
     voice_engine: str = DEFAULT_VOICE_ENGINE
+    voice_whisper_model: str = DEFAULT_LOCAL_WHISPER_MODEL
     voice_model_path: str = ""
     voice_input_device: str = ""
     voice_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN
@@ -1214,6 +1290,7 @@ class IntelPetSettings:
             voice_preview_text=clean_voice_preview_text(payload.get("voice_preview_text")),
             enable_voice_listener=bool(payload.get("enable_voice_listener", False)),
             voice_engine=clean_voice_engine(payload.get("voice_engine")),
+            voice_whisper_model=clean_voice_whisper_model(payload.get("voice_whisper_model")),
             voice_model_path=clean_voice_model_path(payload.get("voice_model_path")),
             voice_input_device=clean_voice_input_device(payload.get("voice_input_device")),
             voice_call_sign=clean_voice_call_sign(payload.get("voice_call_sign")),
@@ -1244,6 +1321,7 @@ class IntelPetSettings:
             "voice_preview_text": clean_voice_preview_text(self.voice_preview_text),
             "enable_voice_listener": bool(self.enable_voice_listener),
             "voice_engine": clean_voice_engine(self.voice_engine),
+            "voice_whisper_model": clean_voice_whisper_model(self.voice_whisper_model),
             "voice_model_path": clean_voice_model_path(self.voice_model_path),
             "voice_input_device": clean_voice_input_device(self.voice_input_device),
             "voice_call_sign": clean_voice_call_sign(self.voice_call_sign),
@@ -1308,6 +1386,67 @@ class IntelPetDiscordNoteSettings:
 class IntelPetDiscordNoteIntent:
     action: str
     note_text: str = ""
+
+
+def first_discord_note_trigger_phrase(settings: IntelPetDiscordNoteSettings) -> str:
+    phrases = clean_discord_note_phrases(
+        settings.trigger_phrases,
+        default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+    )
+    return phrases[0]
+
+
+def first_discord_note_cancel_phrase(settings: IntelPetDiscordNoteSettings) -> str:
+    phrases = clean_discord_note_phrases(
+        settings.cancel_phrases,
+        default=DEFAULT_DISCORD_NOTE_CANCEL_PHRASES,
+    )
+    return phrases[0]
+
+
+def discord_note_ready_detail(settings: IntelPetDiscordNoteSettings) -> str:
+    trigger = first_discord_note_trigger_phrase(settings)
+    cancel = first_discord_note_cancel_phrase(settings)
+    return f'Note capture armed after "{trigger}". Speak the note next, or say "{cancel}".'
+
+
+def voice_listener_ready_detail(
+    settings: IntelPetSettings,
+    note_settings: IntelPetDiscordNoteSettings | None = None,
+) -> str:
+    engine = clean_voice_engine(settings.voice_engine)
+    call_sign = clean_voice_call_sign(settings.voice_call_sign)
+    if settings.allow_voice_command_sending:
+        if settings.require_voice_target_window:
+            mode = f"Sending enabled; active-window guard requires {clean_voice_target_title(settings.voice_target_title)!r}."
+        else:
+            mode = "Sending enabled; active-window guard is off."
+    else:
+        mode = "Practice-only mode; no keys will be sent."
+
+    parts = [
+        f"Voice listener ready with {engine}.",
+        mode,
+        f"Call sign: {call_sign}.",
+    ]
+    if note_settings is not None:
+        trigger = first_discord_note_trigger_phrase(note_settings)
+        cancel = first_discord_note_cancel_phrase(note_settings)
+        parts.append(f'Discord note trigger: "{trigger}"; cancel: "{cancel}".')
+    return " ".join(parts)
+
+
+def active_window_check_summary(
+    *,
+    allow_command_sending: bool,
+    require_target_window: bool,
+    target_title: str,
+) -> str:
+    if not allow_command_sending:
+        return "practice-only; no active-window check"
+    if require_target_window:
+        return f"requires active window containing {clean_voice_target_title(target_title)!r}"
+    return "guard off"
 
 
 @dataclass(frozen=True)
@@ -1377,6 +1516,9 @@ class IntelPetVoiceStatus:
     detail: str
     severity: str
     recorded_at: str
+    heard: str = ""
+    engine: str = ""
+    active_window_check: str = ""
 
 
 @dataclass(frozen=True)
@@ -1386,6 +1528,97 @@ class IntelPetHistoryItem:
     meta: str
     severity: str
     recorded_at: str
+
+
+@dataclass(frozen=True)
+class IntelPetVoiceReliabilityRow:
+    recorded_at: str
+    heard: str
+    outcome: str
+    command: str
+    blocked_reason: str
+    active_window_check: str
+    engine: str
+
+
+def _detail_line_value(detail: str, prefix: str) -> str:
+    folded_prefix = prefix.casefold()
+    for line in str(detail or "").splitlines():
+        if line.casefold().startswith(folded_prefix):
+            return line.split(":", maxsplit=1)[1].strip()
+    return ""
+
+
+def voice_reliability_outcome(title: str) -> str:
+    clean_title = " ".join(str(title or "").split())
+    folded = clean_title.casefold()
+    if folded == "voice practice listener":
+        return "ready"
+    if folded == "voice command sent":
+        return "sent"
+    if folded == "voice command matched":
+        return "matched"
+    if folded == "voice command blocked":
+        return "blocked"
+    if folded == "voice heard":
+        return "no match"
+    if folded == "discord note sent":
+        return "note sent"
+    if folded == "discord note ready":
+        return "note armed"
+    if folded == "discord note canceled":
+        return "note canceled"
+    if folded.startswith("discord note"):
+        return clean_title.removeprefix("Discord ").casefold()
+    return clean_title or "voice event"
+
+
+def voice_reliability_blocked_reason(item: IntelPetHistoryItem) -> str:
+    if item.title in {"Voice practice listener", "Voice command sent", "Discord note sent", "Discord note ready", "Discord note canceled"}:
+        return ""
+    ignored_prefixes = ("Heard:", "Matched:", "Engine:", "Active-window check:")
+    for line in str(item.detail or "").splitlines():
+        text = line.strip()
+        if not text or any(text.startswith(prefix) for prefix in ignored_prefixes):
+            continue
+        return text
+    return ""
+
+
+def voice_reliability_rows(
+    history_items: Iterable[IntelPetHistoryItem],
+    settings: IntelPetSettings,
+    *,
+    limit: int = 20,
+) -> tuple[IntelPetVoiceReliabilityRow, ...]:
+    rows: list[IntelPetVoiceReliabilityRow] = []
+    fallback_engine = clean_voice_engine(settings.voice_engine)
+    fallback_check = active_window_check_summary(
+        allow_command_sending=settings.allow_voice_command_sending,
+        require_target_window=settings.require_voice_target_window,
+        target_title=settings.voice_target_title,
+    )
+    for item in reversed(tuple(history_items)):
+        if item.meta != "Voice practice listener":
+            continue
+        heard = _detail_line_value(item.detail, "Heard:")
+        command = _detail_line_value(item.detail, "Matched:")
+        engine = _detail_line_value(item.detail, "Engine:") or fallback_engine
+        active_check = _detail_line_value(item.detail, "Active-window check:") or fallback_check
+        rows.append(
+            IntelPetVoiceReliabilityRow(
+                recorded_at=item.recorded_at,
+                heard=heard,
+                outcome=voice_reliability_outcome(item.title),
+                command=command,
+                blocked_reason=voice_reliability_blocked_reason(item),
+                active_window_check=active_check,
+                engine=engine,
+            )
+        )
+        if len(rows) >= max(1, limit):
+            break
+    return tuple(rows)
 
 
 def voice_training_phrase_from_detail(
@@ -1540,6 +1773,8 @@ def load_settings(path: Path | None, *, overrides: argparse.Namespace | None = N
         settings = replace(settings, enable_voice_listener=bool(overrides.enable_voice_listener))
     if getattr(overrides, "voice_engine", ""):
         settings = replace(settings, voice_engine=clean_voice_engine(overrides.voice_engine))
+    if getattr(overrides, "voice_whisper_model", ""):
+        settings = replace(settings, voice_whisper_model=clean_voice_whisper_model(overrides.voice_whisper_model))
     if getattr(overrides, "voice_model_path", ""):
         settings = replace(settings, voice_model_path=clean_voice_model_path(overrides.voice_model_path))
     if getattr(overrides, "voice_input_device", ""):
@@ -1676,6 +1911,7 @@ def replace_voice_settings(
     voice_preview_text: str | None = None,
     enable_voice_listener: bool | None = None,
     voice_engine: str | None = None,
+    voice_whisper_model: str | None = None,
     voice_model_path: str | None = None,
     voice_input_device: str | None = None,
     voice_call_sign: str | None = None,
@@ -1697,6 +1933,9 @@ def replace_voice_settings(
         ),
         enable_voice_listener=settings.enable_voice_listener if enable_voice_listener is None else bool(enable_voice_listener),
         voice_engine=settings.voice_engine if voice_engine is None else clean_voice_engine(voice_engine),
+        voice_whisper_model=(
+            settings.voice_whisper_model if voice_whisper_model is None else clean_voice_whisper_model(voice_whisper_model)
+        ),
         voice_model_path=settings.voice_model_path if voice_model_path is None else clean_voice_model_path(voice_model_path),
         voice_input_device=settings.voice_input_device if voice_input_device is None else clean_voice_input_device(voice_input_device),
         voice_call_sign=settings.voice_call_sign if voice_call_sign is None else clean_voice_call_sign(voice_call_sign),
@@ -1938,9 +2177,16 @@ def history_item_from_status(message: str) -> IntelPetHistoryItem:
 
 
 def history_item_from_voice_status(status: IntelPetVoiceStatus) -> IntelPetHistoryItem:
+    detail_lines = [status.detail]
+    if status.heard and not _detail_line_value(status.detail, "Heard:"):
+        detail_lines.append(f"Heard: {status.heard}")
+    if status.engine:
+        detail_lines.append(f"Engine: {status.engine}")
+    if status.active_window_check:
+        detail_lines.append(f"Active-window check: {status.active_window_check}")
     return IntelPetHistoryItem(
         title=status.title,
-        detail=status.detail,
+        detail="\n".join(line for line in detail_lines if line),
         meta="Voice practice listener",
         severity=status.severity,
         recorded_at=status.recorded_at,
@@ -2163,6 +2409,7 @@ def intel_pet_diagnostics_report(
         f"- Muted spoken alert types: {', '.join(muted_spoken) if muted_spoken else 'none'}",
         f"- Spoken response engine: {clean_response_engine(settings.response_engine)}",
         f"- Voice listener: {on_off(settings.enable_voice_listener)}; engine: {clean_voice_engine(settings.voice_engine)}",
+        f"- Whisper model: {clean_voice_whisper_model(settings.voice_whisper_model)}",
         f"- Voice model: {voice_model_display(settings.voice_model_path)} ({voice_model_status(settings.voice_model_path)})",
         f"- Microphone: {voice_input_device_display(settings.voice_input_device)}",
         f"- Voice command profile: {voice_profile_path}",
@@ -2607,9 +2854,9 @@ def run_overlay(
     def configure_pet_speech(settings: IntelPetSettings) -> None:
         pet_speech.configure(
             engine=settings.response_engine,
-            api_key=pet_openai_api_key(),
-            model=DEFAULT_OPENAI_TTS_MODEL,
-            voice=settings.response_voice,
+            api_key=pet_response_api_key(settings.response_engine),
+            model=pet_response_model(settings.response_engine),
+            voice=pet_response_voice(settings.response_engine, settings.response_voice),
             instructions=settings.response_style,
         )
 
@@ -2741,11 +2988,18 @@ def run_overlay(
                     raise CorpIntelError("OpenAI voice listener needs an API key.")
                 input_device_index = voice_input_device_index(settings.voice_input_device)
                 selected_model_path = voice_model_path(settings.voice_model_path)
+                whisper_model = clean_voice_whisper_model(settings.voice_whisper_model)
                 call_sign = clean_voice_call_sign(settings.voice_call_sign)
+                active_check = active_window_check_summary(
+                    allow_command_sending=settings.allow_voice_command_sending,
+                    require_target_window=settings.require_voice_target_window,
+                    target_title=settings.voice_target_title,
+                )
                 signature = (
                     voice_engine,
                     input_device_index,
                     str(selected_model_path) if voice_engine == VOICE_ENGINE_LOCAL else "",
+                    whisper_model if voice_engine == VOICE_ENGINE_WHISPER else "",
                     call_sign,
                     voice_command_signature(commands),
                     bool(api_key) if voice_engine == VOICE_ENGINE_OPENAI else False,
@@ -2763,6 +3017,7 @@ def run_overlay(
                         transcriber = LocalWhisperTranscriber(
                             lambda text: alert_queue.put(f"Voice listener: {text}"),
                             input_device_index=input_device_index,
+                            model_name=whisper_model,
                         )
                     else:
                         transcriber = LocalVoskTranscriber(
@@ -2783,9 +3038,11 @@ def run_overlay(
                     alert_queue.put(
                         IntelPetVoiceStatus(
                             title="Voice practice listener",
-                            detail="Voice practice listening. No keys will be sent.",
+                            detail=voice_listener_ready_detail(settings, current_discord_note_settings()),
                             severity="info",
                             recorded_at=now_iso(),
+                            engine=voice_engine,
+                            active_window_check=active_check,
                         )
                     )
 
@@ -2796,6 +3053,8 @@ def run_overlay(
                     pending_capture=pending_note_capture,
                     response_call_sign=call_sign,
                     pilot_name=location_session.character_name if location_session is not None else "",
+                    voice_engine=voice_engine,
+                    active_window_check=active_check,
                 )
                 if note_status:
                     alert_queue.put(note_status)
@@ -2808,6 +3067,7 @@ def run_overlay(
                     allow_command_sending=settings.allow_voice_command_sending,
                     require_target_window=settings.require_voice_target_window,
                     target_title=settings.voice_target_title,
+                    voice_engine=voice_engine,
                 )
                 if status:
                     alert_queue.put(status)
@@ -3263,6 +3523,7 @@ def run_overlay(
         behavior_tab, behavior_frame = scrollable_tab(notebook)
         voice_tab, voice_frame = scrollable_tab(notebook)
         notes_tab, notes_frame = scrollable_tab(notebook)
+        reliability_tab, reliability_frame = scrollable_tab(notebook)
         voice_lab_tab, voice_lab_frame = scrollable_tab(notebook)
         diagnostics_tab, diagnostics_frame = scrollable_tab(notebook)
         history_tab, history_frame = scrollable_tab(notebook)
@@ -3270,6 +3531,7 @@ def run_overlay(
         notebook.add(behavior_tab, text="Behaviors")
         notebook.add(voice_tab, text="Voice")
         notebook.add(notes_tab, text="Notes")
+        notebook.add(reliability_tab, text="Reliability")
         notebook.add(voice_lab_tab, text="Voice Lab")
         notebook.add(diagnostics_tab, text="Diagnostics")
         notebook.add(history_tab, text="History")
@@ -3638,9 +3900,11 @@ def run_overlay(
         voice_preview_text_var = tk.StringVar(value=clean_voice_preview_text(voice_settings.voice_preview_text))
         voice_listener_var = tk.BooleanVar(value=voice_settings.enable_voice_listener)
         speech_engine_var = tk.StringVar(value=clean_voice_engine(voice_settings.voice_engine))
+        voice_whisper_model_var = tk.StringVar(value=clean_voice_whisper_model(voice_settings.voice_whisper_model))
         voice_model_var = tk.StringVar(value=voice_model_display(voice_settings.voice_model_path))
         voice_model_status_var = tk.StringVar(value=voice_model_status(voice_settings.voice_model_path))
         voice_call_sign_var = tk.StringVar(value=clean_voice_call_sign(voice_settings.voice_call_sign))
+        voice_listener_summary_var = tk.StringVar()
         try:
             input_device_labels = [DEFAULT_INPUT_DEVICE_LABEL, *(device.label for device in list_input_devices())]
         except Exception:
@@ -3649,6 +3913,10 @@ def run_overlay(
         allow_command_sending_var = tk.BooleanVar(value=voice_settings.allow_voice_command_sending)
         require_target_window_var = tk.BooleanVar(value=voice_settings.require_voice_target_window)
         voice_target_title_var = tk.StringVar(value=clean_voice_target_title(voice_settings.voice_target_title))
+
+        def refresh_voice_listener_summary(settings: IntelPetSettings | None = None) -> None:
+            current = settings or engine.current_settings()
+            voice_listener_summary_var.set(voice_listener_ready_detail(current, current_discord_note_settings()))
 
         def persist_voice_settings(action: str = "Voice settings saved") -> None:
             try:
@@ -3662,6 +3930,7 @@ def run_overlay(
                     voice_preview_text=voice_preview_text_var.get(),
                     enable_voice_listener=voice_listener_var.get(),
                     voice_engine=speech_engine_var.get(),
+                    voice_whisper_model=voice_whisper_model_var.get(),
                     voice_model_path=voice_model_var.get(),
                     voice_input_device=voice_input_device_var.get(),
                     voice_call_sign=voice_call_sign_var.get(),
@@ -3676,6 +3945,7 @@ def run_overlay(
                 voice_model_status_var.set(voice_model_status(settings.voice_model_path))
                 for kind, var in spoken_alert_kind_vars.items():
                     var.set(clean_spoken_alert_kinds(settings.spoken_alert_kinds)[kind])
+                refresh_voice_listener_summary(settings)
             except Exception as exc:
                 editor_status_var.set(f"Voice save failed: {exc}")
                 return
@@ -3719,6 +3989,8 @@ def run_overlay(
             voice_model_box.configure(values=installed_voice_model_labels())
             voice_model_status_var.set(voice_model_status(engine.current_settings().voice_model_path))
             editor_status_var.set("Voice model list refreshed.")
+
+        refresh_voice_listener_summary(voice_settings)
 
         voice_grid = ttk.Frame(voice_frame)
         voice_grid.pack(fill="x")
@@ -3773,8 +4045,12 @@ def run_overlay(
         response_engine_box.grid(row=3, column=1, sticky="ew", pady=5)
         response_engine_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="OpenAI voice").grid(row=4, column=0, sticky="w", pady=5)
-        response_voice_box = ttk.Combobox(voice_grid, textvariable=response_voice_var, values=OPENAI_TTS_VOICES)
+        ttk.Label(voice_grid, text="Voice / voice id").grid(row=4, column=0, sticky="w", pady=5)
+        response_voice_box = ttk.Combobox(
+            voice_grid,
+            textvariable=response_voice_var,
+            values=(*OPENAI_TTS_VOICES, DEFAULT_ELEVENLABS_TTS_VOICE_ID),
+        )
         response_voice_box.grid(row=4, column=1, sticky="ew", pady=5)
         response_voice_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
@@ -3814,7 +4090,7 @@ def run_overlay(
         )
         ttk.Label(
             voice_grid,
-            text="Practice mode only. The pet shows matched Voice Pilot commands but does not send keys.",
+            textvariable=voice_listener_summary_var,
             wraplength=500,
         ).grid(row=11, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(
@@ -3834,53 +4110,63 @@ def run_overlay(
         speech_engine_box.grid(row=13, column=1, sticky="ew", pady=5)
         speech_engine_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Local model").grid(row=14, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="Whisper model").grid(row=14, column=0, sticky="w", pady=5)
+        whisper_model_box = ttk.Combobox(
+            voice_grid,
+            textvariable=voice_whisper_model_var,
+            values=LOCAL_WHISPER_MODELS,
+            state="readonly",
+        )
+        whisper_model_box.grid(row=14, column=1, sticky="ew", pady=5)
+        whisper_model_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings("Whisper model selected"))
+
+        ttk.Label(voice_grid, text="Local model").grid(row=15, column=0, sticky="w", pady=5)
         voice_model_box = ttk.Combobox(
             voice_grid,
             textvariable=voice_model_var,
             values=installed_voice_model_labels(),
         )
-        voice_model_box.grid(row=14, column=1, sticky="ew", pady=5)
+        voice_model_box.grid(row=15, column=1, sticky="ew", pady=5)
         voice_model_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings("Voice model selected"))
         ttk.Label(voice_grid, textvariable=voice_model_status_var, wraplength=500).grid(
-            row=15,
+            row=16,
             column=0,
             columnspan=2,
             sticky="ew",
             pady=(0, 8),
         )
 
-        ttk.Label(voice_grid, text="Microphone").grid(row=16, column=0, sticky="w", pady=5)
+        ttk.Label(voice_grid, text="Microphone").grid(row=17, column=0, sticky="w", pady=5)
         voice_input_box = ttk.Combobox(
             voice_grid,
             textvariable=voice_input_device_var,
             values=input_device_labels,
             state="readonly",
         )
-        voice_input_box.grid(row=16, column=1, sticky="ew", pady=5)
+        voice_input_box.grid(row=17, column=1, sticky="ew", pady=5)
         voice_input_box.bind("<<ComboboxSelected>>", lambda _event: persist_voice_settings())
 
-        ttk.Label(voice_grid, text="Response call sign").grid(row=17, column=0, sticky="w", pady=5)
-        ttk.Entry(voice_grid, textvariable=voice_call_sign_var).grid(row=17, column=1, sticky="ew", pady=5)
+        ttk.Label(voice_grid, text="Response call sign").grid(row=18, column=0, sticky="w", pady=5)
+        ttk.Entry(voice_grid, textvariable=voice_call_sign_var).grid(row=18, column=1, sticky="ew", pady=5)
 
         ttk.Checkbutton(
             voice_grid,
             text="Allow command sending",
             variable=allow_command_sending_var,
             command=lambda: persist_voice_settings("Command sending setting saved"),
-        ).grid(row=18, column=0, columnspan=2, sticky="w", pady=(12, 4))
+        ).grid(row=19, column=0, columnspan=2, sticky="w", pady=(12, 4))
         ttk.Label(
             voice_grid,
             text="Leave this off for practice. When on, only exact Voice Pilot command matches can send their configured keybind.",
             wraplength=500,
-        ).grid(row=19, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ).grid(row=20, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(
             voice_grid,
             text="Only send when active window title matches",
             variable=require_target_window_var,
             command=lambda: persist_voice_settings("Window guard saved"),
-        ).grid(row=20, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        ttk.Entry(voice_grid, textvariable=voice_target_title_var).grid(row=21, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        ).grid(row=21, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Entry(voice_grid, textvariable=voice_target_title_var).grid(row=22, column=0, columnspan=2, sticky="ew", pady=(0, 5))
 
         voice_buttons = ttk.Frame(voice_frame)
         voice_buttons.pack(fill="x", pady=(8, 0))
@@ -3988,6 +4274,7 @@ def run_overlay(
             note_status_var.set(f"{action}. Notes are {enabled}; webhook is {configured}.")
             editor_status_var.set(note_status_var.get())
             refresh_note_phrase_preview(note_settings_override=settings)
+            refresh_voice_listener_summary()
             refresh_option_summary()
             return settings
 
@@ -4086,6 +4373,100 @@ def run_overlay(
         note_status_frame = ttk.LabelFrame(notes_frame, text="Status", padding=8)
         note_status_frame.pack(fill="x", pady=(12, 0))
         ttk.Label(note_status_frame, textvariable=note_status_var, wraplength=620).pack(anchor="w", fill="x")
+
+        ttk.Label(reliability_frame, text="Voice Reliability", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        reliability_status_var = tk.StringVar(value="No voice attempts yet.")
+        reliability_body = ttk.Frame(reliability_frame)
+        reliability_body.pack(fill="both", expand=True, pady=(8, 0))
+        reliability_body.columnconfigure(0, weight=1)
+        reliability_body.rowconfigure(0, weight=1)
+        reliability_columns = ("recorded_at", "engine", "heard", "result", "command", "blocked", "guard")
+        reliability_tree = ttk.Treeview(
+            reliability_body,
+            columns=reliability_columns,
+            show="headings",
+            height=14,
+        )
+        reliability_tree.heading("recorded_at", text="Time")
+        reliability_tree.heading("engine", text="Engine")
+        reliability_tree.heading("heard", text="Heard")
+        reliability_tree.heading("result", text="Result")
+        reliability_tree.heading("command", text="Command")
+        reliability_tree.heading("blocked", text="Blocked Reason")
+        reliability_tree.heading("guard", text="Active Window")
+        reliability_tree.column("recorded_at", width=138, minwidth=110, stretch=False)
+        reliability_tree.column("engine", width=120, minwidth=95, stretch=False)
+        reliability_tree.column("heard", width=210, minwidth=140, stretch=True)
+        reliability_tree.column("result", width=92, minwidth=80, stretch=False)
+        reliability_tree.column("command", width=170, minwidth=120, stretch=True)
+        reliability_tree.column("blocked", width=210, minwidth=130, stretch=True)
+        reliability_tree.column("guard", width=190, minwidth=130, stretch=True)
+        reliability_tree.grid(row=0, column=0, sticky="nsew")
+        reliability_y = ttk.Scrollbar(reliability_body, orient="vertical", command=reliability_tree.yview)
+        reliability_y.grid(row=0, column=1, sticky="ns")
+        reliability_x = ttk.Scrollbar(reliability_body, orient="horizontal", command=reliability_tree.xview)
+        reliability_x.grid(row=1, column=0, sticky="ew")
+        reliability_tree.configure(yscrollcommand=reliability_y.set, xscrollcommand=reliability_x.set)
+
+        def current_voice_reliability_rows() -> tuple[IntelPetVoiceReliabilityRow, ...]:
+            return voice_reliability_rows(history_items, engine.current_settings(), limit=20)
+
+        def refresh_voice_reliability() -> None:
+            rows = current_voice_reliability_rows()
+            reliability_tree.delete(*reliability_tree.get_children())
+            for row in rows:
+                reliability_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        row.recorded_at,
+                        row.engine,
+                        row.heard or "-",
+                        row.outcome,
+                        row.command or "-",
+                        row.blocked_reason or "-",
+                        row.active_window_check,
+                    ),
+                )
+            reliability_status_var.set(
+                f"{diagnostic_count_label(len(rows), 'recent voice attempt')} shown."
+                if rows
+                else "No voice attempts yet."
+            )
+
+        def copy_voice_reliability_summary() -> None:
+            rows = current_voice_reliability_rows()
+            lines = ["Intel Pet Voice Reliability"]
+            if not rows:
+                lines.append("No voice attempts yet.")
+            for row in rows:
+                lines.append(
+                    " | ".join(
+                        (
+                            row.recorded_at,
+                            row.outcome,
+                            row.engine,
+                            f"heard={row.heard or '-'}",
+                            f"command={row.command or '-'}",
+                            f"blocked={row.blocked_reason or '-'}",
+                            f"active_window={row.active_window_check}",
+                        )
+                    )
+                )
+            editor.clipboard_clear()
+            editor.clipboard_append("\n".join(lines))
+            editor_status_var.set("Voice reliability summary copied.")
+
+        reliability_buttons = ttk.Frame(reliability_frame)
+        reliability_buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(reliability_buttons, text="Refresh", command=refresh_voice_reliability).pack(side="left")
+        ttk.Button(reliability_buttons, text="Copy Summary", command=copy_voice_reliability_summary).pack(
+            side="left",
+            padx=(6, 0),
+        )
+        ttk.Label(reliability_frame, textvariable=reliability_status_var, wraplength=620).pack(anchor="w", pady=(8, 0))
+        refresh_voice_reliability()
+        history_refreshers.append(refresh_voice_reliability)
 
         ttk.Label(voice_lab_frame, text="Voice Lab", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(
@@ -4777,6 +5158,7 @@ def run_overlay(
             history_items.clear()
             refresh_history_text()
             refresh_heard_phrases()
+            refresh_voice_reliability()
             refresh_option_summary()
 
         history_buttons = ttk.Frame(history_frame)
@@ -4805,6 +5187,7 @@ def run_overlay(
             voice_preview_text_var.set(clean_voice_preview_text(settings.voice_preview_text))
             voice_listener_var.set(settings.enable_voice_listener)
             speech_engine_var.set(clean_voice_engine(settings.voice_engine))
+            voice_whisper_model_var.set(clean_voice_whisper_model(settings.voice_whisper_model))
             voice_model_var.set(voice_model_display(settings.voice_model_path))
             voice_model_status_var.set(voice_model_status(settings.voice_model_path))
             voice_input_device_var.set(voice_input_device_display(settings.voice_input_device))
@@ -4812,7 +5195,9 @@ def run_overlay(
             allow_command_sending_var.set(settings.allow_voice_command_sending)
             require_target_window_var.set(settings.require_voice_target_window)
             voice_target_title_var.set(clean_voice_target_title(settings.voice_target_title))
+            refresh_voice_listener_summary(settings)
             refresh_heard_phrases()
+            refresh_voice_reliability()
             refresh_note_phrase_preview(settings_override=settings)
             refresh_option_summary()
 
@@ -4860,7 +5245,13 @@ def run_overlay(
         def forget_history_refresher(event: Any) -> None:
             if event.widget is not editor:
                 return
-            for refresher in (refresh_history_text, refresh_heard_phrases, refresh_diagnostics_text, refresh_option_summary):
+            for refresher in (
+                refresh_history_text,
+                refresh_heard_phrases,
+                refresh_voice_reliability,
+                refresh_diagnostics_text,
+                refresh_option_summary,
+            ):
                 if refresher in history_refreshers:
                     history_refreshers.remove(refresher)
 
@@ -5302,14 +5693,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=RESPONSE_ENGINES,
         help="Voice engine for spoken pet messages.",
     )
-    parser.add_argument("--response-voice", default="", help="OpenAI TTS voice for spoken pet messages.")
-    parser.add_argument("--response-style", default="", help="OpenAI TTS style instructions for spoken pet messages.")
+    parser.add_argument("--response-voice", default="", help="TTS voice name or ElevenLabs voice id for spoken pet messages.")
+    parser.add_argument("--response-style", default="", help="TTS style instructions for spoken pet messages.")
     parser.add_argument("--voice-preview-text", default="", help="Sample text used by the pet voice preview cache.")
     parser.add_argument(
         "--enable-voice-listener",
         action="store_true",
         default=None,
-        help="Listen for EVE Voice Pilot commands in practice mode only. No keys are sent.",
+        help="Listen for EVE Voice Pilot commands using the saved command-sending safety settings.",
     )
     parser.add_argument(
         "--no-voice-listener",
@@ -5318,6 +5709,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Disable the practice voice listener even if saved settings enable it.",
     )
     parser.add_argument("--voice-engine", default="", choices=VOICE_ENGINES, help="Speech engine for the practice listener.")
+    parser.add_argument(
+        "--voice-whisper-model",
+        default="",
+        choices=LOCAL_WHISPER_MODELS,
+        help="Local Whisper model used when --voice-engine is Whisper local dictation.",
+    )
     parser.add_argument("--voice-model-path", default="", help="Local Vosk model path for offline voice recognition.")
     parser.add_argument("--voice-input-device", default="", help="Microphone label for the practice listener.")
     parser.add_argument("--voice-call-sign", default="", help="Response call sign for voice commands, like Merlin or Aura.")

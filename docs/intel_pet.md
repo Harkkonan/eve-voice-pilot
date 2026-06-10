@@ -148,7 +148,7 @@ To enable it from the command line:
 .\scripts\run_intel_pet.ps1 --speak-alerts
 ```
 
-The default pet speech engine is Windows local speech. You can also choose the cached OpenAI voice path used by EVE Voice Pilot:
+The default pet speech engine is Windows local speech. You can also choose cached OpenAI or ElevenLabs pet speech. Cached clips are stored under the ignored `cache\speech\` folder and replayed locally:
 
 ```powershell
 .\scripts\run_intel_pet.ps1 `
@@ -163,6 +163,14 @@ OpenAI pet speech uses the saved EVE Voice Pilot API key on this PC, or one of t
 INTEL_PET_OPENAI_API_KEY
 OPENAI_API_KEY
 EVE_VOICE_OPENAI_API_KEY
+```
+
+ElevenLabs pet speech uses a local environment variable and the `Voice / voice id` field in `Options` > `Voice`:
+
+```text
+INTEL_PET_ELEVENLABS_API_KEY
+ELEVENLABS_API_KEY
+ELEVEN_LABS_API_KEY
 ```
 
 You can also turn spoken pet messages on or off in `Options` > `Voice`.
@@ -224,7 +232,7 @@ To return to practice mode:
 .\scripts\run_intel_pet.ps1 --enable-voice-listener --no-voice-command-sending
 ```
 
-The listener uses your saved EVE Voice Pilot command profile when available, then falls back to the sample profile. You can choose the speech engine, microphone, local Vosk model, and call sign in `Options` > `Voice`.
+The listener uses your saved EVE Voice Pilot command profile when available, then falls back to the sample profile. You can choose the speech engine, microphone, local Vosk model, local Whisper model, and call sign in `Options` > `Voice`.
 
 Use `Local (offline)` plus the recommended Vosk model for command phrases. Use `Whisper local dictation` when you want better note-style language recognition; it is slower, does not do fast partial command firing, and still routes final text through the same exact-match command checks. OpenAI realtime transcription needs a saved EVE Voice Pilot API key on this PC, or one of the same local environment variables used for spoken pet messages. Local/offline transcription needs the Vosk model from setup.
 
@@ -262,7 +270,7 @@ Then choose:
 Whisper local dictation
 ```
 
-The first Whisper use may download the `base.en` model into the normal user model cache. The pet records one short temporary phrase WAV, transcribes it locally, deletes the temporary WAV, and does not save transcripts unless you deliberately send a Discord note.
+The first Whisper use may download the selected model into the normal user model cache. `tiny.en` is fastest, `base.en` is the default, and `small.en` or `medium.en` are slower experiments for better dictation fidelity. The pet records one short temporary phrase WAV, transcribes it locally, deletes the temporary WAV, and does not save transcripts unless you deliberately send a Discord note.
 
 ### Voice Lab
 

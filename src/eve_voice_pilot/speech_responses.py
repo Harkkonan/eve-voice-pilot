@@ -9,6 +9,7 @@ import subprocess
 import threading
 from typing import Callable
 import urllib.error
+import urllib.parse
 import urllib.request
 import winsound
 
@@ -19,17 +20,23 @@ ROOT = Path(__file__).resolve().parents[2]
 RESPONSE_CACHE_DIR = ROOT / "cache" / "speech"
 DEFAULT_RESPONSE_SUFFIX = "Merlin"
 RESPONSE_ENGINE_OPENAI = "OpenAI cached"
+RESPONSE_ENGINE_ELEVENLABS = "ElevenLabs cached"
 RESPONSE_ENGINE_WINDOWS = "Windows local"
-RESPONSE_ENGINES = [RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_WINDOWS]
+RESPONSE_ENGINES = [RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_ELEVENLABS, RESPONSE_ENGINE_WINDOWS]
 DEFAULT_RESPONSE_ENGINE = RESPONSE_ENGINE_OPENAI
 DEFAULT_OPENAI_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_TTS_VOICE = "ballad"
 OPENAI_TTS_VOICES = ["ballad", "marin", "cedar", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse", "alloy", "ash"]
+DEFAULT_ELEVENLABS_TTS_MODEL = "eleven_multilingual_v2"
+DEFAULT_ELEVENLABS_TTS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
+ELEVENLABS_TTS_MODELS = ["eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_v3"]
+ELEVENLABS_OUTPUT_FORMAT = "pcm_22050"
 DEFAULT_POWER_BALLAD_INSTRUCTIONS = (
     "Speak as a starship AI with a dramatic 1980s power ballad cadence: soaring, confident, "
     "a little theatrical, but concise and clear. Do not sing; speak the line."
 )
 OPENAI_SPEECH_URL = "https://api.openai.com/v1/audio/speech"
+ELEVENLABS_SPEECH_URL = "https://api.elevenlabs.io/v1/text-to-speech"
 
 CREATE_NO_WINDOW = 0x08000000
 SPEECH_RE = re.compile(r"[^a-zA-Z0-9 ]+")
@@ -73,6 +80,34 @@ def response_text_for_command(command: VoiceCommand) -> str:
 
 def normalize_response_text(text: str) -> str:
     return SPACE_RE.sub(" ", str(text or "").strip())
+
+
+def elevenlabs_model_id(model: str = "") -> str:
+    clean_model = str(model or "").strip()
+    if not clean_model or clean_model == DEFAULT_OPENAI_TTS_MODEL:
+        return DEFAULT_ELEVENLABS_TTS_MODEL
+    return clean_model
+
+
+def elevenlabs_voice_id(voice: str = "") -> str:
+    clean_voice = str(voice or "").strip()
+    if clean_voice and clean_voice not in OPENAI_TTS_VOICES:
+        return clean_voice
+    env_voice = os.environ.get("INTEL_PET_ELEVENLABS_VOICE_ID", "").strip() or os.environ.get(
+        "ELEVENLABS_VOICE_ID",
+        "",
+    ).strip()
+    return env_voice or DEFAULT_ELEVENLABS_TTS_VOICE_ID
+
+
+def response_engine_requires_api_key(engine: str) -> bool:
+    return engine in {RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_ELEVENLABS}
+
+
+def missing_api_key_message(engine: str) -> str:
+    if engine == RESPONSE_ENGINE_ELEVENLABS:
+        return "Add your ElevenLabs API key before generating ElevenLabs voice responses."
+    return "Add your OpenAI API key before generating OpenAI voice responses."
 
 
 def response_cache_path(
@@ -127,6 +162,8 @@ def generate_response_audio(
 ) -> Path:
     if engine == RESPONSE_ENGINE_OPENAI:
         return generate_openai_response_audio(command, api_key, model, voice, instructions, force)
+    if engine == RESPONSE_ENGINE_ELEVENLABS:
+        return generate_elevenlabs_response_audio(command, api_key, model, voice, instructions, force)
     return generate_windows_response_audio(command, force)
 
 
@@ -142,6 +179,9 @@ def generate_text_audio(
     clean_text = normalize_response_text(text)
     if not clean_text:
         raise RuntimeError("Voice response text is empty.")
+    if engine == RESPONSE_ENGINE_ELEVENLABS:
+        model = elevenlabs_model_id(model)
+        voice = elevenlabs_voice_id(voice)
     path = response_text_cache_path(
         clean_text,
         engine=engine,
@@ -151,6 +191,8 @@ def generate_text_audio(
     )
     if engine == RESPONSE_ENGINE_OPENAI:
         return generate_openai_text_audio(clean_text, path, api_key, model, voice, instructions, force)
+    if engine == RESPONSE_ENGINE_ELEVENLABS:
+        return generate_elevenlabs_text_audio(clean_text, path, api_key, model, voice, instructions, force)
     return generate_windows_text_audio(clean_text, path, force)
 
 
@@ -279,6 +321,134 @@ def generate_openai_text_audio(
     return path
 
 
+def generate_elevenlabs_response_audio(
+    command: VoiceCommand,
+    api_key: str,
+    model: str = DEFAULT_ELEVENLABS_TTS_MODEL,
+    voice: str = DEFAULT_ELEVENLABS_TTS_VOICE_ID,
+    instructions: str = DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+    force: bool = False,
+) -> Path:
+    clean_model = elevenlabs_model_id(model)
+    clean_voice = elevenlabs_voice_id(voice)
+    path = response_cache_path(
+        command,
+        engine=RESPONSE_ENGINE_ELEVENLABS,
+        model=clean_model,
+        voice=clean_voice,
+        instructions=instructions,
+    )
+    return generate_elevenlabs_text_audio(
+        response_text_for_command(command),
+        path,
+        api_key,
+        clean_model,
+        clean_voice,
+        instructions,
+        force,
+    )
+
+
+def generate_elevenlabs_text_audio(
+    text: str,
+    path: Path,
+    api_key: str,
+    model: str = DEFAULT_ELEVENLABS_TTS_MODEL,
+    voice: str = DEFAULT_ELEVENLABS_TTS_VOICE_ID,
+    instructions: str = DEFAULT_POWER_BALLAD_INSTRUCTIONS,
+    force: bool = False,
+) -> Path:
+    _ = instructions
+    if not api_key.strip():
+        raise RuntimeError(missing_api_key_message(RESPONSE_ENGINE_ELEVENLABS))
+
+    clean_text = normalize_response_text(text)
+    if not clean_text:
+        raise RuntimeError("Voice response text is empty.")
+    clean_model = elevenlabs_model_id(model)
+    clean_voice = elevenlabs_voice_id(voice)
+    if path.exists():
+        if force:
+            path.unlink()
+        else:
+            return path
+
+    RESPONSE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.stem}.tmp.wav")
+    if temp_path.exists():
+        temp_path.unlink()
+
+    payload = {
+        "text": clean_text,
+        "model_id": clean_model,
+    }
+    voice_id = urllib.parse.quote(clean_voice, safe="")
+    url = f"{ELEVENLABS_SPEECH_URL}/{voice_id}?output_format={ELEVENLABS_OUTPUT_FORMAT}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "xi-api-key": api_key.strip(),
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            audio = response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(_format_elevenlabs_error(detail)) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"ElevenLabs voice generation failed: {exc.reason}") from exc
+
+    if not audio:
+        raise RuntimeError("ElevenLabs voice generation returned no audio.")
+    temp_path.write_bytes(normalize_elevenlabs_audio(audio, ELEVENLABS_OUTPUT_FORMAT))
+    temp_path.replace(path)
+    return path
+
+
+def normalize_elevenlabs_audio(audio: bytes, output_format: str = ELEVENLABS_OUTPUT_FORMAT) -> bytes:
+    if len(audio) >= 12 and audio[:4] == b"RIFF" and audio[8:12] == b"WAVE":
+        return normalize_wav_bytes(audio)
+    if output_format.startswith("pcm_"):
+        return pcm_s16le_to_wav_bytes(audio, sample_rate=sample_rate_from_pcm_output_format(output_format))
+    return audio
+
+
+def sample_rate_from_pcm_output_format(output_format: str) -> int:
+    match = re.fullmatch(r"pcm_(\d+)", str(output_format or ""))
+    if not match:
+        return 22050
+    return int(match.group(1))
+
+
+def pcm_s16le_to_wav_bytes(pcm_audio: bytes, *, sample_rate: int, channels: int = 1) -> bytes:
+    sample_width = 2
+    byte_rate = sample_rate * channels * sample_width
+    block_align = channels * sample_width
+    data_size = len(pcm_audio)
+    return b"".join(
+        (
+            b"RIFF",
+            (36 + data_size).to_bytes(4, "little"),
+            b"WAVE",
+            b"fmt ",
+            (16).to_bytes(4, "little"),
+            (1).to_bytes(2, "little"),
+            channels.to_bytes(2, "little"),
+            sample_rate.to_bytes(4, "little"),
+            byte_rate.to_bytes(4, "little"),
+            block_align.to_bytes(2, "little"),
+            (sample_width * 8).to_bytes(2, "little"),
+            b"data",
+            data_size.to_bytes(4, "little"),
+            pcm_audio,
+        )
+    )
+
+
 def normalize_wav_bytes(audio: bytes) -> bytes:
     if len(audio) < 44 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
         return audio
@@ -316,6 +486,24 @@ def _format_openai_error(payload: str) -> str:
     return f"OpenAI voice generation failed: {payload}"
 
 
+def _format_elevenlabs_error(payload: str) -> str:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return f"ElevenLabs voice generation failed: {payload}"
+    detail = data.get("detail")
+    if isinstance(detail, dict):
+        message = detail.get("message")
+        status = detail.get("status")
+        if message and status:
+            return f"ElevenLabs voice generation failed ({status}): {message}"
+        if message:
+            return f"ElevenLabs voice generation failed: {message}"
+    if isinstance(detail, str) and detail:
+        return f"ElevenLabs voice generation failed: {detail}"
+    return f"ElevenLabs voice generation failed: {payload}"
+
+
 class SpeechResponseManager:
     def __init__(self, log: Callable[[str], None]):
         self.log = log
@@ -339,8 +527,12 @@ class SpeechResponseManager:
         with self.lock:
             self.engine = engine if engine in RESPONSE_ENGINES else DEFAULT_RESPONSE_ENGINE
             self.api_key = api_key.strip()
-            self.model = model.strip() or DEFAULT_OPENAI_TTS_MODEL
-            self.voice = voice.strip() or DEFAULT_OPENAI_TTS_VOICE
+            if self.engine == RESPONSE_ENGINE_ELEVENLABS:
+                self.model = elevenlabs_model_id(model)
+                self.voice = elevenlabs_voice_id(voice)
+            else:
+                self.model = model.strip() or DEFAULT_OPENAI_TTS_MODEL
+                self.voice = voice.strip() or DEFAULT_OPENAI_TTS_VOICE
             self.instructions = instructions.strip() or DEFAULT_POWER_BALLAD_INSTRUCTIONS
             if self.api_key:
                 self.missing_key_notice_shown = False
@@ -428,10 +620,10 @@ class SpeechResponseManager:
             voice = self.voice
             instructions = self.instructions
             api_key = self.api_key
-            if engine == RESPONSE_ENGINE_OPENAI and not api_key:
+            if response_engine_requires_api_key(engine) and not api_key:
                 if not self.missing_key_notice_shown:
                     self.missing_key_notice_shown = True
-                    self.log("Add your OpenAI API key before generating OpenAI voice responses.")
+                    self.log(missing_api_key_message(engine))
                 return
             for command in commands:
                 path = response_cache_path(command, engine=engine, model=model, voice=voice, instructions=instructions)
@@ -484,10 +676,10 @@ class SpeechResponseManager:
             voice = self.voice
             instructions = self.instructions
             api_key = self.api_key
-            if engine == RESPONSE_ENGINE_OPENAI and not api_key:
+            if response_engine_requires_api_key(engine) and not api_key:
                 if not self.missing_key_notice_shown:
                     self.missing_key_notice_shown = True
-                    self.log("Add your OpenAI API key before generating OpenAI voice responses.")
+                    self.log(missing_api_key_message(engine))
                 return
             path = response_text_cache_path(text, engine=engine, model=model, voice=voice, instructions=instructions)
             if not force and path.exists():

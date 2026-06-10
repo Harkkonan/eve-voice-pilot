@@ -29,17 +29,26 @@ from eve_voice_pilot.local_transcription import (
     model_status,
 )
 from eve_voice_pilot.speech_responses import (
+    DEFAULT_ELEVENLABS_TTS_MODEL,
+    DEFAULT_ELEVENLABS_TTS_VOICE_ID,
     DEFAULT_POWER_BALLAD_INSTRUCTIONS,
     DEFAULT_RESPONSE_ENGINE,
+    ELEVENLABS_OUTPUT_FORMAT,
+    RESPONSE_ENGINE_ELEVENLABS,
     RESPONSE_ENGINE_OPENAI,
     RESPONSE_ENGINE_WINDOWS,
     SpeechResponseManager,
+    elevenlabs_voice_id,
+    generate_text_audio,
+    normalize_elevenlabs_audio,
     normalize_wav_bytes,
     normalize_response_text,
+    pcm_s16le_to_wav_bytes,
     response_cache_path,
     response_enabled,
     response_text_cache_path,
     response_text_for_command,
+    sample_rate_from_pcm_output_format,
 )
 from eve_voice_pilot.transcription import audio_rms, block_size_for_rate, resample_pcm, resample_pcm_to_24k
 
@@ -229,6 +238,20 @@ def test_response_cache_separates_openai_and_windows_clips():
     assert windows_path != openai_path
 
 
+def test_response_cache_separates_elevenlabs_clips():
+    command = VoiceCommand("Map", ["open map"], "F10", response_suffix="Aura", response_text="Map open.")
+    openai_path = response_cache_path(command, engine=RESPONSE_ENGINE_OPENAI)
+    elevenlabs_path = response_cache_path(
+        command,
+        engine=RESPONSE_ENGINE_ELEVENLABS,
+        model=DEFAULT_ELEVENLABS_TTS_MODEL,
+        voice=DEFAULT_ELEVENLABS_TTS_VOICE_ID,
+    )
+
+    assert elevenlabs_path != openai_path
+    assert elevenlabs_path.suffix == ".wav"
+
+
 def test_response_text_cache_normalizes_and_separates_engines():
     first = response_text_cache_path("Arrived in Amarr.\n")
     second = response_text_cache_path("Arrived   in Amarr.")
@@ -243,6 +266,46 @@ def test_response_text_cache_normalizes_and_separates_engines():
     assert first == second
     assert first.name.startswith("text-")
     assert first != openai
+
+
+def test_elevenlabs_pcm_output_is_wrapped_as_wav():
+    pcm = (1000).to_bytes(2, "little", signed=True) * 4
+    wav = normalize_elevenlabs_audio(pcm, ELEVENLABS_OUTPUT_FORMAT)
+
+    assert sample_rate_from_pcm_output_format(ELEVENLABS_OUTPUT_FORMAT) == 22050
+    assert wav[:4] == b"RIFF"
+    assert wav[8:12] == b"WAVE"
+    assert wav[24:28] == (22050).to_bytes(4, "little")
+    assert wav.endswith(pcm)
+    assert pcm_s16le_to_wav_bytes(pcm, sample_rate=16000)[24:28] == (16000).to_bytes(4, "little")
+
+
+def test_elevenlabs_voice_id_avoids_openai_voice_names(monkeypatch):
+    monkeypatch.delenv("INTEL_PET_ELEVENLABS_VOICE_ID", raising=False)
+    monkeypatch.delenv("ELEVENLABS_VOICE_ID", raising=False)
+    monkeypatch.setenv("ELEVENLABS_VOICE_ID", "custom-voice-id")
+
+    assert elevenlabs_voice_id("nova") == "custom-voice-id"
+    assert elevenlabs_voice_id("my-explicit-id") == "my-explicit-id"
+
+
+def test_elevenlabs_generation_requires_api_key_without_network():
+    try:
+        generate_text_audio("Intel Pet online.", engine=RESPONSE_ENGINE_ELEVENLABS, api_key="")
+    except RuntimeError as exc:
+        assert "ElevenLabs API key" in str(exc)
+    else:
+        raise AssertionError("ElevenLabs generation should require an API key")
+
+
+def test_speech_response_manager_logs_elevenlabs_missing_key():
+    messages: list[str] = []
+    manager = SpeechResponseManager(messages.append)
+    manager.configure(engine=RESPONSE_ENGINE_ELEVENLABS, api_key="", voice="nova")
+
+    manager.prepare_text_async("Intel Pet online.")
+
+    assert messages == ["Add your ElevenLabs API key before generating ElevenLabs voice responses."]
 
 
 def test_speech_response_manager_exposes_text_cache_path():

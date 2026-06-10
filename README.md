@@ -84,7 +84,7 @@ Click a command list column header to sort the visible list. Sorting is only for
 
 Your editable command profile is saved at `profiles/my_eve_commands.json`.
 
-Voice responses can use `OpenAI cached` or `Windows local`. `OpenAI cached` uses `gpt-4o-mini-tts`, the `ballad` voice, and a power-ballad starship-AI style by default. Clips are generated as `.wav` files in `cache\speech\`, then replayed locally during gameplay. They do not play for silence, invalid phrases, practice mode, or blocked sends.
+Voice responses can use `OpenAI cached`, `ElevenLabs cached`, or `Windows local`. Cached cloud voices generate `.wav` files in `cache\speech\`, then replay locally during gameplay. They do not play for silence, invalid phrases, practice mode, or blocked sends.
 
 Use `Regenerate Voice Clips` after changing the response voice or style.
 

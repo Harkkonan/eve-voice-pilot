@@ -24,6 +24,7 @@ from .transcription import (
 
 
 DEFAULT_LOCAL_WHISPER_MODEL = "base.en"
+LOCAL_WHISPER_MODELS = ("tiny.en", "base.en", "small.en", "medium.en")
 WHISPER_AUTO_STOP_SILENCE_SECONDS = 0.80
 WHISPER_MAX_RECORD_SECONDS = 12.0
 

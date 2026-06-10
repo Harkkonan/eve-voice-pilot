@@ -34,14 +34,18 @@ from .local_transcription import (
 )
 from .local_whisper import LocalWhisperTranscriber
 from .speech_responses import (
+    DEFAULT_ELEVENLABS_TTS_MODEL,
+    DEFAULT_ELEVENLABS_TTS_VOICE_ID,
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
     DEFAULT_POWER_BALLAD_INSTRUCTIONS,
     DEFAULT_RESPONSE_ENGINE,
     DEFAULT_RESPONSE_SUFFIX,
     OPENAI_TTS_VOICES,
+    RESPONSE_ENGINE_ELEVENLABS,
     RESPONSE_ENGINES,
     SpeechResponseManager,
+    elevenlabs_voice_id,
 )
 from .transcription import (
     RealtimeTranscriber,
@@ -445,7 +449,7 @@ class EveVoicePilotApp(tk.Tk):
             pady=(0, 8),
         )
 
-        ttk.Label(settings, text="OpenAI API key").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Label(settings, text="API key").grid(row=3, column=0, sticky="w", pady=5)
         ttk.Entry(settings, textvariable=self.api_key_var, show="*", width=28).grid(row=3, column=1, columnspan=2, sticky="ew", pady=5)
         ttk.Checkbutton(settings, text="Remember on this PC", variable=self.remember_key_var).grid(row=4, column=1, columnspan=2, sticky="w")
 
@@ -477,8 +481,12 @@ class EveVoicePilotApp(tk.Tk):
         )
         ttk.Label(settings, text="Response call sign").grid(row=14, column=0, sticky="w", pady=5)
         ttk.Entry(settings, textvariable=self.response_call_sign_var).grid(row=14, column=1, columnspan=2, sticky="ew", pady=5)
-        ttk.Label(settings, text="OpenAI voice").grid(row=15, column=0, sticky="w", pady=5)
-        ttk.Combobox(settings, textvariable=self.response_voice_var, values=OPENAI_TTS_VOICES).grid(row=15, column=1, columnspan=2, sticky="ew", pady=5)
+        ttk.Label(settings, text="Voice / voice id").grid(row=15, column=0, sticky="w", pady=5)
+        ttk.Combobox(
+            settings,
+            textvariable=self.response_voice_var,
+            values=(*OPENAI_TTS_VOICES, DEFAULT_ELEVENLABS_TTS_VOICE_ID),
+        ).grid(row=15, column=1, columnspan=2, sticky="ew", pady=5)
         ttk.Label(settings, text="Voice style").grid(row=16, column=0, sticky="w", pady=5)
         ttk.Entry(settings, textvariable=self.response_style_var).grid(row=16, column=1, columnspan=2, sticky="ew", pady=5)
         ttk.Button(settings, text="Regenerate Voice Clips", command=self.regenerate_voice_clips).grid(
@@ -750,11 +758,18 @@ class EveVoicePilotApp(tk.Tk):
         self._warm_connection_if_possible()
 
     def _configure_speech_responses(self) -> None:
+        engine = self.response_engine_var.get()
+        model = DEFAULT_ELEVENLABS_TTS_MODEL if engine == RESPONSE_ENGINE_ELEVENLABS else DEFAULT_OPENAI_TTS_MODEL
+        voice = (
+            elevenlabs_voice_id(self.response_voice_var.get())
+            if engine == RESPONSE_ENGINE_ELEVENLABS
+            else self.response_voice_var.get().strip() or DEFAULT_OPENAI_TTS_VOICE
+        )
         self.speech_responses.configure(
-            engine=self.response_engine_var.get(),
+            engine=engine,
             api_key=self.api_key_var.get().strip(),
-            model=DEFAULT_OPENAI_TTS_MODEL,
-            voice=self.response_voice_var.get().strip() or DEFAULT_OPENAI_TTS_VOICE,
+            model=model,
+            voice=voice,
             instructions=self.response_style_var.get().strip() or DEFAULT_POWER_BALLAD_INSTRUCTIONS,
         )
 

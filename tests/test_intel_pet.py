@@ -51,6 +51,7 @@ from eve_voice_pilot.intel_pet import (
     IntelPetOptionsSummaryCard,
     IntelPetSettings,
     IntelPetVoiceStatus,
+    IntelPetVoiceReliabilityRow,
     alert_behavior_key,
     alert_with_local_system_fallback,
     behavior_for_alert,
@@ -63,6 +64,7 @@ from eve_voice_pilot.intel_pet import (
     clean_voice_command_phrases,
     clean_voice_engine,
     clean_voice_input_device,
+    clean_voice_whisper_model,
     clean_voice_model_path,
     clean_voice_preview_text,
     clean_voice_training_phrase,
@@ -70,6 +72,7 @@ from eve_voice_pilot.intel_pet import (
     clean_user_terms,
     combat_cheer_from_game_log_line,
     discord_note_intent_from_transcript,
+    discord_note_ready_detail,
     discord_note_status_from_transcript,
     closest_voice_phrase_suggestions,
     display_message_from_alert,
@@ -140,9 +143,12 @@ from eve_voice_pilot.intel_pet import (
     voice_command_with_added_phrase,
     voice_training_phrase_from_detail,
     voice_status_from_transcript,
+    voice_listener_ready_detail,
+    voice_reliability_rows,
 )
 from eve_voice_pilot.commands import VoiceCommand
 from eve_voice_pilot.local_transcription import DEFAULT_MODEL_PATH, RECOMMENDED_MODEL_PATH, LocalRecognitionDiagnostic
+from eve_voice_pilot.local_whisper import DEFAULT_LOCAL_WHISPER_MODEL
 from eve_voice_pilot.speech_responses import RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_WINDOWS
 
 
@@ -438,6 +444,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
         voice_preview_text="  Systems are green.\nDocking path is clear.  ",
         enable_voice_listener=True,
         voice_engine="OpenAI realtime",
+        voice_whisper_model="small.en",
         voice_model_path=str(RECOMMENDED_MODEL_PATH),
         voice_input_device="3: Headset (48000 Hz)",
         voice_call_sign="Aura",
@@ -461,6 +468,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     assert loaded.voice_preview_text == "Systems are green. Docking path is clear."
     assert loaded.enable_voice_listener is True
     assert loaded.voice_engine == "OpenAI realtime"
+    assert loaded.voice_whisper_model == "small.en"
     assert loaded.voice_model_path == str(RECOMMENDED_MODEL_PATH)
     assert loaded.voice_input_device == "3: Headset (48000 Hz)"
     assert loaded.voice_call_sign == "Aura"
@@ -477,6 +485,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
         voice_preview_text="",
         enable_voice_listener=False,
         voice_engine="not-real",
+        voice_whisper_model="not-real",
         voice_model_path=DEFAULT_VOICE_MODEL_LABEL,
         voice_input_device=DEFAULT_INPUT_DEVICE_LABEL,
         voice_call_sign="",
@@ -490,6 +499,7 @@ def test_pet_voice_settings_persist_and_clean_values(tmp_path):
     assert cleaned.spoken_alert_kinds["location"] is True
     assert cleaned.spoken_alert_kinds["help"] is True
     assert cleaned.voice_engine == DEFAULT_VOICE_ENGINE
+    assert cleaned.voice_whisper_model == DEFAULT_LOCAL_WHISPER_MODEL
     assert cleaned.voice_model_path == ""
     assert cleaned.voice_preview_text == DEFAULT_VOICE_PREVIEW_TEXT
     assert cleaned.voice_input_device == ""
@@ -520,6 +530,8 @@ def test_voice_input_device_display_uses_system_default_label():
     assert voice_input_device_display("") == DEFAULT_INPUT_DEVICE_LABEL
     assert clean_voice_engine(VOICE_ENGINE_WHISPER) == VOICE_ENGINE_WHISPER
     assert clean_voice_engine("not-real") == DEFAULT_VOICE_ENGINE
+    assert clean_voice_whisper_model("medium.en") == "medium.en"
+    assert clean_voice_whisper_model("not-real") == DEFAULT_LOCAL_WHISPER_MODEL
     assert clean_voice_target_title("") == DEFAULT_VOICE_TARGET_TITLE
 
 
@@ -640,6 +652,71 @@ def test_recent_voice_training_phrases_reads_in_memory_voice_history():
     phrases = recent_voice_training_phrases(items, response_call_sign="Aura")
 
     assert phrases == ("dock up", "warp now")
+
+
+def test_voice_reliability_rows_summarize_recent_voice_history():
+    items = [
+        IntelPetHistoryItem("Other", "No voice here.", "Local watcher", "info", "1"),
+        IntelPetHistoryItem(
+            "Voice command sent",
+            "Heard: merlin warp now\nMatched: Warp to -> S for 0.10s\nSent S for 0.10s.\n"
+            "Engine: OpenAI realtime\nActive-window check: requires active window containing 'EVE'",
+            "Voice practice listener",
+            "info",
+            "2",
+        ),
+        IntelPetHistoryItem(
+            "Voice command blocked",
+            "Heard: merlin dock up\nMatched: Dock -> D for 0.10s\nDid not send D; active window is 'Notepad'.\n"
+            "Engine: OpenAI realtime\nActive-window check: requires active window containing 'EVE'",
+            "Voice practice listener",
+            "high",
+            "3",
+        ),
+        IntelPetHistoryItem(
+            "Discord note sent",
+            "Note sent to Discord notes: gate camp near amarr\nHeard: merlin tap tap gate camp near amarr\n"
+            "Engine: OpenAI realtime\nActive-window check: requires active window containing 'EVE'",
+            "Voice practice listener",
+            "info",
+            "4",
+        ),
+    ]
+
+    rows = voice_reliability_rows(
+        items,
+        IntelPetSettings(
+            voice_engine=VOICE_ENGINE_WHISPER,
+            allow_voice_command_sending=False,
+            require_voice_target_window=True,
+        ),
+    )
+
+    assert all(isinstance(row, IntelPetVoiceReliabilityRow) for row in rows)
+    assert [row.outcome for row in rows] == ["note sent", "blocked", "sent"]
+    assert rows[0].heard == "merlin tap tap gate camp near amarr"
+    assert rows[0].engine == "OpenAI realtime"
+    assert rows[1].command == "Dock -> D for 0.10s"
+    assert rows[1].blocked_reason == "Did not send D; active window is 'Notepad'."
+    assert rows[2].blocked_reason == ""
+
+
+def test_history_item_from_voice_status_keeps_reliability_context_outside_bubble_detail():
+    status = voice_status_from_transcript(
+        "merlin dock up",
+        [VoiceCommand("Dock", ["dock up"], "D")],
+        response_call_sign="merlin",
+        allow_command_sending=True,
+        require_target_window=False,
+        voice_engine=VOICE_ENGINE_WHISPER,
+        key_sender=lambda _key, _seconds: None,
+    )
+
+    assert status is not None
+    assert "Engine:" not in status.detail
+    item = history_item_from_voice_status(status)
+    assert "Engine: Whisper local dictation" in item.detail
+    assert "Active-window check: guard off" in item.detail
 
 
 def test_recognition_diagnostic_report_shows_volume_and_match_context():
@@ -929,6 +1006,107 @@ def test_discord_note_status_can_arm_next_phrase_and_cancel():
     assert cancel_status is not None
     assert cancel_status.title == "Discord note canceled"
     assert pending_after_cancel is False
+
+
+def test_discord_note_real_tap_tap_phrase_sends_inline_note():
+    settings = IntelPetDiscordNoteSettings(
+        enabled=True,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
+        trigger_phrases=("tap tap",),
+        cancel_phrases=("knock knock",),
+    )
+    sent: list[dict] = []
+
+    status, pending = discord_note_status_from_transcript(
+        "merlin tap tap gate camp near amarr",
+        settings,
+        pending_capture=False,
+        response_call_sign="merlin",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+    )
+
+    assert status is not None
+    assert status.title == "Discord note sent"
+    assert pending is False
+    assert len(sent) == 1
+    assert "gate camp near amarr" in sent[0]["content"]
+
+
+def test_discord_note_real_tap_tap_phrase_arms_and_knock_knock_cancels():
+    settings = IntelPetDiscordNoteSettings(
+        enabled=True,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
+        trigger_phrases=("tap tap",),
+        cancel_phrases=("knock knock",),
+    )
+    sent: list[dict] = []
+
+    ready, pending = discord_note_status_from_transcript(
+        "merlin tap tap",
+        settings,
+        pending_capture=False,
+        response_call_sign="merlin",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+    )
+    cancel_status, pending_after_cancel = discord_note_status_from_transcript(
+        "merlin knock knock",
+        settings,
+        pending_capture=pending,
+        response_call_sign="merlin",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+    )
+
+    assert ready is not None
+    assert ready.title == "Discord note ready"
+    assert '"tap tap"' in ready.detail
+    assert '"knock knock"' in ready.detail
+    assert pending is True
+    assert cancel_status is not None
+    assert cancel_status.title == "Discord note canceled"
+    assert pending_after_cancel is False
+    assert sent == []
+
+
+def test_voice_listener_ready_detail_reflects_current_voice_safety_settings():
+    note_settings = IntelPetDiscordNoteSettings(trigger_phrases=("tap tap",), cancel_phrases=("knock knock",))
+    practice = voice_listener_ready_detail(
+        IntelPetSettings(
+            enable_voice_listener=True,
+            voice_engine=VOICE_ENGINE_WHISPER,
+            voice_call_sign="merlin",
+            allow_voice_command_sending=False,
+        ),
+        note_settings,
+    )
+    sending = voice_listener_ready_detail(
+        IntelPetSettings(
+            enable_voice_listener=True,
+            voice_engine="OpenAI realtime",
+            voice_call_sign="merlin",
+            allow_voice_command_sending=True,
+            require_voice_target_window=False,
+        ),
+        note_settings,
+    )
+    guarded = voice_listener_ready_detail(
+        IntelPetSettings(
+            enable_voice_listener=True,
+            voice_call_sign="merlin",
+            allow_voice_command_sending=True,
+            require_voice_target_window=True,
+            voice_target_title="EVE - Dandin",
+        ),
+        note_settings,
+    )
+
+    assert "Practice-only mode" in practice
+    assert "Whisper local dictation" in practice
+    assert '"tap tap"' in practice
+    assert '"knock knock"' in practice
+    assert "Sending enabled" in sending
+    assert "active-window guard is off" in sending
+    assert "active-window guard requires 'EVE - Dandin'" in guarded
+    assert discord_note_ready_detail(note_settings).endswith('say "knock knock".')
 
 
 def test_history_item_from_voice_status_records_practice_listener_context():
