@@ -20849,6 +20849,38 @@ help</textarea>
       return String(value ?? "").replace(/[&<>"']/g, (char) => replacements[char]);
     }
 
+    function renderDashboardEmptyState(message, options = {}) {
+      const label = options.label ? `<strong>${escapeHtml(options.label)}</strong>` : "";
+      const detail = options.detail ? `<div class="meta">${escapeHtml(options.detail)}</div>` : "";
+      return `<div class="decision-empty">${label}${escapeHtml(message || "No results yet.")}${detail}</div>`;
+    }
+
+    function renderDashboardErrorState(message, options = {}) {
+      const detail = options.detail ? `<div class="meta">${escapeHtml(options.detail)}</div>` : "";
+      return `<div class="error dashboard-error-state">${escapeHtml(message || "Something went wrong.")}${detail}</div>`;
+    }
+
+    function renderDashboardChecklistItem(item) {
+      const warning = Boolean(item?.warning);
+      const detail = item?.detail ? `<small>${escapeHtml(item.detail)}</small>` : "";
+      return `
+        <div class="haul-check-item${warning ? " warning" : ""}">
+          <span>${escapeHtml(item?.label || "")}</span>
+          <b>${escapeHtml(item?.value == null ? "" : item.value)}</b>
+          ${detail}
+        </div>
+      `;
+    }
+
+    function renderDashboardChecklist(items, options = {}) {
+      const safeItems = Array.isArray(items) ? items : [];
+      if (!safeItems.length) {
+        return renderDashboardEmptyState(options.emptyMessage || "No checklist items are ready yet.");
+      }
+      const className = options.className || "haul-checklist";
+      return `<div class="${escapeHtml(className)}">${safeItems.map(renderDashboardChecklistItem).join("")}</div>`;
+    }
+
     function cleanResponseSnippet(value) {
       return String(value || "")
         .replace(/<script[\\s\\S]*?<\\/script>/gi, " ")
@@ -22155,7 +22187,7 @@ help</textarea>
           <div class="haul-route-cost"><span>Profit Delta</span><b>${formatSignedIsk(profitDelta)}</b><small>Actual minus expected.</small></div>
           <div class="haul-route-cost"><span>Needs Actuals</span><b>${formatNumber(summary.missingActualRows)}</b><small>Rows with blank tracking fields.</small></div>
         </div>
-        <div class="completed-run-row-list">${rowList || '<div class="decision-empty">No completed rows found.</div>'}</div>
+        <div class="completed-run-row-list">${rowList || renderDashboardEmptyState("No completed rows found.")}</div>
         ${hiddenRows ? `<div class="meta">Showing first 20 reviewed rows; ${formatNumber(hiddenRows)} more row${hiddenRows === 1 ? "" : "s"} are included in totals.</div>` : ""}
       `;
     }
@@ -22298,7 +22330,7 @@ help</textarea>
           <div class="haul-route-cost"><span>Fill Rate</span><b>${fillRate == null ? "unknown" : formatPercent(fillRate)}</b><small>Actual filled quantity vs planned quantity.</small></div>
           <div class="haul-route-cost"><span>Profit Delta</span><b>${formatSignedIsk(profitDelta)}</b><small>Actual realized profit minus expected profit.</small></div>
         </div>
-        <div class="completed-run-row-list">${rowList || '<div class="decision-empty">No completed portfolio rows found.</div>'}</div>
+        <div class="completed-run-row-list">${rowList || renderDashboardEmptyState("No completed portfolio rows found.")}</div>
         ${hiddenRows ? `<div class="meta">Showing first 20 reviewed rows; ${formatNumber(hiddenRows)} more row${hiddenRows === 1 ? "" : "s"} are included in totals.</div>` : ""}
       `;
     }
@@ -22497,25 +22529,25 @@ help</textarea>
       if (testerCheckList) {
         testerCheckList.innerHTML = checks.length
           ? checks.map(renderTesterCheckRow).join("")
-          : `<div class="decision-empty">No readiness checks were returned.</div>`;
+          : renderDashboardEmptyState("No readiness checks were returned.");
       }
       if (testerDiscordList) {
         const surfaces = Array.isArray(discord.surfaces) ? discord.surfaces : [];
         testerDiscordList.innerHTML = surfaces.length
           ? surfaces.map(renderTesterDiscordSurface).join("")
-          : `<div class="decision-empty">No Discord destination diagnostics were returned.</div>`;
+          : renderDashboardEmptyState("No Discord destination diagnostics were returned.");
       }
       if (testerLocalPathList) {
         const paths = Array.isArray(localPaths.paths) ? localPaths.paths : [];
         testerLocalPathList.innerHTML = paths.length
           ? paths.map(renderTesterPathRow).join("")
-          : `<div class="decision-empty">No local path diagnostics were returned.</div>`;
+          : renderDashboardEmptyState("No local path diagnostics were returned.");
       }
       if (testerStaticCacheList) {
         const caches = Array.isArray(staticCaches.caches) ? staticCaches.caches : [];
         testerStaticCacheList.innerHTML = caches.length
           ? caches.map(renderStaticCacheRow).join("")
-          : `<div class="decision-empty">No static cache diagnostics were returned.</div>`;
+          : renderDashboardEmptyState("No static cache diagnostics were returned.");
       }
     }
 
@@ -23133,7 +23165,7 @@ help</textarea>
         renderBulkAppraisal(data);
       } catch (error) {
         setBulkAppraisalStatus(error.message || "Appraisal failed.", true);
-        if (bulkAppraisalResults) bulkAppraisalResults.innerHTML = `<div class="error">${escapeHtml(error.message || "Appraisal failed.")}</div>`;
+        if (bulkAppraisalResults) bulkAppraisalResults.innerHTML = renderDashboardErrorState(error.message || "Appraisal failed.");
       } finally {
         if (bulkAppraisalRun) bulkAppraisalRun.disabled = false;
       }
@@ -25649,16 +25681,6 @@ help</textarea>
       `;
     }
 
-    function renderHaulCheckItem(label, value, detail, options = {}) {
-      return `
-        <div class="haul-check-item${options.warning ? " warning" : ""}">
-          <span>${escapeHtml(label)}</span>
-          <b>${escapeHtml(value)}</b>
-          ${detail ? `<small>${escapeHtml(detail)}</small>` : ""}
-        </div>
-      `;
-    }
-
     function renderHaulBeforeBuyingChecklist(item) {
       const pickup = item.pickup_order || {};
       const destination = item.destination_order || {};
@@ -25668,18 +25690,53 @@ help</textarea>
       const extraJumps = item.extra_route_jumps == null ? "unknown" : formatNumber(item.extra_route_jumps);
       const pickupAccessWarning = String(pickup.location_kind || "") === "player-structure" || String(pickup.location_kind || "") === "unknown";
       const destinationAccessWarning = String(destination.location_kind || "") === "player-structure" || String(destination.location_kind || "") === "unknown";
+      const checklist = [
+        {
+          label: "Pickup Price",
+          value: formatIsk(item.average_pickup_price == null ? pickup.price : item.average_pickup_price),
+          detail: `${formatNumber(item.units)} units planned from ${pickup.system_name || "pickup"}.`,
+        },
+        {
+          label: "Min Volume",
+          value: `${pickupMinVolume} pickup / ${destinationMinVolume} destination`,
+          detail: "The recommendation skips orders it cannot fill, but live orders can change.",
+        },
+        {
+          label: "Docking Access",
+          value: pickup.location_kind_label || "Unknown pickup",
+          detail: pickup.location_access_note || "Verify pickup access in EVE.",
+          warning: pickupAccessWarning,
+        },
+        {
+          label: "Route Jumps",
+          value: `${matchedRouteJumps} planned; ${extraJumps} extra`,
+          detail: "Confirm the route, ship, cargo value, and risk before undocking.",
+        },
+        {
+          label: "Destination Demand",
+          value: `${formatIsk(item.average_destination_price == null ? destination.price : item.average_destination_price)} avg`,
+          detail: `${formatNumber(destination.volume_remain)} units visible at destination buy orders.`,
+        },
+        {
+          label: "Sales Tax",
+          value: formatIsk(item.sales_tax_total),
+          detail: `${formatRatePercent(item.sales_tax_rate)} estimated from the signed-in pilot.`,
+        },
+        {
+          label: "Destination Access",
+          value: destination.location_kind_label || "Unknown destination",
+          detail: destination.location_access_note || "Verify destination access in EVE.",
+          warning: destinationAccessWarning,
+        },
+        {
+          label: "Spreadsheet",
+          value: "Fill actuals after run",
+          detail: "Record actual cost, filled quantity, route jumps, realized return, and lesson learned.",
+        },
+      ];
       return `
         <div class="decision-lede">Before Buying: verify the live in-game order still matches this plan.</div>
-        <div class="haul-checklist">
-          ${renderHaulCheckItem("Pickup Price", formatIsk(item.average_pickup_price == null ? pickup.price : item.average_pickup_price), `${formatNumber(item.units)} units planned from ${pickup.system_name || "pickup"}.`)}
-          ${renderHaulCheckItem("Min Volume", `${pickupMinVolume} pickup / ${destinationMinVolume} destination`, "The recommendation skips orders it cannot fill, but live orders can change.")}
-          ${renderHaulCheckItem("Docking Access", pickup.location_kind_label || "Unknown pickup", pickup.location_access_note || "Verify pickup access in EVE.", {warning: pickupAccessWarning})}
-          ${renderHaulCheckItem("Route Jumps", `${matchedRouteJumps} planned; ${extraJumps} extra`, "Confirm the route, ship, cargo value, and risk before undocking.")}
-          ${renderHaulCheckItem("Destination Demand", `${formatIsk(item.average_destination_price == null ? destination.price : item.average_destination_price)} avg`, `${formatNumber(destination.volume_remain)} units visible at destination buy orders.`)}
-          ${renderHaulCheckItem("Sales Tax", formatIsk(item.sales_tax_total), `${formatRatePercent(item.sales_tax_rate)} estimated from the signed-in pilot.`)}
-          ${renderHaulCheckItem("Destination Access", destination.location_kind_label || "Unknown destination", destination.location_access_note || "Verify destination access in EVE.", {warning: destinationAccessWarning})}
-          ${renderHaulCheckItem("Spreadsheet", "Fill actuals after run", "Record actual cost, filled quantity, route jumps, realized return, and lesson learned.")}
-        </div>
+        ${renderDashboardChecklist(checklist)}
       `;
     }
 
@@ -26231,20 +26288,61 @@ help</textarea>
       const sourceBuy = item.best_source_buy || {};
       const sourceSell = item.best_source_sell || {};
       const brokerRate = item.broker_fee_rate == null ? null : Number(item.broker_fee_rate) * 100;
+      const checklist = [
+        {
+          label: "Buy Price To Enter",
+          value: formatIsk(item.suggested_bid),
+          detail: `Do not exceed safe ceiling ${formatIsk(item.max_safe_bid)}.`,
+        },
+        {
+          label: "Order Range",
+          value: range.range || "station",
+          detail: range.reason || "Keep the first order easy to monitor.",
+        },
+        {
+          label: "Broker Fee",
+          value: brokerRate == null ? "manual" : `${formatNumber(brokerRate)}%`,
+          detail: `Spreadsheet expects ${formatIsk(item.estimated_broker_fee)} broker fee.`,
+        },
+        {
+          label: "Order Size",
+          value: `${formatNumber(item.recommended_units)} units`,
+          detail: `History window caps the first test order; original recommendation ${formatNumber(item.original_recommended_units || item.recommended_units)}.`,
+        },
+        {
+          label: "Total ISK Needed",
+          value: formatIsk(item.estimated_isk_committed),
+          detail: "Bid escrow plus broker fee estimate.",
+        },
+        {
+          label: "Destination Demand",
+          value: `${formatIsk(destinationBuy.price)} buy`,
+          detail: `${formatNumber(destinationBuy.volume_remain)} visible units in ${destinationBuy.system_name || "destination"}.`,
+        },
+        {
+          label: "Competing Source Buy",
+          value: sourceBuy.price == null ? "none nearby" : formatIsk(sourceBuy.price),
+          detail: sourceBuy.system_name || "Check local buy competition.",
+        },
+        {
+          label: "Nearby Sell Floor",
+          value: sourceSell.price == null ? "none nearby" : formatIsk(sourceSell.price),
+          detail: sourceSell.system_name || "Check whether sell orders undercut your bid logic.",
+        },
+        {
+          label: "Market History",
+          value: acquisitionRiskLabel(item.risk_level),
+          detail: "Read every Possible trap or Caution badge before posting.",
+        },
+        {
+          label: "Spreadsheet",
+          value: "Fill actuals later",
+          detail: "Record actual buy total, broker fee, filled quantity, realized return, and lesson learned.",
+        },
+      ];
       return `
         <div class="decision-lede">Before Placing Buy Orders: check the exact EVE order window before committing ISK.</div>
-        <div class="haul-checklist">
-          ${renderHaulCheckItem("Buy Price To Enter", formatIsk(item.suggested_bid), `Do not exceed safe ceiling ${formatIsk(item.max_safe_bid)}.`)}
-          ${renderHaulCheckItem("Order Range", range.range || "station", range.reason || "Keep the first order easy to monitor.")}
-          ${renderHaulCheckItem("Broker Fee", brokerRate == null ? "manual" : `${formatNumber(brokerRate)}%`, `Spreadsheet expects ${formatIsk(item.estimated_broker_fee)} broker fee.`)}
-          ${renderHaulCheckItem("Order Size", `${formatNumber(item.recommended_units)} units`, `History window caps the first test order; original recommendation ${formatNumber(item.original_recommended_units || item.recommended_units)}.`)}
-          ${renderHaulCheckItem("Total ISK Needed", formatIsk(item.estimated_isk_committed), "Bid escrow plus broker fee estimate.")}
-          ${renderHaulCheckItem("Destination Demand", `${formatIsk(destinationBuy.price)} buy`, `${formatNumber(destinationBuy.volume_remain)} visible units in ${destinationBuy.system_name || "destination"}.`)}
-          ${renderHaulCheckItem("Competing Source Buy", sourceBuy.price == null ? "none nearby" : formatIsk(sourceBuy.price), sourceBuy.system_name || "Check local buy competition.")}
-          ${renderHaulCheckItem("Nearby Sell Floor", sourceSell.price == null ? "none nearby" : formatIsk(sourceSell.price), sourceSell.system_name || "Check whether sell orders undercut your bid logic.")}
-          ${renderHaulCheckItem("Market History", acquisitionRiskLabel(item.risk_level), "Read every Possible trap or Caution badge before posting.")}
-          ${renderHaulCheckItem("Spreadsheet", "Fill actuals later", "Record actual buy total, broker fee, filled quantity, realized return, and lesson learned.")}
-        </div>
+        ${renderDashboardChecklist(checklist)}
       `;
     }
 

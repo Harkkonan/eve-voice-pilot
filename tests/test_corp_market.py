@@ -948,6 +948,20 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "ME-adjusted one-run materials covered" in page
 
 
+def test_dashboard_uses_shared_empty_error_and_checklist_helpers():
+    page = render_dashboard()
+
+    assert "function renderDashboardEmptyState" in page
+    assert "function renderDashboardErrorState" in page
+    assert "function renderDashboardChecklistItem" in page
+    assert "function renderDashboardChecklist" in page
+    assert 'renderDashboardEmptyState("No completed rows found.")' in page
+    assert 'renderDashboardEmptyState("No readiness checks were returned.")' in page
+    assert 'renderDashboardErrorState(error.message || "Appraisal failed.")' in page
+    assert "renderDashboardChecklist(checklist)" in page
+    assert "function renderHaulCheckItem" not in page
+
+
 def test_dashboard_renders_flight_scope_disclosures_by_tab():
     page = render_dashboard()
 
