@@ -582,6 +582,14 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Why This App Requests ESI Scopes" in page
     assert "It cannot buy, sell, contract, move assets, send mail, place market orders" in page
     assert "esi-wallet.read_character_wallet.v1" in page
+    assert "data-tab-target=\"asset-ledger\"" in page
+    assert "id=\"tab-asset-ledger\"" in page
+    assert "Trade Asset Ledger" in page
+    assert "id=\"asset-ledger-preview-duck\"" in page
+    assert "id=\"asset-ledger-document\" class=\"decision-output\" data-managed-document=\"trade-asset-ledger\" data-managed-document-watch" in page
+    assert "id=\"asset-ledger-preview-version\"" in page
+    assert "previewAssetLedgerDuck" in page
+    assert "@@TAB_SCOPE_ASSET_LEDGER@@" not in page
     assert "id=\"flight-blueprint-summary\"" in industry_section
     assert "id=\"flight-profit-scan\"" in industry_section
     assert "id=\"flight-buyer-scan\"" in industry_section
@@ -832,6 +840,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Open-stock valuation" in page
     assert "renderTradePnlMatches" in page
     assert "renderTradePnlItems" in page
+    assert page.count("id=\"tab-asset-ledger\"") == 1
     assert page.count("id=\"tab-trade-pnl\"") == 1
     assert page.count("id=\"tab-planetary\"") == 1
     assert "id=\"planetary-form\"" in page

@@ -376,6 +376,11 @@ FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
         "summary": "Uses live location when no buy-order system is typed, plus skills for tax-aware advisory math. Total investment, portfolio jumps, and broker fee remain manual inputs.",
         "scopes": (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE),
     },
+    "asset-ledger": {
+        "label": "Trade Asset Ledger",
+        "summary": "Read-only managed ledger surface for portfolio fills and future ESI-named trade containers. The page is browsable and copyable, but not manually editable.",
+        "scopes": (),
+    },
     "appraisal": {
         "label": "Bulk Appraisal",
         "summary": "No character ESI scope is used by this tab. It resolves pasted item text with local static market data and prices public hub orders only.",
@@ -18866,6 +18871,14 @@ def _render_flight_attendant_dashboard() -> str:
           <a class="button-link ghost-link" href="#trade-pnl">Trade P&amp;L</a>
         </div>
       </div>
+      <div class="ops-launcher-card">
+        <strong>Trade Asset Ledger</strong>
+        <div class="meta">Read-only managed document bridge for portfolio fills, ESI assets, and hauler plans.</div>
+        <div class="ops-launcher-stat"><span>Mode</span><b>Managed</b></div>
+        <div class="ops-launcher-actions">
+          <a class="button-link ghost-link" href="#asset-ledger">Open Ledger</a>
+        </div>
+      </div>
     </section>
 
     <nav class="tabbar" aria-label="Dashboard tabs">
@@ -18876,6 +18889,7 @@ def _render_flight_attendant_dashboard() -> str:
       <button type="button" data-tab-target="industry" aria-selected="false">Industry Library</button>
       <button type="button" data-tab-target="hauling" aria-selected="false">Hauler Routes</button>
       <button type="button" data-tab-target="acquisition" aria-selected="false">Investment Portfolio</button>
+      <button type="button" data-tab-target="asset-ledger" aria-selected="false">Asset Ledger</button>
       <button type="button" data-tab-target="appraisal" aria-selected="false">Bulk Appraisal</button>
       <button type="button" data-tab-target="trade-pnl" aria-selected="false">Trade P&amp;L</button>
       <button type="button" data-tab-target="planetary" aria-selected="false">Planetary Industry</button>
@@ -20081,6 +20095,80 @@ help</textarea>
         </div>
       </section>
 
+      <section id="tab-asset-ledger" class="tab-panel" data-tab-panel="asset-ledger" hidden>
+        <div class="flight-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Trade Asset Ledger</h2>
+                <div class="meta">A read-only managed document for portfolio fills, ESI-named containers, and hauler handoff.</div>
+              </div>
+              <span class="pill reserved">Managed Read-Only</span>
+            </div>
+@@TAB_SCOPE_ASSET_LEDGER@@
+            <div class="tester-cockpit-note">
+              <strong>This ledger is not hand editable.</strong>
+              <span>The app will own rows from Portfolio expectations, ESI assets, ESI named containers, and later wallet or Trade P&amp;L matches.</span>
+              <span>For the next backend slice, freight containers named like <code>CM-ASSET-JITA-01</code> or <code>CM-READY-HAUL</code> can become the source buckets for Hauler route planning.</span>
+            </div>
+            <div class="completed-run-actions">
+              <button id="asset-ledger-preview-duck" class="secondary" type="button" data-no-plex>Preview Duck</button>
+              <a class="button-link ghost-link" href="#acquisition">Open Portfolio</a>
+              <a class="button-link ghost-link" href="#hauling">Open Hauler</a>
+              <span id="asset-ledger-status" class="meta quickbar-copy-status" aria-live="polite">Preview document is ready.</span>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Document Rules</h2>
+                <div class="meta">What will and will not be editable when ESI ingestion is wired in.</div>
+              </div>
+            </div>
+            <ul class="charter-list">
+              <li><strong>Readable:</strong> browse, filter, copy, and export ledger rows.</li>
+              <li><strong>Managed:</strong> quantities, locations, container names, and status come from app-managed sources.</li>
+              <li><strong>Not hand edited:</strong> no manual row edits that could drift from ESI or the app's portfolio snapshots.</li>
+              <li><strong>Handoff:</strong> ready-to-haul rows will become input for a Hauler route/load plan.</li>
+            </ul>
+          </section>
+
+          <section class="panel profit-panel full-span" aria-labelledby="asset-ledger-title">
+            <div class="panel-header">
+              <div>
+                <div class="profit-title">
+                  <h2 id="asset-ledger-title">Managed Asset Document</h2>
+                  <span class="pill reserved">Preview</span>
+                </div>
+                <div class="meta">This preview gives the duck a real managed-document surface before ESI container ingestion is added.</div>
+              </div>
+            </div>
+            <details class="output-details" open>
+              <summary>Trade Asset Ledger Preview</summary>
+              <div class="output-details-body">
+                <div id="asset-ledger-document" class="decision-output" data-managed-document="trade-asset-ledger" data-managed-document-watch>
+                  <div class="decision-row">
+                    <div class="decision-head">
+                      <strong>CM-ASSET-JITA-01</strong>
+                      <span class="pill decision-source">Example container</span>
+                      <span class="pill reserved">Read-only</span>
+                    </div>
+                    <div class="decision-lede">Future row source: ESI assets plus ESI container name. This row is a managed preview, not a manual entry.</div>
+                    <div class="meta">Last preview update: <span id="asset-ledger-preview-version">not run yet</span></div>
+                    <div class="profit-detail-grid">
+                      <div class="profit-detail-row"><span>Status</span><b>Ready to wire ESI source</b><small>Future states: needs cost match, ready to haul, hauled, sold, reviewed.</small></div>
+                      <div class="profit-detail-row"><span>Portfolio link</span><b>Expected fill snapshot</b><small>Future rows will match portfolio plan, actual filled quantity, and destination hub.</small></div>
+                      <div class="profit-detail-row"><span>Hauler handoff</span><b>Build route from actual assets</b><small>Future button will pass this managed inventory to Hauler without manual edits.</small></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </section>
+        </div>
+      </section>
+
       <section id="tab-appraisal" class="tab-panel" data-tab-panel="appraisal" hidden>
         <div class="flight-grid">
           <section class="panel">
@@ -20942,6 +21030,10 @@ help</textarea>
     const acqPostTestStatus = document.querySelector("#acq-post-test-status");
     const acqPostTestResults = document.querySelector("#acq-post-test-results");
     const acqResults = document.querySelector("#acq-results");
+    const assetLedgerPreviewDuck = document.querySelector("#asset-ledger-preview-duck");
+    const assetLedgerStatus = document.querySelector("#asset-ledger-status");
+    const assetLedgerDocument = document.querySelector("#asset-ledger-document");
+    const assetLedgerPreviewVersion = document.querySelector("#asset-ledger-preview-version");
     const bulkAppraisalForm = document.querySelector("#bulk-appraisal-form");
     const bulkAppraisalHub = document.querySelector("#bulk-appraisal-hub");
     const bulkAppraisalMode = document.querySelector("#bulk-appraisal-mode");
@@ -21107,7 +21199,7 @@ help</textarea>
     const optionalReprocessingScopeNames = new Set(Object.values(flightScopeMetadata)
       .filter((entry) => entry && entry.optional_reprocessing && entry.scope)
       .map((entry) => entry.scope));
-    const validTabs = new Set(["market", "tester", "fittings", "flight", "industry", "hauling", "acquisition", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
+    const validTabs = new Set(["market", "tester", "fittings", "flight", "industry", "hauling", "acquisition", "asset-ledger", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
     const tabAliases = new Map([
       ["discord-alerts", "market"],
       ["discord", "market"],
@@ -21150,6 +21242,7 @@ help</textarea>
     let acquisitionProgressSettings = null;
     let acquisitionQuickbarItems = [];
     let acquisitionReportRows = [];
+    let assetLedgerPreviewCount = 0;
     let bulkAppraisalLastExportText = "";
     let planetaryShoppingQuickbarItems = [];
     let planetarySellQuickbarItems = [];
@@ -30198,6 +30291,23 @@ help</textarea>
       selectHaulOpportunity(card.dataset.haulOpportunityIndex);
     });
 
+    function previewAssetLedgerDuck() {
+      if (!assetLedgerDocument) return;
+      assetLedgerPreviewCount += 1;
+      const stamp = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+      const previewLabel = `${stamp} run ${assetLedgerPreviewCount}`;
+      if (assetLedgerPreviewVersion) {
+        assetLedgerPreviewVersion.textContent = previewLabel;
+      } else if (typeof window.eveVoiceManagedDocumentChanged === "function") {
+        window.eveVoiceManagedDocumentChanged({ target: assetLedgerDocument });
+      }
+      window.dispatchEvent(new CustomEvent("eve-managed-document-change", { detail: { target: assetLedgerDocument } }));
+      if (assetLedgerStatus) {
+        assetLedgerStatus.textContent = `Managed ledger preview changed at ${previewLabel}.`;
+        assetLedgerStatus.classList.remove("error");
+      }
+    }
+
     function updateAcquisitionScopeAndReset() {
       writeAcquisitionSettings({
         originName: acqOrigin.value,
@@ -30258,6 +30368,9 @@ help</textarea>
       if (!event.target.closest("input[data-haul-market-group], input[data-haul-market-type]")) return;
       updateAcquisitionScopeAndReset();
     });
+    if (assetLedgerPreviewDuck) {
+      assetLedgerPreviewDuck.addEventListener("click", previewAssetLedgerDuck);
+    }
 
     document.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-copy-quickbar]");
@@ -30708,6 +30821,7 @@ help</textarea>
         "@@TAB_SCOPE_INDUSTRY@@": render_flight_scope_summary("industry"),
         "@@TAB_SCOPE_HAULING@@": render_flight_scope_summary("hauling"),
         "@@TAB_SCOPE_ACQUISITION@@": render_flight_scope_summary("acquisition"),
+        "@@TAB_SCOPE_ASSET_LEDGER@@": render_flight_scope_summary("asset-ledger"),
         "@@TAB_SCOPE_APPRAISAL@@": render_flight_scope_summary("appraisal"),
         "@@TAB_SCOPE_TRADE_PNL@@": render_flight_scope_summary("trade-pnl"),
         "@@TAB_SCOPE_PLANETARY@@": render_flight_scope_summary("planetary"),
