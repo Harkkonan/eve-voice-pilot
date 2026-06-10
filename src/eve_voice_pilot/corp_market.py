@@ -4890,15 +4890,23 @@ def quantity_by_type_id(items: Iterable[dict[str, Any]]) -> dict[int, int]:
 
 def load_route_graph_cache(cache_path: Path = DEFAULT_ROUTE_GRAPH_CACHE_PATH) -> RouteGraphCache:
     path = Path(cache_path)
+    refresh_hint = (
+        f"Run {STATIC_CACHE_REFRESH_COMMAND} on the same machine or container that serves this website; "
+        "generated cache files are ignored and are not created by git push."
+    )
     if not path.exists():
-        return RouteGraphCache(path=path, available=False, error="Route graph cache file is missing.")
+        return RouteGraphCache(
+            path=path,
+            available=False,
+            error=f"Route graph cache file is missing at {path}. {refresh_hint}",
+        )
     try:
         with path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
-        return RouteGraphCache(path=path, available=False, error=f"Route graph cache could not be read: {exc}")
+        return RouteGraphCache(path=path, available=False, error=f"Route graph cache could not be read: {exc}. {refresh_hint}")
     if not isinstance(payload, dict):
-        return RouteGraphCache(path=path, available=False, error="Route graph cache has unexpected format.")
+        return RouteGraphCache(path=path, available=False, error=f"Route graph cache has unexpected format. {refresh_hint}")
 
     systems_payload = payload.get("systems")
     adjacency_payload = payload.get("adjacency")
@@ -4930,7 +4938,7 @@ def load_route_graph_cache(cache_path: Path = DEFAULT_ROUTE_GRAPH_CACHE_PATH) ->
                 neighbors.append(neighbor_id)
         adjacency[system_id] = tuple(sorted(set(neighbors)))
     if not systems or not adjacency:
-        return RouteGraphCache(path=path, available=False, error="Route graph cache has no usable jump data.")
+        return RouteGraphCache(path=path, available=False, error=f"Route graph cache has no usable jump data. {refresh_hint}")
     return RouteGraphCache(
         path=path,
         available=True,

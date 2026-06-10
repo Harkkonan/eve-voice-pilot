@@ -3607,6 +3607,16 @@ def test_load_route_graph_cache_reads_compact_cache(tmp_path):
     assert cache.systems[30000142].name == "Jita"
 
 
+def test_load_route_graph_cache_missing_file_explains_same_host_refresh(tmp_path):
+    cache = corp_market.load_route_graph_cache(tmp_path / "missing_route_graph.json")
+
+    assert cache.available is False
+    assert "Route graph cache file is missing" in cache.error
+    assert r"python .\scripts\update_industry_recipe_cache.py" in cache.error
+    assert "same machine or container" in cache.error
+    assert "not created by git push" in cache.error
+
+
 def test_static_cache_diagnostics_identifies_missing_planetary_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(
         corp_market,
