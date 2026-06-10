@@ -2647,16 +2647,90 @@ def test_haul_scan_skips_pickup_regions_without_destination_demand(monkeypatch, 
     assert buy_calls == [(200, 34)]
     assert sell_calls == []
     assert hauling["buy_order_count"] == 0
+    assert hauling["raw_destination_buy_order_count"] == 0
+    assert hauling["unreachable_destination_buy_order_count"] == 0
     assert hauling["sell_order_count"] == 0
     assert hauling["profitable_opportunities"] == 0
     assert hauling["no_destination_buy_order_count"] == 1
+    assert hauling["no_destination_buy_order_names"] == ["Tritanium"]
     assert hauling["no_pickup_sell_order_count"] == 0
     assert hauling["destination_demand_gated_count"] == 1
     assert any(
+        payload["message"].startswith("No destination buy demand was reachable")
+        for event, payload in progress_events
+        if event == "orders"
+    )
+    assert not any(
         payload["message"].startswith("Skipping pickup sell scan")
         for event, payload in progress_events
         if event == "orders"
     )
+
+
+def test_haul_scan_reports_unreachable_destination_region_buy_orders(monkeypatch, tmp_path):
+    route_cache = RouteGraphCache(
+        path=tmp_path / "route.json",
+        available=True,
+        build_number=3374020,
+        systems={
+            1: RouteSystem(solar_system_id=1, name="Start", region_id=100, security_status=0.9),
+            2: RouteSystem(solar_system_id=2, name="Jita", region_id=200, security_status=0.9),
+            3: RouteSystem(solar_system_id=3, name="Other Forge System", region_id=200, security_status=0.8),
+        },
+        adjacency={1: (2,), 2: (1, 3), 3: (2,)},
+    )
+    recipe_cache = IndustryRecipeCache(
+        path=tmp_path / "recipes.json",
+        available=True,
+        build_number=3374020,
+        recipes={
+            681: IndustryRecipe(
+                blueprint_type_id=681,
+                blueprint_name="Hobgoblin I Blueprint",
+                product_type_id=165,
+                product_name="Hobgoblin I",
+                product_quantity=1,
+                materials=(IndustryMaterial(type_id=34, name="Tritanium", quantity=1000, volume_m3=0.01),),
+            )
+        },
+    )
+
+    def fake_fetch_market_buy_orders(config, *, region_id, type_id):
+        return [
+            {
+                "order_id": 10,
+                "system_id": 3,
+                "location_id": 60000001,
+                "price": 5.0,
+                "volume_remain": 1000,
+                "is_buy_order": True,
+            }
+        ]
+
+    monkeypatch.setattr(corp_market, "fetch_market_buy_orders", fake_fetch_market_buy_orders)
+    monkeypatch.setattr(corp_market, "fetch_market_sell_orders", lambda *args, **kwargs: [])
+
+    hauling = corp_market.scan_route_hauling_opportunities(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        recipe_cache=recipe_cache,
+        route_cache=route_cache,
+        origin_solar_system_id=1,
+        destination_solar_system_id=2,
+        route_path=[1, 2],
+        detour_jumps=0,
+        cargo_capacity_m3=10,
+        purchase_budget_isk=1_000_000,
+        min_detour_margin_percent=10,
+        sales_tax={"rate": 0.0},
+        include_common_materials=True,
+        market_group_ids=(),
+        market_type_ids=(),
+    )
+
+    assert hauling["buy_order_count"] == 0
+    assert hauling["raw_destination_buy_order_count"] == 1
+    assert hauling["unreachable_destination_buy_order_count"] == 1
+    assert hauling["no_destination_buy_order_names"] == ["Tritanium"]
 
 
 def test_haul_market_group_ids_parse_and_dedupe():

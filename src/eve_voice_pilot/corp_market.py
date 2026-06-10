@@ -5849,6 +5849,8 @@ def scan_route_hauling_opportunities(
     opportunities = []
     total_sell_order_count = 0
     total_buy_order_count = 0
+    raw_destination_buy_order_count = 0
+    unreachable_destination_buy_order_count = 0
     history_regions = set()
     trap_signal_count = 0
     caution_signal_count = 0
@@ -5883,6 +5885,7 @@ def scan_route_hauling_opportunities(
         targets=scan_targets,
         destination_region_id=destination.region_id,
     )
+    raw_destination_buy_order_count = sum(len(orders) for orders in raw_destination_buys_by_type.values())
     errors.extend(batch_errors)
     scan_timer.mark(
         "destination_buy_fetch",
@@ -5892,9 +5895,11 @@ def scan_route_hauling_opportunities(
     )
     buy_orders_by_type: dict[int, list[dict[str, Any]]] = {}
     destination_demand_type_ids: list[int] = []
+    no_destination_buy_order_names: list[str] = []
     for target in scan_targets:
         type_id = int(target["type_id"])
         buy_orders = []
+        raw_buy_order_count = len(raw_destination_buys_by_type.get(type_id, []))
         for order in raw_destination_buys_by_type.get(type_id, []):
             record = build_reachable_market_order_record(
                 order,
@@ -5910,14 +5915,44 @@ def scan_route_hauling_opportunities(
         buy_orders_by_type[type_id] = buy_orders
         if buy_orders:
             destination_demand_type_ids.append(type_id)
+        else:
+            no_destination_buy_order_names.append(str(target["name"]))
+            unreachable_destination_buy_order_count += raw_buy_order_count
     scan_timer.mark(
         "destination_buy_filter",
         "Filter reachable destination buy orders",
+        raw_buy_orders=raw_destination_buy_order_count,
         buy_orders=total_buy_order_count,
+        unreachable_buy_orders=unreachable_destination_buy_order_count,
         destination_demand_item_types=len(destination_demand_type_ids),
         no_destination_buy_item_types=len(scan_targets) - len(destination_demand_type_ids),
     )
     if progress is not None:
+        if no_destination_buy_order_names:
+            if len(no_destination_buy_order_names) == len(scan_targets):
+                demand_message = (
+                    f"No destination buy demand was reachable for any of the {len(scan_targets)} scanned item types. "
+                    f"Skipped pickup sell-order lookups for speed."
+                )
+            else:
+                preview = ", ".join(no_destination_buy_order_names[:5])
+                extra = "..." if len(no_destination_buy_order_names) > 5 else ""
+                demand_message = (
+                    f"Skipped pickup sell-order lookups for {len(no_destination_buy_order_names)} item types "
+                    f"with no reachable destination buy demand: {preview}{extra}."
+                )
+            progress(
+                "orders",
+                {
+                    "scanned_materials": len(scan_targets),
+                    "destination_demand_item_types": len(destination_demand_type_ids),
+                    "no_destination_buy_order_count": len(no_destination_buy_order_names),
+                    "raw_destination_buy_orders": raw_destination_buy_order_count,
+                    "reachable_destination_buy_orders": total_buy_order_count,
+                    "unreachable_destination_buy_orders": unreachable_destination_buy_order_count,
+                    "message": demand_message,
+                },
+            )
         progress(
             "orders",
             {
@@ -5960,17 +5995,6 @@ def scan_route_hauling_opportunities(
         if not buy_orders:
             no_destination_buy_order_count += 1
             destination_demand_gated_count += max(0, len(scan_pickup_region_ids))
-            if progress is not None:
-                progress(
-                    "orders",
-                    {
-                        "type_id": type_id,
-                        "item_name": target["name"],
-                        "material_index": target_index,
-                        "scanned_materials": len(scan_targets),
-                        "message": f"Skipping pickup sell scan for {target['name']}: no reachable destination buy orders",
-                    },
-                )
             continue
 
         sell_orders = []
@@ -6244,11 +6268,14 @@ def scan_route_hauling_opportunities(
         },
         "sell_order_count": total_sell_order_count,
         "buy_order_count": total_buy_order_count,
+        "raw_destination_buy_order_count": raw_destination_buy_order_count,
+        "unreachable_destination_buy_order_count": unreachable_destination_buy_order_count,
         "history_region_count": len(history_regions),
         "possible_trap_count": trap_signal_count,
         "caution_count": caution_signal_count,
         "detour_margin_rejected_count": detour_margin_rejected_count,
         "no_destination_buy_order_count": no_destination_buy_order_count,
+        "no_destination_buy_order_names": no_destination_buy_order_names[:12],
         "no_pickup_sell_order_count": no_pickup_sell_order_count,
         "destination_demand_gated_count": destination_demand_gated_count,
         "efficiency_filter_rejected_count": efficiency_filter_rejected_count,
@@ -24416,7 +24443,10 @@ help</textarea>
       });
       haulEventSource.addEventListener("orders", (event) => {
         const payload = parseHaulProgressEvent(event);
-        appendHaulProgress(`Item ${formatNumber(payload.material_index)}/${formatNumber(payload.scanned_materials)}`, payload);
+        const label = payload.material_index == null
+          ? (payload.no_destination_buy_order_count != null ? "Demand" : "Orders")
+          : `Item ${formatNumber(payload.material_index)}/${formatNumber(payload.scanned_materials)}`;
+        appendHaulProgress(label, payload);
       });
       haulEventSource.addEventListener("scan_error", (event) => {
         const payload = parseHaulProgressEvent(event);
@@ -24489,6 +24519,38 @@ help</textarea>
       haulProgressLog.scrollTop = haulProgressLog.scrollHeight;
     }
 
+    function renderHaulDemandGateNotice(hauling, route) {
+      const skippedTypes = Number(hauling.no_destination_buy_order_count || 0);
+      const skippedLookups = Number(hauling.destination_demand_gated_count || 0);
+      const scannedTypes = Number(hauling.scanned_item_types || hauling.scanned_materials || 0);
+      const rawDestinationBuys = Number(hauling.raw_destination_buy_order_count || 0);
+      const reachableDestinationBuys = Number(hauling.buy_order_count || 0);
+      const unreachableDestinationBuys = Number(hauling.unreachable_destination_buy_order_count || 0);
+      if (!skippedTypes) {
+        return `<div class="meta">Destination demand gate found reachable buy orders for every scanned item type.</div>`;
+      }
+      const names = Array.isArray(hauling.no_destination_buy_order_names) ? hauling.no_destination_buy_order_names.filter(Boolean) : [];
+      const preview = names.length ? ` Examples: ${names.slice(0, 6).map((name) => escapeHtml(name)).join(", ")}${names.length > 6 ? "..." : ""}.` : "";
+      const destinationName = route.destination?.name || route.destination_query || "the selected destination";
+      const allSkipped = scannedTypes > 0 && skippedTypes >= scannedTypes;
+      let explanation = "";
+      if (allSkipped && rawDestinationBuys > 0 && unreachableDestinationBuys > 0) {
+        explanation = `ESI returned ${formatNumber(rawDestinationBuys)} destination-region buy order${rawDestinationBuys === 1 ? "" : "s"}, but none matched ${escapeHtml(destinationName)} as reachable destination demand. Check that the destination hub/system is the one you mean.`;
+      } else if (allSkipped) {
+        explanation = `No reachable destination buy demand was found at ${escapeHtml(destinationName)} for this item set. Try a major trade hub or use hub comparison.`;
+      } else {
+        explanation = `${formatNumber(reachableDestinationBuys)} reachable destination buy order${reachableDestinationBuys === 1 ? "" : "s"} were found for the remaining scanned item types.`;
+      }
+      return `
+        <div class="meta">
+          <span class="pill decision-watch">Destination demand</span>
+          ${formatNumber(skippedTypes)} item type${skippedTypes === 1 ? "" : "s"} had no reachable destination buy orders;
+          skipped ${formatNumber(skippedLookups)} pickup region sell-order lookup${skippedLookups === 1 ? "" : "s"} for speed.
+          ${explanation}${preview}
+        </div>
+      `;
+    }
+
     function renderFlightHauling(data, elapsedSeconds = null) {
       const route = data.route || {};
       const hauling = data.hauling || {};
@@ -24526,6 +24588,7 @@ help</textarea>
       const routeDiagnostics = renderHaulRouteDiagnostics(route.diagnostics || {});
       const stageTiming = renderScanStageTiming(data.server_timing || {}, hauling.stage_timing || {});
       const scanDuration = elapsedSeconds == null ? "" : `<div class="meta">Scan duration: ${escapeHtml(formatElapsedDuration(elapsedSeconds))}.</div>`;
+      const demandGateNotice = renderHaulDemandGateNotice(hauling, route);
       haulRouteSummary.innerHTML = `
         <strong>${escapeHtml(origin.name || "Current system")}</strong> to
         <strong>${escapeHtml(destination.name || route.destination_query || "destination")}</strong>:
@@ -24560,7 +24623,7 @@ help</textarea>
         <div class="meta">${escapeHtml(commonText)}${groupText}${typeText}</div>
         ${pastedWarning}
         <div class="meta">Ranked by ${escapeHtml(sortLabel)}.${escapeHtml(efficiencyText)} ${formatNumber(hauling.efficiency_filter_rejected_count)} profitable candidate${Number(hauling.efficiency_filter_rejected_count || 0) === 1 ? "" : "s"} were hidden by efficiency filters.</div>
-        <div class="meta">${formatNumber(hauling.no_destination_buy_order_count)} item type${Number(hauling.no_destination_buy_order_count || 0) === 1 ? "" : "s"} had no reachable destination buy orders; skipped ${formatNumber(hauling.destination_demand_gated_count)} pickup region sell-order lookup${Number(hauling.destination_demand_gated_count || 0) === 1 ? "" : "s"}.</div>
+        ${demandGateNotice}
         <div class="meta">Purchase budget ${formatIsk(hauling.purchase_budget_isk)} caps pickup cost before cargo and history checks.</div>
         <div class="meta">${formatNumber(hauling.detour_margin_rejected_count)} detour candidates were below the selected profit threshold.</div>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on destination buy-order sales.</div>
