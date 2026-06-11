@@ -21,6 +21,11 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 import webbrowser
 
+if os.name == "nt":
+    import winreg
+else:
+    winreg = None  # type: ignore[assignment]
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = ROOT / "profiles" / "flight_workbench.local.json"
@@ -54,6 +59,7 @@ CONFIG_ENV_NAMES = (
     "CORP_MARKET_PUBLIC_HOSTING_MODE",
     "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET",
 )
+USER_ENV_BRIDGE_NAMES = SENSITIVE_ENV_NAMES + CONFIG_ENV_NAMES
 SECRET_NAME_MARKERS = ("SECRET", "TOKEN", "WEBHOOK", "PASSWORD", "AUTHORIZATION", "KEY")
 DISCORD_WEBHOOK_RE = re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9._-]+")
 KEY_VALUE_SECRET_RE = re.compile(
@@ -257,9 +263,35 @@ def name_is_sensitive(name: str) -> bool:
     return any(marker in upper for marker in SECRET_NAME_MARKERS)
 
 
+def read_user_env_value(name: str) -> str:
+    if winreg is None:
+        return ""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _value_type = winreg.QueryValueEx(key, name)
+    except OSError:
+        return ""
+    return str(value or "").strip()
+
+
+def child_environment_with_user_vars(names: Iterable[str] = USER_ENV_BRIDGE_NAMES) -> dict[str, str]:
+    env = os.environ.copy()
+    for name in names:
+        if env.get(name):
+            continue
+        user_value = read_user_env_value(name)
+        if user_value:
+            env[name] = user_value
+    return env
+
+
 def redacted_env_values() -> list[str]:
     values = []
     for name, value in os.environ.items():
+        if value and (name in SENSITIVE_ENV_NAMES or name_is_sensitive(name)):
+            values.append(value)
+    for name in USER_ENV_BRIDGE_NAMES:
+        value = read_user_env_value(name)
         if value and (name in SENSITIVE_ENV_NAMES or name_is_sensitive(name)):
             values.append(value)
     return sorted(values, key=len, reverse=True)
@@ -346,7 +378,13 @@ def managed_process_status(name: str) -> dict[str, Any]:
         return {"managed": True, "running": running, "pid": process.pid if running else None, "returncode": returncode}
 
 
-def start_managed_process(name: str, args: list[str], *, log_name: str) -> CommandResult:
+def start_managed_process(
+    name: str,
+    args: list[str],
+    *,
+    log_name: str,
+    env: dict[str, str] | None = None,
+) -> CommandResult:
     ensure_ignored_dirs()
     with _process_lock:
         existing = _managed_processes.get(name)
@@ -358,6 +396,7 @@ def start_managed_process(name: str, args: list[str], *, log_name: str) -> Comma
             process = subprocess.Popen(
                 args,
                 cwd=str(ROOT),
+                env=env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -438,18 +477,34 @@ def check_flight_diagnostics(config: WorkbenchConfig) -> dict[str, Any]:
 def environment_status() -> dict[str, Any]:
     rows = []
     for name in SENSITIVE_ENV_NAMES + CONFIG_ENV_NAMES:
-        configured = bool(os.environ.get(name))
+        process_configured = bool(os.environ.get(name))
+        user_configured = bool(read_user_env_value(name))
+        configured = process_configured or user_configured
+        source = "Process" if process_configured else ("Windows User" if user_configured else "")
         rows.append(
             {
                 "name": name,
                 "configured": configured,
+                "process_configured": process_configured,
+                "user_configured": user_configured,
+                "source": source,
                 "secret": name in SENSITIVE_ENV_NAMES or name_is_sensitive(name),
-                "value": "[set]" if configured else "",
+                "value": f"Set in {source}" if configured else "",
             }
         )
     sso_ready = bool(
-        (os.environ.get("CORP_MARKET_SSO_CLIENT_ID") or os.environ.get("EVE_SSO_CLIENT_ID"))
-        and (os.environ.get("CORP_MARKET_SSO_CLIENT_SECRET") or os.environ.get("EVE_SSO_CLIENT_SECRET"))
+        (
+            os.environ.get("CORP_MARKET_SSO_CLIENT_ID")
+            or os.environ.get("EVE_SSO_CLIENT_ID")
+            or read_user_env_value("CORP_MARKET_SSO_CLIENT_ID")
+            or read_user_env_value("EVE_SSO_CLIENT_ID")
+        )
+        and (
+            os.environ.get("CORP_MARKET_SSO_CLIENT_SECRET")
+            or os.environ.get("EVE_SSO_CLIENT_SECRET")
+            or read_user_env_value("CORP_MARKET_SSO_CLIENT_SECRET")
+            or read_user_env_value("EVE_SSO_CLIENT_SECRET")
+        )
     )
     return {
         "sso_ready": sso_ready,
@@ -526,7 +581,12 @@ def local_server_start(config: WorkbenchConfig) -> CommandResult:
         "--port",
         str(config.local_app_port),
     ]
-    return start_managed_process("local server", args, log_name="flight_workbench_corp_market.log")
+    return start_managed_process(
+        "local server",
+        args,
+        log_name="flight_workbench_corp_market.log",
+        env=child_environment_with_user_vars(),
+    )
 
 
 def local_server_stop(config: WorkbenchConfig) -> CommandResult:
@@ -1115,7 +1175,7 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
       ].join("");
 
       const envRows = data.environment?.rows || [];
-      document.querySelector("#env-rows").innerHTML = envRows.map(item => row(item.name, item.configured ? "Set" : "Missing", item.configured ? "pill ok" : "pill warn")).join("");
+      document.querySelector("#env-rows").innerHTML = envRows.map(item => row(item.name, item.value || (item.configured ? "Set" : "Missing"), item.configured ? "pill ok" : "pill warn")).join("");
       const logs = data.recent_actions || [];
       setText("#log-count", String(logs.length));
       document.querySelector("#action-log").innerHTML = logs.length ? logs.slice().reverse().map(entry => `

@@ -92,6 +92,40 @@ def test_environment_status_never_returns_secret_values(monkeypatch):
     assert "https://flight.example.test" not in payload
 
 
+def test_environment_status_uses_redacted_windows_user_env(monkeypatch):
+    for name in ("CORP_MARKET_SSO_CLIENT_ID", "CORP_MARKET_SSO_CLIENT_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+
+    def fake_user_env(name):
+        return {
+            "CORP_MARKET_SSO_CLIENT_ID": "user-client-id",
+            "CORP_MARKET_SSO_CLIENT_SECRET": "user-client-secret",
+        }.get(name, "")
+
+    monkeypatch.setattr(flight_workbench, "read_user_env_value", fake_user_env)
+
+    status = flight_workbench.environment_status()
+    payload = json.dumps(status)
+
+    assert status["sso_ready"] is True
+    assert "user-client-id" not in payload
+    assert "user-client-secret" not in payload
+    assert any(row["name"] == "CORP_MARKET_SSO_CLIENT_ID" and row["source"] == "Windows User" for row in status["rows"])
+
+
+def test_child_environment_with_user_vars_bridges_allowlisted_user_env(monkeypatch):
+    monkeypatch.delenv("CORP_MARKET_SSO_CLIENT_ID", raising=False)
+
+    def fake_user_env(name):
+        return "user-client-id" if name == "CORP_MARKET_SSO_CLIENT_ID" else ""
+
+    monkeypatch.setattr(flight_workbench, "read_user_env_value", fake_user_env)
+
+    child_env = flight_workbench.child_environment_with_user_vars(("CORP_MARKET_SSO_CLIENT_ID",))
+
+    assert child_env["CORP_MARKET_SSO_CLIENT_ID"] == "user-client-id"
+
+
 def test_run_action_rejects_unknown_action():
     with pytest.raises(flight_workbench.WorkbenchError):
         flight_workbench.run_action("git pull", flight_workbench.WorkbenchConfig())
@@ -110,6 +144,32 @@ def test_git_status_action_uses_fixed_command(monkeypatch):
 
     assert result.ok is True
     assert observed["args"] == ["git", "status", "--short", "--branch"]
+
+
+def test_local_server_start_bridges_user_env_to_child_process(monkeypatch):
+    observed = {}
+
+    monkeypatch.setattr(
+        flight_workbench,
+        "check_local_health",
+        lambda config: {"ok": False, "url": "http://127.0.0.1:8770/api/health", "detail": "offline"},
+    )
+    monkeypatch.setattr(
+        flight_workbench,
+        "child_environment_with_user_vars",
+        lambda: {"CORP_MARKET_SSO_CLIENT_ID": "user-client-id"},
+    )
+
+    def fake_start_managed_process(name, args, *, log_name, env=None):
+        observed["env"] = env
+        return flight_workbench.CommandResult(ok=True, summary="started")
+
+    monkeypatch.setattr(flight_workbench, "start_managed_process", fake_start_managed_process)
+
+    result = flight_workbench.local_server_start(flight_workbench.WorkbenchConfig())
+
+    assert result.ok is True
+    assert observed["env"]["CORP_MARKET_SSO_CLIENT_ID"] == "user-client-id"
 
 
 def test_tunnel_start_requires_vm_config():
@@ -268,6 +328,7 @@ def test_append_action_log_redacts_output(tmp_path, monkeypatch):
 
 
 def test_status_payload_contains_expected_cards(monkeypatch):
+    monkeypatch.setattr(flight_workbench, "read_user_env_value", lambda name: "")
     monkeypatch.setattr(
         flight_workbench,
         "check_local_health",
