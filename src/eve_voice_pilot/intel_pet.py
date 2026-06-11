@@ -2028,6 +2028,11 @@ def behavior_key_from_label(label: str) -> str:
     return BEHAVIOR_ALERT
 
 
+def behavior_test_status(alert_kind_label: str, behavior: str) -> str:
+    clean_label = str(alert_kind_label or "").strip() or "Alert"
+    return f"Testing {clean_label} behavior: {behavior_label(behavior)}."
+
+
 def alert_behavior_key(alert: IntelPetAlert) -> str:
     categories = set(alert.categories)
     if "self-mention" in categories:
@@ -3940,6 +3945,12 @@ def run_overlay(
             editor_status_var.set(f"{label} behavior saved as {behavior_label(settings.alert_behaviors[kind])}.")
             refresh_option_summary()
 
+        def test_behavior(kind: str) -> None:
+            label = next((item_label for item_kind, item_label, _description in ALERT_BEHAVIOR_KINDS if item_kind == kind), kind)
+            behavior = behavior_key_from_label(behavior_vars[kind].get())
+            start_behavior_cycle(trigger_robot_miner_animation("options test") if behavior == BEHAVIOR_ROBOT_MINER else behavior)
+            editor_status_var.set(behavior_test_status(label, behavior))
+
         def draw_behavior_preview(canvas: Any, behavior: str, step: int) -> None:
             canvas.delete("preview")
             canvas.create_rectangle(0, 0, 96, 52, fill="#0f172a", outline="#334155", tags=("preview",))
@@ -4098,6 +4109,10 @@ def run_overlay(
             )
             behavior_box.pack(side="left")
             behavior_box.bind("<<ComboboxSelected>>", lambda _event, item_kind=kind: persist_behavior(item_kind))
+            ttk.Button(choice_row, text="Test", command=lambda item_kind=kind: test_behavior(item_kind)).pack(
+                side="left",
+                padx=(6, 0),
+            )
 
             preview = tk.Canvas(row, width=96, height=52, bg="#0f172a", highlightthickness=0)
             preview.pack(side="right", padx=(10, 0))

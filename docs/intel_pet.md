@@ -65,6 +65,8 @@ The robot-miner frames are transparent 160x128 PNG renders derived from local CC
 .\.venv\Scripts\python.exe scripts\generate_intel_pet_robot_miner_assets.py
 ```
 
+Use `Options` > `Behaviors` > `Test` beside an alert kind to run that selected animation immediately on the overlay without waiting for a chat, location, combat, or mission event.
+
 Alert bubbles stay visible for 15 seconds by default. If a newer alert arrives before that timer ends, the bubble switches to the newer message and the 15-second timer starts again.
 
 ## Add Extra Local Alerts

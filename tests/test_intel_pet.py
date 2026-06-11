@@ -65,6 +65,7 @@ from eve_voice_pilot.intel_pet import (
     behavior_for_kind,
     behavior_key_from_label,
     behavior_label,
+    behavior_test_status,
     clean_alert_behaviors,
     clean_spoken_alert_kinds,
     build_discord_note_payload,
@@ -1184,6 +1185,13 @@ def test_behavior_labels_round_trip_for_options_ui():
     assert behavior_key_from_label(behavior_label(BEHAVIOR_LONG_COMBO)) == BEHAVIOR_LONG_COMBO
     assert behavior_key_from_label(behavior_label(BEHAVIOR_ROBOT_MINER)) == BEHAVIOR_ROBOT_MINER
     assert behavior_key_from_label("not a label") == BEHAVIOR_ALERT
+
+
+def test_behavior_test_status_names_selected_animation():
+    assert behavior_test_status("Help calls", BEHAVIOR_ROBOT_MINER) == (
+        "Testing Help calls behavior: Stout robot miner."
+    )
+    assert behavior_test_status("", "not-real") == "Testing Alert behavior: Alert pulse."
 
 
 def test_robot_miner_trigger_hook_routes_to_special_behavior_without_alert_changes():
