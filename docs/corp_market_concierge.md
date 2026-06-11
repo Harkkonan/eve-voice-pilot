@@ -60,6 +60,12 @@ The first version is a safe briefing surface:
 - It keeps the first ESI access token in server memory only; no refresh token or token file is stored by this version.
 - It shows an `ESI Flight Recorder` panel near the scope explanation. The recorder is a browser-session-only, plain-language transparency feed for recent checks such as location, industry library, wallet P&L, route scans, public market pricing, and reprocessing estimates. It does not store or display access tokens, refresh tokens, authorization headers, raw ESI responses, transaction IDs, character IDs, or private location IDs.
 
+### Operations UX Polish
+
+The dashboard shell now includes a compact operations status strip above the tabs. It shows the active workflow, ESI session state, static-cache readiness, and current data posture so testers can see whether the console is ready, waiting for ESI, missing cache data, or blocked by an error. Mobile users also get a `Workspace` selector in addition to the horizontal tab rail.
+
+Flight Attendant and Industry Library use workflow cards and source badges to make each area easier to audit: Flight stays focused on briefing, trust, and safety, while Industry labels ESI blueprint reads, ESI asset reads, local cache checks, public market-order scans, and manual handoff boundaries. Waiting, empty, and error states use shared callouts instead of bare text so large output panels are easier to scan.
+
 Treat future Flight Attendant work like a crew member giving advice: the tool can brief the pilot, but the pilot takes every in-game action manually.
 
 ### Flight Attendant ESI Setup

@@ -16289,6 +16289,7 @@ def _render_flight_attendant_dashboard() -> str:
       display: grid;
       gap: 7px;
       min-width: 0;
+      max-width: 100%;
       min-height: 116px;
       border: 1px solid rgba(63, 85, 80, .72);
       border-radius: 8px;
@@ -16311,6 +16312,10 @@ def _render_flight_attendant_dashboard() -> str:
     .ops-launcher-card .meta {
       line-height: 1.35;
       margin: 0;
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .ops-launcher-actions {
       display: flex;
@@ -16318,33 +16323,100 @@ def _render_flight_attendant_dashboard() -> str:
       gap: 7px;
       align-items: center;
       margin-top: auto;
+      min-width: 0;
+      max-width: 100%;
     }
     .ops-launcher-actions a,
     .ops-launcher-actions button {
       min-height: 32px;
+      min-width: 0;
       padding: 6px 9px;
       font-size: 12px;
       border-radius: 7px;
       text-decoration: none;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .ops-launcher-stat {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      min-width: 0;
       color: var(--muted);
       font-size: 12px;
       line-height: 1.25;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .ops-launcher-stat b {
       color: var(--amber);
       font-size: 13px;
       white-space: nowrap;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .ops-status-panel {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 9px;
+      margin: 0 0 14px;
+    }
+    .ops-status-card {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+      max-width: 100%;
+      min-height: 86px;
+      border: 1px solid rgba(63, 85, 80, .68);
+      border-radius: 8px;
+      padding: 11px;
+      background: rgba(8, 13, 15, .58);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+    }
+    .ops-status-card[data-state="ready"] { border-color: rgba(95, 191, 139, .45); }
+    .ops-status-card[data-state="waiting"] { border-color: rgba(224, 168, 74, .42); }
+    .ops-status-card[data-state="error"] { border-color: rgba(255, 107, 107, .48); }
+    .ops-status-card span {
+      min-width: 0;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .ops-status-card strong {
+      min-width: 0;
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .ops-status-card small {
+      display: block;
+      min-width: 0;
+      color: var(--muted);
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+      white-space: normal;
+      word-break: break-word;
     }
     .button-link.ghost-link {
       border: 1px solid rgba(97, 199, 217, .34);
       background: rgba(5, 9, 11, .58);
       color: var(--text);
+    }
+    .tab-switcher {
+      display: none;
+      gap: 6px;
+      margin: 0 0 10px;
+    }
+    .tab-switcher label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
     }
     .tabbar {
       display: flex;
@@ -16367,10 +16439,30 @@ def _render_flight_attendant_dashboard() -> str:
       font-weight: 750;
       white-space: nowrap;
     }
+    .tabbar button::before {
+      content: attr(data-tab-group);
+      display: block;
+      margin-bottom: 2px;
+      color: rgba(166, 184, 180, .74);
+      font-size: 9px;
+      line-height: 1;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
     .tabbar button[aria-selected="true"] {
       color: #061113;
       border-color: rgba(97, 199, 217, .75);
       background: linear-gradient(180deg, #75d6e2, #4baebe);
+    }
+    .tabbar button[aria-selected="true"]::before { color: rgba(6, 17, 19, .72); }
+    button:focus-visible,
+    a:focus-visible,
+    select:focus-visible,
+    input:focus-visible,
+    textarea:focus-visible,
+    summary:focus-visible {
+      outline: 2px solid var(--cyan);
+      outline-offset: 2px;
     }
     body[data-active-tab="reprocessing"] header {
       border-bottom: 1px solid rgba(224, 168, 74, .2);
@@ -17402,6 +17494,71 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .ops-tile strong { display: block; color: var(--text); font-size: 16px; margin-top: 3px; overflow-wrap: anywhere; }
     .ops-tile span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .workflow-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin: 10px 0 12px;
+    }
+    .workflow-strip.compact { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .workflow-step {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+      border: 1px solid rgba(63, 85, 80, .64);
+      border-radius: 7px;
+      padding: 9px;
+      background: rgba(5, 9, 11, .42);
+    }
+    .workflow-step span {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .workflow-step strong {
+      color: var(--text);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .workflow-step small {
+      color: var(--muted);
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+    .source-badge {
+      flex: 0 0 auto;
+      border: 1px solid rgba(97, 199, 217, .3);
+      border-radius: 999px;
+      padding: 2px 7px;
+      color: var(--cyan);
+      background: rgba(97, 199, 217, .07);
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .module-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    .state-callout {
+      display: grid;
+      gap: 3px;
+      border: 1px solid rgba(63, 85, 80, .7);
+      border-radius: 7px;
+      padding: 10px;
+      background: rgba(5, 9, 11, .42);
+      color: var(--muted);
+    }
+    .state-callout strong { color: var(--text); }
+    .state-callout small { color: var(--muted); line-height: 1.35; }
+    .state-callout.is-ready { border-color: rgba(95, 191, 139, .42); }
+    .state-callout.is-waiting { border-color: rgba(224, 168, 74, .36); }
+    .state-callout.is-empty { border-style: dashed; }
+    .state-callout.is-error { border-color: rgba(255, 107, 107, .48); }
     .flight-console-panel { grid-column: 1 / -1; }
     .briefing { display: grid; grid-template-columns: minmax(360px, .95fr) minmax(340px, .8fr); gap: 14px; align-items: start; }
     .system-board {
@@ -20198,6 +20355,7 @@ def _render_flight_attendant_dashboard() -> str:
       .progress-bar span { width: 100%; opacity: .72; }
     }
     @media (max-width: 1040px) {
+      .ops-status-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .ops-launcher { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .market-grid, #tab-market > .market-grid, .flight-grid, .briefing, .industry-library-grid, .tester-cockpit-grid { grid-template-columns: 1fr; }
       .fitting-grid {
@@ -20220,6 +20378,8 @@ def _render_flight_attendant_dashboard() -> str:
           "output";
       }
       .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .workflow-strip,
+      .workflow-strip.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .profit-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .haul-hub-comparison-summary,
       .haul-hub-route,
@@ -20240,18 +20400,47 @@ def _render_flight_attendant_dashboard() -> str:
       .status-rail-cell { border-bottom: 1px solid rgba(63, 85, 80, .5); }
     }
     @media (max-width: 720px) {
-      .shell { width: auto; margin: 0 10px; }
+      .shell { width: 100%; max-width: 100%; margin: 0; padding: 0 10px 34px; }
+      header,
+      main,
+      .ops-status-panel,
+      .ops-launcher,
+      .tab-switcher,
+      .tabbar { width: 100%; max-width: 100%; }
       .reprocess-page::before { inset: -6px 0; }
       header { grid-template-columns: 1fr; align-items: start; }
       .status { text-align: left; }
       .brand { align-items: start; display: grid; grid-template-columns: 42px minmax(0, 1fr); }
       .deck { display: none; }
-      .ops-launcher { grid-template-columns: 1fr; }
-      .ops-launcher-card { min-height: 0; }
+      .ops-status-panel { grid-template-columns: 1fr; }
+      .ops-status-card { overflow: hidden; width: 100%; }
+      .ops-status-card span,
+      .ops-status-card strong,
+      .ops-status-card small { max-width: 100%; }
+      .ops-launcher { grid-template-columns: minmax(0, 1fr); max-width: 100%; overflow: hidden; }
+      .ops-launcher-card { width: 100%; min-height: 0; overflow: hidden; }
+      .ops-launcher-card * { min-width: 0; }
+      .ops-launcher-card strong,
+      .ops-launcher-card .meta { max-width: 100%; }
+      .ops-launcher-actions { display: grid; grid-template-columns: 1fr; }
       .ops-launcher-actions a,
-      .ops-launcher-actions button { flex: 1 1 140px; }
-      .tabbar { flex-wrap: wrap; overflow: visible; }
-      .tabbar button { flex: 1 1 138px; }
+      .ops-launcher-actions button { width: 100%; max-width: 100%; }
+      .ops-launcher-stat { display: grid; grid-template-columns: 1fr; align-items: start; gap: 2px; }
+      .ops-launcher-stat b { white-space: normal; text-align: left; }
+      .tab-switcher { display: grid; }
+      .tabbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding: 8px 0;
+        background: rgba(5, 9, 11, .94);
+        backdrop-filter: blur(8px);
+      }
+      .tabbar button { flex: 0 0 auto; min-width: 136px; }
+      .workflow-strip,
+      .workflow-strip.compact { grid-template-columns: 1fr; }
       .tester-run-head { display: grid; }
       .tester-run-steps { grid-template-columns: 1fr; }
       .tester-run-actions .meta { margin-left: 0; }
@@ -20372,10 +20561,33 @@ def _render_flight_attendant_dashboard() -> str:
       <div id="status" class="status">Loading offers...</div>
     </header>
 
+    <section class="ops-status-panel" aria-label="Operations status">
+      <div class="ops-status-card" data-state="ready">
+        <span>Active workflow</span>
+        <strong id="ops-active-workflow">Market Posts</strong>
+        <small id="ops-active-detail">Choose a tab to focus the console.</small>
+      </div>
+      <div class="ops-status-card" data-state="waiting">
+        <span>ESI session</span>
+        <strong id="ops-esi-state">Checking</strong>
+        <small id="ops-esi-detail">Read-only scopes only; no client control.</small>
+      </div>
+      <div class="ops-status-card" data-state="waiting">
+        <span>Static caches</span>
+        <strong id="ops-cache-state">Checking</strong>
+        <small id="ops-cache-detail">Industry, route, PI, and reprocessing cache readiness.</small>
+      </div>
+      <div class="ops-status-card" data-state="ready">
+        <span>Data posture</span>
+        <strong id="ops-data-state">Manual decisions</strong>
+        <small id="ops-data-detail">Public market data, local cache files, and authorized ESI summaries.</small>
+      </div>
+    </section>
+
     <section class="ops-launcher" aria-label="Tester operations launcher">
       <div class="ops-launcher-card primary">
         <strong>Test Session</strong>
-        <div class="meta">Connect ESI once, then compare a route scan against an investment portfolio scan.</div>
+        <div class="meta">Connect ESI once, then compare route and portfolio scans.</div>
         <div class="ops-launcher-stat"><span>Mode</span><b>Read-only</b></div>
         <div class="ops-launcher-actions">
           <a class="button-link" href="/flight/login">Connect ESI</a>
@@ -20393,7 +20605,7 @@ def _render_flight_attendant_dashboard() -> str:
       </div>
       <div class="ops-launcher-card">
         <strong>Investment Portfolio</strong>
-        <div class="meta">Buy-order spread, market-history warnings, and Quickbar handoff.</div>
+        <div class="meta">Buy-order spread, history warnings, and Quickbar handoff.</div>
         <div class="ops-launcher-stat"><span>Default scan</span><b>Balanced</b></div>
         <div class="ops-launcher-actions">
           <a class="button-link ghost-link" href="#acquisition">Open Portfolio</a>
@@ -20401,7 +20613,7 @@ def _render_flight_attendant_dashboard() -> str:
       </div>
       <div class="ops-launcher-card">
         <strong>Tester Handoff</strong>
-        <div class="meta">Keep every recommendation advisory and verify orders in EVE before moving ISK.</div>
+        <div class="meta">Keep recommendations advisory and verify orders in EVE.</div>
         <div class="ops-launcher-stat"><span>Exports</span><b>CSV + Quickbar</b></div>
         <div class="ops-launcher-actions">
           <a class="button-link ghost-link" href="#trade-pnl">Trade P&amp;L</a>
@@ -20409,7 +20621,7 @@ def _render_flight_attendant_dashboard() -> str:
       </div>
       <div class="ops-launcher-card">
         <strong>Trade Asset Ledger</strong>
-        <div class="meta">Read-only managed document bridge for portfolio fills, ESI assets, and hauler plans.</div>
+        <div class="meta">Managed bridge for portfolio fills, ESI assets, and hauler plans.</div>
         <div class="ops-launcher-stat"><span>Mode</span><b>Managed</b></div>
         <div class="ops-launcher-actions">
           <a class="button-link ghost-link" href="#asset-ledger">Open Ledger</a>
@@ -20417,20 +20629,39 @@ def _render_flight_attendant_dashboard() -> str:
       </div>
     </section>
 
+    <div class="tab-switcher">
+      <label for="dashboard-tab-select">Workspace</label>
+      <select id="dashboard-tab-select" aria-label="Dashboard workspace">
+        <option value="market">Market Posts</option>
+        <option value="tester">Tester Cockpit</option>
+        <option value="fittings">Shared Fittings</option>
+        <option value="flight">Flight Attendant</option>
+        <option value="industry">Industry Library</option>
+        <option value="hauling">Hauler Routes</option>
+        <option value="acquisition">Investment Portfolio</option>
+        <option value="asset-ledger">Asset Ledger</option>
+        <option value="mining-yield">Mining Yield</option>
+        <option value="appraisal">Bulk Appraisal</option>
+        <option value="trade-pnl">Trade P&amp;L</option>
+        <option value="planetary">Planetary Industry</option>
+        <option value="reprocessing">Reprocessing</option>
+      </select>
+    </div>
+
     <nav class="tabbar" aria-label="Dashboard tabs">
-      <button type="button" data-tab-target="market" aria-selected="true">Market Posts</button>
-      <button type="button" data-tab-target="tester" aria-selected="false">Tester Cockpit</button>
-      <button type="button" data-tab-target="fittings" aria-selected="false">Shared Fittings</button>
-      <button type="button" data-tab-target="flight" aria-selected="false">Flight Attendant</button>
-      <button type="button" data-tab-target="industry" aria-selected="false">Industry Library</button>
-      <button type="button" data-tab-target="hauling" aria-selected="false">Hauler Routes</button>
-      <button type="button" data-tab-target="acquisition" aria-selected="false">Investment Portfolio</button>
-      <button type="button" data-tab-target="asset-ledger" aria-selected="false">Asset Ledger</button>
-      <button type="button" data-tab-target="mining-yield" aria-selected="false">Mining Yield</button>
-      <button type="button" data-tab-target="appraisal" aria-selected="false">Bulk Appraisal</button>
-      <button type="button" data-tab-target="trade-pnl" aria-selected="false">Trade P&amp;L</button>
-      <button type="button" data-tab-target="planetary" aria-selected="false">Planetary Industry</button>
-      <button type="button" data-tab-target="reprocessing" aria-selected="false">Reprocessing</button>
+      <button type="button" data-tab-target="market" data-tab-group="Market" aria-selected="true">Market Posts</button>
+      <button type="button" data-tab-target="tester" data-tab-group="Ops" aria-selected="false">Tester Cockpit</button>
+      <button type="button" data-tab-target="fittings" data-tab-group="Fleet" aria-selected="false">Shared Fittings</button>
+      <button type="button" data-tab-target="flight" data-tab-group="ESI" aria-selected="false">Flight Attendant</button>
+      <button type="button" data-tab-target="industry" data-tab-group="Industry" aria-selected="false">Industry Library</button>
+      <button type="button" data-tab-target="hauling" data-tab-group="Logistics" aria-selected="false">Hauler Routes</button>
+      <button type="button" data-tab-target="acquisition" data-tab-group="Market" aria-selected="false">Investment Portfolio</button>
+      <button type="button" data-tab-target="asset-ledger" data-tab-group="Assets" aria-selected="false">Asset Ledger</button>
+      <button type="button" data-tab-target="mining-yield" data-tab-group="Industry" aria-selected="false">Mining Yield</button>
+      <button type="button" data-tab-target="appraisal" data-tab-group="Market" aria-selected="false">Bulk Appraisal</button>
+      <button type="button" data-tab-target="trade-pnl" data-tab-group="Accounting" aria-selected="false">Trade P&amp;L</button>
+      <button type="button" data-tab-target="planetary" data-tab-group="Industry" aria-selected="false">Planetary Industry</button>
+      <button type="button" data-tab-target="reprocessing" data-tab-group="Industry" aria-selected="false">Reprocessing</button>
     </nav>
 
     <main>
@@ -20975,6 +21206,28 @@ help</textarea>
               </div>
               <span class="pill reserved">Preview</span>
             </div>
+            <div class="workflow-strip" aria-label="Flight Attendant workflow">
+              <div class="workflow-step">
+                <span>Status</span>
+                <strong>Briefing first</strong>
+                <small>Current system, local notes, ESI transparency, and safety checks.</small>
+              </div>
+              <div class="workflow-step">
+                <span>Data source</span>
+                <strong>Read-only ESI</strong>
+                <small>Location scope only on this tab; industry work moved to Industry Library.</small>
+              </div>
+              <div class="workflow-step">
+                <span>Freshness</span>
+                <strong>Manual refresh</strong>
+                <small>Refresh when you want the current system rechecked.</small>
+              </div>
+              <div class="workflow-step">
+                <span>Control</span>
+                <strong>Pilot acts</strong>
+                <small>No keypresses, market orders, contracts, warps, or client reads.</small>
+              </div>
+            </div>
             <details class="module note-module">
               <summary><h3 class="warning">Captain's Notes</h3></summary>
               <div class="module-content">
@@ -21063,31 +21316,53 @@ help</textarea>
                 <div class="meta">Owned blueprint inventory, known recipes, material stock, and job assumptions from ESI plus the local SDE cache.</div>
               </div>
             </div>
+            <div class="workflow-strip" aria-label="Industry Library workflow">
+              <div class="workflow-step">
+                <span>Inputs</span>
+                <strong>Blueprints + assets</strong>
+                <small>Authorized ESI reads summarize what this pilot owns.</small>
+              </div>
+              <div class="workflow-step">
+                <span>Reference</span>
+                <strong>Local SDE cache</strong>
+                <small>Recipe, route, PI, and reprocessing files are host-side cache data.</small>
+              </div>
+              <div class="workflow-step">
+                <span>Market data</span>
+                <strong>Public orders</strong>
+                <small>Buyer and price estimates use public ESI market data.</small>
+              </div>
+              <div class="workflow-step">
+                <span>Output</span>
+                <strong>Advisory only</strong>
+                <small>Build, buy, haul, and sell actions stay manual inside EVE.</small>
+              </div>
+            </div>
 @@TAB_SCOPE_INDUSTRY@@
             <div class="module-stack">
               <details class="module flight-output-module" open>
-                <summary><h3 class="signal">Owned Blueprints</h3></summary>
+                <summary><span class="module-title"><h3 class="signal">Owned Blueprints</h3><span class="source-badge">ESI blueprints</span></span></summary>
                 <div class="module-content">
                   <div id="flight-blueprint-summary" class="meta">Connect ESI to scan owned blueprints.</div>
                   <div id="flight-blueprint-top" class="meta"></div>
                 </div>
               </details>
               <details class="module flight-output-module" open>
-                <summary><h3 class="warning">Materials And Assets</h3></summary>
+                <summary><span class="module-title"><h3 class="warning">Materials And Assets</h3><span class="source-badge">ESI assets</span></span></summary>
                 <div class="module-content">
                   <div id="flight-asset-summary" class="meta">Connect ESI to scan owned asset stacks.</div>
                   <div id="flight-asset-top" class="meta"></div>
                 </div>
               </details>
               <details class="module flight-output-module" open>
-                <summary><h3 class="signal">Recipe Cache</h3></summary>
+                <summary><span class="module-title"><h3 class="signal">Recipe Cache</h3><span class="source-badge">Local cache</span></span></summary>
                 <div class="module-content">
                   <div id="flight-recipe-summary" class="meta">Connect ESI to compare owned blueprints with static recipes.</div>
                   <div id="flight-buildability-top" class="meta"></div>
                 </div>
               </details>
               <details class="module flight-output-module" open>
-                <summary><h3 class="signal">Nearby Systems</h3></summary>
+                <summary><span class="module-title"><h3 class="signal">Nearby Systems</h3><span class="source-badge">Location + route cache</span></span></summary>
                 <div class="module-content">
                   <label>Max jumps
                     <input id="flight-max-jumps" type="number" min="0" max="25" step="1" value="5">
@@ -21097,7 +21372,7 @@ help</textarea>
                 </div>
               </details>
               <details class="module flight-output-module" open>
-                <summary><h3 class="warning">Buyer Orders</h3></summary>
+                <summary><span class="module-title"><h3 class="warning">Buyer Orders</h3><span class="source-badge">Public market ESI</span></span></summary>
                 <div class="module-content">
                   <button id="flight-buyer-scan" class="ghost" type="button">Scan Buyers</button>
                   <div id="flight-buyer-summary" class="meta">Connect ESI to scan nearby public buy orders.</div>
@@ -21106,7 +21381,7 @@ help</textarea>
                 </div>
               </details>
               <details class="module flight-output-module" open>
-                <summary><h3 class="danger">Pilot Still Acts</h3></summary>
+                <summary><span class="module-title"><h3 class="danger">Pilot Still Acts</h3><span class="source-badge">Manual handoff</span></span></summary>
                 <div class="module-content">
                   <div id="flight-industry-note" class="meta">No warps, orders, contracts, clicks, or client input are performed by this page.</div>
                 </div>
@@ -21121,6 +21396,23 @@ help</textarea>
                   <span class="pill reserved">Decision Board</span>
                 </div>
                 <div class="meta">Owned blueprints, owned materials, nearby buyers, and nearby material pricing.</div>
+              </div>
+            </div>
+            <div class="workflow-strip compact" aria-label="Profitability workflow">
+              <div class="workflow-step">
+                <span>Estimate</span>
+                <strong>Owned materials</strong>
+                <small>Uses ESI assets and blueprint ME/TE where available.</small>
+              </div>
+              <div class="workflow-step">
+                <span>Demand</span>
+                <strong>Nearby buyers</strong>
+                <small>Public buy orders are cached locally to respect ESI limits.</small>
+              </div>
+              <div class="workflow-step">
+                <span>Decision</span>
+                <strong>Rank, then verify</strong>
+                <small>Every result is a planning estimate, not an order instruction.</small>
               </div>
             </div>
             <div class="profit-actions">
@@ -22568,6 +22860,15 @@ help</textarea>
     const fittingsStatusEl = document.querySelector("#fittings-status");
     const fittingSearch = document.querySelector("#fitting-search");
     const fittingFilters = document.querySelector("#fitting-filters");
+    const dashboardTabSelect = document.querySelector("#dashboard-tab-select");
+    const opsActiveWorkflow = document.querySelector("#ops-active-workflow");
+    const opsActiveDetail = document.querySelector("#ops-active-detail");
+    const opsEsiState = document.querySelector("#ops-esi-state");
+    const opsEsiDetail = document.querySelector("#ops-esi-detail");
+    const opsCacheState = document.querySelector("#ops-cache-state");
+    const opsCacheDetail = document.querySelector("#ops-cache-detail");
+    const opsDataState = document.querySelector("#ops-data-state");
+    const opsDataDetail = document.querySelector("#ops-data-detail");
     const tabButtons = document.querySelectorAll("[data-tab-target]");
     const tabPanels = document.querySelectorAll("[data-tab-panel]");
     const notesForm = document.querySelector("#flight-note-form");
@@ -22899,6 +23200,25 @@ help</textarea>
       ["readiness", "tester"],
       ["cockpit", "tester"],
     ]);
+    const tabWorkflowDetails = {
+      market: "Discord-facing market posts and manual offer coordination.",
+      tester: "Hosting, ESI, Discord, cache, callback, and local path readiness.",
+      fittings: "Shared EVE fitting blocks with Discord handoff.",
+      flight: "Current-system briefing, ESI transparency, notes, and safety.",
+      industry: "Blueprints, assets, recipes, nearby buyers, and profitability estimates.",
+      hauling: "Route profit planning, cargo limits, pickup access, and manual exports.",
+      acquisition: "Buy-order portfolio planning and history-backed risk checks.",
+      "asset-ledger": "Managed asset containers for portfolio fills and hauler handoff.",
+      "mining-yield": "Opt-in mining ledger summaries and local session timing.",
+      appraisal: "Bulk price appraisal from pasted item lists.",
+      "trade-pnl": "Wallet transaction P&L, fees, open stock, and plan reconciliation.",
+      planetary: "Planetary industry price ranking and customs-fee planning.",
+      reprocessing: "Ore reprocessing estimates, facility tax, and manual structure overrides.",
+    };
+    const tabLabels = Array.from(tabButtons).reduce((labels, button) => {
+      labels[button.dataset.tabTarget] = button.textContent.trim();
+      return labels;
+    }, {});
     let filterType = "";
     let includeClosed = false;
     let includeArchivedFittings = false;
@@ -22992,6 +23312,49 @@ help</textarea>
       }
       const className = options.className || "haul-checklist";
       return `<div class="${escapeHtml(className)}">${safeItems.map(renderDashboardChecklistItem).join("")}</div>`;
+    }
+
+    function dashboardStateLabel(state) {
+      if (state === "ready") return "Ready";
+      if (state === "error") return "Needs attention";
+      if (state === "empty") return "No results";
+      return "Waiting";
+    }
+
+    function renderDashboardStateMessage(message, options = {}) {
+      const state = options.state || "waiting";
+      const label = options.label || dashboardStateLabel(state);
+      const detail = options.detail ? `<small>${escapeHtml(options.detail)}</small>` : "";
+      return `
+        <div class="state-callout is-${escapeHtml(state)}">
+          <strong>${escapeHtml(label)}</strong>
+          <span>${escapeHtml(message || "Waiting for input.")}</span>
+          ${detail}
+        </div>
+      `;
+    }
+
+    function setDashboardState(target, message, options = {}) {
+      if (!target) return;
+      target.innerHTML = renderDashboardStateMessage(message, options);
+    }
+
+    function setOpsStatusCard(strongEl, detailEl, label, detail, state = "waiting") {
+      if (strongEl) strongEl.textContent = label || dashboardStateLabel(state);
+      if (detailEl) detailEl.textContent = detail || "";
+      const card = strongEl ? strongEl.closest(".ops-status-card") : null;
+      if (card) card.dataset.state = state;
+    }
+
+    function updateActiveWorkflowStatus(tabName) {
+      const targetTab = resolveTabName(tabName) || "market";
+      setOpsStatusCard(
+        opsActiveWorkflow,
+        opsActiveDetail,
+        tabLabels[targetTab] || "Dashboard",
+        tabWorkflowDetails[targetTab] || "Focused dashboard workspace.",
+        "ready",
+      );
     }
 
     function cleanResponseSnippet(value) {
@@ -24642,8 +25005,19 @@ help</textarea>
     }
 
     async function loadFlightDiagnostics() {
-      if (flightCacheSummary) flightCacheSummary.textContent = "Checking static cache readiness...";
+      setDashboardState(flightCacheSummary, "Checking static cache readiness...", {
+        state: "waiting",
+        label: "Checking caches",
+        detail: "This reads only local host-side cache file metadata.",
+      });
       if (flightCacheList) flightCacheList.innerHTML = "";
+      setOpsStatusCard(
+        opsCacheState,
+        opsCacheDetail,
+        "Checking",
+        "Reading host-side static cache diagnostics.",
+        "waiting",
+      );
       if (testerCockpitSummary) testerCockpitSummary.textContent = "Checking tester readiness...";
       try {
         const data = await readJsonApiResponse(
@@ -24653,8 +25027,19 @@ help</textarea>
         renderStaticCachePreflight(data.static_caches || {});
         renderTesterCockpit(data);
       } catch (error) {
-        if (flightCacheSummary) flightCacheSummary.textContent = error.message;
+        setDashboardState(flightCacheSummary, error.message, {
+          state: "error",
+          label: "Cache diagnostics failed",
+          detail: "Confirm the server is still running, then refresh this page.",
+        });
         if (flightCacheList) flightCacheList.innerHTML = "";
+        setOpsStatusCard(
+          opsCacheState,
+          opsCacheDetail,
+          "Diagnostics failed",
+          error.message || "Could not read cache readiness.",
+          "error",
+        );
         renderTesterCockpitError(error.message);
       }
     }
@@ -24665,8 +25050,19 @@ help</textarea>
       const missingCount = Number(staticCaches.missing_count || caches.filter((cache) => !cache.available).length);
       const refreshCommand = staticCaches.refresh_command || "python .\\\\scripts\\\\update_industry_recipe_cache.py";
       if (!caches.length) {
-        flightCacheSummary.textContent = "No static cache diagnostics were returned.";
+        setDashboardState(flightCacheSummary, "No static cache diagnostics were returned.", {
+          state: "empty",
+          label: "No diagnostics",
+          detail: "The diagnostics endpoint did not return cache rows.",
+        });
         flightCacheList.innerHTML = "";
+        setOpsStatusCard(
+          opsCacheState,
+          opsCacheDetail,
+          "No diagnostics",
+          "The server did not return cache readiness rows.",
+          "error",
+        );
         return;
       }
       if (missingCount > 0) {
@@ -24674,11 +25070,25 @@ help</textarea>
           <strong>${formatNumber(missingCount)}</strong> static cache${missingCount === 1 ? "" : "s"} missing.
           <div class="meta">Run <code>${escapeHtml(refreshCommand)}</code> on the same host that serves this website.</div>
         `;
+        setOpsStatusCard(
+          opsCacheState,
+          opsCacheDetail,
+          `${formatNumber(missingCount)} missing`,
+          "Run the cache refresh on the serving host before tester use.",
+          "error",
+        );
       } else {
         flightCacheSummary.innerHTML = `
           <strong>All static caches ready.</strong>
           <div class="meta">Generated cache files are local host data under <code>cache\\</code> and are not committed.</div>
         `;
+        setOpsStatusCard(
+          opsCacheState,
+          opsCacheDetail,
+          "Ready",
+          `${formatNumber(caches.length)} cache file${caches.length === 1 ? "" : "s"} available on this host.`,
+          "ready",
+        );
       }
       flightCacheList.innerHTML = caches.map(renderStaticCacheRow).join("");
     }
@@ -24907,9 +25317,11 @@ help</textarea>
         const selected = button.dataset.tabTarget === targetTab;
         button.setAttribute("aria-selected", selected ? "true" : "false");
       });
+      if (dashboardTabSelect) dashboardTabSelect.value = targetTab;
       tabPanels.forEach((panel) => {
         panel.hidden = panel.dataset.tabPanel !== targetTab;
       });
+      updateActiveWorkflowStatus(targetTab);
     }
 
     function scrollTabIntoView(tabName) {
@@ -26472,6 +26884,13 @@ help</textarea>
 
     async function loadFlightStatus() {
       try {
+        setOpsStatusCard(
+          opsEsiState,
+          opsEsiDetail,
+          "Checking",
+          "Reading read-only ESI session status.",
+          "waiting",
+        );
         const maxJumps = writeMaxJumps(readMaxJumps());
         const response = await fetch(`/api/flight/status?max_jumps=${encodeURIComponent(maxJumps)}`);
         const data = await response.json();
@@ -26490,6 +26909,20 @@ help</textarea>
         resetReprocessing("Ore reprocessing calculator is offline.");
         clearReprocessingLocations("Ore reprocessing calculator is offline.", true);
         resetFlightIndustry("Flight Attendant ESI status is offline.");
+        setOpsStatusCard(
+          opsEsiState,
+          opsEsiDetail,
+          "Offline",
+          error.message || "Could not load Flight Attendant status.",
+          "error",
+        );
+        setOpsStatusCard(
+          opsDataState,
+          opsDataDetail,
+          "Data stale",
+          "ESI-dependent summaries are waiting for a successful refresh.",
+          "error",
+        );
         recordEsiActivityError({
           scopes: flightActivityScopes("location"),
           label: "Location check failed",
@@ -26577,6 +27010,20 @@ help</textarea>
         resetReprocessing("Configure EVE SSO before calculating ore reprocessing.");
         clearReprocessingLocations("Configure EVE SSO before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
+        setOpsStatusCard(
+          opsEsiState,
+          opsEsiDetail,
+          "Setup needed",
+          "Add EVE SSO client ID, secret, and callback URL.",
+          "error",
+        );
+        setOpsStatusCard(
+          opsDataState,
+          opsDataDetail,
+          "Local only",
+          "Static and public data can load, but authorized ESI summaries are unavailable.",
+          "waiting",
+        );
         return;
       }
       if (!data.connected) {
@@ -26595,6 +27042,20 @@ help</textarea>
         resetReprocessing("Connect ESI to calculate ore reprocessing.");
         clearReprocessingLocations("Connect ESI to rank reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
+        setOpsStatusCard(
+          opsEsiState,
+          opsEsiDetail,
+          "Not connected",
+          "Connect ESI to enable authorized character summaries.",
+          "waiting",
+        );
+        setOpsStatusCard(
+          opsDataState,
+          opsDataDetail,
+          "Manual mode",
+          "Public and local-cache tools stay advisory until a pilot connects ESI.",
+          "waiting",
+        );
         return;
       }
       const location = data.location || {};
@@ -26615,6 +27076,20 @@ help</textarea>
         resetReprocessing("Use an allowlisted EVE character before calculating ore reprocessing.");
         clearReprocessingLocations("Use an allowlisted EVE character before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Use an allowlisted EVE character before scanning industry data.");
+        setOpsStatusCard(
+          opsEsiState,
+          opsEsiDetail,
+          "Access blocked",
+          membership.message || "This character is not in the allowed corporation or alliance.",
+          "error",
+        );
+        setOpsStatusCard(
+          opsDataState,
+          opsDataDetail,
+          "Restricted",
+          "Reconnect with an allowlisted pilot before using character data.",
+          "error",
+        );
         return;
       }
       if (data.error) {
@@ -26631,6 +27106,20 @@ help</textarea>
         resetReprocessing("Resolve the ESI error before calculating ore reprocessing.");
         clearReprocessingLocations("Resolve the ESI error before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
+        setOpsStatusCard(
+          opsEsiState,
+          opsEsiDetail,
+          "ESI error",
+          data.error || "Reconnect ESI if the token expired.",
+          "error",
+        );
+        setOpsStatusCard(
+          opsDataState,
+          opsDataDetail,
+          "Data stale",
+          "Current ESI summaries are not reliable until the error is resolved.",
+          "error",
+        );
         recordEsiActivityError({
           scopes: flightActivityScopes("location"),
           label: "Location check failed",
@@ -26641,6 +27130,20 @@ help</textarea>
       }
       flightSystemName.textContent = location.solar_system_name || "Unknown System";
       flightLocationLine.textContent = `Live ESI location ${location.updated_at || ""}`;
+      setOpsStatusCard(
+        opsEsiState,
+        opsEsiDetail,
+        "Connected",
+        `${character.character_name || "Pilot"}; token about ${Math.ceil((character.expires_in_seconds || 0) / 60)} min remaining.`,
+        "ready",
+      );
+      setOpsStatusCard(
+        opsDataState,
+        opsDataDetail,
+        location.updated_at ? "Fresh ESI" : "ESI checked",
+        location.updated_at ? `Current location updated ${location.updated_at}.` : "Current-system source was checked this session.",
+        "ready",
+      );
       haulOrigin.placeholder = location.solar_system_name ? `Current ESI: ${location.solar_system_name}` : "Current ESI location";
       if (missingRequiredScopes.length) {
         flightMessage.textContent = `${character.character_name || "Pilot"} connected, but reconnect ESI for new scopes: ${missingRequiredScopes.join(", ")}.`;
@@ -26672,7 +27175,11 @@ help</textarea>
     }
 
     function resetFlightRoute(message) {
-      flightRouteSummary.textContent = message;
+      setDashboardState(flightRouteSummary, message, {
+        state: "waiting",
+        label: "Route waiting",
+        detail: "Uses current ESI location plus the local route graph cache.",
+      });
       flightRouteTop.textContent = "";
     }
 
@@ -26700,7 +27207,11 @@ help</textarea>
     function resetFlightBuyers(message) {
       closeBuyerEventSource();
       stopBuyerProgressTimer();
-      flightBuyerSummary.textContent = message;
+      setDashboardState(flightBuyerSummary, message, {
+        state: "waiting",
+        label: "Buyer scan waiting",
+        detail: "Uses owned blueprint products and public market buy orders when you start a scan.",
+      });
       flightBuyerProgressLog.hidden = true;
       flightBuyerProgressLog.innerHTML = "";
       flightBuyerTop.textContent = "";
@@ -26782,7 +27293,11 @@ help</textarea>
           });
         } catch (error) {
           stopBuyerProgressTimer();
-          flightBuyerSummary.textContent = error.message;
+          setDashboardState(flightBuyerSummary, error.message, {
+            state: "error",
+            label: "Buyer scan failed",
+            detail: "No token, order, or raw response data is shown here.",
+          });
           flightBuyerTop.textContent = "";
           recordEsiActivityError({
             scopes: flightActivityScopes("location", "blueprints"),
@@ -26838,7 +27353,11 @@ help</textarea>
           const elapsedSeconds = stopBuyerProgressTimer();
           closeBuyerEventSource();
           appendBuyerProgress("Stopped", {message: payload.error || "Buyer scan failed.", elapsed_seconds: elapsedSeconds});
-          flightBuyerSummary.textContent = `${payload.error || "Buyer scan failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+          setDashboardState(flightBuyerSummary, `${payload.error || "Buyer scan failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`, {
+            state: "error",
+            label: "Buyer scan failed",
+            detail: "The scan stopped before a usable result was returned.",
+          });
           flightBuyerTop.textContent = "";
           flightBuyerScanButton.disabled = false;
           recordEsiActivityError({
@@ -26872,7 +27391,11 @@ help</textarea>
           const elapsedSeconds = stopBuyerProgressTimer();
           closeBuyerEventSource();
           appendBuyerProgress("Stopped", {message: "Buyer scan connection closed before results arrived.", elapsed_seconds: elapsedSeconds});
-          flightBuyerSummary.textContent = `Buyer scan connection closed before results arrived. Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+          setDashboardState(flightBuyerSummary, `Buyer scan connection closed before results arrived. Elapsed ${formatElapsedDuration(elapsedSeconds)}.`, {
+            state: "error",
+            label: "Buyer scan interrupted",
+            detail: "Try the scan again after confirming the server is still running.",
+          });
           flightBuyerTop.textContent = "";
           flightBuyerScanButton.disabled = false;
           recordEsiActivityError({
@@ -26957,7 +27480,11 @@ help</textarea>
 
     function resetFlightProfitability(message) {
       stopFlightProfitProgress();
-      flightProfitSummary.textContent = message;
+      setDashboardState(flightProfitSummary, message, {
+        state: "waiting",
+        label: "Profit ranking waiting",
+        detail: "Uses owned blueprints, owned assets, skills, public market orders, and local recipe cache data.",
+      });
       flightProfitTop.textContent = "";
       flightProfitScanButton.disabled = false;
       flightProfitProducts = [];
@@ -27019,7 +27546,11 @@ help</textarea>
         });
       } catch (error) {
         stopFlightProfitProgress();
-        flightProfitSummary.textContent = error.message;
+        setDashboardState(flightProfitSummary, error.message, {
+          state: "error",
+          label: "Profit ranking failed",
+          detail: "No token, authorization header, or raw API response is shown.",
+        });
         flightProfitTop.textContent = "";
         recordEsiActivityError({
           scopes: flightActivityScopes("location", "assets", "blueprints", "skills"),
@@ -32294,21 +32825,45 @@ help</textarea>
     }
 
     function resetFlightIndustry(message) {
-      flightBlueprintSummary.textContent = message;
+      setDashboardState(flightBlueprintSummary, message, {
+        state: "waiting",
+        label: "Blueprints waiting",
+        detail: "Reads only blueprint summary data the pilot authorized through ESI.",
+      });
       flightBlueprintTop.textContent = "";
-      flightAssetSummary.textContent = message;
+      setDashboardState(flightAssetSummary, message, {
+        state: "waiting",
+        label: "Assets waiting",
+        detail: "Reads owned item stacks for material coverage; it cannot move assets.",
+      });
       flightAssetTop.textContent = "";
-      flightRecipeSummary.textContent = message;
+      setDashboardState(flightRecipeSummary, message, {
+        state: "waiting",
+        label: "Recipe cache waiting",
+        detail: "Compares authorized blueprints to the local static recipe cache.",
+      });
       flightBuildabilityTop.textContent = "";
       flightIndustryNote.textContent = "No warps, orders, contracts, clicks, or client input are performed by this page.";
     }
 
     async function loadFlightIndustry() {
-      flightBlueprintSummary.textContent = "Scanning owned blueprints...";
+      setDashboardState(flightBlueprintSummary, "Scanning owned blueprints...", {
+        state: "waiting",
+        label: "Reading ESI",
+        detail: "Only summary counts and blueprint names are rendered.",
+      });
       flightBlueprintTop.textContent = "";
-      flightAssetSummary.textContent = "Scanning owned asset stacks...";
+      setDashboardState(flightAssetSummary, "Scanning owned asset stacks...", {
+        state: "waiting",
+        label: "Reading ESI",
+        detail: "Material stacks are summarized for build planning.",
+      });
       flightAssetTop.textContent = "";
-      flightRecipeSummary.textContent = "Checking static recipe cache...";
+      setDashboardState(flightRecipeSummary, "Checking static recipe cache...", {
+        state: "waiting",
+        label: "Checking cache",
+        detail: "Generated static cache files stay local to the serving host.",
+      });
       flightBuildabilityTop.textContent = "";
       try {
         const response = await fetch("/api/flight/industry");
@@ -32326,9 +32881,21 @@ help</textarea>
           status: (Number(blueprints.count || 0) || Number(assets.stack_count || assets.count || 0)) ? "success" : "empty",
         });
       } catch (error) {
-        flightBlueprintSummary.textContent = error.message;
-        flightAssetSummary.textContent = error.message;
-        flightRecipeSummary.textContent = error.message;
+        setDashboardState(flightBlueprintSummary, error.message, {
+          state: "error",
+          label: "Blueprint read failed",
+          detail: "Reconnect ESI if new scopes were added.",
+        });
+        setDashboardState(flightAssetSummary, error.message, {
+          state: "error",
+          label: "Asset read failed",
+          detail: "No token, raw response, or private identifiers are shown here.",
+        });
+        setDashboardState(flightRecipeSummary, error.message, {
+          state: "error",
+          label: "Recipe check blocked",
+          detail: "Industry analysis needs both authorized ESI data and the local cache.",
+        });
         flightBuildabilityTop.textContent = "";
         resetFlightProfitability("Industry analysis requires a connected ESI session with blueprint and asset scopes.");
         flightIndustryNote.textContent = "Industry analysis requires a connected ESI session with blueprint and asset scopes.";
@@ -32446,6 +33013,16 @@ help</textarea>
         window.history.replaceState(null, "", `#${tabName}`);
       });
     });
+
+    if (dashboardTabSelect) {
+      dashboardTabSelect.addEventListener("change", () => {
+        const tabName = resolveTabName(dashboardTabSelect.value);
+        if (!tabName) return;
+        showTab(tabName);
+        window.history.replaceState(null, "", `#${tabName}`);
+        scrollTabIntoView(tabName);
+      });
+    }
 
     document.querySelectorAll(".ops-launcher a[href^='#']").forEach((link) => {
       link.addEventListener("click", (event) => {

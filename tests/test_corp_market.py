@@ -503,6 +503,9 @@ def test_dashboard_includes_flight_attendant_tab_and_safety_charter():
     assert "Captain's Notes" in flight_section
     assert "Current system briefing" in flight_section
     assert "ESI Flight Recorder" in flight_section
+    assert "Flight Attendant workflow" in flight_section
+    assert "Briefing first" in flight_section
+    assert "Manual refresh" in flight_section
     assert "Read-only ESI" in flight_section
     assert "No EVE client control" in flight_section
     assert "screen-reading reactions" in flight_section
@@ -545,6 +548,22 @@ def test_dashboard_includes_tester_readiness_cockpit():
     assert "renderTesterDiscordSurface" in page
     assert "[\"diagnostics\", \"tester\"]" in page
     assert "[\"test-bench\", \"tester\"]" in page
+
+
+def test_dashboard_includes_operations_status_and_mobile_switcher():
+    page = render_dashboard()
+
+    assert "aria-label=\"Operations status\"" in page
+    assert "id=\"ops-active-workflow\"" in page
+    assert "id=\"ops-esi-state\"" in page
+    assert "id=\"ops-cache-state\"" in page
+    assert "id=\"ops-data-state\"" in page
+    assert "id=\"dashboard-tab-select\"" in page
+    assert "data-tab-group=\"Industry\"" in page
+    assert "data-tab-group=\"Logistics\"" in page
+    assert "tabWorkflowDetails" in page
+    assert "setOpsStatusCard" in page
+    assert "updateActiveWorkflowStatus" in page
 
 
 def test_dashboard_includes_plex_button_press_effect():
@@ -617,6 +636,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-tab-target=\"industry\"" in page
     assert "Industry Library" in page
     assert "data-scope-tab=\"industry\"" in page
+    assert "Industry Library workflow" in industry_section
+    assert "Blueprints + assets" in industry_section
+    assert "Local SDE cache" in industry_section
+    assert "Public orders" in industry_section
+    assert "Advisory only" in industry_section
     assert "Decision Lenses" in page
     assert "id=\"industry-build-system\"" in page
     assert "id=\"industry-sale-mode\"" in page
@@ -628,6 +652,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-buyer-scan\"" in page
     assert "id=\"flight-buyer-summary\"" in page
     assert "id=\"flight-buyer-progress-log\"" in page
+    assert "Public market ESI" in industry_section
     assert "id=\"flight-profit-scan\"" in page
     assert "id=\"flight-profit-summary\"" in page
     assert "id=\"flight-profit-filters\"" in page
@@ -686,6 +711,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Server memory" in page
     assert "@@TAB_SCOPE_MINING_YIELD@@" not in page
     assert "id=\"flight-blueprint-summary\"" in industry_section
+    assert "ESI blueprints" in industry_section
+    assert "ESI assets" in industry_section
+    assert "Local cache" in industry_section
     assert "id=\"flight-profit-scan\"" in industry_section
     assert "id=\"flight-buyer-scan\"" in industry_section
     assert "Static Cache Preflight" in industry_section
@@ -1115,6 +1143,9 @@ def test_dashboard_uses_shared_empty_error_and_checklist_helpers():
     assert "function renderDashboardErrorState" in page
     assert "function renderDashboardChecklistItem" in page
     assert "function renderDashboardChecklist" in page
+    assert "function renderDashboardStateMessage" in page
+    assert "function setDashboardState" in page
+    assert "state-callout" in page
     assert 'renderDashboardEmptyState("No completed rows found.")' in page
     assert 'renderDashboardEmptyState("No readiness checks were returned.")' in page
     assert 'renderDashboardErrorState(error.message || "Appraisal failed.")' in page
