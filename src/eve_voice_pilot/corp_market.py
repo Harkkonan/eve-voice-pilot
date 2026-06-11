@@ -5,7 +5,7 @@ import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import fnmatch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -181,6 +181,11 @@ MAX_FLIGHT_TRADE_PNL_TRANSACTIONS = 10_000
 MAX_FLIGHT_TRADE_PNL_ITEMS = 40
 MAX_FLIGHT_TRADE_PNL_MARKET_TYPES = 200
 MAX_FLIGHT_TRADE_PNL_EXPECTATIONS = 200
+DEFAULT_FLIGHT_MINING_WINDOW_DAYS = 7
+MAX_FLIGHT_MINING_WINDOW_DAYS = 30
+DEFAULT_FLIGHT_MINING_SESSION_HOURS = 2.0
+MAX_FLIGHT_MINING_SESSION_HOURS = 720.0
+MAX_FLIGHT_MINING_ROWS = 24
 DEFAULT_PLANETARY_HUB_SYSTEM = "Jita"
 DEFAULT_PLANETARY_OUTPUT_TIER = "P2"
 DEFAULT_PLANETARY_CHAIN_TARGET = "Microfiber Shielding"
@@ -278,6 +283,7 @@ FLIGHT_STANDINGS_SCOPE = "esi-characters.read_standings.v1"
 FLIGHT_IMPLANTS_SCOPE = "esi-clones.read_implants.v1"
 FLIGHT_STRUCTURES_SCOPE = "esi-universe.read_structures.v1"
 FLIGHT_WALLET_SCOPE = "esi-wallet.read_character_wallet.v1"
+FLIGHT_MINING_SCOPE = "esi-industry.read_character_mining.v1"
 DEFAULT_FLIGHT_ESI_SCOPES = (
     FLIGHT_LOCATION_SCOPE,
     FLIGHT_ASSETS_SCOPE,
@@ -290,8 +296,11 @@ OPTIONAL_REPROCESSING_ESI_SCOPES = (
     FLIGHT_IMPLANTS_SCOPE,
     FLIGHT_STRUCTURES_SCOPE,
 )
+OPTIONAL_MINING_ESI_SCOPES = (FLIGHT_MINING_SCOPE,)
 REPROCESSING_SCOPE_MODE = "reprocessing"
+MINING_SCOPE_MODE = "mining"
 REPROCESSING_OPT_IN_LOGIN_URL = f"/flight/login?scope_mode={REPROCESSING_SCOPE_MODE}"
+MINING_OPT_IN_LOGIN_URL = f"/flight/login?scope_mode={MINING_SCOPE_MODE}"
 FLIGHT_ESI_SCOPE_DISCLOSURES: dict[str, dict[str, str]] = {
     FLIGHT_LOCATION_SCOPE: {
         "label": "Current location",
@@ -325,6 +334,10 @@ FLIGHT_ESI_SCOPE_DISCLOSURES: dict[str, dict[str, str]] = {
         "label": "Character wallet",
         "detail": "Reads recent wallet transactions and market fee journal rows for Trade P&L. It is read-only and cannot create, edit, or cancel orders.",
     },
+    FLIGHT_MINING_SCOPE: {
+        "label": "Character mining ledger",
+        "detail": "Optional for Mining Yield. Reads daily character mining ledger rows from ESI so the app can show cache-limited ore/day and manually timed session averages.",
+    },
 }
 
 
@@ -342,6 +355,8 @@ def flight_scopes_for_login(config: EveSsoConfig, *, scope_mode: str = "") -> tu
     base_scopes = tuple(config.scopes or DEFAULT_FLIGHT_ESI_SCOPES)
     if scope_mode == REPROCESSING_SCOPE_MODE:
         return merge_flight_scopes(base_scopes, OPTIONAL_REPROCESSING_ESI_SCOPES)
+    if scope_mode == MINING_SCOPE_MODE:
+        return merge_flight_scopes(base_scopes, OPTIONAL_MINING_ESI_SCOPES)
     return merge_flight_scopes(base_scopes)
 
 
@@ -382,6 +397,11 @@ FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
         "label": "Trade Asset Ledger",
         "summary": "Read-only managed ledger surface for portfolio fills and future ESI-named trade containers. The page is browsable and copyable, but not manually editable.",
         "scopes": (),
+    },
+    "mining-yield": {
+        "label": "Mining Yield",
+        "summary": "Uses the optional character mining ledger scope to summarize daily mined ore and manually timed session averages. It is ledger data, not live cycle telemetry.",
+        "scopes": (FLIGHT_MINING_SCOPE,),
     },
     "appraisal": {
         "label": "Bulk Appraisal",
@@ -1989,6 +2009,16 @@ def fetch_flight_skills(config: EveSsoConfig, session: FlightEsiSession) -> dict
     return payload
 
 
+def fetch_flight_mining_ledger(config: EveSsoConfig, session: FlightEsiSession) -> list[dict[str, Any]]:
+    require_flight_scopes(session, (FLIGHT_MINING_SCOPE,))
+    base_url = config.esi_base_url.rstrip("/")
+    return get_esi_json_pages(
+        f"{base_url}/characters/{session.character_id}/mining/?datasource=tranquility",
+        headers=flight_esi_headers(session.access_token),
+        label="ESI character mining ledger",
+    )
+
+
 def fetch_flight_wallet_transactions(
     config: EveSsoConfig,
     session: FlightEsiSession,
@@ -2190,6 +2220,211 @@ def build_flight_trade_pnl_payload(
         "generated_at": now_iso(),
         "character": session.to_public_dict(),
         "trade_pnl": trade_pnl,
+    }
+
+
+def parse_esi_ledger_date(value: Any) -> date | None:
+    try:
+        return datetime.strptime(str(value or "").strip(), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_mining_type_metadata(config: EveSsoConfig, type_ids: Iterable[int]) -> tuple[dict[int, dict[str, Any]], bool]:
+    wanted = {int(type_id) for type_id in type_ids if int(type_id) > 0}
+    if not wanted:
+        return {}, bool(load_static_market_data())
+    metadata: dict[int, dict[str, Any]] = {}
+    static_data = load_static_market_data()
+    if static_data is not None:
+        for type_infos in static_data.types_by_group.values():
+            for type_info in type_infos:
+                type_id = clean_optional_int(type_info.get("type_id"))
+                if type_id not in wanted or type_id in metadata:
+                    continue
+                metadata[type_id] = {
+                    "type_id": type_id,
+                    "name": str(type_info.get("name") or f"Type {type_id}"),
+                    "volume_m3": clean_optional_float(type_info.get("volume_m3")),
+                    "market_group_id": clean_optional_int(type_info.get("market_group_id")),
+                    "market_group_name": str(type_info.get("market_group_name") or ""),
+                    "source": "local-static-market-data",
+                }
+                if len(metadata) >= len(wanted):
+                    return metadata, True
+    missing_type_ids = sorted(wanted - set(metadata))
+    try:
+        names = fetch_universe_names(config, missing_type_ids)
+    except (CorpIntelError, CorpMarketError, ValueError):
+        names = {}
+    for type_id in missing_type_ids:
+        metadata[type_id] = {
+            "type_id": type_id,
+            "name": names.get(type_id) or f"Type {type_id}",
+            "volume_m3": None,
+            "market_group_id": None,
+            "market_group_name": "",
+            "source": "public-esi-names" if type_id in names else "type-id-only",
+        }
+    return metadata, static_data is not None
+
+
+def build_flight_mining_yield_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    days: Any = DEFAULT_FLIGHT_MINING_WINDOW_DAYS,
+    session_hours: Any = DEFAULT_FLIGHT_MINING_SESSION_HOURS,
+) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_MINING_SCOPE,))
+    clean_days = clamp_mining_window_days(days)
+    clean_session_hours = clamp_mining_session_hours(session_hours)
+    ledger_rows = fetch_flight_mining_ledger(config, session)
+    today = datetime.now(timezone.utc).date()
+    start_date = today - timedelta(days=clean_days - 1)
+    filtered_rows: list[dict[str, Any]] = []
+    for row in ledger_rows:
+        if not isinstance(row, dict):
+            continue
+        ledger_date = parse_esi_ledger_date(row.get("date"))
+        if ledger_date is None or ledger_date < start_date or ledger_date > today:
+            continue
+        type_id = clean_optional_int(row.get("type_id"))
+        quantity = clean_optional_int(row.get("quantity")) or 0
+        if type_id is None or type_id <= 0 or quantity <= 0:
+            continue
+        filtered_rows.append(
+            {
+                "date": ledger_date,
+                "type_id": type_id,
+                "quantity": quantity,
+                "solar_system_id": clean_optional_int(row.get("solar_system_id")),
+            }
+        )
+    type_ids = {int(row["type_id"]) for row in filtered_rows}
+    type_metadata, static_cache_available = resolve_mining_type_metadata(config, type_ids)
+    by_type: dict[int, dict[str, Any]] = {}
+    by_date: dict[str, dict[str, Any]] = {}
+    total_quantity = 0
+    total_volume_m3 = 0.0
+    known_volume_quantity = 0
+    system_ids: set[int] = set()
+    active_dates: set[str] = set()
+    for row in filtered_rows:
+        type_id = int(row["type_id"])
+        quantity = int(row["quantity"])
+        date_key = row["date"].isoformat()
+        metadata = type_metadata.get(type_id, {})
+        unit_volume = clean_optional_float(metadata.get("volume_m3"))
+        row_volume = (unit_volume * quantity) if unit_volume is not None and unit_volume > 0 else None
+        total_quantity += quantity
+        active_dates.add(date_key)
+        if row_volume is not None:
+            total_volume_m3 += row_volume
+            known_volume_quantity += quantity
+        system_id = clean_optional_int(row.get("solar_system_id"))
+        if system_id:
+            system_ids.add(system_id)
+        item = by_type.setdefault(
+            type_id,
+            {
+                "type_id": type_id,
+                "type_name": metadata.get("name") or f"Type {type_id}",
+                "quantity": 0,
+                "unit_volume_m3": unit_volume,
+                "total_volume_m3": 0.0,
+                "volume_known": unit_volume is not None and unit_volume > 0,
+                "dates": set(),
+                "solar_system_ids": set(),
+                "metadata_source": metadata.get("source") or "unknown",
+                "market_group_name": metadata.get("market_group_name") or "",
+            },
+        )
+        item["quantity"] = int(item["quantity"]) + quantity
+        item["dates"].add(date_key)
+        if system_id:
+            item["solar_system_ids"].add(system_id)
+        if row_volume is not None:
+            item["total_volume_m3"] = float(item["total_volume_m3"]) + row_volume
+        day = by_date.setdefault(date_key, {"date": date_key, "quantity": 0, "volume_m3": 0.0, "volume_partial": False})
+        day["quantity"] = int(day["quantity"]) + quantity
+        if row_volume is not None:
+            day["volume_m3"] = float(day["volume_m3"]) + row_volume
+        else:
+            day["volume_partial"] = True
+    items: list[dict[str, Any]] = []
+    for item in by_type.values():
+        date_values = sorted(str(value) for value in item.pop("dates"))
+        item_system_ids = sorted(int(value) for value in item.pop("solar_system_ids"))
+        volume_known = bool(item["volume_known"])
+        total_item_volume = round(float(item["total_volume_m3"]), 2) if volume_known else None
+        items.append(
+            {
+                **item,
+                "total_volume_m3": total_item_volume,
+                "active_day_count": len(date_values),
+                "first_date": date_values[0] if date_values else "",
+                "last_date": date_values[-1] if date_values else "",
+                "solar_system_count": len(item_system_ids),
+            }
+        )
+    items.sort(key=lambda item: (-int(item["quantity"]), str(item["type_name"]).casefold(), int(item["type_id"])))
+    truncated_item_count = max(0, len(items) - MAX_FLIGHT_MINING_ROWS)
+    visible_items = items[:MAX_FLIGHT_MINING_ROWS]
+    daily = []
+    for date_key in sorted(by_date, reverse=True):
+        row = by_date[date_key]
+        volume = round(float(row["volume_m3"]), 2) if float(row["volume_m3"]) > 0 else None
+        daily.append(
+            {
+                "date": date_key,
+                "quantity": int(row["quantity"]),
+                "volume_m3": volume,
+                "volume_partial": bool(row["volume_partial"]),
+            }
+        )
+    session_seconds = clean_session_hours * 3600.0
+    volume_unknown_quantity = max(0, total_quantity - known_volume_quantity)
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "character": session.to_public_dict(),
+        "mining_yield": {
+            "source": FLIGHT_MINING_SCOPE,
+            "source_label": "ESI character mining ledger",
+            "cache_seconds": 600,
+            "cache_note": "ESI character mining ledger is cached for up to 600 seconds and reports daily ledger rows, not live mining-cycle telemetry.",
+            "window_days": clean_days,
+            "session_hours": clean_session_hours,
+            "start_date": start_date.isoformat(),
+            "end_date": today.isoformat(),
+            "ledger_row_count": len(filtered_rows),
+            "raw_ledger_row_count": len([row for row in ledger_rows if isinstance(row, dict)]),
+            "active_day_count": len(active_dates),
+            "solar_system_count": len(system_ids),
+            "static_type_cache_available": static_cache_available,
+            "items_truncated": truncated_item_count > 0,
+            "item_limit": MAX_FLIGHT_MINING_ROWS,
+            "item_count": len(items),
+            "totals": {
+                "quantity": total_quantity,
+                "volume_m3": round(total_volume_m3, 2) if total_volume_m3 > 0 else None,
+                "volume_partial": volume_unknown_quantity > 0,
+                "known_volume_quantity": known_volume_quantity,
+                "unknown_volume_quantity": volume_unknown_quantity,
+                "quantity_per_day": round(total_quantity / clean_days, 2),
+                "volume_m3_per_day": round(total_volume_m3 / clean_days, 4) if total_volume_m3 > 0 else None,
+                "quantity_per_second": round(total_quantity / session_seconds, 6) if session_seconds > 0 else None,
+                "volume_m3_per_second": round(total_volume_m3 / session_seconds, 6) if total_volume_m3 > 0 and session_seconds > 0 else None,
+            },
+            "items": visible_items,
+            "daily": daily,
+            "notes": [
+                "Ore/day uses the selected calendar window, including days with no ledger rows.",
+                "Session average divides the selected-window ledger total by the manual session-hours field.",
+                "m3 values are partial when local static type volume is unavailable for any mined type.",
+            ],
+        },
     }
 
 
@@ -10167,6 +10402,24 @@ def clamp_trade_pnl_window_hours(value: Any) -> int:
     return max(1, min(MAX_FLIGHT_TRADE_PNL_WINDOW_HOURS, hours))
 
 
+def clamp_mining_window_days(value: Any) -> int:
+    try:
+        days = int(float(str(value).replace(",", "").strip()))
+    except (TypeError, ValueError):
+        days = DEFAULT_FLIGHT_MINING_WINDOW_DAYS
+    return max(1, min(MAX_FLIGHT_MINING_WINDOW_DAYS, days))
+
+
+def clamp_mining_session_hours(value: Any) -> float:
+    try:
+        hours = float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        hours = DEFAULT_FLIGHT_MINING_SESSION_HOURS
+    if hours <= 0:
+        hours = DEFAULT_FLIGHT_MINING_SESSION_HOURS
+    return round(max(0.05, min(MAX_FLIGHT_MINING_SESSION_HOURS, hours)), 2)
+
+
 def normalize_haul_route_preference(value: Any) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
     aliases = {
@@ -12201,11 +12454,13 @@ def build_flight_status_payload(
     clean_max_jumps = clamp_flight_max_jumps(max_jumps)
     required_scopes = list(config.scopes or DEFAULT_FLIGHT_ESI_SCOPES)
     optional_reprocessing_scopes = list(OPTIONAL_REPROCESSING_ESI_SCOPES)
+    optional_mining_scopes = list(OPTIONAL_MINING_ESI_SCOPES)
     granted_scopes = set(session.scopes) if session else set()
     missing_required_scopes = [scope for scope in required_scopes if scope not in granted_scopes]
     missing_optional_reprocessing_scopes = [
         scope for scope in optional_reprocessing_scopes if scope not in granted_scopes
     ]
+    missing_optional_mining_scopes = [scope for scope in optional_mining_scopes if scope not in granted_scopes]
     payload: dict[str, Any] = {
         "ok": True,
         "sso_configured": config.enabled,
@@ -12214,7 +12469,10 @@ def build_flight_status_payload(
         "missing_required_scopes": missing_required_scopes if session else [],
         "optional_reprocessing_scopes": optional_reprocessing_scopes,
         "missing_optional_reprocessing_scopes": missing_optional_reprocessing_scopes if session else optional_reprocessing_scopes,
+        "optional_mining_scopes": optional_mining_scopes,
+        "missing_optional_mining_scopes": missing_optional_mining_scopes if session else optional_mining_scopes,
         "reprocessing_opt_in_url": REPROCESSING_OPT_IN_LOGIN_URL,
+        "mining_opt_in_url": MINING_OPT_IN_LOGIN_URL,
         "login_url": "/flight/login",
         "logout_url": "/flight/logout",
         "callback_url": callback_url,
@@ -13532,6 +13790,23 @@ def build_http_server(
                 return
             self._send_json(payload)
 
+        def _handle_flight_mining_yield(self) -> None:
+            session = self._require_flight_session("summarizing mining yield")
+            if session is None:
+                return
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                payload = build_flight_mining_yield_payload(
+                    config=sso_config,
+                    session=session,
+                    days=first_query_value(query, "days") or DEFAULT_FLIGHT_MINING_WINDOW_DAYS,
+                    session_hours=first_query_value(query, "session_hours") or DEFAULT_FLIGHT_MINING_SESSION_HOURS,
+                )
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
         def _handle_flight_trade_pnl(self) -> None:
             session = self._require_flight_session("analyzing trade profit and loss")
             if session is None:
@@ -13690,7 +13965,7 @@ def build_http_server(
         def _handle_flight_login(self) -> None:
             query = parse_qs(urlparse(self.path).query)
             scope_mode = first_query_value(query, "scope_mode")
-            if scope_mode != REPROCESSING_SCOPE_MODE:
+            if scope_mode not in {REPROCESSING_SCOPE_MODE, MINING_SCOPE_MODE}:
                 scope_mode = ""
             if not sso_config.enabled:
                 self._send_html(
@@ -14848,6 +15123,8 @@ def render_flight_scope_justification() -> str:
     core_rows = rows_for(DEFAULT_FLIGHT_ESI_SCOPES)
     optional_rows = rows_for(OPTIONAL_REPROCESSING_ESI_SCOPES)
     optional_scope_list = ", ".join(OPTIONAL_REPROCESSING_ESI_SCOPES)
+    optional_mining_rows = rows_for(OPTIONAL_MINING_ESI_SCOPES)
+    optional_mining_scope_list = ", ".join(OPTIONAL_MINING_ESI_SCOPES)
     return f"""
                 <details class="sso-scope-justification" open>
                   <summary>Why This App Requests ESI Scopes</summary>
@@ -14859,6 +15136,10 @@ def render_flight_scope_justification() -> str:
                   <p><strong>Optional reprocessing opt-in:</strong> if a pilot chooses the reprocessing opt-in button, the app also requests <code>{html.escape(optional_scope_list)}</code>. Those scopes are used only to detect known RX reprocessing implants and resolve accessible Upwell structure names. Manual overrides still work without them.</p>
                   <dl class="sso-scope-list">
 {optional_rows}
+                  </dl>
+                  <p><strong>Optional mining-yield opt-in:</strong> if a pilot chooses the mining opt-in button, the app also requests <code>{html.escape(optional_mining_scope_list)}</code>. That scope is used only to summarize cached daily mining-ledger rows and manual session averages.</p>
+                  <dl class="sso-scope-list">
+{optional_mining_rows}
                   </dl>
                   <p>Public market prices and public market orders come from public ESI data. The app does not need market order write access, contract write access, mail access, or gameplay-control permissions. Users can revoke access any time from EVE Online's authorized applications page.</p>
                 </details>"""
@@ -14874,12 +15155,14 @@ def render_flight_scope_metadata_json() -> str:
         "implants": FLIGHT_IMPLANTS_SCOPE,
         "structures": FLIGHT_STRUCTURES_SCOPE,
         "wallet": FLIGHT_WALLET_SCOPE,
+        "mining": FLIGHT_MINING_SCOPE,
     }
     metadata = {
         key: {
             "scope": scope,
             "label": FLIGHT_ESI_SCOPE_DISCLOSURES[scope]["label"],
             "optional_reprocessing": scope in OPTIONAL_REPROCESSING_ESI_SCOPES,
+            "optional_mining": scope in OPTIONAL_MINING_ESI_SCOPES,
         }
         for key, scope in scope_keys.items()
     }
@@ -19130,6 +19413,7 @@ def _render_flight_attendant_dashboard() -> str:
       <button type="button" data-tab-target="hauling" aria-selected="false">Hauler Routes</button>
       <button type="button" data-tab-target="acquisition" aria-selected="false">Investment Portfolio</button>
       <button type="button" data-tab-target="asset-ledger" aria-selected="false">Asset Ledger</button>
+      <button type="button" data-tab-target="mining-yield" aria-selected="false">Mining Yield</button>
       <button type="button" data-tab-target="appraisal" aria-selected="false">Bulk Appraisal</button>
       <button type="button" data-tab-target="trade-pnl" aria-selected="false">Trade P&amp;L</button>
       <button type="button" data-tab-target="planetary" aria-selected="false">Planetary Industry</button>
@@ -20411,6 +20695,80 @@ help</textarea>
         </div>
       </section>
 
+      <section id="tab-mining-yield" class="tab-panel" data-tab-panel="mining-yield" hidden>
+        <div class="flight-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Mining Yield</h2>
+                <div class="meta">Cached ESI mining-ledger totals with manual session averages. This is not live cycle telemetry.</div>
+              </div>
+              <span class="pill reserved">Ledger Estimate</span>
+            </div>
+@@TAB_SCOPE_MINING_YIELD@@
+            <form id="mining-yield-form" class="note-form">
+              <div class="row">
+                <label>Ledger window
+                  <select id="mining-yield-days" name="days">
+                    <option value="1">Today</option>
+                    <option value="3">3 days</option>
+                    <option value="7" selected>7 days</option>
+                    <option value="14">14 days</option>
+                    <option value="30">30 days</option>
+                  </select>
+                  <small class="input-note">ESI returns daily mining ledger rows for the past 30 days.</small>
+                </label>
+                <label>Manual session hours
+                  <input id="mining-yield-session-hours" name="session_hours" type="number" min="0.05" max="720" step="0.05" value="2">
+                  <small class="input-note">Used only for session-average ore/sec and m3/sec labels.</small>
+                </label>
+              </div>
+              <div class="completed-run-actions">
+                <button id="mining-yield-refresh" class="ghost" type="submit">Refresh Mining Ledger</button>
+                <a id="mining-yield-opt-in-link" class="button-link secondary" href="/flight/login?scope_mode=mining">Opt In To Mining Ledger</a>
+                <span id="mining-yield-status" class="meta quickbar-copy-status" aria-live="polite">Connect ESI, then opt in to the mining ledger scope.</span>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Yield Rules</h2>
+                <div class="meta">Honest labels for what the API can and cannot tell us.</div>
+              </div>
+            </div>
+            <ul class="charter-list">
+              <li><strong>Read-only:</strong> this only reads the signed-in pilot's character mining ledger after explicit SSO consent.</li>
+              <li><strong>Cached:</strong> ESI mining ledger data can be up to 600 seconds old; refresh buttons should respect that cache.</li>
+              <li><strong>Daily ledger:</strong> ore/day is calculated from selected calendar days, not from laser cycles.</li>
+              <li><strong>Session average:</strong> ore/sec and m3/sec divide the selected ledger total by the manual hours field.</li>
+              <li><strong>No inventory deltas:</strong> inventory assets are not used to infer live mining yield.</li>
+              <li><strong>No client control:</strong> no screen reading, cache scraping, keyboard input, target decisions, or mining automation.</li>
+            </ul>
+          </section>
+
+          <section class="panel profit-panel full-span" aria-labelledby="mining-yield-results-title">
+            <div class="panel-header">
+              <div>
+                <div class="profit-title">
+                  <h2 id="mining-yield-results-title">Mining Ledger Output</h2>
+                  <span class="pill reserved">Cache Honest</span>
+                </div>
+                <div class="meta">Top mined types, daily totals, volume coverage, and manual session averages.</div>
+              </div>
+            </div>
+            <details class="output-details" open>
+              <summary>Mining Yield Results</summary>
+              <div class="output-details-body">
+                <div id="mining-yield-summary" class="profit-summary">No mining ledger scan has run yet.</div>
+                <div id="mining-yield-results" class="decision-output"></div>
+              </div>
+            </details>
+          </section>
+        </div>
+      </section>
+
       <section id="tab-appraisal" class="tab-panel" data-tab-panel="appraisal" hidden>
         <div class="flight-grid">
           <section class="panel">
@@ -21278,6 +21636,14 @@ help</textarea>
     const assetLedgerStatus = document.querySelector("#asset-ledger-status");
     const assetLedgerDocument = document.querySelector("#asset-ledger-document");
     const assetLedgerPreviewVersion = document.querySelector("#asset-ledger-preview-version");
+    const miningYieldForm = document.querySelector("#mining-yield-form");
+    const miningYieldDays = document.querySelector("#mining-yield-days");
+    const miningYieldSessionHours = document.querySelector("#mining-yield-session-hours");
+    const miningYieldRefresh = document.querySelector("#mining-yield-refresh");
+    const miningYieldOptInLink = document.querySelector("#mining-yield-opt-in-link");
+    const miningYieldStatus = document.querySelector("#mining-yield-status");
+    const miningYieldSummary = document.querySelector("#mining-yield-summary");
+    const miningYieldResults = document.querySelector("#mining-yield-results");
     const bulkAppraisalForm = document.querySelector("#bulk-appraisal-form");
     const bulkAppraisalHub = document.querySelector("#bulk-appraisal-hub");
     const bulkAppraisalMode = document.querySelector("#bulk-appraisal-mode");
@@ -21409,6 +21775,8 @@ help</textarea>
     const bulkAppraisalHubKey = "eve-flight-bulk-appraisal-hub-v1";
     const bulkAppraisalTextKey = "eve-flight-bulk-appraisal-text-v1";
     const bulkAppraisalModeKey = "eve-flight-bulk-appraisal-mode-v1";
+    const miningYieldDaysKey = "eve-flight-mining-yield-days-v1";
+    const miningYieldSessionHoursKey = "eve-flight-mining-yield-session-hours-v1";
     const tradePnlWindowHoursKey = "eve-flight-trade-pnl-window-hours-v1";
     const tradePnlLensKey = "eve-flight-trade-pnl-lens-v1";
     const tradePnlConsiderationRuleKey = "eve-flight-trade-pnl-consideration-rule-v1";
@@ -21443,7 +21811,11 @@ help</textarea>
     const optionalReprocessingScopeNames = new Set(Object.values(flightScopeMetadata)
       .filter((entry) => entry && entry.optional_reprocessing && entry.scope)
       .map((entry) => entry.scope));
-    const validTabs = new Set(["market", "tester", "fittings", "flight", "industry", "hauling", "acquisition", "asset-ledger", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
+    const optionalMiningScopeNames = new Set(Object.values(flightScopeMetadata)
+      .filter((entry) => entry && entry.optional_mining && entry.scope)
+      .map((entry) => entry.scope));
+    const optionalActivityScopeNames = new Set([...optionalReprocessingScopeNames, ...optionalMiningScopeNames]);
+    const validTabs = new Set(["market", "tester", "fittings", "flight", "industry", "hauling", "acquisition", "asset-ledger", "mining-yield", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
     const tabAliases = new Map([
       ["discord-alerts", "market"],
       ["discord", "market"],
@@ -21574,7 +21946,7 @@ help</textarea>
     function flightActivityScopes(...keys) {
       return keys
         .map((key) => (flightScopeMetadata[key] || {}).scope)
-        .filter((scope) => scope && (!optionalReprocessingScopeNames.has(scope) || currentFlightGrantedScopes.has(scope)));
+        .filter((scope) => scope && (!optionalActivityScopeNames.has(scope) || currentFlightGrantedScopes.has(scope)));
     }
 
     function flightActivityText(value, fallback = "") {
@@ -24839,6 +25211,31 @@ help</textarea>
       if (reprocessOptInLink) reprocessOptInLink.hidden = true;
     }
 
+    function renderMiningOptInStatus(data) {
+      if (miningYieldOptInLink) {
+        miningYieldOptInLink.href = data.mining_opt_in_url || "/flight/login?scope_mode=mining";
+        miningYieldOptInLink.hidden = false;
+      }
+      if (!miningYieldStatus) return;
+      const optionalScopes = Array.isArray(data.optional_mining_scopes) ? data.optional_mining_scopes : [];
+      const missingScopes = Array.isArray(data.missing_optional_mining_scopes) ? data.missing_optional_mining_scopes : optionalScopes;
+      if (!data.sso_configured) {
+        miningYieldStatus.textContent = "EVE SSO must be configured before mining ledger reads can be requested.";
+        if (miningYieldOptInLink) miningYieldOptInLink.hidden = true;
+        return;
+      }
+      if (!data.connected) {
+        miningYieldStatus.textContent = "Mining ledger reads are off. Connect ESI, then opt in only if you want this pilot's mining ledger summarized.";
+        return;
+      }
+      if (missingScopes.length) {
+        miningYieldStatus.textContent = `Mining ledger reads are off for this session. Opt in to add: ${missingScopes.join(", ")}.`;
+        return;
+      }
+      miningYieldStatus.textContent = "Mining ledger scope is connected for this session. Refresh when you want a cache-limited ledger summary.";
+      if (miningYieldOptInLink) miningYieldOptInLink.hidden = true;
+    }
+
     function renderFlightStatus(data) {
       const requiredScopes = data.required_scopes || [];
       const missingRequiredScopes = data.missing_required_scopes || [];
@@ -24850,6 +25247,7 @@ help</textarea>
       flightLogoutLink.hidden = !data.connected;
       flightScopeName.textContent = requiredScopes.length > 1 ? `${requiredScopes.length} scopes` : "Location only";
       renderReprocessingOptInStatus(data);
+      renderMiningOptInStatus(data);
       if (!data.sso_configured) {
         flightSystemName.textContent = "ESI Setup Needed";
         flightLocationLine.textContent = "Register the callback URL, then restart with SSO credentials.";
@@ -24862,6 +25260,7 @@ help</textarea>
         resetFlightHauling("Configure EVE SSO before scanning hauler routes.");
         resetMarketAcquisition("Configure EVE SSO before building an investment portfolio.");
         resetTradePnl("Configure EVE SSO before analyzing trade history.");
+        resetMiningYield("Configure EVE SSO before reading the mining ledger.");
         resetReprocessing("Configure EVE SSO before calculating ore reprocessing.");
         clearReprocessingLocations("Configure EVE SSO before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
@@ -24879,6 +25278,7 @@ help</textarea>
         resetFlightHauling("Connect ESI to scan route hauling opportunities.");
         resetMarketAcquisition("Connect ESI to build an investment portfolio.");
         resetTradePnl("Connect ESI to analyze recent wallet transactions.");
+        resetMiningYield("Connect ESI, then opt in to the mining ledger scope.");
         resetReprocessing("Connect ESI to calculate ore reprocessing.");
         clearReprocessingLocations("Connect ESI to rank reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
@@ -24898,6 +25298,7 @@ help</textarea>
         resetFlightHauling("Use an allowlisted EVE character before scanning hauler routes.");
         resetMarketAcquisition("Use an allowlisted EVE character before building an investment portfolio.");
         resetTradePnl("Use an allowlisted EVE character before analyzing trade history.");
+        resetMiningYield("Use an allowlisted EVE character before reading mining ledger data.");
         resetReprocessing("Use an allowlisted EVE character before calculating ore reprocessing.");
         clearReprocessingLocations("Use an allowlisted EVE character before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Use an allowlisted EVE character before scanning industry data.");
@@ -24913,6 +25314,7 @@ help</textarea>
         resetFlightHauling("Resolve the ESI error before scanning hauler routes.");
         resetMarketAcquisition("Resolve the ESI error before building an investment portfolio.");
         resetTradePnl("Resolve the ESI error before analyzing trade history.");
+        resetMiningYield("Resolve the ESI error before reading mining ledger data.");
         resetReprocessing("Resolve the ESI error before calculating ore reprocessing.");
         clearReprocessingLocations("Resolve the ESI error before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
@@ -24941,6 +25343,8 @@ help</textarea>
       resetMarketAcquisition(`Ready to plan buy orders from ${acquisitionStartLabel(acqSettings)} toward ${acqSettings.destination}.`);
       const tradePnlSettings = readTradePnlSettings();
       resetTradePnl(`Ready to analyze ${tradePnlWindowLabel(tradePnlSettings.windowHours)} of trade history.`);
+      const miningSettings = readMiningYieldSettings();
+      resetMiningYield(`Ready to summarize ${formatNumber(miningSettings.days)} ledger day${miningSettings.days === 1 ? "" : "s"} with a ${formatNumber(miningSettings.sessionHours)} hour manual session average.`);
       const reprocessSettings = readReprocessingSettings();
       resetReprocessing(`Ready to calculate ${formatNumber(reprocessSettings.quantity)} ore units.`);
       recordEsiActivity({
@@ -27407,6 +27811,157 @@ help</textarea>
       window.localStorage.setItem(tradePnlExcludeKey, exclude);
       window.localStorage.setItem(tradePnlShowMatchesKey, showMatches ? "1" : "0");
       return {windowHours, lens, considerationRule, exclude, showMatches};
+    }
+
+    function readMiningYieldSettings() {
+      const days = Number(window.localStorage.getItem(miningYieldDaysKey) || (miningYieldDays ? miningYieldDays.value : 7) || 7);
+      const sessionHours = Number(window.localStorage.getItem(miningYieldSessionHoursKey) || (miningYieldSessionHours ? miningYieldSessionHours.value : 2) || 2);
+      return {
+        days: Math.max(1, Math.min(30, Math.round(Number.isFinite(days) ? days : 7))),
+        sessionHours: Math.max(0.05, Math.min(720, Number.isFinite(sessionHours) ? sessionHours : 2)),
+      };
+    }
+
+    function writeMiningYieldSettings(settings) {
+      const days = Math.max(1, Math.min(30, Math.round(Number(settings.days || 7))));
+      const sessionHours = Math.max(0.05, Math.min(720, Number(settings.sessionHours || 2)));
+      if (miningYieldDays) miningYieldDays.value = String(days);
+      if (miningYieldSessionHours) miningYieldSessionHours.value = String(sessionHours);
+      window.localStorage.setItem(miningYieldDaysKey, String(days));
+      window.localStorage.setItem(miningYieldSessionHoursKey, String(sessionHours));
+      return {days, sessionHours};
+    }
+
+    function resetMiningYield(message) {
+      if (miningYieldStatus) miningYieldStatus.textContent = message;
+      if (miningYieldSummary) miningYieldSummary.textContent = message;
+      if (miningYieldResults) miningYieldResults.innerHTML = `<div class="decision-empty">${escapeHtml(message)}</div>`;
+      if (miningYieldRefresh) miningYieldRefresh.disabled = false;
+    }
+
+    function formatMiningRate(value, suffix) {
+      if (value == null) return "unknown";
+      return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 4})} ${suffix}`;
+    }
+
+    async function loadMiningYield() {
+      if (!miningYieldForm) return;
+      const settings = writeMiningYieldSettings({
+        days: miningYieldDays ? miningYieldDays.value : 7,
+        sessionHours: miningYieldSessionHours ? miningYieldSessionHours.value : 2,
+      });
+      if (miningYieldRefresh) miningYieldRefresh.disabled = true;
+      if (miningYieldStatus) miningYieldStatus.textContent = "Reading cached ESI mining ledger...";
+      if (miningYieldSummary) miningYieldSummary.textContent = "Reading cached ESI mining ledger...";
+      if (miningYieldResults) miningYieldResults.innerHTML = `<div class="decision-empty">Mining ledger rows will appear here when the refresh finishes.</div>`;
+      const params = new URLSearchParams({
+        days: String(settings.days),
+        session_hours: String(settings.sessionHours),
+      });
+      try {
+        const response = await fetch(`/api/flight/mining-yield?${params}`);
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || "Could not summarize mining yield");
+        renderMiningYield(data);
+        const yieldData = data.mining_yield || {};
+        const totals = yieldData.totals || {};
+        recordEsiActivity({
+          scopes: flightActivityScopes("mining"),
+          label: "Mining ledger checked",
+          description: "Refreshed cached daily mining-ledger rows for ore/day and manual session-average estimates.",
+          reason: "The mining ledger gives cache-limited daily totals without reading the EVE client or inventory deltas.",
+          status: Number(totals.quantity || 0) ? "success" : "empty",
+        });
+      } catch (error) {
+        if (miningYieldStatus) miningYieldStatus.textContent = error.message;
+        if (miningYieldSummary) miningYieldSummary.textContent = error.message;
+        if (miningYieldResults) miningYieldResults.innerHTML = `<div class="decision-empty">${escapeHtml(error.message)}</div>`;
+        recordEsiActivityError({
+          scopes: flightActivityScopes("mining"),
+          label: "Mining ledger check failed",
+          description: "The app could not refresh cached mining-ledger rows.",
+          reason: "The mining ledger gives cache-limited daily totals without reading the EVE client or inventory deltas.",
+        });
+      } finally {
+        if (miningYieldRefresh) miningYieldRefresh.disabled = false;
+      }
+    }
+
+    function renderMiningYield(data) {
+      const yieldData = data.mining_yield || {};
+      const totals = yieldData.totals || {};
+      const volumeNote = totals.volume_partial
+        ? ` m3 totals are partial because ${formatNumber(totals.unknown_volume_quantity || 0)} units lacked local static volume.`
+        : "";
+      const itemLimit = yieldData.items_truncated
+        ? ` Showing largest ${formatNumber(yieldData.item_limit)} of ${formatNumber(yieldData.item_count)} mined types.`
+        : "";
+      if (miningYieldStatus) {
+        miningYieldStatus.textContent = `Updated from cached daily ledger rows at ${yieldData.end_date || "current ESI date"}.`;
+      }
+      if (miningYieldSummary) {
+        miningYieldSummary.innerHTML = `
+          <div class="profit-stats">
+            <div class="profit-stat"><span>Ore Units</span><b>${formatNumber(totals.quantity || 0)}</b></div>
+            <div class="profit-stat"><span>Known m3</span><b>${formatVolume(totals.volume_m3)}</b></div>
+            <div class="profit-stat"><span>Ore / Day</span><b>${formatMiningRate(totals.quantity_per_day, "units/day")}</b></div>
+            <div class="profit-stat"><span>m3 / Day</span><b>${formatMiningRate(totals.volume_m3_per_day, "m3/day")}</b></div>
+            <div class="profit-stat"><span>Ore / Sec</span><b>${formatMiningRate(totals.quantity_per_second, "units/sec")}</b></div>
+            <div class="profit-stat"><span>m3 / Sec</span><b>${formatMiningRate(totals.volume_m3_per_second, "m3/sec")}</b></div>
+          </div>
+          <div class="meta">${formatNumber(yieldData.ledger_row_count || 0)} ledger row${Number(yieldData.ledger_row_count || 0) === 1 ? "" : "s"} across ${formatNumber(yieldData.active_day_count || 0)} active day${Number(yieldData.active_day_count || 0) === 1 ? "" : "s"} in the selected ${formatNumber(yieldData.window_days || 0)} day window. Session average uses ${formatNumber(yieldData.session_hours || 0)} manually entered hour${Number(yieldData.session_hours || 0) === 1 ? "" : "s"}.${escapeHtml(itemLimit + volumeNote)}</div>
+          <div class="meta">${escapeHtml(yieldData.cache_note || "ESI mining ledger is cached and not live telemetry.")}</div>
+        `;
+      }
+      if (miningYieldResults) {
+        miningYieldResults.innerHTML = renderMiningYieldRows(yieldData);
+      }
+    }
+
+    function renderMiningYieldRows(yieldData) {
+      const items = Array.isArray(yieldData.items) ? yieldData.items : [];
+      const daily = Array.isArray(yieldData.daily) ? yieldData.daily : [];
+      if (!items.length && !daily.length) {
+        return `<div class="decision-empty">No mining ledger rows were returned for the selected calendar window.</div>`;
+      }
+      const itemRows = items.map((item) => {
+        const volumeText = item.total_volume_m3 == null ? "volume unknown" : formatVolume(item.total_volume_m3);
+        const unitVolumeText = item.unit_volume_m3 == null ? "unit volume unknown" : `${formatVolume(item.unit_volume_m3)} each`;
+        return `
+          <div class="decision-row">
+            <div class="decision-head">
+              <strong>${escapeHtml(item.type_name || `Type ${item.type_id}`)}</strong>
+              <span class="pill decision-source">type ${formatNumber(item.type_id || 0)}</span>
+              <span class="pill reserved">${formatNumber(item.quantity || 0)} units</span>
+            </div>
+            <div class="decision-lede">${escapeHtml(volumeText)}; ${escapeHtml(unitVolumeText)}; ${formatNumber(item.active_day_count || 0)} active day${Number(item.active_day_count || 0) === 1 ? "" : "s"}.</div>
+            <div class="profit-detail-grid">
+              <div class="profit-detail-row"><span>Total units</span><b>${formatNumber(item.quantity || 0)}</b><small>Daily ESI ledger total.</small></div>
+              <div class="profit-detail-row"><span>Total m3</span><b>${escapeHtml(volumeText)}</b><small>${escapeHtml(item.volume_known ? "Calculated from local static type volume." : "Volume unavailable in local static cache.")}</small></div>
+              <div class="profit-detail-row"><span>Mining days</span><b>${formatNumber(item.active_day_count || 0)}</b><small>${escapeHtml(item.first_date || "unknown")} through ${escapeHtml(item.last_date || "unknown")}.</small></div>
+              <div class="profit-detail-row"><span>Systems</span><b>${formatNumber(item.solar_system_count || 0)}</b><small>Count only; system names are not resolved.</small></div>
+            </div>
+          </div>
+        `;
+      }).join("");
+      const dailyRows = daily.slice(0, 14).map((row) => {
+        const volume = row.volume_m3 == null ? "volume unknown" : formatVolume(row.volume_m3);
+        const partial = row.volume_partial ? " partial m3" : "";
+        return `<tr><td>${escapeHtml(row.date || "")}</td><td>${formatNumber(row.quantity || 0)}</td><td>${escapeHtml(volume)}${escapeHtml(partial)}</td></tr>`;
+      }).join("");
+      return `
+        ${itemRows}
+        <div class="decision-row">
+          <div class="decision-head">
+            <strong>Daily Ledger</strong>
+            <span class="pill reserved">${formatNumber(daily.length)} day${daily.length === 1 ? "" : "s"}</span>
+          </div>
+          <table class="pnl-table">
+            <thead><tr><th>Date</th><th>Ore units</th><th>Known m3</th></tr></thead>
+            <tbody>${dailyRows}</tbody>
+          </table>
+        </div>
+      `;
     }
 
     function resetTradePnl(message) {
@@ -30814,6 +31369,21 @@ help</textarea>
     if (assetLedgerRefresh) {
       assetLedgerRefresh.addEventListener("click", loadAssetLedger);
     }
+    if (miningYieldForm) {
+      miningYieldForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        loadMiningYield();
+      });
+    }
+    [miningYieldDays, miningYieldSessionHours].filter(Boolean).forEach((control) => {
+      control.addEventListener("change", () => {
+        const settings = writeMiningYieldSettings({
+          days: miningYieldDays ? miningYieldDays.value : 7,
+          sessionHours: miningYieldSessionHours ? miningYieldSessionHours.value : 2,
+        });
+        resetMiningYield(`Ready to summarize ${formatNumber(settings.days)} ledger day${settings.days === 1 ? "" : "s"} with a ${formatNumber(settings.sessionHours)} hour manual session average.`);
+      });
+    });
 
     document.addEventListener("click", (event) => {
       const assetLedgerHaulerButton = event.target.closest("button[data-asset-ledger-hauler]");
@@ -31220,6 +31790,7 @@ help</textarea>
     writeHaulSettings(readHaulSettings());
     applyMarketItemSearch(haulMarketGroups, haulItemSearch.value, haulItemSearchStatus);
     writeAcquisitionSettings(readAcquisitionSettings());
+    writeMiningYieldSettings(readMiningYieldSettings());
     if (bulkAppraisalHub) {
       bulkAppraisalHub.value = window.localStorage.getItem(bulkAppraisalHubKey) || bulkAppraisalHub.value || "jita";
     }
@@ -31270,6 +31841,7 @@ help</textarea>
         "@@TAB_SCOPE_HAULING@@": render_flight_scope_summary("hauling"),
         "@@TAB_SCOPE_ACQUISITION@@": render_flight_scope_summary("acquisition"),
         "@@TAB_SCOPE_ASSET_LEDGER@@": render_flight_scope_summary("asset-ledger"),
+        "@@TAB_SCOPE_MINING_YIELD@@": render_flight_scope_summary("mining-yield"),
         "@@TAB_SCOPE_APPRAISAL@@": render_flight_scope_summary("appraisal"),
         "@@TAB_SCOPE_TRADE_PNL@@": render_flight_scope_summary("trade-pnl"),
         "@@TAB_SCOPE_PLANETARY@@": render_flight_scope_summary("planetary"),

@@ -1,6 +1,6 @@
 # EVE Developer License Review
 
-Last verified: 2026-06-08
+Last verified: 2026-06-11
 
 Authoritative source:
 
@@ -109,3 +109,4 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - 2026-06-08: Re-opened the official EVE Developer License Agreement, developer license docs, EVE third-party policy page, ESI overview, and ESI rate-limit docs before making reprocessing implant and structure-name scopes explicit opt-in. The normal Flight Attendant login now keeps `esi-clones.read_implants.v1` and `esi-universe.read_structures.v1` out of the default scope request, shows a separate reprocessing opt-in prompt with the exact scopes, stores no new token data, and remains read-only/advisory.
 - 2026-06-09: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding manual Shared Fittings Discord forum posting. The feature stores the Fittings webhook only in ignored local JSON, sends only user-saved fitting clipboard blocks after an explicit button press, disables Discord mentions, adds no ESI scope, does not read the EVE client, and leaves all fitting import/simulation action manual in EVE.
 - 2026-06-09: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding optional local Whisper dictation and main Voice Pilot Vosk model selection. The feature adds no ESI scope, stores no raw audio or transcripts, deletes temporary phrase WAV files after local transcription, preserves exact-match command behavior and active-window guarding, and does not add fuzzy command dispatch, screen-reading decisions, input broadcasting, or automated gameplay reactions.
+- 2026-06-11: Re-opened the official EVE Developer License Agreement, developer license docs, EVE third-party policy page, ESI overview/cache guidance, and live ESI Swagger spec before adding optional Mining Yield. The feature adds only the opt-in `esi-industry.read_character_mining.v1` scope, summarizes cached daily character mining-ledger rows, keeps tokens in server memory only, stores no mining ledger rows, labels ore/sec and m3/sec as manual session averages rather than live telemetry, and does not read inventory deltas, screen state, cache files, packets, memory, or control the EVE client.

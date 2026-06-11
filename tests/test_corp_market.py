@@ -42,6 +42,7 @@ from eve_voice_pilot.corp_market import (
     build_flight_hauling_comparison_payload,
     build_flight_hauling_payload,
     build_flight_industry_payload,
+    build_flight_mining_yield_payload,
     build_flight_profitability_payload,
     build_flight_status_payload,
     build_flight_hosting_diagnostics,
@@ -552,6 +553,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/acquisition" in page
     assert "/api/flight/acquisition/progress" in page
     assert "/api/flight/asset-ledger" in page
+    assert "/api/flight/mining-yield" in page
     assert "/api/flight/appraisal" in page
     assert "/api/flight/trade-pnl" in page
     assert "/api/flight/planetary" in page
@@ -598,6 +600,21 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "assetLedgerHandoffItems" in page
     assert "previewAssetLedgerDuck" in page
     assert "@@TAB_SCOPE_ASSET_LEDGER@@" not in page
+    assert "data-tab-target=\"mining-yield\"" in page
+    assert "id=\"tab-mining-yield\"" in page
+    assert "Mining Yield" in page
+    assert "id=\"mining-yield-form\"" in page
+    assert "id=\"mining-yield-days\"" in page
+    assert "id=\"mining-yield-session-hours\"" in page
+    assert (
+        'id="mining-yield-session-hours" name="session_hours" type="number" '
+        'min="0.05" max="720" step="0.05"'
+    ) in page
+    assert "id=\"mining-yield-results\"" in page
+    assert "Opt In To Mining Ledger" in page
+    assert "ore/sec and m3/sec" in page
+    assert "No inventory deltas" in page
+    assert "@@TAB_SCOPE_MINING_YIELD@@" not in page
     assert "id=\"flight-blueprint-summary\"" in industry_section
     assert "id=\"flight-profit-scan\"" in industry_section
     assert "id=\"flight-buyer-scan\"" in industry_section
@@ -1012,10 +1029,17 @@ def test_dashboard_renders_flight_scope_disclosures_by_tab():
         assert scope in page
         assert scope not in corp_market.DEFAULT_FLIGHT_ESI_SCOPES
 
+    for scope in corp_market.OPTIONAL_MINING_ESI_SCOPES:
+        assert scope in page
+        assert scope not in corp_market.DEFAULT_FLIGHT_ESI_SCOPES
+
     assert "Current location" in page
     assert "Character wallet" in page
+    assert "Character mining ledger" in page
     assert "Optional Reprocessing ESI" in page
     assert "Opt In To Implant/Structure Reads" in page
+    assert "Optional mining-yield opt-in" in page
+    assert "Opt In To Mining Ledger" in page
     assert "Normal Flight Attendant login requests these core scopes" in page
     assert "Optional reprocessing opt-in" in page
     assert "Reads recent wallet transactions and market fee journal rows" in page
@@ -1057,6 +1081,8 @@ def test_flight_scope_metadata_json_uses_scope_registry():
     assert metadata["implants"]["optional_reprocessing"] is True
     assert metadata["structures"]["scope"] == corp_market.FLIGHT_STRUCTURES_SCOPE
     assert metadata["structures"]["optional_reprocessing"] is True
+    assert metadata["mining"]["scope"] == corp_market.FLIGHT_MINING_SCOPE
+    assert metadata["mining"]["optional_mining"] is True
 
 
 def test_reprocessing_scopes_are_explicit_login_opt_in():
@@ -1071,11 +1097,17 @@ def test_reprocessing_scopes_are_explicit_login_opt_in():
         config,
         scope_mode=corp_market.REPROCESSING_SCOPE_MODE,
     )
+    mining_opt_in_scopes = corp_market.flight_scopes_for_login(
+        config,
+        scope_mode=corp_market.MINING_SCOPE_MODE,
+    )
 
     assert corp_market.FLIGHT_IMPLANTS_SCOPE not in default_scopes
     assert corp_market.FLIGHT_STRUCTURES_SCOPE not in default_scopes
+    assert corp_market.FLIGHT_MINING_SCOPE not in default_scopes
     assert corp_market.FLIGHT_IMPLANTS_SCOPE in opt_in_scopes
     assert corp_market.FLIGHT_STRUCTURES_SCOPE in opt_in_scopes
+    assert corp_market.FLIGHT_MINING_SCOPE in mining_opt_in_scopes
 
     url = corp_market.build_sso_authorization_url(
         corp_market.flight_sso_config_for_login(config, scope_mode=corp_market.REPROCESSING_SCOPE_MODE),
@@ -1087,6 +1119,16 @@ def test_reprocessing_scopes_are_explicit_login_opt_in():
 
     assert corp_market.FLIGHT_IMPLANTS_SCOPE in requested_scopes
     assert corp_market.FLIGHT_STRUCTURES_SCOPE in requested_scopes
+
+    mining_url = corp_market.build_sso_authorization_url(
+        corp_market.flight_sso_config_for_login(config, scope_mode=corp_market.MINING_SCOPE_MODE),
+        "test-state",
+        metadata={"authorization_endpoint": "https://login.test/oauth/authorize"},
+    )
+    mining_query = parse_qs(mining_url.split("?", 1)[1])
+    mining_requested_scopes = mining_query["scope"][0].split()
+
+    assert corp_market.FLIGHT_MINING_SCOPE in mining_requested_scopes
 
 
 def test_route_system_suggestions_rank_prefixes_and_aliases(tmp_path):
@@ -1139,9 +1181,13 @@ def test_flight_status_reports_missing_sso_configuration():
     assert "esi-wallet.read_character_wallet.v1" in payload["required_scopes"]
     assert corp_market.FLIGHT_IMPLANTS_SCOPE not in payload["required_scopes"]
     assert corp_market.FLIGHT_STRUCTURES_SCOPE not in payload["required_scopes"]
+    assert corp_market.FLIGHT_MINING_SCOPE not in payload["required_scopes"]
     assert payload["optional_reprocessing_scopes"] == list(corp_market.OPTIONAL_REPROCESSING_ESI_SCOPES)
     assert payload["missing_optional_reprocessing_scopes"] == list(corp_market.OPTIONAL_REPROCESSING_ESI_SCOPES)
     assert payload["reprocessing_opt_in_url"] == corp_market.REPROCESSING_OPT_IN_LOGIN_URL
+    assert payload["optional_mining_scopes"] == list(corp_market.OPTIONAL_MINING_ESI_SCOPES)
+    assert payload["missing_optional_mining_scopes"] == list(corp_market.OPTIONAL_MINING_ESI_SCOPES)
+    assert payload["mining_opt_in_url"] == corp_market.MINING_OPT_IN_LOGIN_URL
     assert payload["membership"]["required"] is False
     assert payload["hosting"]["token_storage"] == "server-memory-only"
 
@@ -2119,6 +2165,124 @@ def test_fetch_flight_skills_uses_read_skills_scope(monkeypatch):
     assert calls[0][0] == "https://esi.test/latest/characters/123456789/skills/?datasource=tranquility"
     assert calls[0][1]["Authorization"] == "Bearer access-token"
     assert "X-Compatibility-Date" in calls[0][1]
+
+
+def test_fetch_flight_mining_ledger_uses_read_only_mining_scope(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Miner Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(corp_market.FLIGHT_MINING_SCOPE,),
+        access_token="access-token",
+        connected_at="2026-06-10T00:00:00Z",
+        expires_at=9999999999,
+    )
+    calls = []
+
+    def fake_get_esi_json_pages(url, *, headers, label):
+        calls.append((url, headers, label))
+        return [{"date": "2026-06-10", "type_id": 34, "quantity": 1000, "solar_system_id": 30000142}]
+
+    monkeypatch.setattr(corp_market, "get_esi_json_pages", fake_get_esi_json_pages)
+
+    ledger = corp_market.fetch_flight_mining_ledger(
+        corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session,
+    )
+
+    assert ledger[0]["quantity"] == 1000
+    assert calls[0][0] == "https://esi.test/latest/characters/123456789/mining/?datasource=tranquility"
+    assert calls[0][1]["Authorization"] == "Bearer access-token"
+    assert calls[0][2] == "ESI character mining ledger"
+
+
+def test_build_flight_mining_yield_payload_uses_daily_ledger_and_manual_session_average(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Miner Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(corp_market.FLIGHT_MINING_SCOPE,),
+        access_token="access-token",
+        connected_at="2026-06-10T00:00:00Z",
+        expires_at=9999999999,
+    )
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+    outside_window = today - timedelta(days=10)
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_mining_ledger",
+        lambda config, session: [
+            {"date": today.isoformat(), "type_id": 34, "quantity": 1000, "solar_system_id": 30000142},
+            {"date": yesterday.isoformat(), "type_id": 34, "quantity": 500, "solar_system_id": 30000142},
+            {"date": yesterday.isoformat(), "type_id": 35, "quantity": 500, "solar_system_id": 30000143},
+            {"date": outside_window.isoformat(), "type_id": 34, "quantity": 9999, "solar_system_id": 30000142},
+        ],
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "resolve_mining_type_metadata",
+        lambda config, type_ids: (
+            {
+                34: {"type_id": 34, "name": "Tritanium", "volume_m3": 0.01, "source": "test"},
+                35: {"type_id": 35, "name": "Pyerite", "volume_m3": 0.01, "source": "test"},
+            },
+            True,
+        ),
+    )
+
+    payload = build_flight_mining_yield_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        days=7,
+        session_hours=2,
+    )
+
+    mining = payload["mining_yield"]
+    totals = mining["totals"]
+    assert payload["ok"] is True
+    assert mining["source"] == corp_market.FLIGHT_MINING_SCOPE
+    assert mining["ledger_row_count"] == 3
+    assert mining["raw_ledger_row_count"] == 4
+    assert mining["active_day_count"] == 2
+    assert mining["solar_system_count"] == 2
+    assert totals["quantity"] == 2000
+    assert totals["volume_m3"] == 20.0
+    assert totals["quantity_per_day"] == pytest.approx(285.71)
+    assert totals["volume_m3_per_day"] == pytest.approx(2.8571)
+    assert totals["quantity_per_second"] == pytest.approx(0.277778)
+    assert totals["volume_m3_per_second"] == pytest.approx(0.002778)
+    assert mining["items"][0]["type_name"] == "Tritanium"
+    assert mining["items"][0]["quantity"] == 1500
+    assert mining["daily"][0]["date"] == today.isoformat()
+
+
+def test_build_flight_mining_yield_payload_requires_mining_scope():
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Miner Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1",),
+        access_token="access-token",
+        connected_at="2026-06-10T00:00:00Z",
+        expires_at=9999999999,
+    )
+
+    with pytest.raises(CorpMarketError, match=corp_market.FLIGHT_MINING_SCOPE):
+        build_flight_mining_yield_payload(
+            config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+            session=session,
+        )
 
 
 def test_sales_tax_profile_uses_accounting_skill_level():

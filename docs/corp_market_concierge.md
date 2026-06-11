@@ -90,6 +90,14 @@ esi-universe.read_structures.v1
 
 The normal Flight Attendant login does not request the optional reprocessing scopes. A pilot must choose the reprocessing opt-in link before the app asks EVE SSO for implant reads or private structure-name resolution. Manual implant, structure bonus, facility yield, and processing-fee overrides still work without these optional scopes.
 
+Optional mining-yield opt-in scope:
+
+```text
+esi-industry.read_character_mining.v1
+```
+
+The normal Flight Attendant login does not request the optional mining scope. A pilot must choose the Mining Yield opt-in link before the app asks EVE SSO for the character mining ledger. The tab summarizes cached daily ledger rows as ore/day and manual session averages; it does not read the EVE client, inventory deltas, laser cycles, or live mining state.
+
 The wallet scope is used by `Trade P&L` for recent market transactions and related market fee rows. The server still keeps the access token in memory only, and the tab does not place, edit, cancel, or update any market orders. Trade P&L consideration rules change only the local considered income summary; ignored rows remain visible with their actual profit or loss. The materials rule uses the local SDE market group lineage for `Materials` when available, with a mineral fallback for common inputs such as Pyerite. Open-stock market valuation uses public Fuzzwork aggregates and is labeled as an estimate, not realized wallet income. Planner expectation snapshots and seen wallet transaction rows are local rows in the ignored `profiles/corp_market.sqlite3` database; they do not create orders and do not leave the server process except as displayed P&L comparison output.
 
 The `Bulk Appraisal` tab does not need an EVE SSO scope. It uses the local SDE market cache and public ESI market orders for selected public hubs. Corp or alliance structure-market pricing is a later review item because it would require a clear scope, access, and token-storage design.
@@ -283,6 +291,18 @@ When the pilot clicks `Refresh Ledger`, the server reads ESI assets, asks ESI fo
 Ledger rows with item names include `Use In Hauler`. That button sends the row's unique item type names into the `Hauler Routes` pasted-items field, enables pasted-items-only quick mode, and shows the source container with aggregated owned quantities on the Hauler tab. The current route scan still uses pasted item names for public-order discovery; the quantity summary is review context until the app has a separate owned-assets route mode.
 
 The ledger does not move items, create contracts, place market orders, or write to EVE. It only reads the connected pilot's asset tree and custom asset names.
+
+### Mining Yield
+
+The `Mining Yield` tab is an optional opt-in view for the character mining ledger. It uses `esi-industry.read_character_mining.v1` only after the pilot chooses the mining opt-in link. The server keeps the access token in memory only and does not store mining ledger rows.
+
+The output is deliberately labeled as cached ledger math:
+
+- `ore/day` divides the selected ledger total by the selected calendar-day window.
+- `ore/sec` and `m3/sec` divide the selected ledger total by the manual session-hours field.
+- `m3` totals use local static type volume when available and are marked partial when volume is unknown.
+
+This tab does not use inventory deltas, screen reading, mining-cycle timing, cache scraping, game memory, or EVE client control. Treat it as a practical "how did that mining block go?" summary, not live automation telemetry.
 
 ### Industry Library And Blueprint Profitability
 

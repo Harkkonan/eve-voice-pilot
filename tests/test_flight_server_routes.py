@@ -42,6 +42,7 @@ def test_flight_get_route_dispatches_known_paths_only():
     assert handler.calls == ["status"]
     assert FLIGHT_GET_ROUTE_METHODS["/api/flight/status"] == "_handle_flight_status"
     assert FLIGHT_GET_ROUTE_METHODS["/api/flight/asset-ledger"] == "_handle_flight_asset_ledger"
+    assert FLIGHT_GET_ROUTE_METHODS["/api/flight/mining-yield"] == "_handle_flight_mining_yield"
 
 
 def test_flight_post_route_keeps_logout_separate_from_appraisal():
