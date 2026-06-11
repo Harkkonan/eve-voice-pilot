@@ -3700,6 +3700,8 @@ def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
             {"item_id": 300, "type_id": 3296, "quantity": 1, "location_id": 60003760, "location_flag": "Hangar", "location_type": "station"},
             {"item_id": 301, "type_id": 36, "quantity": 300, "location_id": 300, "location_flag": "Unlocked", "location_type": "item"},
             {"item_id": 400, "type_id": 3296, "quantity": 1, "location_id": 60008494, "location_flag": "Hangar", "location_type": "station"},
+            {"item_id": 500, "type_id": 3296, "quantity": 1, "location_id": 60008494, "location_flag": "Hangar", "location_type": "station"},
+            {"item_id": 501, "type_id": 37, "quantity": 42, "location_id": 500, "location_flag": "Unlocked", "location_type": "item"},
         ],
     )
     monkeypatch.setattr(
@@ -3710,6 +3712,7 @@ def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
             200: "asset12",
             300: "CM-READY-HAUL",
             400: "Personal Notes",
+            500: "Managed1",
         },
     )
 
@@ -3718,6 +3721,7 @@ def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
             34: "Tritanium",
             35: "Pyerite",
             36: "Mexallon",
+            37: "Isogen",
             3296: "Large Standard Container",
             60008494: "Jita 4-4",
             60003760: "Amarr VIII",
@@ -3733,13 +3737,13 @@ def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
     ledger = payload["ledger"]
     assert payload["ok"] is True
     assert ledger["source"] == "esi-assets.read_assets.v1"
-    assert ledger["scanned_asset_count"] == 8
-    assert ledger["named_asset_count"] == 4
-    assert ledger["container_count"] == 3
-    assert ledger["stack_count"] == 4
-    assert ledger["total_units"] == 5575
+    assert ledger["scanned_asset_count"] == 10
+    assert ledger["named_asset_count"] == 5
+    assert ledger["container_count"] == 4
+    assert ledger["stack_count"] == 5
+    assert ledger["total_units"] == 5617
     names = {row["container_name"]: row for row in ledger["rows"]}
-    assert set(names) == {"CM-ASSET-JITA-01", "asset12", "CM-READY-HAUL"}
+    assert set(names) == {"CM-ASSET-JITA-01", "asset12", "CM-READY-HAUL", "Managed1"}
     assert names["CM-ASSET-JITA-01"]["status_label"] == "Managed asset"
     assert names["CM-ASSET-JITA-01"]["location_name"] == "Jita 4-4"
     assert names["CM-ASSET-JITA-01"]["stack_count"] == 3
@@ -3755,6 +3759,11 @@ def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
     assert names["asset12"]["handoff_items"] == []
     assert names["asset12"]["handoff_total_units"] == 0
     assert "no direct child assets" in names["asset12"]["notes"][0]
+    assert names["Managed1"]["status_label"] == "Managed trade stock"
+    assert names["Managed1"]["match_reason"] == "Managed container name"
+    assert names["Managed1"]["handoff_items"] == [
+        {"type_id": 37, "type_name": "Isogen", "quantity_total": 42, "stack_count": 1},
+    ]
     assert names["CM-READY-HAUL"]["status_key"] == "ready-to-haul"
     assert names["CM-READY-HAUL"]["handoff_item_names"] == ["Mexallon"]
     assert names["CM-READY-HAUL"]["handoff_items"] == [

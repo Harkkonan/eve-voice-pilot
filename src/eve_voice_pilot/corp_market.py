@@ -4703,6 +4703,8 @@ def asset_ledger_container_status(name: str) -> dict[str, str] | None:
         return {"key": "ready-to-haul", "label": "Ready to haul", "reason": "ready-haul container name"}
     if compact.startswith("cmasset") or compact.startswith("cmledger"):
         return {"key": "asset", "label": "Managed asset", "reason": "CM asset container name"}
+    if compact.startswith("managed"):
+        return {"key": "asset", "label": "Managed trade stock", "reason": "Managed container name"}
     if compact.startswith("asset"):
         return {"key": "asset", "label": "Managed asset", "reason": "asset container name"}
     return None
@@ -4855,7 +4857,7 @@ def build_asset_ledger_payload(*, config: EveSsoConfig, session: FlightEsiSessio
     rows.sort(key=lambda row: (str(row.get("status_key") or ""), str(row.get("container_name") or "").casefold()))
     notes = list(lookup_errors)
     if not rows:
-        notes.append("No managed asset containers were found. Rename a freight container to asset, asset12, CM-ASSET-*, or CM-READY-HAUL and refresh.")
+        notes.append("No managed asset containers were found. Rename a freight container to Managed1, asset12, CM-ASSET-*, or CM-READY-HAUL and refresh.")
     return {
         "ok": True,
         "generated_at": now_iso(),
@@ -4868,7 +4870,7 @@ def build_asset_ledger_payload(*, config: EveSsoConfig, session: FlightEsiSessio
             "stack_count": sum(int(row.get("stack_count") or 0) for row in rows),
             "total_units": sum(int(row.get("total_units") or 0) for row in rows),
             "rows": rows,
-            "naming_hint": "Rename freight containers as asset, asset12, CM-ASSET-*, or CM-READY-HAUL to include them here.",
+            "naming_hint": "Rename freight containers as Managed1, asset12, CM-ASSET-*, or CM-READY-HAUL to include them here.",
             "notes": notes,
         },
     }
@@ -20718,7 +20720,7 @@ help</textarea>
             <div class="tester-cockpit-note">
               <strong>This ledger is not hand editable.</strong>
               <span>The app will own rows from Portfolio expectations, ESI assets, ESI named containers, and later wallet or Trade P&amp;L matches.</span>
-              <span>For the next backend slice, freight containers named like <code>CM-ASSET-JITA-01</code> or <code>CM-READY-HAUL</code> can become the source buckets for Hauler route planning.</span>
+              <span>Freight containers named like <code>Managed1</code>, <code>CM-ASSET-JITA-01</code>, or <code>CM-READY-HAUL</code> become source buckets when you click Refresh Ledger.</span>
             </div>
             <div class="completed-run-actions">
               <button id="asset-ledger-refresh" class="primary" type="button">Refresh Ledger</button>
@@ -31268,9 +31270,9 @@ help</textarea>
       const rows = Array.isArray(ledger?.rows) ? ledger.rows : [];
       assetLedgerHandoffRows = rows;
       if (!rows.length) {
-        return renderDashboardEmptyState("No managed asset containers found.", {
+        return renderDashboardEmptyState("No matching ESI-named containers were found.", {
           label: "No ledger rows",
-          detail: ledger?.naming_hint || "Rename a freight container to asset, asset12, CM-ASSET-*, or CM-READY-HAUL, then refresh.",
+          detail: ledger?.naming_hint || "Connect ESI, rename a freight container to Managed1, asset12, CM-ASSET-*, or CM-READY-HAUL, place items directly inside it, then click Refresh Ledger again.",
         });
       }
       return rows.map((row, index) => {
@@ -31313,7 +31315,7 @@ help</textarea>
         const containerCount = Number(ledger.container_count || 0);
         assetLedgerStatus.textContent = containerCount
           ? `Loaded ${formatNumber(containerCount)} managed container${containerCount === 1 ? "" : "s"} from ${formatNumber(ledger.scanned_asset_count)} ESI asset row${Number(ledger.scanned_asset_count || 0) === 1 ? "" : "s"}.`
-          : "No managed containers found yet. Rename a freight container to asset or CM-ASSET-* and refresh.";
+          : "No managed containers found yet. Rename a freight container to Managed1, asset12, or CM-ASSET-* and refresh.";
         assetLedgerStatus.classList.remove("error");
       }
       triggerAssetLedgerDocumentChanged();
