@@ -159,6 +159,7 @@ class LocalVoskTranscriber:
         stop_event: threading.Event,
         on_ready: Callable[[], None] | None = None,
         on_partial_match: Callable[[str], bool] | None = None,
+        initial_silence_seconds: float | None = None,
     ) -> str:
         model = self._load_model()
         recognizer = self._create_recognizer(model)
@@ -173,6 +174,7 @@ class LocalVoskTranscriber:
         capture_rate = capture_rate_for_device(self.input_device_index)
         block_size = block_size_for_rate(capture_rate)
         pre_roll: deque[bytes] = deque(maxlen=max(1, int(PRE_ROLL_SECONDS / BLOCK_SECONDS)))
+        initial_silence_limit = INITIAL_SILENCE_SECONDS if initial_silence_seconds is None else initial_silence_seconds
         with sd.RawInputStream(
             samplerate=capture_rate,
             device=self.input_device_index,
@@ -303,7 +305,7 @@ class LocalVoskTranscriber:
                 elif last_speech_at and now - last_speech_at >= AUTO_STOP_SILENCE_SECONDS:
                     reason = "auto-stop silence"
                     break
-                elif not last_speech_at and now - started_at >= INITIAL_SILENCE_SECONDS:
+                elif not last_speech_at and now - started_at >= initial_silence_limit:
                     reason = "initial silence"
                     break
                 elif speech_started and now - started_at >= MAX_RECORD_SECONDS:

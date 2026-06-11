@@ -90,7 +90,7 @@ Discord voice notes let you say a phrase such as:
 Aura take a note gate camp near the Amarr undock
 ```
 
-You can also say `Aura take a note` by itself. The pet will arm note capture, then send the next spoken phrase as the note. Say `cancel note` to cancel an armed note.
+You can also say `Aura take a note` by itself. The pet will arm note capture, collect recognized note fragments, then send after 2 seconds with no new words. Say `send note` to close and send immediately, or `cancel note` to cancel an armed note.
 
 Set this up from `Options` > `Notes`, or start the pet with a notes webhook:
 

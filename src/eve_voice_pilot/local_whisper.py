@@ -47,6 +47,7 @@ class LocalWhisperTranscriber:
         stop_event: threading.Event,
         on_ready: Callable[[], None] | None = None,
         on_partial_match: Callable[[str], bool] | None = None,
+        initial_silence_seconds: float | None = None,
     ) -> str:
         _ = on_partial_match
         audio_queue: queue.Queue[bytes] = queue.Queue()
@@ -62,6 +63,7 @@ class LocalWhisperTranscriber:
         pre_roll: deque[bytes] = deque(maxlen=max(1, int(PRE_ROLL_SECONDS / BLOCK_SECONDS)))
         recorded: list[bytes] = []
         started_at = time.monotonic()
+        initial_silence_limit = INITIAL_SILENCE_SECONDS if initial_silence_seconds is None else initial_silence_seconds
         last_speech_at: float | None = None
         speech_started = False
 
@@ -87,7 +89,7 @@ class LocalWhisperTranscriber:
                 now = time.monotonic()
                 if last_speech_at and now - last_speech_at >= WHISPER_AUTO_STOP_SILENCE_SECONDS:
                     break
-                if not last_speech_at and now - started_at >= INITIAL_SILENCE_SECONDS:
+                if not last_speech_at and now - started_at >= initial_silence_limit:
                     return ""
                 if speech_started and now - started_at >= WHISPER_MAX_RECORD_SECONDS:
                     break

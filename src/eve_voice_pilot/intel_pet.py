@@ -110,7 +110,9 @@ RECOMMENDED_VOICE_MODEL_LABEL = f"Recommended lgraph ({RECOMMENDED_MODEL_NAME})"
 DEFAULT_DISCORD_NOTE_SETTINGS_PATH = ROOT / "profiles" / "intel_pet_discord_notes.json"
 DEFAULT_DISCORD_NOTE_SENDER = "IntelPet Notes"
 DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES = ("take a note", "take note", "note", "remember this")
+DEFAULT_DISCORD_NOTE_CLOSE_PHRASES = ("send note", "end note", "finish note", "note done")
 DEFAULT_DISCORD_NOTE_CANCEL_PHRASES = ("cancel note", "never mind", "forget note")
+DISCORD_NOTE_IDLE_SEND_SECONDS = 2.0
 MAX_DISCORD_NOTE_TEXT_LENGTH = 1500
 COMMAND_PHRASE_SPLIT_RE = re.compile(r"[\n,]+")
 PET_VOICE_STYLE_PRESETS = (
@@ -469,6 +471,10 @@ def clean_voice_target_title(value: Any) -> str:
 def clean_discord_note_text(value: Any) -> str:
     text = normalize_response_text(str(value or "").replace("\n", " "))
     return text[:MAX_DISCORD_NOTE_TEXT_LENGTH].strip()
+
+
+def join_discord_note_parts(parts: Iterable[str]) -> str:
+    return clean_discord_note_text(" ".join(part for part in parts if clean_discord_note_text(part)))
 
 
 def clean_discord_note_sender(value: Any) -> str:
@@ -874,6 +880,26 @@ def discord_note_intent_from_transcript(
     return None
 
 
+def split_discord_note_close_phrase(
+    note_text: str,
+    settings: IntelPetDiscordNoteSettings,
+) -> tuple[str, bool]:
+    note = clean_discord_note_text(note_text)
+    if not note:
+        return "", False
+    close_phrases = clean_discord_note_phrases(
+        settings.close_phrases,
+        default=DEFAULT_DISCORD_NOTE_CLOSE_PHRASES,
+    )
+    for phrase in close_phrases:
+        if note == phrase:
+            return "", True
+        suffix = f" {phrase}"
+        if note.endswith(suffix):
+            return clean_discord_note_text(note[: -len(suffix)]), True
+    return note, False
+
+
 def build_discord_note_payload(
     note_text: str,
     settings: IntelPetDiscordNoteSettings,
@@ -946,6 +972,170 @@ def send_discord_note(
         detail=f"Note sent to Discord notes: {note}",
         severity="info",
         recorded_at=recorded_at,
+    )
+
+
+def discord_note_recording_status(
+    state: IntelPetDiscordNoteCaptureState,
+    settings: IntelPetDiscordNoteSettings,
+    *,
+    heard: str = "",
+    engine: str = "",
+    active_window_check: str = "",
+) -> IntelPetVoiceStatus:
+    close = first_discord_note_close_phrase(settings)
+    cancel = first_discord_note_cancel_phrase(settings)
+    note = state.note_text
+    detail = f'Note capture is recording. Pause for 2 seconds to send, say "{close}" to send now, or say "{cancel}" to cancel.'
+    if note:
+        detail = f"{detail}\nBuffered: {note}"
+    return IntelPetVoiceStatus(
+        title="Discord note recording",
+        detail=detail,
+        severity="info",
+        recorded_at=now_iso(),
+        heard=heard,
+        engine=engine,
+        active_window_check=active_window_check,
+    )
+
+
+def discord_note_initial_silence_seconds(
+    state: IntelPetDiscordNoteCaptureState,
+    *,
+    now_seconds: float | None = None,
+) -> float | None:
+    if not state.active or not state.parts:
+        return None
+    now_value = time.monotonic() if now_seconds is None else float(now_seconds)
+    elapsed = max(0.0, now_value - state.last_note_at)
+    return max(0.05, DISCORD_NOTE_IDLE_SEND_SECONDS - elapsed)
+
+
+def discord_note_capture_status_from_transcript(
+    transcript: str,
+    settings: IntelPetDiscordNoteSettings,
+    *,
+    state: IntelPetDiscordNoteCaptureState,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+    pilot_name: str = "",
+    voice_engine: str = "",
+    active_window_check: str = "",
+    poster: Callable[..., Any] = post_discord_note_webhook,
+    now_seconds: float | None = None,
+) -> tuple[IntelPetVoiceStatus | None, IntelPetDiscordNoteCaptureState]:
+    now_value = time.monotonic() if now_seconds is None else float(now_seconds)
+    heard = normalize_response_text(transcript)
+    cleaned, _response_requested = strip_response_call_sign(heard, response_call_signs(response_call_sign))
+    clean_engine = clean_voice_engine(voice_engine) if voice_engine else ""
+
+    def with_voice_context(status: IntelPetVoiceStatus) -> IntelPetVoiceStatus:
+        return replace(
+            status,
+            heard=heard,
+            engine=clean_engine,
+            active_window_check=active_window_check,
+        )
+
+    def inactive() -> IntelPetDiscordNoteCaptureState:
+        return IntelPetDiscordNoteCaptureState()
+
+    def send_state(note_state: IntelPetDiscordNoteCaptureState) -> tuple[IntelPetVoiceStatus, IntelPetDiscordNoteCaptureState]:
+        return (
+            with_voice_context(send_discord_note(note_state.note_text, settings, pilot_name=pilot_name, poster=poster)),
+            inactive(),
+        )
+
+    def append_text(note_state: IntelPetDiscordNoteCaptureState, note_text: str) -> IntelPetDiscordNoteCaptureState:
+        text = clean_discord_note_text(note_text)
+        if not text:
+            return note_state
+        return IntelPetDiscordNoteCaptureState(
+            active=True,
+            parts=(*note_state.parts, text),
+            last_note_at=now_value,
+        )
+
+    intent = discord_note_intent_from_transcript(
+        transcript,
+        settings,
+        response_call_sign=response_call_sign,
+    )
+
+    if state.active:
+        if intent and intent.action == "cancel":
+            return (
+                with_voice_context(
+                    IntelPetVoiceStatus(
+                        title="Discord note canceled",
+                        detail="Note capture canceled.",
+                        severity="info",
+                        recorded_at=now_iso(),
+                    )
+                ),
+                inactive(),
+            )
+        if not cleaned:
+            if state.parts and now_value - state.last_note_at >= DISCORD_NOTE_IDLE_SEND_SECONDS:
+                return send_state(state)
+            return None, state
+        note_text = intent.note_text if intent and intent.action == "send" else cleaned
+        note_text, should_send = split_discord_note_close_phrase(note_text, settings)
+        updated = append_text(state, note_text)
+        if should_send:
+            return send_state(updated)
+        if updated is not state:
+            return (
+                discord_note_recording_status(
+                    updated,
+                    settings,
+                    heard=heard,
+                    engine=clean_engine,
+                    active_window_check=active_window_check,
+                ),
+                updated,
+            )
+        return None, updated
+
+    if intent is None:
+        return None, inactive()
+    if intent.action == "cancel":
+        return (
+            with_voice_context(
+                IntelPetVoiceStatus(
+                    title="Discord note canceled",
+                    detail="No note capture was active.",
+                    severity="info",
+                    recorded_at=now_iso(),
+                )
+            ),
+            inactive(),
+        )
+    if intent.action == "arm":
+        return (
+            with_voice_context(
+                IntelPetVoiceStatus(
+                    title="Discord note ready",
+                    detail=discord_note_ready_detail(settings),
+                    severity="info",
+                    recorded_at=now_iso(),
+                )
+            ),
+            IntelPetDiscordNoteCaptureState(active=True, last_note_at=now_value),
+        )
+    note_text, should_send = split_discord_note_close_phrase(intent.note_text, settings)
+    updated = append_text(IntelPetDiscordNoteCaptureState(active=True, last_note_at=now_value), note_text)
+    if should_send:
+        return send_state(updated)
+    return (
+        discord_note_recording_status(
+            updated,
+            settings,
+            heard=heard,
+            engine=clean_engine,
+            active_window_check=active_window_check,
+        ),
+        updated,
     )
 
 
@@ -1364,6 +1554,7 @@ class IntelPetDiscordNoteSettings:
     webhook_url: str = ""
     sender_name: str = DEFAULT_DISCORD_NOTE_SENDER
     trigger_phrases: tuple[str, ...] = DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES
+    close_phrases: tuple[str, ...] = DEFAULT_DISCORD_NOTE_CLOSE_PHRASES
     cancel_phrases: tuple[str, ...] = DEFAULT_DISCORD_NOTE_CANCEL_PHRASES
 
     @classmethod
@@ -1375,6 +1566,10 @@ class IntelPetDiscordNoteSettings:
             trigger_phrases=clean_discord_note_phrases(
                 payload.get("trigger_phrases"),
                 default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+            ),
+            close_phrases=clean_discord_note_phrases(
+                payload.get("close_phrases"),
+                default=DEFAULT_DISCORD_NOTE_CLOSE_PHRASES,
             ),
             cancel_phrases=clean_discord_note_phrases(
                 payload.get("cancel_phrases"),
@@ -1390,6 +1585,9 @@ class IntelPetDiscordNoteSettings:
             "trigger_phrases": list(
                 clean_discord_note_phrases(self.trigger_phrases, default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES)
             ),
+            "close_phrases": list(
+                clean_discord_note_phrases(self.close_phrases, default=DEFAULT_DISCORD_NOTE_CLOSE_PHRASES)
+            ),
             "cancel_phrases": list(
                 clean_discord_note_phrases(self.cancel_phrases, default=DEFAULT_DISCORD_NOTE_CANCEL_PHRASES)
             ),
@@ -1401,6 +1599,7 @@ class IntelPetDiscordNoteSettings:
             "webhook_configured": bool(self.webhook_url),
             "sender_name": clean_discord_note_sender(self.sender_name),
             "trigger_phrases": list(self.trigger_phrases),
+            "close_phrases": list(self.close_phrases),
             "cancel_phrases": list(self.cancel_phrases),
         }
 
@@ -1411,10 +1610,29 @@ class IntelPetDiscordNoteIntent:
     note_text: str = ""
 
 
+@dataclass(frozen=True)
+class IntelPetDiscordNoteCaptureState:
+    active: bool = False
+    parts: tuple[str, ...] = ()
+    last_note_at: float = 0.0
+
+    @property
+    def note_text(self) -> str:
+        return join_discord_note_parts(self.parts)
+
+
 def first_discord_note_trigger_phrase(settings: IntelPetDiscordNoteSettings) -> str:
     phrases = clean_discord_note_phrases(
         settings.trigger_phrases,
         default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+    )
+    return phrases[0]
+
+
+def first_discord_note_close_phrase(settings: IntelPetDiscordNoteSettings) -> str:
+    phrases = clean_discord_note_phrases(
+        settings.close_phrases,
+        default=DEFAULT_DISCORD_NOTE_CLOSE_PHRASES,
     )
     return phrases[0]
 
@@ -1429,8 +1647,9 @@ def first_discord_note_cancel_phrase(settings: IntelPetDiscordNoteSettings) -> s
 
 def discord_note_ready_detail(settings: IntelPetDiscordNoteSettings) -> str:
     trigger = first_discord_note_trigger_phrase(settings)
+    close = first_discord_note_close_phrase(settings)
     cancel = first_discord_note_cancel_phrase(settings)
-    return f'Note capture armed after "{trigger}". Speak the note next, or say "{cancel}".'
+    return f'Note capture armed after "{trigger}". Speak the note, pause for 2 seconds, say "{close}" to send, or say "{cancel}" to cancel.'
 
 
 def voice_listener_ready_detail(
@@ -1454,8 +1673,9 @@ def voice_listener_ready_detail(
     ]
     if note_settings is not None:
         trigger = first_discord_note_trigger_phrase(note_settings)
+        close = first_discord_note_close_phrase(note_settings)
         cancel = first_discord_note_cancel_phrase(note_settings)
-        parts.append(f'Discord note trigger: "{trigger}"; cancel: "{cancel}".')
+        parts.append(f'Discord note trigger: "{trigger}"; close: "{close}"; cancel: "{cancel}".')
     return " ".join(parts)
 
 
@@ -3009,7 +3229,7 @@ def run_overlay(
     def voice_practice_watcher() -> None:
         transcriber: LocalVoskTranscriber | LocalWhisperTranscriber | RealtimeTranscriber | None = None
         transcriber_signature: tuple[Any, ...] | None = None
-        pending_note_capture = False
+        note_capture_state = IntelPetDiscordNoteCaptureState()
         ready_announced = False
         last_error = ""
         while not stop_event.is_set():
@@ -3020,6 +3240,7 @@ def run_overlay(
                     transcriber = None
                     transcriber_signature = None
                     ready_announced = False
+                    note_capture_state = IntelPetDiscordNoteCaptureState()
                 stop_event.wait(0.5)
                 continue
             try:
@@ -3091,11 +3312,15 @@ def run_overlay(
                         )
                     )
 
-                transcript = transcriber.record_until_stopped(stop_event, on_ready=on_ready)
-                note_status, pending_note_capture = discord_note_status_from_transcript(
+                transcript = transcriber.record_until_stopped(
+                    stop_event,
+                    on_ready=on_ready,
+                    initial_silence_seconds=discord_note_initial_silence_seconds(note_capture_state),
+                )
+                note_status, note_capture_state = discord_note_capture_status_from_transcript(
                     transcript,
                     current_discord_note_settings(),
-                    pending_capture=pending_note_capture,
+                    state=note_capture_state,
                     response_call_sign=call_sign,
                     pilot_name=location_session.character_name if location_session is not None else "",
                     voice_engine=voice_engine,
@@ -4450,6 +4675,7 @@ def run_overlay(
         note_webhook_var = tk.StringVar(value=note_settings.webhook_url)
         note_sender_var = tk.StringVar(value=clean_discord_note_sender(note_settings.sender_name))
         note_trigger_var = tk.StringVar(value=", ".join(note_settings.trigger_phrases))
+        note_close_var = tk.StringVar(value=", ".join(note_settings.close_phrases))
         note_cancel_var = tk.StringVar(value=", ".join(note_settings.cancel_phrases))
         note_test_var = tk.StringVar(value="gate camp near the Amarr undock")
         note_status_var = tk.StringVar(value=f"Notes settings file: {discord_note_settings_path}")
@@ -4465,6 +4691,10 @@ def run_overlay(
                     note_trigger_var.get(),
                     default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
                 ),
+                close_phrases=clean_discord_note_phrases(
+                    note_close_var.get(),
+                    default=DEFAULT_DISCORD_NOTE_CLOSE_PHRASES,
+                ),
                 cancel_phrases=clean_discord_note_phrases(
                     note_cancel_var.get(),
                     default=DEFAULT_DISCORD_NOTE_CANCEL_PHRASES,
@@ -4479,6 +4709,10 @@ def run_overlay(
                 trigger_phrases=clean_discord_note_phrases(
                     note_trigger_var.get(),
                     default=DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES,
+                ),
+                close_phrases=clean_discord_note_phrases(
+                    note_close_var.get(),
+                    default=DEFAULT_DISCORD_NOTE_CLOSE_PHRASES,
                 ),
                 cancel_phrases=clean_discord_note_phrases(
                     note_cancel_var.get(),
@@ -4506,6 +4740,7 @@ def run_overlay(
             note_webhook_var.set(settings.webhook_url)
             note_sender_var.set(clean_discord_note_sender(settings.sender_name))
             note_trigger_var.set(", ".join(settings.trigger_phrases))
+            note_close_var.set(", ".join(settings.close_phrases))
             note_cancel_var.set(", ".join(settings.cancel_phrases))
             refresh_note_phrase_preview(note_settings_override=settings)
 
@@ -4550,7 +4785,7 @@ def run_overlay(
             note_trigger_var.set(", ".join(promoted))
             persist_discord_note_settings("Tap tap trigger saved")
 
-        for preview_var in (note_trigger_var, note_test_var, voice_call_sign_var):
+        for preview_var in (note_trigger_var, note_close_var, note_test_var, voice_call_sign_var):
             preview_var.trace_add("write", lambda *_args: refresh_note_phrase_preview())
 
         phrase_frame = ttk.LabelFrame(notes_frame, text="Current voice phrase", padding=10)
@@ -4607,8 +4842,16 @@ def run_overlay(
             wraplength=560,
         ).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 8))
 
-        ttk.Label(discord_note_form, text="Cancel phrases").grid(row=6, column=0, sticky="w", pady=5)
-        ttk.Entry(discord_note_form, textvariable=note_cancel_var).grid(row=6, column=1, sticky="ew", pady=5)
+        ttk.Label(discord_note_form, text="Close phrases").grid(row=6, column=0, sticky="w", pady=5)
+        ttk.Entry(discord_note_form, textvariable=note_close_var).grid(row=6, column=1, sticky="ew", pady=5)
+        ttk.Label(
+            discord_note_form,
+            text="A close phrase sends the buffered note immediately. Otherwise the note sends after 2 seconds without new words.",
+            wraplength=560,
+        ).grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+
+        ttk.Label(discord_note_form, text="Cancel phrases").grid(row=8, column=0, sticky="w", pady=5)
+        ttk.Entry(discord_note_form, textvariable=note_cancel_var).grid(row=8, column=1, sticky="ew", pady=5)
 
         test_frame = ttk.LabelFrame(notes_frame, text="Manual test", padding=8)
         test_frame.pack(fill="x", pady=(12, 0))

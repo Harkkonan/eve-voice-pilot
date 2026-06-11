@@ -49,6 +49,7 @@ from eve_voice_pilot.intel_pet import (
     SHIP_FRAME_COUNT,
     GameLogState,
     IntelPetCombatCheer,
+    IntelPetDiscordNoteCaptureState,
     IntelPetDiscordNoteSettings,
     IntelPetHistoryItem,
     IntelPetLocationCheer,
@@ -80,6 +81,8 @@ from eve_voice_pilot.intel_pet import (
     clean_user_terms,
     combat_cheer_from_game_log_line,
     discord_note_intent_from_transcript,
+    discord_note_capture_status_from_transcript,
+    discord_note_initial_silence_seconds,
     discord_note_ready_detail,
     discord_note_status_from_transcript,
     closest_voice_phrase_suggestions,
@@ -335,6 +338,7 @@ def test_discord_note_settings_round_trip_and_stay_out_of_export(tmp_path):
         webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
         sender_name="Aura Notes",
         trigger_phrases=("take a note", "remember"),
+        close_phrases=("send note",),
         cancel_phrases=("cancel note",),
     )
 
@@ -346,6 +350,7 @@ def test_discord_note_settings_round_trip_and_stay_out_of_export(tmp_path):
     assert loaded.webhook_url.endswith("/token-value")
     assert loaded.sender_name == "Aura Notes"
     assert loaded.trigger_phrases == ("take a note", "remember")
+    assert loaded.close_phrases == ("send note",)
     assert "webhook" not in json.dumps(exported).casefold()
     assert DEFAULT_DISCORD_NOTE_SETTINGS_PATH.name == "intel_pet_discord_notes.json"
 
@@ -1029,6 +1034,94 @@ def test_discord_note_status_can_arm_next_phrase_and_cancel():
     assert pending_after_cancel is False
 
 
+def test_discord_note_capture_buffers_until_two_seconds_without_words():
+    settings = IntelPetDiscordNoteSettings(
+        enabled=True,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
+        trigger_phrases=("tap tap",),
+        close_phrases=("send note",),
+        cancel_phrases=("knock knock",),
+    )
+    sent: list[dict] = []
+
+    status, state = discord_note_capture_status_from_transcript(
+        "merlin tap tap gate camp near amarr",
+        settings,
+        state=IntelPetDiscordNoteCaptureState(),
+        response_call_sign="merlin",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+        now_seconds=10.0,
+    )
+    waiting, state = discord_note_capture_status_from_transcript(
+        "",
+        settings,
+        state=state,
+        response_call_sign="merlin",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+        now_seconds=11.5,
+    )
+    sent_status, state = discord_note_capture_status_from_transcript(
+        "",
+        settings,
+        state=state,
+        response_call_sign="merlin",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+        now_seconds=12.1,
+    )
+
+    assert status is not None
+    assert status.title == "Discord note recording"
+    assert state.active is False
+    assert waiting is None
+    assert sent_status is not None
+    assert sent_status.title == "Discord note sent"
+    assert "gate camp near amarr" in sent[0]["content"]
+
+
+def test_discord_note_capture_sends_when_close_phrase_is_heard():
+    settings = IntelPetDiscordNoteSettings(
+        enabled=True,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
+        trigger_phrases=("tap tap",),
+        close_phrases=("send note",),
+        cancel_phrases=("knock knock",),
+    )
+    sent: list[dict] = []
+
+    ready, state = discord_note_capture_status_from_transcript(
+        "merlin tap tap",
+        settings,
+        state=IntelPetDiscordNoteCaptureState(),
+        response_call_sign="merlin",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+        now_seconds=20.0,
+    )
+    sent_status, state = discord_note_capture_status_from_transcript(
+        "gate camp near amarr send note",
+        settings,
+        state=state,
+        response_call_sign="merlin",
+        poster=lambda _url, payload, timeout_seconds: sent.append(payload),
+        now_seconds=21.0,
+    )
+
+    assert ready is not None
+    assert ready.title == "Discord note ready"
+    assert state.active is False
+    assert sent_status is not None
+    assert sent_status.title == "Discord note sent"
+    assert "gate camp near amarr" in sent[0]["content"]
+    assert "send note" not in sent[0]["content"]
+
+
+def test_discord_note_initial_silence_seconds_counts_down_after_words():
+    state = IntelPetDiscordNoteCaptureState(active=True, parts=("gate camp",), last_note_at=30.0)
+
+    assert discord_note_initial_silence_seconds(state, now_seconds=30.5) == pytest.approx(1.5)
+    assert discord_note_initial_silence_seconds(state, now_seconds=32.5) == pytest.approx(0.05)
+    assert discord_note_initial_silence_seconds(IntelPetDiscordNoteCaptureState(), now_seconds=30.5) is None
+
+
 def test_discord_note_real_tap_tap_phrase_sends_inline_note():
     settings = IntelPetDiscordNoteSettings(
         enabled=True,
@@ -1089,7 +1182,11 @@ def test_discord_note_real_tap_tap_phrase_arms_and_knock_knock_cancels():
 
 
 def test_voice_listener_ready_detail_reflects_current_voice_safety_settings():
-    note_settings = IntelPetDiscordNoteSettings(trigger_phrases=("tap tap",), cancel_phrases=("knock knock",))
+    note_settings = IntelPetDiscordNoteSettings(
+        trigger_phrases=("tap tap",),
+        close_phrases=("send note",),
+        cancel_phrases=("knock knock",),
+    )
     practice = voice_listener_ready_detail(
         IntelPetSettings(
             enable_voice_listener=True,
@@ -1123,11 +1220,12 @@ def test_voice_listener_ready_detail_reflects_current_voice_safety_settings():
     assert "Practice-only mode" in practice
     assert "Whisper local dictation" in practice
     assert '"tap tap"' in practice
+    assert '"send note"' in practice
     assert '"knock knock"' in practice
     assert "Sending enabled" in sending
     assert "active-window guard is off" in sending
     assert "active-window guard requires 'EVE - Dandin'" in guarded
-    assert discord_note_ready_detail(note_settings).endswith('say "knock knock".')
+    assert discord_note_ready_detail(note_settings).endswith('say "knock knock" to cancel.')
 
 
 def test_history_item_from_voice_status_records_practice_listener_context():

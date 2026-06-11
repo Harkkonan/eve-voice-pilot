@@ -168,6 +168,7 @@ class RealtimeTranscriber:
         stop_event: threading.Event,
         on_ready: Callable[[], None] | None = None,
         on_partial_match: Callable[[str], bool] | None = None,
+        initial_silence_seconds: float | None = None,
     ) -> str:
         if not self.api_key.strip():
             raise RuntimeError("Add your OpenAI API key first.")
@@ -184,6 +185,7 @@ class RealtimeTranscriber:
         capture_rate = capture_rate_for_device(self.input_device_index)
         block_size = block_size_for_rate(capture_rate)
         pre_roll: deque[bytes] = deque(maxlen=max(1, int(PRE_ROLL_SECONDS / BLOCK_SECONDS)))
+        initial_silence_limit = INITIAL_SILENCE_SECONDS if initial_silence_seconds is None else initial_silence_seconds
         try:
             with sd.RawInputStream(
                 samplerate=capture_rate,
@@ -224,7 +226,7 @@ class RealtimeTranscriber:
                         last_speech_at = now
                     elif last_speech_at and now - last_speech_at >= AUTO_STOP_SILENCE_SECONDS:
                         break
-                    elif not last_speech_at and now - started_at >= INITIAL_SILENCE_SECONDS:
+                    elif not last_speech_at and now - started_at >= initial_silence_limit:
                         self._clear_input_buffer(ws)
                         return ""
                     elif speech_started and now - started_at >= MAX_RECORD_SECONDS:
