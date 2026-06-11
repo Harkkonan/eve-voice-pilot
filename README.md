@@ -128,7 +128,7 @@ After SSO login, trusted members can create per-pilot agent upload tokens from t
 
 ### EVE Intel Pet
 
-Double-click `Start-EveIntelPet.bat` for a local-only always-on-top alert overlay. It watches your own EVE chat logs and local game logs, starts at the end of existing files, and warns on new help/hostile/keyword lines. The ship also flies around shooting when a fresh game-log line looks like an NPC or player kill. It includes a small original pixel-art ship that animates on alerts and every five minutes while idle. Add your character name for mention alerts:
+Double-click `Start-EveIntelPet.bat` for a local-only always-on-top alert overlay. It watches your own EVE chat logs and local game logs, starts at the end of existing files, and warns on new help/hostile/keyword lines. The ship also flies around shooting when a fresh game-log line looks like an NPC or player kill. It includes a small original pixel-art ship that animates on alerts and every five minutes while idle, plus a local-only stout robot miner gag behavior for future trigger hooks. Add your character name for mention alerts:
 
 ```powershell
 .\scripts\run_intel_pet.ps1 --pilot-name "Your Character Name"

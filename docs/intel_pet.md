@@ -47,13 +47,15 @@ Channels outside the default allowlist, such as `Rookie Help` or private corp co
 
 ## Ship Animation
 
-The pet includes a small original pixel-art spaceship. It uses eight transparent PNG frames under:
+The pet includes a small original pixel-art spaceship. It uses eight transparent PNG ship frames and a separate original robot-miner gag frame set under:
 
 ```text
 src/eve_voice_pilot/static/intel-pet/
 ```
 
 The overlay swaps those frames with Tkinter only. Turrets and engines animate when an alert appears, the ship flies happily on configured system arrivals and mission milestones, and it flies around shooting when a local game-log kill is detected. The ship also runs a short idle cycle every five minutes.
+
+The `Stout robot miner` behavior is a local visual gag: the ship briefly folds into a compact industrial robot, swings a pickaxe, fires eye lasers, and returns to ship form. It does not add an ESI scope, share data, read new files, click, send keys, or automate EVE.
 
 Alert bubbles stay visible for 15 seconds by default. If a newer alert arrives before that timer ends, the bubble switches to the newer message and the 15-second timer starts again.
 
@@ -369,7 +371,7 @@ In the `Behaviors` tab, choose the ship animation for each alert type:
 - kill cheer;
 - mission milestone.
 
-Each row has a small animated preview next to the selector. The behavior choices include short alert, happy flight, combat burst, long flight, long shooting, long combo, calm wiggle, and no animation. Behavior changes are saved immediately to the same local settings file.
+Each row has a small animated preview next to the selector. The behavior choices include short alert, happy flight, combat burst, long flight, long shooting, long combo, stout robot miner, calm wiggle, and no animation. Behavior changes are saved immediately to the same local settings file.
 
 In the `Voice` tab, turn spoken pet messages on or off and choose the voice engine/style. You can also enable the voice-command listener there. `Allow command sending` is off by default; when it is on, the active-window guard is still on by default.
 

@@ -147,6 +147,7 @@ BEHAVIOR_NONE = "none"
 BEHAVIOR_LONG_MOVE = "long_move"
 BEHAVIOR_LONG_COMBAT = "long_combat"
 BEHAVIOR_LONG_COMBO = "long_combo"
+BEHAVIOR_ROBOT_MINER = "robot_miner"
 BEHAVIOR_OPTIONS = (
     (BEHAVIOR_ALERT, "Alert pulse", "quick turret and engine pulse"),
     (BEHAVIOR_HAPPY, "Happy flight", "small cheerful loop"),
@@ -154,6 +155,7 @@ BEHAVIOR_OPTIONS = (
     (BEHAVIOR_LONG_MOVE, "Long flight", "extended movement loop"),
     (BEHAVIOR_LONG_COMBAT, "Long shooting", "extended laser volley"),
     (BEHAVIOR_LONG_COMBO, "Long combo", "extended flight and shooting"),
+    (BEHAVIOR_ROBOT_MINER, "Stout robot miner", "morph, pickaxe, and eye lasers"),
     (BEHAVIOR_IDLE, "Calm wiggle", "quiet idle flutter"),
     (BEHAVIOR_NONE, "No animation", "message only"),
 )
@@ -177,6 +179,7 @@ DEFAULT_ALERT_BEHAVIORS = {
     "mission": BEHAVIOR_HAPPY,
 }
 SHIP_FRAME_COUNT = 8
+ROBOT_MINER_FRAME_COUNT = 12
 SHIP_FRAME_MS = 150
 IDLE_ANIMATION_MS = 5 * 60 * 1000
 IDLE_SPRITE_SEQUENCE = (0, 1, 2, 3, 4, 5, 6, 7, 0)
@@ -261,6 +264,24 @@ LONG_COMBO_SPRITE_STEPS = (
     (7, -24, 0, 150, 34),
     (0, -10, -12, 156, 62),
     (1, 0, 0, 148, 64),
+)
+ROBOT_MINER_STEPS = (
+    (0, 0, 0, "none"),
+    (1, 0, -2, "spark"),
+    (2, 0, 0, "spark"),
+    (3, 0, 0, "none"),
+    (4, -2, -2, "spark"),
+    (5, 4, 4, "spark"),
+    (6, 0, -2, "laser"),
+    (7, -2, 0, "laser"),
+    (8, 4, 3, "laser"),
+    (4, -2, -2, "spark"),
+    (5, 4, 4, "spark"),
+    (6, 0, -2, "laser"),
+    (8, 4, 2, "laser"),
+    (9, 0, 0, "none"),
+    (10, 0, 2, "spark"),
+    (11, 0, 0, "none"),
 )
 GAME_LOG_LINE_RE = re.compile(
     r"^\s*\[\s*(?P<timestamp>\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}:\d{2})\s*\]\s*(?P<body>.*)$"
@@ -2448,6 +2469,15 @@ def ship_sprite_frame_paths(asset_dir: Path = DEFAULT_SPRITE_DIR) -> tuple[Path,
     return tuple(asset_dir / f"ship-frame-{index:02d}.png" for index in range(SHIP_FRAME_COUNT))
 
 
+def robot_miner_sprite_frame_paths(asset_dir: Path = DEFAULT_SPRITE_DIR) -> tuple[Path, ...]:
+    return tuple(asset_dir / f"robot-miner-frame-{index:02d}.png" for index in range(ROBOT_MINER_FRAME_COUNT))
+
+
+def trigger_robot_miner_animation(reason: str = "") -> str:
+    _reason = str(reason or "").strip()
+    return BEHAVIOR_ROBOT_MINER
+
+
 def location_sso_config_from_args(args: argparse.Namespace) -> EveSsoConfig:
     happy_systems = clean_user_terms(args.happy_system or DEFAULT_HAPPY_SYSTEMS)
     if not happy_systems:
@@ -3120,6 +3150,7 @@ def run_overlay(
         root.configure(bg=transparent_color)
 
     sprite_frames = load_sprite_frames(tk, root)
+    robot_miner_frames = load_sprite_frames(tk, root, paths=robot_miner_sprite_frame_paths())
     sprite_after_id: str | None = None
     idle_cycle_after_id: str | None = None
     shot_item_ids: list[int] = []
@@ -3738,6 +3769,33 @@ def run_overlay(
             canvas.create_oval(14, 9, 16, 11, fill="#e2e8f0", outline="", tags=("preview",))
             canvas.create_oval(72, 10, 74, 12, fill="#e2e8f0", outline="", tags=("preview",))
             canvas.create_oval(84, 34, 86, 36, fill="#e2e8f0", outline="", tags=("preview",))
+
+            if behavior == BEHAVIOR_ROBOT_MINER:
+                bob = (0, -2, 0, 2)[step % 4]
+                x = 44
+                y = 26 + bob
+                laser = step % 6 in {2, 3}
+                swing = step % 6 in {0, 1, 4}
+                canvas.create_rectangle(x - 13, y - 7, x + 13, y + 13, fill="#475b7a", outline="#93c5fd", tags=("preview",))
+                canvas.create_rectangle(x - 10, y - 18, x + 10, y - 7, fill="#64748b", outline="#0f172a", tags=("preview",))
+                canvas.create_rectangle(x - 7, y - 15, x + 7, y - 10, fill="#1e293b", outline="#38bdf8", tags=("preview",))
+                canvas.create_rectangle(x - 5, y - 13, x - 3, y - 11, fill="#fde68a", outline="", tags=("preview",))
+                canvas.create_rectangle(x + 3, y - 13, x + 5, y - 11, fill="#fde68a", outline="", tags=("preview",))
+                canvas.create_rectangle(x - 2, y + 1, x + 2, y + 10, fill="#f97316", outline="", tags=("preview",))
+                canvas.create_line(x - 8, y + 13, x - 10, y + 23, fill="#64748b", width=3, tags=("preview",))
+                canvas.create_line(x + 8, y + 13, x + 10, y + 23, fill="#64748b", width=3, tags=("preview",))
+                canvas.create_rectangle(x - 16, y + 21, x - 5, y + 24, fill="#64748b", outline="#0f172a", tags=("preview",))
+                canvas.create_rectangle(x + 5, y + 21, x + 16, y + 24, fill="#64748b", outline="#0f172a", tags=("preview",))
+                if laser:
+                    canvas.create_line(x - 4, y - 12, 94, 10 + (step % 3) * 10, fill="#50ebff", width=2, tags=("preview",))
+                    canvas.create_line(x + 4, y - 12, 94, 24 + (step % 2) * 10, fill="#ff5f78", width=2, tags=("preview",))
+                if swing:
+                    canvas.create_line(x + 13, y + 1, x + 29, y - 14, fill="#a57238", width=2, tags=("preview",))
+                    canvas.create_line(x + 23, y - 17, x + 34, y - 8, fill="#e2e8f0", width=2, tags=("preview",))
+                    if step % 6 == 4:
+                        canvas.create_line(82, 41, 92, 41, fill="#fde68a", width=2, tags=("preview",))
+                        canvas.create_line(87, 36, 87, 46, fill="#f97316", width=2, tags=("preview",))
+                return
 
             if behavior == BEHAVIOR_HAPPY:
                 offsets = ((0, 0), (6, -5), (10, 0), (6, 5), (0, 0), (-6, -5), (-10, 0), (-6, 5))
@@ -5276,6 +5334,13 @@ def run_overlay(
         sprite_canvas.itemconfigure(sprite_image_id, image=sprite_frames[clean_index])
         sprite_canvas.coords(sprite_image_id, 80 + offset_x, 64 + offset_y)
 
+    def set_robot_miner_frame(index: int, *, offset_x: int = 0, offset_y: int = 0) -> None:
+        if not robot_miner_frames or sprite_image_id is None:
+            return
+        clean_index = max(0, min(index, len(robot_miner_frames) - 1))
+        sprite_canvas.itemconfigure(sprite_image_id, image=robot_miner_frames[clean_index])
+        sprite_canvas.coords(sprite_image_id, 80 + offset_x, 64 + offset_y)
+
     def clear_combat_shots() -> None:
         for item_id in shot_item_ids:
             sprite_canvas.delete(item_id)
@@ -5384,6 +5449,55 @@ def run_overlay(
 
         advance()
 
+    def start_robot_miner_cycle(*, reschedule_idle: bool = True, frame_ms: int = 120) -> None:
+        nonlocal sprite_after_id
+        if not robot_miner_frames or sprite_image_id is None:
+            start_combat_sprite_cycle(LONG_COMBO_SPRITE_STEPS, reschedule_idle=reschedule_idle, frame_ms=140)
+            return
+        cancel_sprite_cycle()
+        cancel_idle_sprite_cycle()
+
+        def draw_robot_effect(effect: str, offset_x: int, offset_y: int, position: int) -> None:
+            clear_combat_shots()
+            if effect == "laser":
+                left_eye_x = 68 + offset_x
+                right_eye_x = 88 + offset_x
+                eye_y = 52 + offset_y
+                target_x = 160
+                target_y = 28 + (position % 4) * 14
+                shot_item_ids.append(
+                    sprite_canvas.create_line(left_eye_x, eye_y, target_x, target_y, fill="#50ebff", width=3)
+                )
+                shot_item_ids.append(
+                    sprite_canvas.create_line(right_eye_x, eye_y, target_x, target_y + 16, fill="#ff5f78", width=2)
+                )
+            elif effect == "spark":
+                spark_x = 132 + offset_x + (position % 3) * 4
+                spark_y = 94 + offset_y - (position % 2) * 8
+                shot_item_ids.append(
+                    sprite_canvas.create_line(spark_x - 5, spark_y, spark_x + 5, spark_y, fill="#ffd552", width=2)
+                )
+                shot_item_ids.append(
+                    sprite_canvas.create_line(spark_x, spark_y - 5, spark_x, spark_y + 5, fill="#ff8f2a", width=2)
+                )
+
+        def advance(position: int = 0) -> None:
+            nonlocal sprite_after_id
+            frame_index, offset_x, offset_y, effect = ROBOT_MINER_STEPS[position]
+            set_robot_miner_frame(frame_index, offset_x=offset_x, offset_y=offset_y)
+            draw_robot_effect(effect, offset_x, offset_y, position)
+            next_position = position + 1
+            if next_position < len(ROBOT_MINER_STEPS):
+                sprite_after_id = root.after(frame_ms, lambda: advance(next_position))
+            else:
+                sprite_after_id = None
+                clear_combat_shots()
+                set_sprite_frame(0)
+                if reschedule_idle:
+                    schedule_idle_sprite_cycle()
+
+        advance()
+
     def run_idle_sprite_cycle() -> None:
         nonlocal idle_cycle_after_id
         idle_cycle_after_id = None
@@ -5400,6 +5514,8 @@ def run_overlay(
             start_combat_sprite_cycle(LONG_COMBAT_SPRITE_STEPS, frame_ms=140)
         elif behavior == BEHAVIOR_LONG_COMBO:
             start_combat_sprite_cycle(LONG_COMBO_SPRITE_STEPS, frame_ms=140)
+        elif behavior == BEHAVIOR_ROBOT_MINER:
+            start_robot_miner_cycle()
         elif behavior == BEHAVIOR_IDLE:
             start_sprite_cycle(IDLE_SPRITE_SEQUENCE)
         elif behavior == BEHAVIOR_NONE:

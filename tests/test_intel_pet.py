@@ -20,6 +20,7 @@ from eve_voice_pilot.intel_pet import (
     BEHAVIOR_LONG_COMBO,
     BEHAVIOR_LONG_MOVE,
     BEHAVIOR_NONE,
+    BEHAVIOR_ROBOT_MINER,
     DEFAULT_ALERT_SECONDS,
     DEFAULT_ALERT_BEHAVIORS,
     DEFAULT_INPUT_DEVICE_LABEL,
@@ -32,6 +33,8 @@ from eve_voice_pilot.intel_pet import (
     DEFAULT_VOICE_PREVIEW_TEXT,
     DEFAULT_VOICE_TARGET_TITLE,
     RECOMMENDED_VOICE_MODEL_LABEL,
+    ROBOT_MINER_FRAME_COUNT,
+    ROBOT_MINER_STEPS,
     USER_VOICE_PROFILE,
     VOICE_ENGINE_WHISPER,
     IDLE_SPRITE_SEQUENCE,
@@ -121,6 +124,7 @@ from eve_voice_pilot.intel_pet import (
     replace_extra_keywords,
     replace_spoken_alert_kinds,
     replace_voice_settings,
+    robot_miner_sprite_frame_paths,
     save_settings,
     save_discord_note_settings,
     send_discord_note,
@@ -128,6 +132,7 @@ from eve_voice_pilot.intel_pet import (
     ship_sprite_frame_paths,
     should_speak_alert_kind,
     spoken_pet_text,
+    trigger_robot_miner_animation,
     trim_history,
     filtered_voice_command_indices,
     voice_input_device_display,
@@ -1162,7 +1167,19 @@ def test_behavior_labels_round_trip_for_options_ui():
     assert behavior_key_from_label(behavior_label(BEHAVIOR_LONG_MOVE)) == BEHAVIOR_LONG_MOVE
     assert behavior_key_from_label(behavior_label(BEHAVIOR_LONG_COMBAT)) == BEHAVIOR_LONG_COMBAT
     assert behavior_key_from_label(behavior_label(BEHAVIOR_LONG_COMBO)) == BEHAVIOR_LONG_COMBO
+    assert behavior_key_from_label(behavior_label(BEHAVIOR_ROBOT_MINER)) == BEHAVIOR_ROBOT_MINER
     assert behavior_key_from_label("not a label") == BEHAVIOR_ALERT
+
+
+def test_robot_miner_trigger_hook_routes_to_special_behavior_without_alert_changes():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("ore",)))
+
+    alert = engine.analyze(make_message("ore buy order updated"))
+
+    assert trigger_robot_miner_animation("future input") == BEHAVIOR_ROBOT_MINER
+    assert alert is not None
+    assert alert_behavior_key(alert) == "keyword"
+    assert behavior_for_alert(alert, IntelPetSettings()) == BEHAVIOR_ALERT
 
 
 def test_engine_update_settings_changes_keyword_matches_without_restarting():
@@ -1779,8 +1796,17 @@ def test_ship_sprite_frame_paths_point_to_committed_assets():
     assert all(path.name == f"ship-frame-{index:02d}.png" for index, path in enumerate(paths))
 
 
+def test_robot_miner_sprite_frame_paths_point_to_committed_assets():
+    paths = robot_miner_sprite_frame_paths()
+
+    assert len(paths) == ROBOT_MINER_FRAME_COUNT
+    assert all(path.exists() for path in paths)
+    assert all(path.name == f"robot-miner-frame-{index:02d}.png" for index, path in enumerate(paths))
+
+
 def test_sprite_sequences_only_reference_existing_frames():
     valid_indexes = set(range(SHIP_FRAME_COUNT))
+    robot_indexes = set(range(ROBOT_MINER_FRAME_COUNT))
 
     assert set(IDLE_SPRITE_SEQUENCE) <= valid_indexes
     assert set(ALERT_SPRITE_SEQUENCE) <= valid_indexes
@@ -1788,12 +1814,15 @@ def test_sprite_sequences_only_reference_existing_frames():
     assert {step[0] for step in LONG_MOVE_SPRITE_STEPS} <= valid_indexes
     assert {step[0] for step in LONG_COMBAT_SPRITE_STEPS} <= valid_indexes
     assert {step[0] for step in LONG_COMBO_SPRITE_STEPS} <= valid_indexes
+    assert {step[0] for step in ROBOT_MINER_STEPS} <= robot_indexes
     assert IDLE_SPRITE_SEQUENCE[-1] == 0
     assert ALERT_SPRITE_SEQUENCE[-1] == 0
     assert KILL_SPRITE_STEPS[-1][0] == 0
     assert LONG_MOVE_SPRITE_STEPS[-1][0] == 1
     assert LONG_COMBAT_SPRITE_STEPS[-1][0] == 0
     assert LONG_COMBO_SPRITE_STEPS[-1][0] == 1
+    assert ROBOT_MINER_STEPS[0][0] == 0
+    assert ROBOT_MINER_STEPS[-1][0] == ROBOT_MINER_FRAME_COUNT - 1
 
 
 def test_load_sprite_frames_returns_empty_when_any_frame_is_missing(tmp_path):
