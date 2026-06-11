@@ -59,6 +59,12 @@ Alert bubbles use a subtle Aura-style life-simulation backing layer: faint trace
 
 The `Stout robot miner` behavior is a local visual gag: the ship briefly folds into a compact industrial robot, swings a pickaxe, fires eye lasers, and returns to ship form. It does not add an ESI scope, share data, read new files, click, send keys, or automate EVE.
 
+The robot-miner frames are transparent 160x128 PNG renders derived from local CC0 source packs kept under the ignored `local_archives/intel_pet_cc0_packs/` folder. The generator uses Quaternius Animated Mech Pack as the base mech form, Quaternius LowPoly Robot for the squat robot silhouette, OpenGameArt Stylized Low Poly Tools axe meshes as the dual mining-pick props, and Quaternius Sci-Fi Essentials for sensor/industrial details. Raw downloaded packs are not committed. To regenerate the committed frames after placing the sources locally:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\generate_intel_pet_robot_miner_assets.py
+```
+
 Alert bubbles stay visible for 15 seconds by default. If a newer alert arrives before that timer ends, the bubble switches to the newer message and the 15-second timer starts again.
 
 ## Add Extra Local Alerts

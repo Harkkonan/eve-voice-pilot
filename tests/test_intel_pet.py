@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import struct
 import sys
 import threading
 
@@ -1816,6 +1817,14 @@ def test_robot_miner_sprite_frame_paths_point_to_committed_assets():
     assert len(paths) == ROBOT_MINER_FRAME_COUNT
     assert all(path.exists() for path in paths)
     assert all(path.name == f"robot-miner-frame-{index:02d}.png" for index, path in enumerate(paths))
+
+
+def test_robot_miner_sprite_frames_keep_overlay_canvas_size():
+    for path in robot_miner_sprite_frame_paths():
+        body = path.read_bytes()
+
+        assert body.startswith(b"\x89PNG\r\n\x1a\n")
+        assert struct.unpack(">II", body[16:24]) == (160, 128)
 
 
 def test_sprite_sequences_only_reference_existing_frames():
