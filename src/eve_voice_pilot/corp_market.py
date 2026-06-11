@@ -5975,6 +5975,7 @@ def build_flight_acquisition_comparison_payload(
     if not destination_payload:
         destination_payload = first_acquisition.get("destination_system") if isinstance(first_acquisition.get("destination_system"), Mapping) else {}
     destination_payload = dict(destination_payload or {"name": clean_destination_name})
+    combined_opportunity_rows = combined_candidates[:MAX_FLIGHT_ACQUISITION_OPPORTUNITIES]
     combined_acquisition = {
         "origin_system": {"name": "Multiple buy hubs"},
         "destination_system": destination_payload,
@@ -5991,7 +5992,7 @@ def build_flight_acquisition_comparison_payload(
         "opportunity_count": len(combined_candidates),
         "possible_trap_count": combined_portfolio.get("possible_trap_excluded_count", 0),
         "portfolio": combined_portfolio,
-        "opportunities": combined_candidates[:MAX_FLIGHT_ACQUISITION_OPPORTUNITIES],
+        "opportunities": combined_opportunity_rows,
     }
     combined_route = {
         "origin": {"name": "Multiple buy hubs"},
@@ -6030,6 +6031,7 @@ def build_flight_acquisition_comparison_payload(
             "combined_plan": {
                 "available": bool(combined_portfolio.get("available")),
                 "portfolio": combined_portfolio,
+                "opportunities": combined_opportunity_rows,
                 "report_rows": combined_report_rows,
                 "manual_note": (
                     "Hub results are independent full-budget what-if scans. The combined plan uses the one shared "

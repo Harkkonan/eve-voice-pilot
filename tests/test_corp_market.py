@@ -3725,6 +3725,8 @@ def test_acquisition_comparison_payload_ranks_hubs_builds_shared_plan_and_skips_
     assert {line["source_hub_name"] for line in combined_portfolio["lines"]} <= {"Amarr", "Dodixie"}
     assert any(line["item_name"] == "Tritanium" and line["source_hub_name"] == "Dodixie" for line in combined_portfolio["lines"])
     assert comparison["combined_deduped_candidate_count"] == 3
+    assert len(comparison["combined_plan"]["opportunities"]) == 3
+    assert {row["source_hub_name"] for row in comparison["combined_plan"]["opportunities"]} == {"Amarr", "Dodixie"}
     assert comparison["combined_plan"]["report_rows"]
     assert {row["Buy Hub"] for row in comparison["combined_plan"]["report_rows"]} <= {"Amarr", "Dodixie"}
     assert any(event == "hub_failed" for event, _data in progress_events)
