@@ -67,8 +67,23 @@ The first version allows fixed, allowlisted actions only:
 - Check static cache preflight.
 - Run local `git status --short --branch` and `git diff --check`.
 - Run fixed SSH checks for VM health, service status, service restart, service logs, and VM Git status.
+- Fast-forward the configured VM checkout from GitHub, install `requirements.txt`, restart the configured VM service, and show service status.
 
 The workbench does not accept arbitrary shell commands from the browser.
+
+## Routine VM Update
+
+After a local change has been tested, committed, and pushed to GitHub, use the VM buttons in this order:
+
+```text
+VM Git Status
+Update VM App
+VM Health
+Service Status
+Tail VM Logs
+```
+
+`Update VM App` refuses to continue if the VM checkout has uncommitted local changes. It uses `git pull --ff-only`, so it also refuses merge commits or conflict resolution on the VM.
 
 ## Manual-Only Work
 
@@ -79,7 +94,7 @@ Keep these outside the workbench for now:
 - EVE Developers portal callback changes.
 - Oracle instance creation, termination, VCN changes, firewall rules, and security list edits.
 - First SSH host-key trust prompts.
-- Git push, Git pull, Git reset, and cleanup commands.
+- Git push, Git reset, cleanup commands, and any Git operation other than the fixed VM fast-forward update button.
 - Public hosting and tunnel-token setup.
 
 ## Security Notes

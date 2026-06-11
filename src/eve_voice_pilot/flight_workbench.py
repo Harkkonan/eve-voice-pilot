@@ -670,6 +670,38 @@ def vm_service_restart(config: WorkbenchConfig) -> CommandResult:
     )
 
 
+def vm_update_and_restart(config: WorkbenchConfig) -> CommandResult:
+    app_dir = validate_remote_path(config.vm_app_dir, "VM app directory")
+    service = validate_remote_name(config.vm_service_name, "VM service name")
+    restart_command = (
+        'if [ -x "$HOME/bin/eve-flight-restart" ]; then '
+        '"$HOME/bin/eve-flight-restart"; '
+        f"else sudo -n systemctl restart {service}; fi"
+    )
+    remote_command = (
+        "set -e; "
+        f"cd {app_dir}; "
+        'branch="$(git rev-parse --abbrev-ref HEAD)"; '
+        'echo "Branch: $branch"; '
+        'if [ -n "$(git status --porcelain)" ]; then '
+        'echo "VM working tree has local changes; refusing to update."; '
+        "git status --short; "
+        "exit 3; "
+        "fi; "
+        'git pull --ff-only origin "$branch"; '
+        "if [ ! -x .venv/bin/python ]; then python3 -m venv .venv; fi; "
+        ".venv/bin/python -m pip install -r requirements.txt; "
+        f"{restart_command}; "
+        f"systemctl is-active {service}; "
+        f"systemctl status --no-pager --lines=18 {service}"
+    )
+    return run_ssh_command(
+        config,
+        remote_command,
+        timeout_seconds=max(90.0, config.command_timeout_seconds),
+    )
+
+
 def vm_logs_tail(config: WorkbenchConfig) -> CommandResult:
     service = validate_remote_name(config.vm_service_name, "VM service name")
     return run_ssh_command(
@@ -720,6 +752,7 @@ def action_definitions() -> dict[str, ActionDefinition]:
         ActionDefinition("vm_health", "VM Health", "VM App Service", "Run hostname, uptime, and memory checks over SSH.", vm_health),
         ActionDefinition("vm_service_status", "Service Status", "VM App Service", "Read systemd service status over SSH.", vm_service_status),
         ActionDefinition("vm_service_restart", "Restart VM Service", "VM App Service", "Restart the configured app service over SSH.", vm_service_restart, True),
+        ActionDefinition("vm_update_restart", "Update VM App", "VM App Service", "Fast-forward VM Git checkout, install requirements, and restart the service.", vm_update_and_restart, True),
         ActionDefinition("vm_logs_tail", "Tail VM Logs", "VM App Service", "Read recent service logs over SSH.", vm_logs_tail),
         ActionDefinition("vm_git_status", "VM Git Status", "VM App Service", "Show Git status in the VM app directory.", vm_git_status),
     ]
