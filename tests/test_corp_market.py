@@ -945,6 +945,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "\"Buy Directions\"" in page
     assert "\"Container Directions\"" in page
     assert "\"Sell Directions\"" in page
+    assert "\"Expected Profit Per Item\"" in page
     assert "\"Destination Sell Target Price\"" in page
     assert "\"Actual Sell Price Per Item\"" in page
     assert "id=\"acq-results\" class=\"decision-output\"" in page
@@ -2768,6 +2769,7 @@ def test_expected_realized_report_row_calculates_and_quotes_csv():
     assert row["Estimated Total ISK Needed"] == pytest.approx(41.0)
     assert row["Expected Total Return"] == pytest.approx(52.0)
     assert row["Expected Total Profit"] == pytest.approx(11.0)
+    assert row["Expected Profit Per Item"] == pytest.approx(1.1)
     assert row["Buy Order Price To Enter"] == ""
     assert row["Buy Directions"] == ""
     assert row["Container Directions"] == ""
@@ -2784,7 +2786,7 @@ def test_expected_realized_report_row_calculates_and_quotes_csv():
 
     csv_text = corp_market.spreadsheet_report_csv([row])
 
-    assert csv_text.startswith("Date Created,Date Completed,Status,Category,Location to Post Order")
+    assert csv_text.startswith("Date Created,Date Completed,Status,Category,Expected Profit Per Item,Location to Post Order")
     assert "Buy Order Price To Enter" in csv_text
     assert "Buy Directions" in csv_text
     assert "Buy Hub" in csv_text
@@ -2893,6 +2895,7 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
     assert row["Quantity"] == 1000
     assert row["Price Per Item"] == pytest.approx(2.2)
     assert row["Expected Return Per Item"] == pytest.approx(7.4884375)
+    assert row["Expected Profit Per Item"] == pytest.approx(5.2884375)
     assert row["Destination Sell Hub"] == "Jita"
     assert row["Destination Sell Target Price"] == pytest.approx(7.75)
     assert row["Destination Sell Target Units"] == 1000
@@ -2985,6 +2988,7 @@ def test_acquisition_report_rows_use_committed_cost_basis():
     assert row["Expected Total Cost"] == pytest.approx(592_250.0)
     assert row["Estimated Total ISK Needed"] == pytest.approx(592_250.0)
     assert row["Expected Total Profit"] == pytest.approx(157_750.0)
+    assert row["Expected Profit Per Item"] == pytest.approx(3.155)
     assert row["Realized Total Profit"] == ""
     assert "Place a manual 90-day buy order" in row["Buy Directions"]
     assert "in Amarr" in row["Buy Directions"]

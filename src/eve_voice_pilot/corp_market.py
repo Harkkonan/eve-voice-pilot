@@ -141,6 +141,7 @@ EXPECTED_REALIZED_REPORT_COLUMNS = (
     "Date Completed",
     "Status",
     "Category",
+    "Expected Profit Per Item",
     "Location to Post Order",
     "Buy Hub",
     "Order Type",
@@ -7798,6 +7799,11 @@ def build_expected_realized_report_row(
         if expected_total_return is not None and expected_total_cost is not None
         else None
     )
+    expected_profit_per_item = (
+        expected_total_profit / quantity_number
+        if expected_total_profit is not None and quantity_number is not None and quantity_number > 0
+        else None
+    )
     realized_total_profit = (
         realized_total_return - expected_total_cost
         if realized_total_return is not None and expected_total_cost is not None
@@ -7816,6 +7822,7 @@ def build_expected_realized_report_row(
             "Date Completed": str(date_completed or ""),
             "Status": str(status or "Planned"),
             "Category": str(category or ""),
+            "Expected Profit Per Item": expected_realized_report_number(expected_profit_per_item),
             "Location to Post Order": str(location_to_post_order or ""),
             "Buy Hub": str(buy_hub or ""),
             "Order Type": str(order_type or ""),
@@ -24369,6 +24376,7 @@ help</textarea>
       "Date Completed",
       "Status",
       "Category",
+      "Expected Profit Per Item",
       "Location to Post Order",
       "Buy Hub",
       "Order Type",
