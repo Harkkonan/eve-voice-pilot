@@ -292,6 +292,8 @@ def test_vm_update_and_verify_adds_git_and_health_checks(tmp_path, monkeypatch):
     assert "git status --short --branch" in observed["remote_command"]
     assert 'echo "Health:"' in observed["remote_command"]
     assert "curl -fsS http://127.0.0.1:8770/api/health" in observed["remote_command"]
+    assert "for attempt in 1 2 3 4 5 6 7 8 9 10" in observed["remote_command"]
+    assert "sleep 1" in observed["remote_command"]
     assert observed["timeout_seconds"] >= 120.0
 
 
