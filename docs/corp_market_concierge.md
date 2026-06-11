@@ -264,6 +264,8 @@ The portfolio model follows the useful Goonmetrics-style trading idea: do not ju
 
 The item scope picker is shared with `Hauler Routes`. When the local SDE market data is available, each top-level market category and subcategory is labeled from that cache, shows the published item count, and includes collapsed item checkboxes with a show-more control. Use a whole category when you want broad coverage, or expand a subcategory such as Bombs and select exact item types when you want a narrow scan. The portfolio defaults to a 50,000,000 ISK budget and a 50-jump planning budget, and accepts manual budgets from 1 ISK through 10,000,000,000 ISK. Common materials uses a smaller top-industry-input scan in the hosted planner so broad scans are less likely to time out; use market categories or exact items for a more targeted family of items.
 
+`Compare buy hubs` runs the same portfolio settings against selected source hubs such as Amarr, Dodixie, Rens, Hek, and Dihra while keeping the downstream demand hub, usually Jita, fixed. Each hub row is an independent full-budget what-if scan so the pilot can see which hub looks strongest on its own. The `Combined Buy Plan` then uses one shared investment budget across the best source-hub candidates and exports rows with a `Buy Hub` column, concrete buy directions, `Managed#Trade` staging directions, and downstream sell/haul directions. Comparison scans are exploratory and do not save Trade P&L expectation rows automatically.
+
 History analysis has three modes:
 
 - `Fast shortlist` skips market-history calls for speed and marks candidates as needing a later audit. Use it to narrow a large idea list, not to commit ISK.
@@ -278,7 +280,7 @@ Portfolio recommendations, hauler route opportunities, and Planetary Industry in
 
 The `Market Investment Portfolio` and `Hauler Routes` result panels also include an `Expected vs Realized Report` after a successful scan. The report uses the same CSV column order for both features, leaves realized columns blank for later spreadsheet review, and keeps the app's expected-cost basis visible so exported rows can be checked against later wallet or manual results. It also includes `Buy Directions`, `Container Directions`, and `Sell Directions` columns so each row tells the pilot where to buy, which station or order-fill location to stage in, and which managed container marker to use.
 
-For investment report rows, `Location to Post Order` is the suggested buy-order placement system, `Order Type` is `Buy`, `Price Per Item` is the estimated committed cost per item including broker-fee estimate, and the suggested bid/safe ceiling are repeated in Notes. This makes the spreadsheet's expected profit match the portfolio's after-fee profit rather than undercounting broker fees.
+For investment report rows, `Location to Post Order` and `Buy Hub` show the suggested buy-order placement system, `Order Type` is `Buy`, `Price Per Item` is the estimated committed cost per item including broker-fee estimate, and the suggested bid/safe ceiling are repeated in Notes. This makes the spreadsheet's expected profit match the portfolio's after-fee profit rather than undercounting broker fees.
 
 This tab does not place, update, or cancel market orders. The pilot still creates every buy order manually in EVE.
 

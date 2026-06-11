@@ -38,6 +38,7 @@ from eve_voice_pilot.corp_market import (
     build_flight_reprocessing_locations_payload,
     build_flight_reprocessing_payload,
     build_flight_buyers_payload,
+    build_flight_acquisition_comparison_payload,
     build_flight_acquisition_payload,
     build_flight_hauling_comparison_payload,
     build_flight_hauling_payload,
@@ -680,6 +681,20 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "renderAcquisitionPostTestReview" in page
     assert "renderAcquisitionBeforeOrderChecklist" in page
     assert "Before Placing Buy Orders" in page
+    assert "/api/flight/acquisition/compare" in page
+    assert "/api/flight/acquisition/compare/progress" in page
+    assert "id=\"acq-compare-hubs\"" in page
+    assert "data-acq-compare-source=\"Amarr\"" in page
+    assert "id=\"acq-compare\" class=\"secondary\" type=\"button\"" in page
+    assert "Compare Buy Hubs" in page
+    assert "id=\"acq-compare-summary\"" in page
+    assert "id=\"acq-compare-results\" class=\"decision-output\"" in page
+    assert "eve-flight-acq-compare-source-hubs-v1" in page
+    assert "loadAcquisitionHubComparison" in page
+    assert "renderAcquisitionHubComparison" in page
+    assert "renderAcquisitionCombinedPlan" in page
+    assert "data-acq-compare-use" in page
+    assert "Buy Hub" in page
     assert "renderAcquisitionWhySelected" in page
     assert "Why selected" in page
     assert "renderAcquisitionExclusionLedger" in page
@@ -2571,6 +2586,7 @@ def test_expected_realized_report_row_calculates_and_quotes_csv():
     assert row["Buy Directions"] == ""
     assert row["Container Directions"] == ""
     assert row["Sell Directions"] == ""
+    assert row["Buy Hub"] == ""
     assert row["Actual Buy Order Total"] == ""
     assert row["Actual Broker Fee Paid"] == ""
     assert row["Actual Total Cost"] == ""
@@ -2580,6 +2596,7 @@ def test_expected_realized_report_row_calculates_and_quotes_csv():
     assert csv_text.startswith("Date Created,Date Completed,Status,Category,Location to Post Order")
     assert "Buy Order Price To Enter" in csv_text
     assert "Buy Directions" in csv_text
+    assert "Buy Hub" in csv_text
     assert "Container Directions" in csv_text
     assert "Sell Directions" in csv_text
     assert "Actual Buy Order Total" in csv_text
@@ -2739,6 +2756,7 @@ def test_acquisition_report_rows_use_committed_cost_basis():
     assert row["Category"] == "Investment"
     assert row["Order Type"] == "Buy"
     assert row["Location to Post Order"] == "Amarr"
+    assert row["Buy Hub"] == "Amarr"
     assert row["Item Name"] == "Scourge Fury Heavy Missile"
     assert row["Quantity"] == 50_000
     assert row["Planned Order Duration"] == "90 days"
@@ -3091,6 +3109,23 @@ def test_haul_compare_destinations_parse_dedupe_and_limit():
     assert corp_market.clean_haul_compare_destinations(["A,B,C,D,E,F,G"]) == ("A", "B", "C", "D", "E", "F")
 
 
+def test_acquisition_compare_source_hubs_parse_dedupe_limit_and_skip_destination():
+    assert corp_market.clean_acquisition_compare_source_hubs(
+        ["Amarr, Jita", "amarr|Dodixie", "", "  Rens  ", "Hek\nDihra"],
+        destination_name="Jita",
+    ) == (
+        "Amarr",
+        "Dodixie",
+        "Rens",
+        "Hek",
+        "Dihra",
+    )
+    assert corp_market.clean_acquisition_compare_source_hubs(
+        ["A,B,C,D,E,F,G"],
+        destination_name="Z",
+    ) == ("A", "B", "C", "D", "E", "F")
+
+
 def test_haul_scan_request_parses_query_contract():
     request = corp_market.HaulScanRequest.from_query(
         parse_qs(
@@ -3150,6 +3185,22 @@ def test_acquisition_scan_request_parses_query_contract():
     assert request.payload_kwargs()["destination_name"] == "Amarr"
     assert request.payload_kwargs()["order_duration_days"] == 90
     assert request.payload_kwargs()["history_analysis_mode"] == "advanced"
+
+
+def test_acquisition_comparison_request_parses_sources_and_removes_single_origin():
+    request = corp_market.AcquisitionComparisonRequest.from_query(
+        parse_qs(
+            "origin_name=Rens&destination=Jita&source_hubs=Amarr,Dodixie,Jita"
+            "&budget_isk=75000000&pickup_jumps=5&portfolio_jumps=80"
+        )
+    )
+
+    assert request.source_hubs == ("Amarr", "Dodixie")
+    assert request.scan.origin_name == "Rens"
+    kwargs = request.payload_kwargs()
+    assert "origin_name" not in kwargs
+    assert kwargs["destination_name"] == "Jita"
+    assert kwargs["budget_isk"] == pytest.approx(75_000_000.0)
 
 
 def test_market_order_location_guardrail_labels_station_structure_and_unknown():
@@ -3558,6 +3609,126 @@ def test_hauling_comparison_payload_ranks_hubs_and_keeps_failed_rows(monkeypatch
     assert comparison["results"][0]["load_plan_net_profit"] == pytest.approx(5000.0)
     assert comparison["results"][2]["ok"] is False
     assert "not found" in comparison["results"][2]["error"]
+
+
+def test_acquisition_comparison_payload_ranks_hubs_builds_shared_plan_and_skips_expectation_store(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Portfolio Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1", "esi-skills.read_skills.v1"),
+        access_token="access-token",
+        connected_at="2026-06-04T00:00:00Z",
+        expires_at=9999999999,
+    )
+    calls = []
+    progress_events = []
+
+    def opportunity(type_id, name, *, cost, profit, source_hub):
+        return {
+            "type_id": type_id,
+            "item_name": name,
+            "source_labels": ["Common materials"],
+            "risk_level": "clear",
+            "decision": {"label": "Place a small order"},
+            "range_recommendation": {"range": "solar system", "reason": "easy collection"},
+            "placement_system": source_hub,
+            "recommended_units": 10,
+            "suggested_bid": cost / 10,
+            "max_safe_bid": (cost / 10) * 1.1,
+            "estimated_bid_total": cost * 0.97,
+            "estimated_broker_fee": cost * 0.03,
+            "estimated_isk_committed": cost,
+            "gross_destination_revenue": cost + profit + 1_000_000.0,
+            "estimated_sales_tax": 1_000_000.0,
+            "estimated_net_revenue": cost + profit,
+            "net_profit": profit,
+            "net_profit_per_unit": profit / 10,
+            "margin_percent": profit / cost * 100,
+            "history_flags": [{"severity": "clear", "label": "History supports a cautious order"}],
+        }
+
+    def fake_acquisition_payload(**kwargs):
+        source_hub = kwargs["origin_name"]
+        calls.append(source_hub)
+        assert kwargs["expectation_store"] is None
+        if source_hub == "Bad Hub":
+            raise CorpMarketError("Starting system 'Bad Hub' was not found.")
+        hub_opportunities = (
+            [
+                opportunity(34, "Tritanium", cost=50_000_000.0, profit=5_000_000.0, source_hub=source_hub),
+                opportunity(35, "Mexallon", cost=30_000_000.0, profit=3_000_000.0, source_hub=source_hub),
+            ]
+            if source_hub == "Amarr"
+            else [
+                opportunity(34, "Tritanium", cost=55_000_000.0, profit=8_000_000.0, source_hub=source_hub),
+                opportunity(36, "Pyerite", cost=40_000_000.0, profit=4_000_000.0, source_hub=source_hub),
+            ]
+        )
+        portfolio = corp_market.build_acquisition_investment_portfolio(
+            opportunities=hub_opportunities,
+            budget_isk=kwargs["budget_isk"],
+            max_portfolio_jumps=kwargs["portfolio_jumps"],
+            pickup_jumps=kwargs["pickup_jumps"],
+        )
+        if kwargs.get("progress"):
+            kwargs["progress"]("portfolio", {"message": f"{source_hub}: fake portfolio ready.", "percent": 98})
+        return {
+            "route": {
+                "origin": {"name": source_hub},
+                "destination": {"name": kwargs["destination_name"]},
+                "destination_query": kwargs["destination_name"],
+                "route_jumps": 5,
+                "route_source": "fake",
+                "route_warning": "",
+            },
+            "acquisition": {
+                "destination_system": {"name": kwargs["destination_name"]},
+                "budget_isk": kwargs["budget_isk"],
+                "portfolio_jumps": kwargs["portfolio_jumps"],
+                "order_duration_days": kwargs["order_duration_days"],
+                "broker_fee_percent": kwargs["broker_fee_percent"],
+                "opportunity_count": len(hub_opportunities),
+                "possible_trap_count": 0,
+                "portfolio": portfolio,
+                "opportunities": hub_opportunities,
+            },
+        }
+
+    monkeypatch.setattr(corp_market, "build_flight_acquisition_payload", fake_acquisition_payload)
+
+    payload = build_flight_acquisition_comparison_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        source_hubs=("Amarr", "Dodixie", "Bad Hub"),
+        destination_name="Jita",
+        budget_isk=80_000_000.0,
+        pickup_jumps=2,
+        portfolio_jumps=10,
+        broker_fee_percent=2.4,
+        progress=lambda event, data: progress_events.append((event, data)),
+    )
+
+    assert calls == ["Amarr", "Dodixie", "Bad Hub"]
+    comparison = payload["comparison"]
+    assert comparison["source_hub_count"] == 3
+    assert comparison["successful_count"] == 2
+    assert comparison["failed_count"] == 1
+    assert comparison["best"]["source_hub_name"] == "Dodixie"
+    assert [row["source_hub_name"] for row in comparison["results"]] == ["Dodixie", "Amarr", "Bad Hub"]
+    assert comparison["combined_plan"]["available"] is True
+    combined_portfolio = comparison["combined_plan"]["portfolio"]
+    assert combined_portfolio["invested_isk"] <= 80_000_000.0
+    assert {line["source_hub_name"] for line in combined_portfolio["lines"]} <= {"Amarr", "Dodixie"}
+    assert any(line["item_name"] == "Tritanium" and line["source_hub_name"] == "Dodixie" for line in combined_portfolio["lines"])
+    assert comparison["combined_deduped_candidate_count"] == 3
+    assert comparison["combined_plan"]["report_rows"]
+    assert {row["Buy Hub"] for row in comparison["combined_plan"]["report_rows"]} <= {"Amarr", "Dodixie"}
+    assert any(event == "hub_failed" for event, _data in progress_events)
+    assert any(event == "combined_portfolio" for event, _data in progress_events)
 
 
 def test_build_flight_industry_payload_summarizes_blueprints_and_assets(monkeypatch, tmp_path):

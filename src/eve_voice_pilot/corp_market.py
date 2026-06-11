@@ -142,6 +142,7 @@ EXPECTED_REALIZED_REPORT_COLUMNS = (
     "Status",
     "Category",
     "Location to Post Order",
+    "Buy Hub",
     "Order Type",
     "Item Name",
     "Quantity",
@@ -207,6 +208,8 @@ STATIC_CACHE_REFRESH_COMMAND = r"python .\scripts\update_industry_recipe_cache.p
 DEFAULT_HAUL_DESTINATION_SYSTEM = "Jita"
 DEFAULT_HAUL_COMPARE_DESTINATIONS = ("Jita", "Amarr", "Hek", "Rens", "Dodixie")
 MAX_HAUL_COMPARE_DESTINATIONS = 6
+DEFAULT_ACQUISITION_COMPARE_SOURCE_HUBS = ("Amarr", "Dodixie", "Rens", "Hek", "Dihra")
+MAX_ACQUISITION_COMPARE_SOURCE_HUBS = 6
 MIN_ROUTE_SYSTEM_SUGGESTION_CHARS = 3
 MAX_ROUTE_SYSTEM_SUGGESTIONS = 15
 DEFAULT_HAUL_DETOUR_JUMPS = 1
@@ -3715,6 +3718,31 @@ def clean_haul_compare_destinations(raw_values: Iterable[Any]) -> tuple[str, ...
     return tuple(destinations)
 
 
+def clean_acquisition_compare_source_hubs(
+    raw_values: Iterable[Any],
+    *,
+    destination_name: str = DEFAULT_HAUL_DESTINATION_SYSTEM,
+) -> tuple[str, ...]:
+    source_hubs: list[str] = []
+    seen: set[str] = set()
+    destination_key = normalize_system_name(destination_name)
+    for raw_value in raw_values:
+        if raw_value is None:
+            continue
+        for part in re.split(r"[\r\n,;|]+", str(raw_value)):
+            source_hub = " ".join(str(part or "").split())
+            if not source_hub:
+                continue
+            key = normalize_system_name(source_hub)
+            if not key or key == destination_key or key in seen:
+                continue
+            seen.add(key)
+            source_hubs.append(source_hub)
+            if len(source_hubs) >= MAX_ACQUISITION_COMPARE_SOURCE_HUBS:
+                return tuple(source_hubs)
+    return tuple(source_hubs)
+
+
 def load_static_market_data(path: Path = DEFAULT_STATIC_DATA_ZIP_PATH) -> StaticMarketData | None:
     if not path.exists():
         return None
@@ -5688,6 +5716,334 @@ def build_flight_hauling_comparison_payload(
     }
 
 
+def tag_acquisition_comparison_opportunity(opportunity: Mapping[str, Any], *, source_hub_name: str) -> dict[str, Any]:
+    tagged = dict(opportunity)
+    tagged["source_hub_name"] = source_hub_name
+    tagged["comparison_source_hub"] = source_hub_name
+    if not str(tagged.get("placement_system") or "").strip():
+        tagged["placement_system"] = source_hub_name
+    return tagged
+
+
+def acquisition_comparison_opportunity_sort_key(opportunity: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        acquisition_risk_sort_rank(str(opportunity.get("risk_level") or "")),
+        -float(opportunity.get("net_profit") or 0.0),
+        -float(opportunity.get("margin_percent") or 0.0),
+        str(opportunity.get("item_name") or ""),
+        str(opportunity.get("source_hub_name") or opportunity.get("placement_system") or ""),
+    )
+
+
+def dedupe_acquisition_comparison_opportunities(opportunities: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for opportunity in sorted(opportunities, key=acquisition_comparison_opportunity_sort_key):
+        type_id = clean_optional_int(opportunity.get("type_id"))
+        key = f"type:{type_id}" if type_id is not None else f"name:{str(opportunity.get('item_name') or '').casefold()}"
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        selected.append(opportunity)
+    return selected
+
+
+def summarize_acquisition_payload_for_comparison(source_hub_name: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    route = payload.get("route") if isinstance(payload.get("route"), Mapping) else {}
+    acquisition = payload.get("acquisition") if isinstance(payload.get("acquisition"), Mapping) else {}
+    portfolio = acquisition.get("portfolio") if isinstance(acquisition.get("portfolio"), Mapping) else {}
+    lines = list(portfolio.get("lines") or []) if isinstance(portfolio.get("lines"), list) else []
+    opportunities = list(acquisition.get("opportunities") or []) if isinstance(acquisition.get("opportunities"), list) else []
+    best_item = lines[0] if lines and isinstance(lines[0], Mapping) else (
+        opportunities[0] if opportunities and isinstance(opportunities[0], Mapping) else {}
+    )
+    origin = route.get("origin") if isinstance(route.get("origin"), Mapping) else {}
+    destination = route.get("destination") if isinstance(route.get("destination"), Mapping) else {}
+    invested_isk = float(portfolio.get("invested_isk") or 0.0)
+    estimated_net_profit = float(portfolio.get("estimated_net_profit") or 0.0)
+    excluded_counts = portfolio.get("excluded_reason_counts") if isinstance(portfolio.get("excluded_reason_counts"), Mapping) else {}
+    return {
+        "ok": True,
+        "source_hub": source_hub_name,
+        "source_hub_name": str(origin.get("name") or source_hub_name),
+        "destination_name": str(destination.get("name") or route.get("destination_query") or ""),
+        "route_jumps": int(route.get("route_jumps") or 0),
+        "route_source": route.get("route_source") or "",
+        "route_warning": route.get("route_warning") or "",
+        "portfolio_available": bool(portfolio.get("available")),
+        "portfolio_line_count": int(portfolio.get("line_count") or 0),
+        "opportunity_count": int(acquisition.get("opportunity_count") or len(opportunities)),
+        "invested_isk": invested_isk,
+        "budget_remaining_isk": float(portfolio.get("budget_remaining_isk") or 0.0),
+        "estimated_net_profit": estimated_net_profit,
+        "margin_percent": portfolio.get("margin_percent"),
+        "used_jumps": int(portfolio.get("used_jumps") or 0),
+        "max_portfolio_jumps": int(portfolio.get("max_portfolio_jumps") or acquisition.get("portfolio_jumps") or 0),
+        "possible_trap_count": int(
+            portfolio.get("possible_trap_excluded_count") or acquisition.get("possible_trap_count") or 0
+        ),
+        "caution_line_count": int(portfolio.get("caution_line_count") or 0),
+        "excluded_reason_counts": dict(excluded_counts),
+        "best_item_name": best_item.get("item_name") if isinstance(best_item, Mapping) else "",
+        "best_item_net_profit": float(best_item.get("net_profit") or 0.0) if isinstance(best_item, Mapping) else 0.0,
+        "best_item_margin_percent": best_item.get("margin_percent") if isinstance(best_item, Mapping) else None,
+    }
+
+
+def build_flight_acquisition_comparison_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    source_hubs: Iterable[Any] = (),
+    destination_name: str = DEFAULT_HAUL_DESTINATION_SYSTEM,
+    budget_isk: float = DEFAULT_ACQUISITION_BUDGET_ISK,
+    pickup_jumps: int = DEFAULT_ACQUISITION_PICKUP_JUMPS,
+    portfolio_jumps: int = DEFAULT_ACQUISITION_PORTFOLIO_JUMPS,
+    min_margin_percent: float = DEFAULT_HAUL_MIN_DETOUR_MARGIN_PERCENT,
+    broker_fee_percent: float = DEFAULT_ACQUISITION_BROKER_FEE_PERCENT,
+    target_days: int = DEFAULT_ACQUISITION_TARGET_DAYS,
+    order_duration_days: int = DEFAULT_ACQUISITION_ORDER_DURATION_DAYS,
+    history_analysis_mode: str = DEFAULT_ACQUISITION_HISTORY_ANALYSIS_MODE,
+    route_preference: str = DEFAULT_HAUL_ROUTE_PREFERENCE,
+    include_common_materials: bool = True,
+    market_group_ids: Iterable[int] = (),
+    market_type_ids: Iterable[int] = (),
+    market_type_names: Iterable[Any] = (),
+    item_workers: int = DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS,
+    progress: Callable[[str, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    clean_destination_name = str(destination_name or DEFAULT_HAUL_DESTINATION_SYSTEM).strip() or DEFAULT_HAUL_DESTINATION_SYSTEM
+    clean_source_hubs = clean_acquisition_compare_source_hubs(source_hubs, destination_name=clean_destination_name)
+    if not clean_source_hubs:
+        clean_source_hubs = clean_acquisition_compare_source_hubs(
+            DEFAULT_ACQUISITION_COMPARE_SOURCE_HUBS,
+            destination_name=clean_destination_name,
+        )
+    if not clean_source_hubs:
+        raise CorpMarketError("Choose at least one buy hub that is not the downstream destination.")
+
+    generated_at = now_iso()
+    results: list[dict[str, Any]] = []
+    combined_opportunities: list[dict[str, Any]] = []
+    successful_payloads: list[dict[str, Any]] = []
+    source_count = len(clean_source_hubs)
+    if progress is not None:
+        progress(
+            "comparison_start",
+            {
+                "message": (
+                    f"Comparing {source_count} buy hub{'s' if source_count != 1 else ''} toward "
+                    f"{clean_destination_name}."
+                ),
+                "percent": 1,
+            },
+        )
+
+    def hub_percent(index: int, inner_percent: Any = 0) -> int:
+        try:
+            clean_inner = max(0.0, min(100.0, float(inner_percent)))
+        except (TypeError, ValueError):
+            clean_inner = 0.0
+        return max(1, min(96, round(3 + (((index - 1) + (clean_inner / 100.0)) / source_count) * 92)))
+
+    for index, source_hub in enumerate(clean_source_hubs, start=1):
+        source_hub_name = str(source_hub)
+        if progress is not None:
+            progress(
+                "hub_start",
+                {
+                    "source_hub": source_hub_name,
+                    "hub_index": index,
+                    "hub_count": source_count,
+                    "message": f"{source_hub_name}: starting buy-hub portfolio comparison.",
+                    "percent": hub_percent(index, 0),
+                },
+            )
+
+        def hub_progress(event_name: str, payload: dict[str, Any], *, hub: str = source_hub_name, hub_index: int = index) -> None:
+            if progress is None:
+                return
+            nested = dict(payload)
+            nested["source_hub"] = hub
+            nested["hub_index"] = hub_index
+            nested["hub_count"] = source_count
+            nested["stage"] = event_name
+            nested["message"] = f"{hub}: {payload.get('message') or event_name}"
+            nested["percent"] = hub_percent(hub_index, payload.get("percent", 0))
+            progress("hub_progress", nested)
+
+        try:
+            payload = build_flight_acquisition_payload(
+                config=config,
+                session=session,
+                origin_name=source_hub_name,
+                destination_name=clean_destination_name,
+                budget_isk=budget_isk,
+                pickup_jumps=pickup_jumps,
+                portfolio_jumps=portfolio_jumps,
+                min_margin_percent=min_margin_percent,
+                broker_fee_percent=broker_fee_percent,
+                target_days=target_days,
+                order_duration_days=order_duration_days,
+                history_analysis_mode=history_analysis_mode,
+                route_preference=route_preference,
+                include_common_materials=include_common_materials,
+                market_group_ids=market_group_ids,
+                market_type_ids=market_type_ids,
+                market_type_names=market_type_names,
+                item_workers=item_workers,
+                expectation_store=None,
+                progress=hub_progress,
+            )
+        except CorpMarketError as exc:
+            results.append(
+                {
+                    "ok": False,
+                    "source_hub": source_hub_name,
+                    "source_hub_name": source_hub_name,
+                    "destination_name": clean_destination_name,
+                    "error": str(exc),
+                }
+            )
+            if progress is not None:
+                progress(
+                    "hub_failed",
+                    {
+                        "source_hub": source_hub_name,
+                        "hub_index": index,
+                        "hub_count": source_count,
+                        "message": f"{source_hub_name}: {exc}",
+                        "percent": hub_percent(index, 100),
+                    },
+                )
+            continue
+
+        successful_payloads.append(payload)
+        summary = summarize_acquisition_payload_for_comparison(source_hub_name, payload)
+        results.append(summary)
+        acquisition = payload.get("acquisition") if isinstance(payload.get("acquisition"), Mapping) else {}
+        for opportunity in acquisition.get("opportunities") or []:
+            if isinstance(opportunity, Mapping):
+                combined_opportunities.append(
+                    tag_acquisition_comparison_opportunity(opportunity, source_hub_name=summary["source_hub_name"])
+                )
+        if progress is not None:
+            progress(
+                "hub_done",
+                {
+                    "source_hub": source_hub_name,
+                    "hub_index": index,
+                    "hub_count": source_count,
+                    "message": (
+                        f"{source_hub_name}: built {summary['portfolio_line_count']} funded line"
+                        f"{'s' if summary['portfolio_line_count'] != 1 else ''}."
+                    ),
+                    "percent": hub_percent(index, 100),
+                },
+            )
+
+    ranked_results = sorted(
+        [result for result in results if result.get("ok")],
+        key=lambda result: (
+            float(result.get("estimated_net_profit") or 0.0),
+            float(result.get("invested_isk") or 0.0),
+            int(result.get("portfolio_line_count") or 0),
+            -int(result.get("possible_trap_count") or 0),
+        ),
+        reverse=True,
+    )
+    if progress is not None:
+        progress(
+            "combined_portfolio",
+            {
+                "message": f"Building one shared-budget plan from {len(combined_opportunities)} hub candidate row(s).",
+                "candidate_count": len(combined_opportunities),
+                "percent": 98,
+            },
+        )
+    combined_candidates = dedupe_acquisition_comparison_opportunities(combined_opportunities)
+    combined_portfolio = build_acquisition_investment_portfolio(
+        opportunities=combined_candidates,
+        budget_isk=budget_isk,
+        max_portfolio_jumps=portfolio_jumps,
+        pickup_jumps=pickup_jumps,
+    )
+    first_payload = successful_payloads[0] if successful_payloads else {}
+    first_route = first_payload.get("route") if isinstance(first_payload.get("route"), Mapping) else {}
+    first_acquisition = first_payload.get("acquisition") if isinstance(first_payload.get("acquisition"), Mapping) else {}
+    destination_payload = first_route.get("destination") if isinstance(first_route.get("destination"), Mapping) else {}
+    if not destination_payload:
+        destination_payload = first_acquisition.get("destination_system") if isinstance(first_acquisition.get("destination_system"), Mapping) else {}
+    destination_payload = dict(destination_payload or {"name": clean_destination_name})
+    combined_acquisition = {
+        "origin_system": {"name": "Multiple buy hubs"},
+        "destination_system": destination_payload,
+        "budget_isk": clamp_acquisition_budget_isk(budget_isk),
+        "pickup_jumps": clamp_acquisition_pickup_jumps(pickup_jumps),
+        "portfolio_jumps": clamp_acquisition_portfolio_jumps(portfolio_jumps),
+        "min_margin_percent": clamp_haul_min_detour_margin_percent(min_margin_percent),
+        "broker_fee_percent": clamp_acquisition_broker_fee_percent(broker_fee_percent),
+        "target_days": clamp_acquisition_target_days(target_days),
+        "order_duration_days": clamp_acquisition_order_duration_days(order_duration_days),
+        "history_analysis_mode": normalize_acquisition_history_analysis_mode(history_analysis_mode),
+        "history_analysis_label": acquisition_history_analysis_label(history_analysis_mode),
+        "item_workers": clamp_acquisition_item_workers(item_workers),
+        "opportunity_count": len(combined_candidates),
+        "possible_trap_count": combined_portfolio.get("possible_trap_excluded_count", 0),
+        "portfolio": combined_portfolio,
+        "opportunities": combined_candidates[:MAX_FLIGHT_ACQUISITION_OPPORTUNITIES],
+    }
+    combined_route = {
+        "origin": {"name": "Multiple buy hubs"},
+        "destination": destination_payload,
+        "origin_query": ", ".join(clean_source_hubs),
+        "origin_source": "hub-comparison",
+        "destination_query": clean_destination_name,
+        "route_jumps": None,
+        "route_preference": normalize_haul_route_preference(route_preference),
+        "route_preference_label": normalize_haul_route_preference(route_preference).replace("_", " ").title(),
+        "route_source": "hub-comparison",
+        "route_warning": "",
+        "systems": [],
+    }
+    combined_report_rows = build_acquisition_expected_realized_report_rows(
+        generated_at=generated_at,
+        route=combined_route,
+        acquisition=combined_acquisition,
+    )
+    combined_acquisition["report_rows"] = combined_report_rows
+    failed_results = [result for result in results if not result.get("ok")]
+    return {
+        "ok": True,
+        "generated_at": generated_at,
+        "character": session.to_public_dict(),
+        "comparison": {
+            "source_hubs": list(clean_source_hubs),
+            "source_hub_count": len(clean_source_hubs),
+            "destination_name": destination_payload.get("name") or clean_destination_name,
+            "successful_count": len(ranked_results),
+            "failed_count": len(failed_results),
+            "best": ranked_results[0] if ranked_results else {},
+            "results": ranked_results + failed_results,
+            "combined_candidate_count": len(combined_opportunities),
+            "combined_deduped_candidate_count": len(combined_candidates),
+            "combined_plan": {
+                "available": bool(combined_portfolio.get("available")),
+                "portfolio": combined_portfolio,
+                "report_rows": combined_report_rows,
+                "manual_note": (
+                    "Hub results are independent full-budget what-if scans. The combined plan uses the one shared "
+                    "investment budget across the best source-hub candidates and does not save Trade P&L expectations."
+                ),
+            },
+            "manual_note": (
+                "Compare buy hubs with the same item scope, fee, margin, history mode, budget, and downstream demand. "
+                "Verify every order in EVE before placing manual buy orders."
+            ),
+        },
+    }
+
+
 def build_flight_acquisition_payload(
     *,
     config: EveSsoConfig,
@@ -7129,6 +7485,7 @@ def build_expected_realized_report_row(
     quantity: Any,
     price_per_item: Any,
     expected_return_per_item: Any,
+    buy_hub: str = "",
     realized_return_per_item: Any = None,
     expected_total_cost: Any = None,
     planned_order_duration: str = "",
@@ -7198,6 +7555,7 @@ def build_expected_realized_report_row(
             "Status": str(status or "Planned"),
             "Category": str(category or ""),
             "Location to Post Order": str(location_to_post_order or ""),
+            "Buy Hub": str(buy_hub or ""),
             "Order Type": str(order_type or ""),
             "Item Name": str(item_name or ""),
             "Quantity": expected_realized_report_number(quantity_number),
@@ -7582,6 +7940,7 @@ def build_acquisition_expected_realized_report_rows(
                 category="Investment",
                 location_to_post_order=placement_system,
                 order_type="Buy",
+                buy_hub=str(line.get("source_hub_name") or line.get("comparison_source_hub") or placement_system),
                 item_name=str(line.get("item_name") or ""),
                 quantity=units,
                 planned_order_duration=order_duration_label,
@@ -8078,6 +8437,8 @@ def acquisition_portfolio_line(
         "decision": opportunity.get("decision"),
         "range_recommendation": opportunity.get("range_recommendation"),
         "placement_system": opportunity.get("placement_system") or "",
+        "source_hub_name": opportunity.get("source_hub_name") or opportunity.get("comparison_source_hub") or "",
+        "comparison_source_hub": opportunity.get("comparison_source_hub") or opportunity.get("source_hub_name") or "",
         "estimated_collection_jumps": estimated_collection_jumps,
         "recommended_units": clean_units,
         "original_recommended_units": original_units,
@@ -8128,6 +8489,8 @@ def acquisition_portfolio_exclusion_row(
         "reason_key": reason_key,
         "reason_label": reason_label,
         "detail": detail,
+        "source_hub_name": opportunity.get("source_hub_name") or opportunity.get("comparison_source_hub") or "",
+        "comparison_source_hub": opportunity.get("comparison_source_hub") or opportunity.get("source_hub_name") or "",
         "risk_level": opportunity.get("risk_level"),
         "suggested_bid": opportunity.get("suggested_bid"),
         "max_safe_bid": opportunity.get("max_safe_bid"),
@@ -10819,6 +11182,28 @@ class AcquisitionScanRequest:
             "market_type_ids": self.market_type_ids,
             "market_type_names": self.market_type_names,
         }
+
+
+@dataclass(frozen=True)
+class AcquisitionComparisonRequest:
+    scan: AcquisitionScanRequest
+    source_hubs: tuple[str, ...]
+
+    @classmethod
+    def from_query(cls, query: Mapping[str, list[str]]) -> "AcquisitionComparisonRequest":
+        scan = AcquisitionScanRequest.from_query(query)
+        return cls(
+            scan=scan,
+            source_hubs=clean_acquisition_compare_source_hubs(
+                query.get("source_hubs") or query.get("sources") or [],
+                destination_name=scan.destination_name,
+            ),
+        )
+
+    def payload_kwargs(self) -> dict[str, Any]:
+        kwargs = self.scan.payload_kwargs()
+        kwargs.pop("origin_name", None)
+        return kwargs
 
 
 class StageTimer:
@@ -13892,6 +14277,24 @@ def build_http_server(
                 return
             self._send_json(payload)
 
+        def _handle_flight_acquisition_compare(self) -> None:
+            session = self._require_flight_session("comparing portfolio buy hubs")
+            if session is None:
+                return
+            query = parse_qs(urlparse(self.path).query)
+            request = AcquisitionComparisonRequest.from_query(query)
+            try:
+                payload = build_flight_acquisition_comparison_payload(
+                    config=sso_config,
+                    session=session,
+                    source_hubs=request.source_hubs,
+                    **request.payload_kwargs(),
+                )
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
         def _handle_flight_acquisition_progress(self) -> None:
             self._send_sse_headers()
             started_at = time.monotonic()
@@ -13921,6 +14324,49 @@ def build_http_server(
                     config=sso_config,
                     session=session,
                     expectation_store=store,
+                    progress=emit,
+                    **request.payload_kwargs(),
+                )
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except CorpMarketError as exc:
+                emit("scan_error", {"ok": False, "error": str(exc)})
+                return
+            try:
+                emit("result", payload)
+                emit("done", {"ok": True, "generated_at": now_iso()})
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+        def _handle_flight_acquisition_compare_progress(self) -> None:
+            self._send_sse_headers()
+            started_at = time.monotonic()
+            emit_lock = threading.Lock()
+
+            def emit(event: str, payload: dict[str, Any]) -> None:
+                timed_payload = dict(payload)
+                timed_payload.setdefault("elapsed_seconds", round(time.monotonic() - started_at, 1))
+                with emit_lock:
+                    self._send_sse_event(event, timed_payload)
+
+            if not sso_config.enabled:
+                emit("scan_error", {"ok": False, "error": "EVE SSO is not configured."})
+                return
+            session = self._flight_session()
+            if session is None:
+                emit("scan_error", {"ok": False, "error": "Connect ESI before comparing portfolio buy hubs."})
+                return
+            access_error = flight_member_access_error(sso_config, session)
+            if access_error:
+                emit("scan_error", {"ok": False, "error": access_error})
+                return
+            query = parse_qs(urlparse(self.path).query)
+            request = AcquisitionComparisonRequest.from_query(query)
+            try:
+                payload = build_flight_acquisition_comparison_payload(
+                    config=sso_config,
+                    session=session,
+                    source_hubs=request.source_hubs,
                     progress=emit,
                     **request.payload_kwargs(),
                 )
@@ -20719,6 +21165,20 @@ help</textarea>
                 <div id="acq-item-scope-summary" class="meta">Scanning common materials only.</div>
               </div>
               <button id="acq-scan" class="ghost" type="submit">Build Portfolio</button>
+              <details class="haul-compare-controls">
+                <summary>Compare buy hubs</summary>
+                <div class="meta">Runs the same portfolio scan settings against each checked buy hub with the current downstream demand hub. Hub rows are full-budget what-if scans; the combined plan uses one shared budget.</div>
+                <div id="acq-compare-hubs" class="haul-compare-grid" aria-label="Portfolio buy hub comparison sources">
+                  <label class="checkline"><input type="checkbox" data-acq-compare-source="Amarr" checked><span>Amarr</span></label>
+                  <label class="checkline"><input type="checkbox" data-acq-compare-source="Dodixie" checked><span>Dodixie</span></label>
+                  <label class="checkline"><input type="checkbox" data-acq-compare-source="Rens" checked><span>Rens</span></label>
+                  <label class="checkline"><input type="checkbox" data-acq-compare-source="Hek" checked><span>Hek</span></label>
+                  <label class="checkline"><input type="checkbox" data-acq-compare-source="Dihra" checked><span>Dihra</span></label>
+                </div>
+                <button id="acq-compare" class="secondary" type="button">Compare Buy Hubs</button>
+                <div id="acq-compare-summary" class="meta">No buy-hub comparison has run yet.</div>
+                <div id="acq-compare-results" class="decision-output"></div>
+              </details>
             </form>
             <details class="output-details" open>
               <summary>Portfolio Output</summary>
@@ -21813,6 +22273,11 @@ help</textarea>
     const acqMarketTypeInputs = Array.from(acqMarketGroups.querySelectorAll("input[data-haul-market-type]"));
     const acqItemScopeSummary = document.querySelector("#acq-item-scope-summary");
     const acqScanButton = document.querySelector("#acq-scan");
+    const acqCompareHubs = document.querySelector("#acq-compare-hubs");
+    const acqCompareInputs = Array.from(acqCompareHubs.querySelectorAll("input[data-acq-compare-source]"));
+    const acqCompareButton = document.querySelector("#acq-compare");
+    const acqCompareSummary = document.querySelector("#acq-compare-summary");
+    const acqCompareResults = document.querySelector("#acq-compare-results");
     const acqSummary = document.querySelector("#acq-summary");
     const acqStrategy = document.querySelector("#acq-strategy");
     const acqRoute = document.querySelector("#acq-route");
@@ -21974,6 +22439,7 @@ help</textarea>
     const acqMarketTypeIdsKey = "eve-flight-acq-market-type-ids-v1";
     const acqPastedItemsKey = "eve-flight-acq-pasted-items-v1";
     const acqPastedItemsOnlyKey = "eve-flight-acq-pasted-items-only-v1";
+    const acqCompareSourceHubsKey = "eve-flight-acq-compare-source-hubs-v1";
     const bulkAppraisalHubKey = "eve-flight-bulk-appraisal-hub-v1";
     const bulkAppraisalTextKey = "eve-flight-bulk-appraisal-text-v1";
     const bulkAppraisalModeKey = "eve-flight-bulk-appraisal-mode-v1";
@@ -22086,6 +22552,10 @@ help</textarea>
         "'": "&#39;",
       };
       return String(value ?? "").replace(/[&<>"']/g, (char) => replacements[char]);
+    }
+
+    function normalizeSystemKey(value) {
+      return String(value || "").trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, "");
     }
 
     function renderDashboardEmptyState(message, options = {}) {
@@ -23133,6 +23603,7 @@ help</textarea>
       "Status",
       "Category",
       "Location to Post Order",
+      "Buy Hub",
       "Order Type",
       "Item Name",
       "Quantity",
@@ -24794,6 +25265,48 @@ help</textarea>
       const cleanDestinations = Array.isArray(destinations) ? destinations : readHaulCompareDestinationsFromInputs();
       window.localStorage.setItem(haulCompareDestinationsKey, JSON.stringify(cleanDestinations));
       return cleanDestinations;
+    }
+
+    function readStoredAcqCompareSourceHubs() {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(acqCompareSourceHubsKey) || "null");
+        if (!Array.isArray(parsed)) return null;
+        return parsed.map((value) => String(value || "").trim()).filter(Boolean);
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function readAcqCompareSourceHubsFromInputs(destination = "") {
+      const destinationKey = normalizeSystemKey(destination || (acqDestination ? acqDestination.value : ""));
+      return acqCompareInputs
+        .filter((input) => input.checked)
+        .map((input) => String(input.dataset.acqCompareSource || "").trim())
+        .filter((value) => value && normalizeSystemKey(value) !== destinationKey);
+    }
+
+    function applyAcqCompareSourceHubs(sourceHubs) {
+      if (!Array.isArray(sourceHubs)) return;
+      const selected = new Set(sourceHubs.map((value) => String(value || "").trim().toLocaleLowerCase()).filter(Boolean));
+      acqCompareInputs.forEach((input) => {
+        input.checked = selected.has(String(input.dataset.acqCompareSource || "").trim().toLocaleLowerCase());
+      });
+    }
+
+    function writeAcqCompareSourceHubs(sourceHubs = null) {
+      const cleanSourceHubs = Array.isArray(sourceHubs) ? sourceHubs : readAcqCompareSourceHubsFromInputs();
+      window.localStorage.setItem(acqCompareSourceHubsKey, JSON.stringify(cleanSourceHubs));
+      return cleanSourceHubs;
+    }
+
+    function updateAcqCompareHubAvailability(destination = "") {
+      const destinationKey = normalizeSystemKey(destination || (acqDestination ? acqDestination.value : ""));
+      acqCompareInputs.forEach((input) => {
+        const sourceKey = normalizeSystemKey(input.dataset.acqCompareSource || "");
+        const matchesDestination = Boolean(destinationKey && sourceKey === destinationKey);
+        input.disabled = matchesDestination;
+        if (matchesDestination) input.checked = false;
+      });
     }
 
     function applyHaulMarketGroupIds(groupIds) {
@@ -27197,6 +27710,7 @@ help</textarea>
       resetReportPanel("acquisition");
       acqResults.innerHTML = "";
       acqScanButton.disabled = false;
+      if (acqCompareButton) acqCompareButton.disabled = false;
     }
 
     function closeAcquisitionEventSource() {
@@ -27276,6 +27790,7 @@ help</textarea>
       stopAcquisitionProgressTimer();
       acquisitionScanFinished = false;
       acqScanButton.disabled = true;
+      if (acqCompareButton) acqCompareButton.disabled = true;
       acqStrategy.innerHTML = "";
       acqRoute.textContent = "";
       acqProgressLog.hidden = false;
@@ -27323,6 +27838,7 @@ help</textarea>
           });
         } finally {
           acqScanButton.disabled = false;
+          if (acqCompareButton) acqCompareButton.disabled = false;
         }
         return;
       }
@@ -27394,6 +27910,7 @@ help</textarea>
           acqRoute.textContent = "";
           acqResults.textContent = "";
           acqScanButton.disabled = false;
+          if (acqCompareButton) acqCompareButton.disabled = false;
           recordEsiActivityError({
             scopes: flightActivityScopes("location", "skills"),
             label: "Acquisition portfolio check failed",
@@ -27411,6 +27928,7 @@ help</textarea>
           appendAcquisitionProgress("Done", {message: `Portfolio scan complete in ${formatElapsedDuration(elapsedSeconds)}.`, elapsed_seconds: elapsedSeconds});
           closeAcquisitionEventSource();
           acqScanButton.disabled = false;
+          if (acqCompareButton) acqCompareButton.disabled = false;
         });
         acquisitionEventSource.onerror = () => {
           if (acquisitionScanFinished) return;
@@ -27438,11 +27956,175 @@ help</textarea>
         acqRoute.textContent = "";
         acqResults.textContent = "";
         acqScanButton.disabled = false;
+        if (acqCompareButton) acqCompareButton.disabled = false;
         recordEsiActivityError({
           scopes: flightActivityScopes("location", "skills"),
           label: "Acquisition portfolio check failed",
           description: "The app could not start the investment portfolio scan.",
           reason: "Acquisition planning uses current/manual route context, skill-based tax estimates, public orders, and public market history.",
+        });
+      }
+    }
+
+    async function loadAcquisitionHubComparison() {
+      const settings = writeAcquisitionSettings({
+        originName: acqOrigin.value,
+        destination: acqDestination.value,
+        budgetIsk: acqBudget.value,
+        brokerFeePercent: acqBrokerFee.value,
+        pickupJumps: acqPickupJumps.value,
+        portfolioJumps: acqPortfolioJumps.value,
+        targetDays: acqTargetDays.value,
+        historyAnalysisMode: acqHistoryAnalysis.value,
+        orderDurationDays: acqOrderDuration.value,
+        itemWorkers: acqItemWorkers.value,
+        minMarginPercent: acqMinMargin.value,
+        includeCommonMaterials: acqCommonMaterials.checked,
+        marketGroupIds: readAcqMarketGroupIdsFromInputs(),
+        marketTypeIds: readAcqMarketTypeIdsFromInputs(),
+        pastedItemNames: acqPastedItems ? acqPastedItems.value : "",
+        pastedItemsOnly: acqPastedItemsOnly ? acqPastedItemsOnly.checked : true,
+      });
+      updateAcqCompareHubAvailability(settings.destination);
+      const sourceHubs = writeAcqCompareSourceHubs(readAcqCompareSourceHubsFromInputs(settings.destination));
+      if (!sourceHubs.length) {
+        acqCompareSummary.textContent = "Choose at least one buy hub that is not the downstream demand hub.";
+        acqCompareResults.innerHTML = renderDashboardErrorState("No buy hubs selected for comparison.");
+        return;
+      }
+      const scanSettings = effectiveAcquisitionScanSettings(settings);
+      closeAcquisitionEventSource();
+      stopAcquisitionProgressTimer();
+      acquisitionScanFinished = false;
+      acqScanButton.disabled = true;
+      if (acqCompareButton) acqCompareButton.disabled = true;
+      acqStrategy.innerHTML = "";
+      acqRoute.textContent = "";
+      acqProgressLog.hidden = false;
+      acqProgressLog.innerHTML = "";
+      resetQuickbarList(acqQuickbarPanel, acqQuickbarStatus, "acquisition");
+      resetReportPanel("acquisition");
+      startAcquisitionProgressTimer(settings);
+      acquisitionProgressMessage = `Comparing ${sourceHubs.length} buy hub${sourceHubs.length === 1 ? "" : "s"}`;
+      renderAcquisitionProgressSummary(settings);
+      acqCompareSummary.textContent = `Comparing ${formatNumber(sourceHubs.length)} buy hub${sourceHubs.length === 1 ? "" : "s"} toward ${settings.destination}...`;
+      acqCompareResults.innerHTML = `<div class="decision-empty">Hub rankings and the combined buy plan will appear when the comparison finishes.</div>`;
+      acqResults.innerHTML = `<div class="decision-empty">The shared-budget combined plan will appear here when the comparison finishes.</div>`;
+      const params = new URLSearchParams({
+        source_hubs: sourceHubs.join(","),
+        destination: scanSettings.destination,
+        budget_isk: String(scanSettings.budgetIsk),
+        broker_fee_percent: String(scanSettings.brokerFeePercent),
+        pickup_jumps: String(scanSettings.pickupJumps),
+        portfolio_jumps: String(scanSettings.portfolioJumps),
+        target_days: String(scanSettings.targetDays),
+        history_analysis_mode: scanSettings.historyAnalysisMode,
+        order_duration_days: String(scanSettings.orderDurationDays),
+        item_workers: String(scanSettings.itemWorkers),
+        min_margin_percent: String(scanSettings.minMarginPercent),
+        common_materials: scanSettings.includeCommonMaterials ? "1" : "0",
+        market_group_ids: scanSettings.marketGroupIds.join(","),
+        market_type_ids: scanSettings.marketTypeIds.join(","),
+        market_type_names: scanSettings.pastedItemNames,
+      });
+      if (typeof EventSource === "undefined") {
+        try {
+          const response = await fetch(`/api/flight/acquisition/compare?${params}`);
+          const data = await readJsonApiResponse(response, "Could not compare portfolio buy hubs");
+          const elapsedSeconds = stopAcquisitionProgressTimer();
+          renderAcquisitionHubComparison(data);
+          appendAcquisitionProgress("Done", {message: `Buy-hub comparison complete in ${formatElapsedDuration(elapsedSeconds)}.`, elapsed_seconds: elapsedSeconds});
+        } catch (error) {
+          const elapsedSeconds = stopAcquisitionProgressTimer();
+          appendAcquisitionProgress("Stopped", {message: error.message || "Buy-hub comparison failed.", elapsed_seconds: elapsedSeconds});
+          acqCompareSummary.textContent = `${error.message || "Buy-hub comparison failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+          acqCompareResults.innerHTML = renderDashboardErrorState(error.message || "Buy-hub comparison failed.");
+          recordEsiActivityError({
+            scopes: flightActivityScopes("location", "skills"),
+            label: "Portfolio buy-hub comparison failed",
+            description: "The app could not complete the buy-hub comparison.",
+            reason: "Portfolio hub comparison uses current/manual settings, skill-based tax estimates, public orders, and public market history.",
+          });
+        } finally {
+          acqScanButton.disabled = false;
+          if (acqCompareButton) acqCompareButton.disabled = false;
+        }
+        return;
+      }
+      try {
+        acquisitionEventSource = new EventSource(`/api/flight/acquisition/compare/progress?${params}`);
+        ["comparison_start", "hub_start", "hub_progress", "hub_done", "hub_failed", "combined_portfolio"].forEach((eventName) => {
+          acquisitionEventSource.addEventListener(eventName, (event) => {
+            const payload = parseAcquisitionProgressEvent(event);
+            updateAcquisitionProgressFromPayload(payload);
+            const label = eventName === "comparison_start" ? "Compare"
+              : eventName === "hub_start" ? `Hub ${formatNumber(payload.hub_index)}`
+              : eventName === "hub_done" ? "Hub done"
+              : eventName === "hub_failed" ? "Hub failed"
+              : eventName === "combined_portfolio" ? "Combined"
+              : payload.source_hub || "Hub";
+            appendAcquisitionProgress(label, payload);
+          });
+        });
+        acquisitionEventSource.addEventListener("scan_error", (event) => {
+          const payload = parseAcquisitionProgressEvent(event);
+          acquisitionScanFinished = true;
+          const elapsedSeconds = stopAcquisitionProgressTimer();
+          closeAcquisitionEventSource();
+          appendAcquisitionProgress("Stopped", {message: payload.error || "Buy-hub comparison failed.", elapsed_seconds: elapsedSeconds});
+          acqCompareSummary.textContent = `${payload.error || "Buy-hub comparison failed."} Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+          acqCompareResults.innerHTML = renderDashboardErrorState(payload.error || "Buy-hub comparison failed.");
+          acqScanButton.disabled = false;
+          if (acqCompareButton) acqCompareButton.disabled = false;
+          recordEsiActivityError({
+            scopes: flightActivityScopes("location", "skills"),
+            label: "Portfolio buy-hub comparison failed",
+            description: "The app could not complete the buy-hub comparison.",
+            reason: "Portfolio hub comparison uses current/manual settings, skill-based tax estimates, public orders, and public market history.",
+          });
+        });
+        acquisitionEventSource.addEventListener("result", (event) => {
+          acquisitionScanFinished = true;
+          const data = parseAcquisitionProgressEvent(event);
+          const elapsedSeconds = stopAcquisitionProgressTimer();
+          acquisitionProgressPercent = 100;
+          acquisitionProgressMessage = "Buy-hub comparison complete";
+          renderAcquisitionProgressSummary(settings);
+          renderAcquisitionHubComparison(data);
+          appendAcquisitionProgress("Done", {message: `Buy-hub comparison complete in ${formatElapsedDuration(elapsedSeconds)}.`, elapsed_seconds: elapsedSeconds});
+          closeAcquisitionEventSource();
+          acqScanButton.disabled = false;
+          if (acqCompareButton) acqCompareButton.disabled = false;
+        });
+        acquisitionEventSource.onerror = () => {
+          if (acquisitionScanFinished) return;
+          const elapsedSeconds = stopAcquisitionProgressTimer();
+          closeAcquisitionEventSource();
+          appendAcquisitionProgress("Stopped", {message: "Buy-hub comparison connection closed before results arrived.", elapsed_seconds: elapsedSeconds});
+          acqCompareSummary.textContent = `Buy-hub comparison connection closed before results arrived. Elapsed ${formatElapsedDuration(elapsedSeconds)}.`;
+          acqCompareResults.innerHTML = renderDashboardErrorState("Buy-hub comparison connection closed before results arrived.");
+          acqScanButton.disabled = false;
+          if (acqCompareButton) acqCompareButton.disabled = false;
+          recordEsiActivityError({
+            scopes: flightActivityScopes("location", "skills"),
+            label: "Portfolio buy-hub comparison failed",
+            description: "The comparison connection closed before the app could show results.",
+            reason: "Portfolio hub comparison uses current/manual settings, skill-based tax estimates, public orders, and public market history.",
+          });
+        };
+      } catch (error) {
+        closeAcquisitionEventSource();
+        const elapsedSeconds = stopAcquisitionProgressTimer();
+        appendAcquisitionProgress("Stopped", {message: error.message || "Buy-hub comparison failed.", elapsed_seconds: elapsedSeconds});
+        acqCompareSummary.textContent = error.message || "Buy-hub comparison failed.";
+        acqCompareResults.innerHTML = renderDashboardErrorState(error.message || "Buy-hub comparison failed.");
+        acqScanButton.disabled = false;
+        if (acqCompareButton) acqCompareButton.disabled = false;
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location", "skills"),
+          label: "Portfolio buy-hub comparison failed",
+          description: "The app could not start the buy-hub comparison.",
+          reason: "Portfolio hub comparison uses current/manual settings, skill-based tax estimates, public orders, and public market history.",
         });
       }
     }
@@ -27478,6 +28160,145 @@ help</textarea>
         acqProgressLog.removeChild(acqProgressLog.firstElementChild);
       }
       acqProgressLog.scrollTop = acqProgressLog.scrollHeight;
+    }
+
+    function renderAcquisitionHubComparison(data) {
+      const comparison = data.comparison || {};
+      const results = Array.isArray(comparison.results) ? comparison.results : [];
+      const combined = comparison.combined_plan || {};
+      const portfolio = combined.portfolio || {};
+      const best = comparison.best || {};
+      const successfulResults = results.filter((result) => result.ok);
+      const bestText = best.source_hub_name
+        ? ` Best buy hub: ${escapeHtml(best.source_hub_name)} at ${formatSignedIsk(best.estimated_net_profit)} estimated net profit.`
+        : " No successful hub produced a funded plan.";
+      const lowestTrap = successfulResults
+        .slice()
+        .sort((left, right) => Number(left.possible_trap_count || 0) - Number(right.possible_trap_count || 0))[0];
+      const mostLines = successfulResults
+        .slice()
+        .sort((left, right) => Number(right.portfolio_line_count || 0) - Number(left.portfolio_line_count || 0))[0];
+      acqCompareSummary.innerHTML = `
+        Compared ${formatNumber(comparison.source_hub_count)} buy hub${Number(comparison.source_hub_count || 0) === 1 ? "" : "s"} toward ${escapeHtml(comparison.destination_name || "destination")}:
+        ${formatNumber(comparison.successful_count)} successful, ${formatNumber(comparison.failed_count)} failed.${bestText}
+        <div class="meta">${escapeHtml(comparison.manual_note || "Verify every order manually in EVE.")}</div>
+        <div class="haul-hub-comparison-summary" aria-label="Portfolio buy hub comparison summary">
+          <div class="haul-route-cost"><span>Best Profit Hub</span><b>${escapeHtml(best.source_hub_name || "None")}</b><small>${best.source_hub_name ? formatSignedIsk(best.estimated_net_profit) : "No funded plan."}</small></div>
+          <div class="haul-route-cost"><span>Combined Lines</span><b>${formatNumber(portfolio.line_count)}</b><small>${formatIsk(portfolio.invested_isk)} shared-budget investment.</small></div>
+          <div class="haul-route-cost"><span>Lowest Trap Count</span><b>${escapeHtml(lowestTrap?.source_hub_name || "None")}</b><small>${lowestTrap ? `${formatNumber(lowestTrap.possible_trap_count)} possible trap${Number(lowestTrap.possible_trap_count || 0) === 1 ? "" : "s"}` : "No successful hubs."}</small></div>
+          <div class="haul-route-cost"><span>Most Funded Lines</span><b>${escapeHtml(mostLines?.source_hub_name || "None")}</b><small>${mostLines ? `${formatNumber(mostLines.portfolio_line_count)} line${Number(mostLines.portfolio_line_count || 0) === 1 ? "" : "s"}` : "No successful hubs."}</small></div>
+        </div>
+      `;
+      acqCompareResults.innerHTML = `
+        ${renderAcquisitionHubComparisonResults(results)}
+        ${renderAcquisitionCombinedPlan(combined, comparison)}
+      `;
+      acquisitionQuickbarItems = Array.isArray(portfolio.lines) ? portfolio.lines : [];
+      updateQuickbarPanel(acqQuickbarPanel, acqQuickbarStatus, acquisitionQuickbarItems, "portfolio item");
+      updateReportPanel("acquisition", combined.report_rows || []);
+      acqResults.innerHTML = renderAcquisitionPortfolio(portfolio, (comparison.combined_plan || {}).opportunities || []);
+      acqStrategy.innerHTML = "";
+      acqRoute.innerHTML = `
+        <strong>Buy hub comparison toward ${escapeHtml(comparison.destination_name || "destination")}.</strong>
+        <div class="meta">Hub ranking rows are independent full-budget what-if scans. The combined plan below uses one shared budget and does not save Trade P&amp;L expectations.</div>
+      `;
+      recordEsiActivity({
+        scopes: flightActivityScopes("location", "skills"),
+        label: "Portfolio buy hubs compared",
+        description: "Compared source hubs with current Portfolio settings and public market data.",
+        reason: "The app uses ESI location/session context, skills for tax estimates, and public orders/history to produce manual advisory buy-order plans.",
+        status: Number(portfolio.line_count || 0) ? "success" : "empty",
+      });
+    }
+
+    function renderAcquisitionHubComparisonResults(results) {
+      if (!results.length) return `<div class="decision-empty">No buy-hub comparison rows returned.</div>`;
+      return `<div class="decision-list">${results.map((result, index) => {
+        if (!result.ok) {
+          return `
+            <article class="haul-hub-card">
+              <div class="haul-hub-card-head">
+                <div>
+                  <h3>${escapeHtml(result.source_hub_name || result.source_hub || "Buy hub")}</h3>
+                  <div class="meta">Buy-hub comparison failed before a portfolio card could be built.</div>
+                </div>
+                <span class="pill decision-skip">Failed</span>
+              </div>
+              <div class="decision-empty">
+                <div class="meta">${escapeHtml(result.error || "Comparison failed for this hub.")}</div>
+              </div>
+            </article>
+          `;
+        }
+        const sourceHub = result.source_hub_name || result.source_hub || "Buy hub";
+        const bestItem = result.best_item_name
+          ? `Best line: ${escapeHtml(result.best_item_name)} at ${formatSignedIsk(result.best_item_net_profit)}.`
+          : "No funded best line returned.";
+        const planClass = result.portfolio_available ? "decision-build" : "decision-watch";
+        const planText = result.portfolio_available ? formatSignedIsk(result.estimated_net_profit) : "No plan";
+        const excludedCounts = result.excluded_reason_counts || {};
+        const excludedText = Object.entries(excludedCounts)
+          .filter(([_key, value]) => Number(value || 0) > 0)
+          .slice(0, 4)
+          .map(([key, value]) => `${key.replaceAll("_", " ")} ${formatNumber(value)}`)
+          .join("; ");
+        return `
+          <article class="haul-hub-card">
+            <div class="haul-hub-card-head">
+              <div>
+                <span class="haul-hub-rank">#${formatNumber(index + 1)}</span>
+                <h3>${escapeHtml(sourceHub)}</h3>
+                <div class="meta">${bestItem}</div>
+              </div>
+              <span class="pill ${planClass}">${planText}</span>
+            </div>
+            <div class="haul-hub-route">
+              <div class="haul-route-cost"><span>Invested</span><b>${formatIsk(result.invested_isk)}</b><small>${formatIsk(result.budget_remaining_isk)} remaining in this what-if scan.</small></div>
+              <div class="haul-route-cost"><span>Net Profit</span><b>${formatSignedIsk(result.estimated_net_profit)}</b><small>${formatPercent(result.margin_percent)} on invested ISK.</small></div>
+              <div class="haul-route-cost"><span>Lines</span><b>${formatNumber(result.portfolio_line_count)}</b><small>${formatNumber(result.opportunity_count)} viable candidate${Number(result.opportunity_count || 0) === 1 ? "" : "s"}.</small></div>
+              <div class="haul-route-cost"><span>Jumps</span><b>${formatNumber(result.used_jumps)} / ${formatNumber(result.max_portfolio_jumps)}</b><small>Collection effort estimate.</small></div>
+            </div>
+            <div class="haul-hub-actions">
+              <div class="meta">${formatNumber(result.possible_trap_count)} possible trap${Number(result.possible_trap_count || 0) === 1 ? "" : "s"}; ${formatNumber(result.caution_line_count)} caution line${Number(result.caution_line_count || 0) === 1 ? "" : "s"}. ${escapeHtml(excludedText || "No exclusion counts returned.")}</div>
+              <button class="secondary" type="button" data-acq-compare-use="${escapeHtml(sourceHub)}">Use ${escapeHtml(sourceHub)}</button>
+            </div>
+          </article>
+        `;
+      }).join("")}</div>`;
+    }
+
+    function renderAcquisitionCombinedPlan(combined, comparison) {
+      const portfolio = combined?.portfolio || {};
+      const lines = Array.isArray(portfolio.lines) ? portfolio.lines : [];
+      const byHub = lines.reduce((summary, line) => {
+        const hub = line.source_hub_name || line.comparison_source_hub || line.placement_system || "Selected source";
+        if (!summary[hub]) summary[hub] = {lineCount: 0, invested: 0, profit: 0};
+        summary[hub].lineCount += 1;
+        summary[hub].invested += Number(line.estimated_isk_committed || 0);
+        summary[hub].profit += Number(line.net_profit || 0);
+        return summary;
+      }, {});
+      const hubRows = Object.entries(byHub).map(([hub, row]) => `
+        <div class="completed-run-row">
+          <strong>${escapeHtml(hub)}</strong>
+          <b>${formatIsk(row.invested)}</b>
+          <span>${formatNumber(row.lineCount)} line${row.lineCount === 1 ? "" : "s"}; ${formatSignedIsk(row.profit)} est. net.</span>
+        </div>
+      `).join("");
+      return `
+        <details class="profit-details" open>
+          <summary>Combined Buy Plan</summary>
+          <div class="decision-lede">${escapeHtml(combined?.manual_note || "The combined plan uses one shared budget across selected buy hubs.")}</div>
+          <div class="profit-stats">
+            <div class="profit-stat"><span>Shared Investment</span><b>${formatIsk(portfolio.invested_isk)}</b></div>
+            <div class="profit-stat"><span>Est. Net Profit</span><b>${formatSignedIsk(portfolio.estimated_net_profit)}</b></div>
+            <div class="profit-stat"><span>Lines</span><b>${formatNumber(portfolio.line_count)}</b></div>
+            <div class="profit-stat"><span>Buy Hubs</span><b>${formatNumber(Object.keys(byHub).length)}</b></div>
+          </div>
+          <div class="completed-run-row-list">${hubRows || renderDashboardEmptyState("No shared-budget buy lines were selected.")}</div>
+          <div class="meta">Candidate rows: ${formatNumber(comparison.combined_candidate_count)} scanned, ${formatNumber(comparison.combined_deduped_candidate_count)} kept after duplicate item cleanup.</div>
+        </details>
+      `;
     }
 
     function renderMarketAcquisition(data) {
@@ -27654,10 +28475,12 @@ help</textarea>
     function renderAcquisitionWhySelected(item) {
       const range = item.range_recommendation || {};
       const destinationBuy = item.best_destination_buy || {};
+      const sourceHub = item.source_hub_name || item.comparison_source_hub || item.placement_system || "";
       const scaled = Number(item.original_recommended_units || 0) > Number(item.recommended_units || 0);
       return `
         <div class="decision-lede">Why selected: this row fit the budget, jump cap, risk filter, and category spread better than excluded alternatives.</div>
         <div class="profit-detail-grid">
+          <div class="profit-detail-row"><span>Buy hub</span><b>${escapeHtml(sourceHub || "Selected source")}</b><small>Place this manual buy order in this source system.</small></div>
           <div class="profit-detail-row"><span>Category role</span><b>${escapeHtml(item.category || "Selected scope")}</b><small>Used to avoid one-item concentration.</small></div>
           <div class="profit-detail-row"><span>Risk filter</span><b>${escapeHtml(acquisitionRiskLabel(item.risk_level))}</b><small>Possible trap rows are excluded from funded plans.</small></div>
           <div class="profit-detail-row"><span>Budget fit</span><b>${formatIsk(item.estimated_isk_committed)}</b><small>${formatPercent(item.portfolio_weight_percent)} of total portfolio budget.</small></div>
@@ -27687,12 +28510,14 @@ help</textarea>
       const rowHtml = rows.slice(0, 18).map((row) => {
         const reasonClass = row.reason_key === "possible_trap" ? "decision-price" : "decision-watch";
         const flags = renderAcquisitionHistoryFlags(row.history_flags || []);
+        const sourceHub = row.source_hub_name || row.comparison_source_hub || "";
         return `
           <div class="decision-row portfolio-excluded-row">
             <div class="decision-head">
               <strong>${escapeHtml(row.item_name || "Unknown item")}</strong>
               <span class="pill ${reasonClass}">${escapeHtml(row.reason_label || "Excluded")}</span>
               <span class="pill decision-source">${escapeHtml(row.category || "Selected scope")}</span>
+              ${sourceHub ? `<span class="pill decision-source">Buy hub ${escapeHtml(sourceHub)}</span>` : ""}
             </div>
             <div class="decision-lede">${escapeHtml(row.detail || "Excluded from the funded portfolio.")}</div>
             ${renderAcquisitionTheoryPills(row)}
@@ -27743,6 +28568,7 @@ help</textarea>
           const range = item.range_recommendation || {};
           const destinationBuy = item.best_destination_buy || {};
           const riskClass = acquisitionRiskClass(item.risk_level);
+          const sourceHub = item.source_hub_name || item.comparison_source_hub || item.placement_system || "";
           const scaledNote = Number(item.original_recommended_units || 0) > Number(item.recommended_units || 0)
             ? `Scaled down from ${formatNumber(item.original_recommended_units)} units to fit the portfolio budget.`
             : "Uses the full first-order size suggested by market history and destination demand.";
@@ -27751,6 +28577,7 @@ help</textarea>
               <div class="decision-head">
                 <strong>${escapeHtml(item.item_name)}</strong>
                 <span class="pill decision-source">${escapeHtml(item.category || "Selected scope")}</span>
+                ${sourceHub ? `<span class="pill decision-source">Buy hub ${escapeHtml(sourceHub)}</span>` : ""}
                 <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
               </div>
               <div class="decision-lede">${escapeHtml(decision.label || "Review")} at ${formatIsk(item.suggested_bid)} or less; ${escapeHtml(range.range || "station")} range. ${escapeHtml(scaledNote)}</div>
@@ -31616,7 +32443,15 @@ help</textarea>
         pastedItemsOnly: acqPastedItemsOnly ? acqPastedItemsOnly.checked : true,
       });
       const settings = readAcquisitionSettings();
+      updateAcqCompareHubAvailability(settings.destination);
       resetMarketAcquisition(`Ready to build an investment portfolio from ${acquisitionStartLabel(settings)} toward ${settings.destination}.`);
+      const sourceHubs = readAcqCompareSourceHubsFromInputs(settings.destination);
+      if (acqCompareSummary) {
+        acqCompareSummary.textContent = sourceHubs.length
+          ? `Ready to compare ${formatNumber(sourceHubs.length)} buy hub${sourceHubs.length === 1 ? "" : "s"} toward ${settings.destination}.`
+          : "Choose at least one buy hub to compare.";
+      }
+      if (acqCompareResults) acqCompareResults.textContent = "";
     }
 
     acquisitionForm.addEventListener("submit", (event) => {
@@ -31657,6 +32492,32 @@ help</textarea>
       if (!event.target.closest("input[data-haul-market-group], input[data-haul-market-type]")) return;
       updateAcquisitionScopeAndReset();
     });
+    if (acqCompareHubs) {
+      acqCompareHubs.addEventListener("change", (event) => {
+        if (!event.target.closest("input[data-acq-compare-source]")) return;
+        const settings = readAcquisitionSettings();
+        updateAcqCompareHubAvailability(settings.destination);
+        const sourceHubs = writeAcqCompareSourceHubs(readAcqCompareSourceHubsFromInputs(settings.destination));
+        if (acqCompareSummary) {
+          acqCompareSummary.textContent = sourceHubs.length
+            ? `Ready to compare ${formatNumber(sourceHubs.length)} buy hub${sourceHubs.length === 1 ? "" : "s"} toward ${settings.destination}.`
+            : "Choose at least one buy hub to compare.";
+        }
+        if (acqCompareResults) acqCompareResults.textContent = "";
+      });
+    }
+    if (acqCompareButton) {
+      acqCompareButton.addEventListener("click", loadAcquisitionHubComparison);
+    }
+    if (acqCompareResults) {
+      acqCompareResults.addEventListener("click", (event) => {
+        const useButton = event.target.closest("button[data-acq-compare-use]");
+        if (!useButton) return;
+        acqOrigin.value = useButton.dataset.acqCompareUse || "";
+        updateAcquisitionScopeAndReset();
+        if (acqCompareSummary) acqCompareSummary.textContent = `Buy order system set to ${acqOrigin.value}. Run Build Portfolio when ready.`;
+      });
+    }
     if (assetLedgerPreviewDuck) {
       assetLedgerPreviewDuck.addEventListener("click", previewAssetLedgerDuck);
     }
@@ -32093,6 +32954,16 @@ help</textarea>
     writeHaulSettings(readHaulSettings());
     applyMarketItemSearch(haulMarketGroups, haulItemSearch.value, haulItemSearchStatus);
     writeAcquisitionSettings(readAcquisitionSettings());
+    const storedAcqCompareSourceHubs = readStoredAcqCompareSourceHubs();
+    if (storedAcqCompareSourceHubs) applyAcqCompareSourceHubs(storedAcqCompareSourceHubs);
+    updateAcqCompareHubAvailability(acqDestination ? acqDestination.value : "Jita");
+    writeAcqCompareSourceHubs();
+    if (acqCompareSummary) {
+      const initialAcqCompareSources = readAcqCompareSourceHubsFromInputs(acqDestination ? acqDestination.value : "Jita");
+      acqCompareSummary.textContent = initialAcqCompareSources.length
+        ? `Ready to compare ${formatNumber(initialAcqCompareSources.length)} buy hub${initialAcqCompareSources.length === 1 ? "" : "s"} toward ${acqDestination ? acqDestination.value : "Jita"}.`
+        : "Choose at least one buy hub to compare.";
+    }
     writeMiningYieldSettings(readMiningYieldSettings());
     renderMiningYieldTimer();
     if (bulkAppraisalHub) {
