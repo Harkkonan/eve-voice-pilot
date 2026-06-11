@@ -324,6 +324,50 @@ def test_vm_update_and_restart_rejects_unsafe_remote_values(tmp_path):
         flight_workbench.vm_update_and_restart(config)
 
 
+def test_vm_public_readiness_uses_fixed_remote_python_check(tmp_path, monkeypatch):
+    observed = {}
+    key_path = tmp_path / "oci.key"
+    key_path.write_text("private", encoding="utf-8")
+    config = flight_workbench.WorkbenchConfig(
+        ssh_host="203.0.113.10",
+        ssh_user="ubuntu",
+        ssh_key_path=str(key_path),
+        vm_app_dir="/home/ubuntu/apps/eve-voice-pilot",
+        vm_service_name="eve-flight.service",
+    )
+
+    def fake_run_ssh_command(config, remote_command, *, timeout_seconds=None):
+        observed["remote_command"] = remote_command
+        observed["timeout_seconds"] = timeout_seconds
+        return flight_workbench.CommandResult(ok=False, summary="checked")
+
+    monkeypatch.setattr(flight_workbench, "run_ssh_command", fake_run_ssh_command)
+
+    result = flight_workbench.vm_public_readiness(config)
+
+    assert result.ok is False
+    assert observed["remote_command"].startswith("cd /home/ubuntu/apps/eve-voice-pilot && .venv/bin/python -c ")
+    assert "api/flight/diagnostics" in observed["remote_command"]
+    assert "public_hosting_mode" in observed["remote_command"]
+    assert "membership_restricted" in observed["remote_command"]
+    assert "caddy.service" in observed["remote_command"]
+    assert observed["timeout_seconds"] >= 35.0
+
+
+def test_vm_public_readiness_rejects_unsafe_app_path(tmp_path):
+    key_path = tmp_path / "oci.key"
+    key_path.write_text("private", encoding="utf-8")
+    config = flight_workbench.WorkbenchConfig(
+        ssh_host="203.0.113.10",
+        ssh_user="ubuntu",
+        ssh_key_path=str(key_path),
+        vm_app_dir="/home/ubuntu/apps/eve-voice-pilot; touch bad",
+    )
+
+    with pytest.raises(flight_workbench.WorkbenchError):
+        flight_workbench.vm_public_readiness(config)
+
+
 def test_operator_origin_rules_accept_same_origin_and_reject_other_origin():
     assert flight_workbench.origin_is_allowed("http://127.0.0.1:8790", "", "127.0.0.1:8790") is True
     assert flight_workbench.origin_is_allowed("https://evil.example", "", "127.0.0.1:8790") is False
@@ -463,3 +507,4 @@ def test_status_payload_contains_expected_cards(monkeypatch):
     assert any(action["id"] == "vm_service_restart" for action in payload["actions"])
     assert any(action["id"] == "vm_update_restart" for action in payload["actions"])
     assert any(action["id"] == "vm_update_verify" for action in payload["actions"])
+    assert any(action["id"] == "vm_public_readiness" for action in payload["actions"])

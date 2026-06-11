@@ -69,6 +69,7 @@ The first version allows fixed, allowlisted actions only:
 - Run fixed SSH checks for VM health, service status, service restart, service logs, and VM Git status.
 - Fast-forward the configured VM checkout from GitHub, install `requirements.txt`, restart the configured VM service, and show service status.
 - Run the same VM update with built-in Git status and local health verification.
+- Check VM public-hosting readiness without changing Oracle networking, DNS, SSO secrets, or reverse-proxy config.
 
 The workbench does not accept arbitrary shell commands from the browser.
 
@@ -85,6 +86,24 @@ Tail VM Logs
 `Update VM + Verify` refuses to continue if the VM checkout has uncommitted local changes. It uses `git pull --ff-only`, so it also refuses merge commits or conflict resolution on the VM. It restarts the configured service, checks VM Git status, and fetches the VM-local `/api/health` endpoint.
 
 Use `Update VM App` when you only want the update/restart portion. Use `Service Status`, `VM Health`, and `Tail VM Logs` when you need more detail.
+
+## Public Hosting Readiness
+
+Use `Public Readiness` before opening the site to other people. It checks the VM over SSH and reports:
+
+```text
+eve-flight.service state
+local /api/health
+local /api/flight/diagnostics
+public-hosting mode
+HTTPS public base URL
+callback/public-base match
+SSO configured
+corp/alliance member allowlist configured
+Caddy installed and active
+```
+
+This button is read-only. It does not install Caddy, edit Oracle firewall rules, change DNS, rotate secrets, or update the EVE Developers portal callback.
 
 ## Manual-Only Work
 

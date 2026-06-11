@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import threading
@@ -755,6 +756,111 @@ def vm_git_status(config: WorkbenchConfig) -> CommandResult:
     return run_ssh_command(config, f"cd {app_dir} && git status --short --branch")
 
 
+def vm_public_readiness(config: WorkbenchConfig) -> CommandResult:
+    app_dir = validate_remote_path(config.vm_app_dir, "VM app directory")
+    service = validate_remote_name(config.vm_service_name, "VM service name")
+    script = build_vm_public_readiness_script(service)
+    remote_command = f"cd {app_dir} && .venv/bin/python -c {shlex.quote(script)}"
+    return run_ssh_command(
+        config,
+        remote_command,
+        timeout_seconds=max(35.0, config.command_timeout_seconds),
+    )
+
+
+def build_vm_public_readiness_script(service: str) -> str:
+    return f"""
+import json
+import shutil
+import subprocess
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
+
+SERVICE = {service!r}
+issues = []
+
+
+def run(args):
+    return subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8", errors="replace")
+
+
+def yes_no(value):
+    return "yes" if value else "no"
+
+
+print("VM public hosting readiness")
+service_state = run(["systemctl", "is-active", SERVICE]).stdout.strip()
+print(f"{{SERVICE}}: {{service_state or 'unknown'}}")
+if service_state != "active":
+    issues.append(f"{{SERVICE}} is not active.")
+
+try:
+    with urlopen("http://127.0.0.1:8770/api/health", timeout=3) as response:
+        health = json.loads(response.read().decode("utf-8", errors="replace"))
+    print(f"Local app health: {{yes_no(bool(health.get('ok')))}}")
+    if not health.get("ok"):
+        issues.append("Local app health is not OK.")
+except (OSError, HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+    print(f"Local app health: error: {{exc}}")
+    issues.append("Local app health endpoint is not reachable.")
+
+try:
+    with urlopen("http://127.0.0.1:8770/api/flight/diagnostics", timeout=5) as response:
+        diagnostics = json.loads(response.read().decode("utf-8", errors="replace"))
+except (OSError, HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+    print(f"Flight diagnostics: error: {{exc}}")
+    issues.append("Flight diagnostics endpoint is not reachable from the VM.")
+else:
+    hosting = diagnostics.get("hosting") or {{}}
+    sso = diagnostics.get("sso") or {{}}
+    public_mode = bool(hosting.get("public_hosting_mode"))
+    public_https = bool(hosting.get("public_base_url_https"))
+    callback_match = bool(hosting.get("callback_matches_public_base"))
+    sso_ready = bool(sso.get("configured"))
+    restricted = bool(sso.get("membership_restricted"))
+    print(f"Server mode: {{hosting.get('server_mode_label') or 'unknown'}}")
+    print(f"Public base URL: {{hosting.get('public_base_url') or 'missing'}}")
+    print(f"Expected callback: {{hosting.get('expected_callback_url') or 'missing'}}")
+    print(f"Public hosting mode: {{yes_no(public_mode)}}")
+    print(f"Public URL uses HTTPS: {{yes_no(public_https)}}")
+    print(f"Callback matches public base: {{yes_no(callback_match)}}")
+    print(f"SSO configured: {{yes_no(sso_ready)}}")
+    print(f"Member allowlist configured: {{yes_no(restricted)}}")
+    if not public_mode:
+        issues.append("Public hosting mode is not enabled.")
+    if not public_https:
+        issues.append("Public base URL is missing or not HTTPS.")
+    if not callback_match:
+        issues.append("SSO callback does not match the public base URL.")
+    if not sso_ready:
+        issues.append("SSO client ID/secret are not configured.")
+    if not restricted:
+        issues.append("Corp/alliance member allowlist is not configured.")
+
+caddy_path = shutil.which("caddy")
+if caddy_path:
+    version = run(["caddy", "version"]).stdout.strip().splitlines()
+    caddy_state = run(["systemctl", "is-active", "caddy"]).stdout.strip()
+    print(f"Caddy binary: {{caddy_path}}")
+    print(f"Caddy version: {{version[0] if version else 'unknown'}}")
+    print(f"caddy.service: {{caddy_state or 'unknown'}}")
+    if caddy_state != "active":
+        issues.append("caddy.service is not active.")
+else:
+    print("Caddy binary: missing")
+    issues.append("Caddy is not installed.")
+
+if issues:
+    print("Missing before public HTTPS:")
+    for issue in issues:
+        print(f"- {{issue}}")
+    sys.exit(1)
+
+print("Ready for public HTTPS hosting checks.")
+"""
+
+
 def tunnel_start(config: WorkbenchConfig) -> CommandResult:
     validate_ssh_config(config)
     if process_is_running("ssh tunnel"):
@@ -791,6 +897,7 @@ def action_definitions() -> dict[str, ActionDefinition]:
         ActionDefinition("vm_update_verify", "Update VM + Verify", "VM App Service", "Update the VM app, restart the service, check Git status, and fetch health.", vm_update_and_verify, True),
         ActionDefinition("vm_logs_tail", "Tail VM Logs", "VM App Service", "Read recent service logs over SSH.", vm_logs_tail),
         ActionDefinition("vm_git_status", "VM Git Status", "VM App Service", "Show Git status in the VM app directory.", vm_git_status),
+        ActionDefinition("vm_public_readiness", "Public Readiness", "VM App Service", "Check VM public-hosting readiness without changing Oracle, DNS, or secrets.", vm_public_readiness),
     ]
     return {action.action_id: action for action in actions}
 
