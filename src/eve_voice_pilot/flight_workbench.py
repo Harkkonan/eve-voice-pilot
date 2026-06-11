@@ -729,8 +729,8 @@ def build_vm_update_command(app_dir: str, service: str, *, verify: bool) -> str:
             "git status --short --branch; "
             'echo "Health:"; '
             "for attempt in 1 2 3 4 5 6 7 8 9 10; do "
-            "if curl -fsS http://127.0.0.1:8770/api/health; then break; fi; "
-            'if [ "$attempt" = "10" ]; then exit 7; fi; '
+            "if curl -fsS http://127.0.0.1:8770/api/health 2>/dev/null; then break; fi; "
+            'if [ "$attempt" = "10" ]; then echo "Health check did not answer after 10 seconds."; exit 7; fi; '
             "sleep 1; "
             "done"
         )
