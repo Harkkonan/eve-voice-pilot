@@ -139,6 +139,8 @@ LOCATION_SCOPE = "esi-location.read_location.v1"
 OVERLAY_IDLE_WIDTH = 220
 OVERLAY_ALERT_WIDTH = 430
 OVERLAY_HEIGHT = 176
+AURA_BUBBLE_SCAN_X = (34, 66, 98, 130, 162, 194, 226, 258)
+AURA_BUBBLE_NODE_COUNT = 7
 BEHAVIOR_ALERT = "alert"
 BEHAVIOR_HAPPY = "happy"
 BEHAVIOR_COMBAT = "combat"
@@ -2478,6 +2480,14 @@ def trigger_robot_miner_animation(reason: str = "") -> str:
     return BEHAVIOR_ROBOT_MINER
 
 
+def aura_bubble_phase_state(phase: int, *, node_count: int = AURA_BUBBLE_NODE_COUNT) -> tuple[int, tuple[int, ...]]:
+    scan_x = AURA_BUBBLE_SCAN_X[phase % len(AURA_BUBBLE_SCAN_X)]
+    if node_count <= 0:
+        return scan_x, ()
+    active_nodes = {phase % node_count, (phase + max(1, node_count // 2)) % node_count}
+    return scan_x, tuple(sorted(active_nodes))
+
+
 def location_sso_config_from_args(args: argparse.Namespace) -> EveSsoConfig:
     happy_systems = clean_user_terms(args.happy_system or DEFAULT_HAPPY_SYSTEMS)
     if not happy_systems:
@@ -3134,7 +3144,7 @@ def run_overlay(
     root.overrideredirect(True)
 
     transparent_color = "#ff00ff"
-    bubble_fill = "#101820"
+    bubble_fill = "#07121c"
     colors = {
         "idle": "#5f7f96",
         "info": "#4bb4ff",
@@ -3153,6 +3163,8 @@ def run_overlay(
     robot_miner_frames = load_sprite_frames(tk, root, paths=robot_miner_sprite_frame_paths())
     sprite_after_id: str | None = None
     idle_cycle_after_id: str | None = None
+    aura_after_id: str | None = None
+    current_aura_color = colors["idle"]
     shot_item_ids: list[int] = []
     history_items: list[IntelPetHistoryItem] = []
 
@@ -3254,6 +3266,160 @@ def run_overlay(
         )
         return items
 
+    def draw_aura_bubble_background(canvas: Any) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], int]:
+        base_tags = ("bubble", "aura_sim")
+        static_items: list[int] = []
+        accent_items: list[int] = []
+        node_items: list[int] = []
+
+        static_items.append(
+            canvas.create_line(
+                30,
+                18,
+                62,
+                18,
+                78,
+                28,
+                116,
+                28,
+                fill="#12323f",
+                width=1,
+                tags=base_tags,
+            )
+        )
+        static_items.append(
+            canvas.create_line(
+                130,
+                24,
+                164,
+                24,
+                184,
+                38,
+                226,
+                38,
+                244,
+                24,
+                fill="#10303b",
+                width=1,
+                tags=base_tags,
+            )
+        )
+        static_items.append(
+            canvas.create_line(
+                38,
+                84,
+                56,
+                72,
+                78,
+                84,
+                98,
+                78,
+                120,
+                90,
+                fill="#12313b",
+                width=1,
+                tags=base_tags,
+            )
+        )
+        static_items.append(
+            canvas.create_line(
+                148,
+                84,
+                178,
+                70,
+                208,
+                86,
+                238,
+                72,
+                260,
+                82,
+                fill="#12313b",
+                width=1,
+                tags=base_tags,
+            )
+        )
+        static_items.append(
+            canvas.create_line(
+                26,
+                98,
+                52,
+                98,
+                58,
+                92,
+                66,
+                104,
+                74,
+                88,
+                82,
+                98,
+                116,
+                98,
+                fill="#184654",
+                width=1,
+                tags=base_tags,
+            )
+        )
+        for index in range(4):
+            y = 64 + index * 8
+            static_items.append(canvas.create_line(30, y, 48, y + 5, fill="#0f2a35", width=1, tags=base_tags))
+            static_items.append(canvas.create_line(30, y + 5, 48, y, fill="#0f2a35", width=1, tags=base_tags))
+        for x, y, radius in ((70, 52, 13), (206, 58, 17), (246, 84, 10)):
+            static_items.append(
+                canvas.create_oval(
+                    x - radius,
+                    y - radius,
+                    x + radius,
+                    y + radius,
+                    outline="#0d2b35",
+                    width=1,
+                    tags=base_tags,
+                )
+            )
+        for x, y in ((44, 28), (82, 28), (122, 46), (164, 24), (204, 38), (244, 24), (252, 82)):
+            node_items.append(
+                canvas.create_oval(
+                    x - 2,
+                    y - 2,
+                    x + 2,
+                    y + 2,
+                    fill="#1a4652",
+                    outline="",
+                    tags=base_tags,
+                )
+            )
+        accent_items.append(
+            canvas.create_line(
+                132,
+                98,
+                156,
+                98,
+                162,
+                92,
+                170,
+                104,
+                178,
+                88,
+                188,
+                98,
+                226,
+                98,
+                fill=colors["idle"],
+                width=1,
+                tags=base_tags,
+            )
+        )
+        scan_id = canvas.create_line(
+            AURA_BUBBLE_SCAN_X[0],
+            14,
+            AURA_BUBBLE_SCAN_X[0] + 9,
+            104,
+            fill=colors["idle"],
+            width=1,
+            dash=(2, 3),
+            tags=base_tags,
+        )
+        return tuple(static_items), tuple(accent_items), tuple(node_items), scan_id
+
     bubble_border_items = draw_round_rectangle(
         bubble_canvas,
         8,
@@ -3277,6 +3443,9 @@ def run_overlay(
         outline=colors["idle"],
         width=2,
         tags=("bubble",),
+    )
+    aura_static_item_ids, aura_accent_item_ids, aura_node_item_ids, aura_scan_item_id = draw_aura_bubble_background(
+        bubble_canvas
     )
 
     message_id = bubble_canvas.create_text(
@@ -3307,7 +3476,15 @@ def run_overlay(
         text="Options",
         tags=("options_button",),
     )
-    bubble_item_ids = (*bubble_border_items, bubble_tail_id, message_id)
+    bubble_item_ids = (
+        *bubble_border_items,
+        bubble_tail_id,
+        *aura_static_item_ids,
+        *aura_accent_item_ids,
+        *aura_node_item_ids,
+        aura_scan_item_id,
+        message_id,
+    )
     for item_id in bubble_item_ids:
         bubble_canvas.itemconfigure(item_id, state="hidden")
 
@@ -5526,12 +5703,40 @@ def run_overlay(
         else:
             start_sprite_cycle(ALERT_SPRITE_SEQUENCE)
 
+    def render_aura_bubble_phase(phase: int) -> None:
+        scan_x, active_nodes = aura_bubble_phase_state(phase, node_count=len(aura_node_item_ids))
+        bubble_canvas.coords(aura_scan_item_id, scan_x, 14, scan_x + 9, 104)
+        bubble_canvas.itemconfigure(aura_scan_item_id, fill=current_aura_color)
+        for index, item_id in enumerate(aura_node_item_ids):
+            bubble_canvas.itemconfigure(item_id, fill=current_aura_color if index in active_nodes else "#1a4652")
+        pulse_width = 2 if phase % 4 == 0 else 1
+        for item_id in aura_accent_item_ids:
+            bubble_canvas.itemconfigure(item_id, fill=current_aura_color, width=pulse_width)
+
+    def run_aura_bubble_animation(phase: int) -> None:
+        nonlocal aura_after_id
+        render_aura_bubble_phase(phase)
+        aura_after_id = root.after(320, lambda: run_aura_bubble_animation(phase + 1))
+
+    def start_aura_bubble_animation() -> None:
+        stop_aura_bubble_animation()
+        run_aura_bubble_animation(0)
+
+    def stop_aura_bubble_animation() -> None:
+        nonlocal aura_after_id
+        if aura_after_id is not None:
+            root.after_cancel(aura_after_id)
+            aura_after_id = None
+
     def apply_severity(severity: str) -> None:
+        nonlocal current_aura_color
         color = colors.get(severity, colors["info"])
+        current_aura_color = color
         for item_id in bubble_border_items:
             bubble_canvas.itemconfigure(item_id, outline=color)
         bubble_canvas.itemconfigure(bubble_tail_id, outline=color)
         control_canvas.itemconfigure(options_rect_id, outline=color)
+        render_aura_bubble_phase(0)
 
     def resize_overlay(width: int) -> None:
         desktop_left = root.winfo_vrootx()
@@ -5548,8 +5753,10 @@ def run_overlay(
         message_var.set(message)
         for item_id in bubble_item_ids:
             bubble_canvas.itemconfigure(item_id, state="normal")
+        start_aura_bubble_animation()
 
     def hide_message_bubble() -> None:
+        stop_aura_bubble_animation()
         message_var.set("")
         for item_id in bubble_item_ids:
             bubble_canvas.itemconfigure(item_id, state="hidden")

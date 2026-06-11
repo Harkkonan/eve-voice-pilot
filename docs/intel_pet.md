@@ -55,6 +55,8 @@ src/eve_voice_pilot/static/intel-pet/
 
 The overlay swaps those frames with Tkinter only. Turrets and engines animate when an alert appears, the ship flies happily on configured system arrivals and mission milestones, and it flies around shooting when a local game-log kill is detected. The ship also runs a short idle cycle every five minutes.
 
+Alert bubbles use a subtle Aura-style life-simulation backing layer: faint trace lines, cell pulses, and a scan sweep behind the message. It is only local visual polish and does not add any new data source or ESI scope.
+
 The `Stout robot miner` behavior is a local visual gag: the ship briefly folds into a compact industrial robot, swings a pickaxe, fires eye lasers, and returns to ship form. It does not add an ESI scope, share data, read new files, click, send keys, or automate EVE.
 
 Alert bubbles stay visible for 15 seconds by default. If a newer alert arrives before that timer ends, the bubble switches to the newer message and the 15-second timer starts again.

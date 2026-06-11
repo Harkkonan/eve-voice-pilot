@@ -12,6 +12,8 @@ from eve_voice_pilot.corp_intel import ChannelFilter, ChatMessage, CorpIntelErro
 import eve_voice_pilot.intel_pet as intel_pet_module
 from eve_voice_pilot.intel_pet import (
     ALERT_SPRITE_SEQUENCE,
+    AURA_BUBBLE_NODE_COUNT,
+    AURA_BUBBLE_SCAN_X,
     BEHAVIOR_ALERT,
     BEHAVIOR_COMBAT,
     BEHAVIOR_HAPPY,
@@ -57,6 +59,7 @@ from eve_voice_pilot.intel_pet import (
     IntelPetVoiceReliabilityRow,
     alert_behavior_key,
     alert_with_local_system_fallback,
+    aura_bubble_phase_state,
     behavior_for_alert,
     behavior_for_kind,
     behavior_key_from_label,
@@ -528,6 +531,17 @@ def test_spoken_alert_kind_settings_gate_pet_speech():
 
 def test_spoken_pet_text_collapses_bubble_newlines():
     assert spoken_pet_text("18:15:00Z | Amarr\nbuy order appeared") == "18:15:00Z | Amarr. buy order appeared"
+
+
+def test_aura_bubble_phase_state_wraps_scan_and_node_pulses():
+    first_scan_x, first_nodes = aura_bubble_phase_state(0)
+    wrapped_scan_x, wrapped_nodes = aura_bubble_phase_state(len(AURA_BUBBLE_SCAN_X))
+
+    assert first_scan_x == AURA_BUBBLE_SCAN_X[0] == wrapped_scan_x
+    assert first_nodes
+    assert wrapped_nodes
+    assert all(0 <= index < AURA_BUBBLE_NODE_COUNT for index in first_nodes + wrapped_nodes)
+    assert aura_bubble_phase_state(3, node_count=0)[1] == ()
 
 
 def test_voice_input_device_display_uses_system_default_label():
