@@ -147,6 +147,14 @@ class ActionDefinition:
     changes_process: bool = False
 
 
+@dataclass(frozen=True)
+class LocalProcessInfo:
+    pid: int
+    local_address: str
+    local_port: int
+    command_line: str
+
+
 _process_lock = threading.Lock()
 _managed_processes: dict[str, subprocess.Popen[Any]] = {}
 
@@ -381,6 +389,101 @@ def managed_process_status(name: str) -> dict[str, Any]:
         return {"managed": True, "running": running, "pid": process.pid if running else None, "returncode": returncode}
 
 
+def run_windows_process_query_for_port(port: int) -> str:
+    if os.name != "nt":
+        return ""
+    script = f"""
+$items = Get-NetTCPConnection -LocalPort {int(port)} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.OwningProcess)" -ErrorAction SilentlyContinue
+    [PSCustomObject]@{{
+        pid = [int]$_.OwningProcess
+        local_address = [string]$_.LocalAddress
+        local_port = [int]$_.LocalPort
+        command_line = [string]$process.CommandLine
+    }}
+}}
+$items | ConvertTo-Json -Compress
+"""
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=8,
+            shell=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def parse_local_process_query(raw: str) -> list[LocalProcessInfo]:
+    if not raw.strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    rows = parsed if isinstance(parsed, list) else [parsed]
+    processes: list[LocalProcessInfo] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            pid = int(row.get("pid") or 0)
+            local_port = int(row.get("local_port") or 0)
+        except (TypeError, ValueError):
+            continue
+        if pid <= 0:
+            continue
+        processes.append(
+            LocalProcessInfo(
+                pid=pid,
+                local_address=str(row.get("local_address") or ""),
+                local_port=local_port,
+                command_line=str(row.get("command_line") or ""),
+            )
+        )
+    return processes
+
+
+def local_processes_for_port(port: int) -> list[LocalProcessInfo]:
+    return parse_local_process_query(run_windows_process_query_for_port(port))
+
+
+def is_corp_market_process(process: LocalProcessInfo) -> bool:
+    command_line = process.command_line.lower()
+    return "eve_voice_pilot.corp_market" in command_line or "run_corp_market.ps1" in command_line
+
+
+def corp_market_processes_for_config(config: WorkbenchConfig) -> list[LocalProcessInfo]:
+    if os.name != "nt":
+        return []
+    return [process for process in local_processes_for_port(config.local_app_port) if is_corp_market_process(process)]
+
+
+def public_process_summary(processes: Iterable[LocalProcessInfo]) -> list[dict[str, Any]]:
+    return [
+        {
+            "pid": process.pid,
+            "local_address": process.local_address,
+            "local_port": process.local_port,
+            "recognized": is_corp_market_process(process),
+        }
+        for process in processes
+    ]
+
+
+def stop_windows_process_tree(pid: int, *, timeout_seconds: float = 10.0) -> CommandResult:
+    if os.name != "nt":
+        return CommandResult(ok=False, summary="Windows process-tree stop is not available on this platform.")
+    return run_command(["taskkill", "/PID", str(int(pid)), "/T", "/F"], timeout_seconds=timeout_seconds)
+
+
 def start_managed_process(
     name: str,
     args: list[str],
@@ -423,15 +526,24 @@ def stop_managed_process(name: str) -> CommandResult:
             _managed_processes.pop(name, None)
             return CommandResult(ok=False, summary=f"{name} is not managed by this workbench.")
         pid = process.pid
-        process.terminate()
-    try:
-        process.wait(timeout=8)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=8)
-        summary = f"Stopped {name} after forcing the managed process to exit."
+    if os.name == "nt":
+        stop_result = stop_windows_process_tree(pid)
+        try:
+            process.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=8)
+        summary = f"Stopped {name} process tree." if stop_result.ok else f"Stopped {name}."
     else:
-        summary = f"Stopped {name}."
+        process.terminate()
+        try:
+            process.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=8)
+            summary = f"Stopped {name} after forcing the managed process to exit."
+        else:
+            summary = f"Stopped {name}."
     with _process_lock:
         _managed_processes.pop(name, None)
     return CommandResult(ok=True, summary=summary, data={"pid": pid})
@@ -569,6 +681,15 @@ def local_server_start(config: WorkbenchConfig) -> CommandResult:
     require_loopback_host(config.local_app_host, "Local app host")
     health = check_local_health(config)
     if health["ok"]:
+        processes = corp_market_processes_for_config(config)
+        if processes and not process_is_running("local server"):
+            pids = ", ".join(str(process.pid) for process in processes)
+            return CommandResult(
+                ok=True,
+                summary="Corp Market is already answering, but it is not managed by this Workbench.",
+                output=f"Recognized local Corp Market listener PID(s): {pids}\nUse Stop Local Server first if you need a fresh reload.",
+                data={"processes": public_process_summary(processes)},
+            )
         return CommandResult(ok=True, summary="Corp Market is already answering on the configured local URL.")
     script = ROOT / "scripts" / "run_corp_market.ps1"
     args = [
@@ -593,7 +714,46 @@ def local_server_start(config: WorkbenchConfig) -> CommandResult:
 
 
 def local_server_stop(config: WorkbenchConfig) -> CommandResult:
-    return stop_managed_process("local server")
+    require_loopback_host(config.local_app_host, "Local app host")
+    summaries: list[str] = []
+    stopped_pids: list[int] = []
+
+    managed = managed_process_status("local server")
+    if managed.get("running"):
+        result = stop_managed_process("local server")
+        summaries.append(result.summary)
+        pid = result.data.get("pid") if result.data else None
+        if isinstance(pid, int):
+            stopped_pids.append(pid)
+    else:
+        with _process_lock:
+            _managed_processes.pop("local server", None)
+
+    remaining = [process for process in corp_market_processes_for_config(config) if process.pid not in stopped_pids]
+    for process in remaining:
+        result = stop_windows_process_tree(process.pid)
+        if result.ok:
+            stopped_pids.append(process.pid)
+            summaries.append(f"Stopped Corp Market listener PID {process.pid}.")
+        else:
+            summaries.append(f"Could not stop Corp Market listener PID {process.pid}: {result.summary}")
+
+    if stopped_pids:
+        return CommandResult(
+            ok=True,
+            summary="Stopped local Corp Market server.",
+            output="\n".join(summaries),
+            data={"stopped_pids": stopped_pids},
+        )
+
+    health = check_local_health(config)
+    if health["ok"]:
+        return CommandResult(
+            ok=False,
+            summary="Corp Market is answering, but no safe matching local process was found to stop.",
+            output="This usually means the port is owned by an unexpected process. Close the old server window manually, then start again.",
+        )
+    return CommandResult(ok=False, summary="No local Corp Market server is running on the configured URL.")
 
 
 def validate_ssh_config(config: WorkbenchConfig) -> None:
@@ -887,7 +1047,7 @@ def action_definitions() -> dict[str, ActionDefinition]:
         ActionDefinition("git_status", "Git Status", "Git", "Show local Git branch and dirty state.", local_git_status),
         ActionDefinition("git_diff_check", "Diff Whitespace Check", "Git", "Run git diff --check.", git_diff_check),
         ActionDefinition("local_server_start", "Start Local Server", "Local Server", "Start Corp Market through the existing wrapper.", local_server_start, True),
-        ActionDefinition("local_server_stop", "Stop Managed Server", "Local Server", "Stop only the server started by this workbench.", local_server_stop, True),
+        ActionDefinition("local_server_stop", "Stop Local Server", "Local Server", "Stop the managed server or a recognized stale Corp Market listener.", local_server_stop, True),
         ActionDefinition("tunnel_start", "Start SSH Tunnel", "SSH Tunnel", "Start the configured local SSH tunnel.", tunnel_start, True),
         ActionDefinition("tunnel_stop", "Stop Managed Tunnel", "SSH Tunnel", "Stop only the tunnel started by this workbench.", tunnel_stop, True),
         ActionDefinition("vm_health", "VM Health", "VM App Service", "Run hostname, uptime, and memory checks over SSH.", vm_health),
@@ -969,6 +1129,7 @@ def recent_action_log(config: WorkbenchConfig, limit: int = RECENT_ACTION_LIMIT)
 def build_status_payload(config: WorkbenchConfig) -> dict[str, Any]:
     health = check_local_health(config)
     git_status = local_git_status(config)
+    local_processes = corp_market_processes_for_config(config)
     return {
         "ok": True,
         "generated_at": now_iso(),
@@ -976,6 +1137,7 @@ def build_status_payload(config: WorkbenchConfig) -> dict[str, Any]:
         "local_server": {
             "managed": managed_process_status("local server"),
             "health": health,
+            "processes": public_process_summary(local_processes),
         },
         "ssh_tunnel": {
             "managed": managed_process_status("ssh tunnel"),
@@ -1330,7 +1492,12 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
 
     function renderStatus(data) {{
       const health = data.local_server?.health || {{}};
-      setText("#local-status", health.ok ? "Answering" : "Offline");
+      const localManaged = data.local_server?.managed || {{}};
+      const localProcesses = data.local_server?.processes || [];
+      const localLabel = localManaged.running
+        ? `Managed PID ${{localManaged.pid}}`
+        : (health.ok && localProcesses.length ? `Answering PID ${{localProcesses.map(process => process.pid).join(", ")}}` : (health.ok ? "Answering" : "Offline"));
+      setText("#local-status", localLabel);
       document.querySelector("#local-status").style.color = health.ok ? "var(--green)" : "var(--red)";
       const tunnel = data.ssh_tunnel || {{}};
       const tunnelManaged = tunnel.managed || {{}};

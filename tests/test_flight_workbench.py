@@ -182,6 +182,85 @@ def test_local_server_start_bridges_user_env_to_child_process(monkeypatch):
     assert observed["env"]["CORP_MARKET_SSO_CLIENT_ID"] == "user-client-id"
 
 
+def test_local_server_start_reports_stale_listener(monkeypatch):
+    monkeypatch.setattr(
+        flight_workbench,
+        "check_local_health",
+        lambda config: {"ok": True, "url": "http://127.0.0.1:8770/api/health", "detail": "online"},
+    )
+    monkeypatch.setattr(flight_workbench, "process_is_running", lambda name: False)
+    monkeypatch.setattr(
+        flight_workbench,
+        "corp_market_processes_for_config",
+        lambda config: [
+            flight_workbench.LocalProcessInfo(
+                pid=1234,
+                local_address="127.0.0.1",
+                local_port=8770,
+                command_line="python -m eve_voice_pilot.corp_market serve",
+            )
+        ],
+    )
+
+    result = flight_workbench.local_server_start(flight_workbench.WorkbenchConfig())
+
+    assert result.ok is True
+    assert "not managed by this Workbench" in result.summary
+    assert "1234" in result.output
+
+
+def test_local_server_stop_stops_stale_listener(monkeypatch):
+    stopped = []
+
+    monkeypatch.setattr(flight_workbench, "managed_process_status", lambda name: {"managed": False, "running": False, "pid": None})
+    monkeypatch.setattr(
+        flight_workbench,
+        "corp_market_processes_for_config",
+        lambda config: [
+            flight_workbench.LocalProcessInfo(
+                pid=4321,
+                local_address="127.0.0.1",
+                local_port=8770,
+                command_line="python -m eve_voice_pilot.corp_market serve",
+            )
+        ],
+    )
+
+    def fake_stop_windows_process_tree(pid, *, timeout_seconds=10.0):
+        stopped.append(pid)
+        return flight_workbench.CommandResult(ok=True, summary="stopped")
+
+    monkeypatch.setattr(flight_workbench, "stop_windows_process_tree", fake_stop_windows_process_tree)
+
+    result = flight_workbench.local_server_stop(flight_workbench.WorkbenchConfig())
+
+    assert result.ok is True
+    assert stopped == [4321]
+    assert result.data == {"stopped_pids": [4321]}
+
+
+def test_parse_local_process_query_accepts_single_object():
+    raw = json.dumps(
+        {
+            "pid": 9876,
+            "local_address": "127.0.0.1",
+            "local_port": 8770,
+            "command_line": "python -m eve_voice_pilot.corp_market serve",
+        }
+    )
+
+    processes = flight_workbench.parse_local_process_query(raw)
+
+    assert processes == [
+        flight_workbench.LocalProcessInfo(
+            pid=9876,
+            local_address="127.0.0.1",
+            local_port=8770,
+            command_line="python -m eve_voice_pilot.corp_market serve",
+        )
+    ]
+
+
 def test_tunnel_start_requires_vm_config():
     result_error = None
     try:
@@ -486,6 +565,8 @@ def test_append_action_log_redacts_output(tmp_path, monkeypatch):
 
 
 def test_status_payload_contains_expected_cards(monkeypatch):
+    for name in flight_workbench.SENSITIVE_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(flight_workbench, "read_user_env_value", lambda name: "")
     monkeypatch.setattr(
         flight_workbench,
@@ -497,6 +578,7 @@ def test_status_payload_contains_expected_cards(monkeypatch):
         "local_git_status",
         lambda config: flight_workbench.CommandResult(ok=True, summary="ok", output="## master...origin/master"),
     )
+    monkeypatch.setattr(flight_workbench, "corp_market_processes_for_config", lambda config: [])
     monkeypatch.setattr(flight_workbench, "recent_action_log", lambda config: [])
 
     payload = flight_workbench.build_status_payload(flight_workbench.WorkbenchConfig())
@@ -508,3 +590,4 @@ def test_status_payload_contains_expected_cards(monkeypatch):
     assert any(action["id"] == "vm_update_restart" for action in payload["actions"])
     assert any(action["id"] == "vm_update_verify" for action in payload["actions"])
     assert any(action["id"] == "vm_public_readiness" for action in payload["actions"])
+    assert next(action for action in payload["actions"] if action["id"] == "local_server_stop")["label"] == "Stop Local Server"
