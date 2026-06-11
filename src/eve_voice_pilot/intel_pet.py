@@ -5462,7 +5462,7 @@ def run_overlay(
             if effect == "laser":
                 left_eye_x = 68 + offset_x
                 right_eye_x = 88 + offset_x
-                eye_y = 52 + offset_y
+                eye_y = 42 + offset_y
                 target_x = 160
                 target_y = 28 + (position % 4) * 14
                 shot_item_ids.append(
