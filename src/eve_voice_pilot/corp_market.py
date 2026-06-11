@@ -20735,7 +20735,7 @@ help</textarea>
             <div class="panel-header">
               <div>
                 <h2>Document Rules</h2>
-                <div class="meta">What will and will not be editable when ESI ingestion is wired in.</div>
+                <div class="meta">What is readable, managed, and intentionally not hand editable.</div>
               </div>
             </div>
             <ul class="charter-list">
@@ -20751,9 +20751,9 @@ help</textarea>
               <div>
                 <div class="profit-title">
                   <h2 id="asset-ledger-title">Managed Asset Document</h2>
-                  <span class="pill reserved">Preview</span>
+                  <span class="pill reserved">ESI Ready</span>
                 </div>
-                <div class="meta">This preview gives the duck a real managed-document surface before ESI container ingestion is added.</div>
+                <div class="meta">Click Refresh Ledger to replace the preview with current ESI-named container rows.</div>
               </div>
             </div>
             <details class="output-details" open>
@@ -20766,12 +20766,12 @@ help</textarea>
                       <span class="pill decision-source">Example container</span>
                       <span class="pill reserved">Read-only</span>
                     </div>
-                    <div class="decision-lede">Future row source: ESI assets plus ESI container name. This row is a managed preview, not a manual entry.</div>
+                    <div class="decision-lede">Example only: Refresh Ledger reads ESI assets plus custom container names. This preview is not a stored ledger row.</div>
                     <div class="meta">Last preview update: <span id="asset-ledger-preview-version">not run yet</span></div>
                     <div class="profit-detail-grid">
-                      <div class="profit-detail-row"><span>Status</span><b>Ready to wire ESI source</b><small>Future states: needs cost match, ready to haul, hauled, sold, reviewed.</small></div>
+                      <div class="profit-detail-row"><span>Status</span><b>Waiting for Refresh Ledger</b><small>Managed states: needs cost match, ready to haul, hauled, sold, reviewed.</small></div>
                       <div class="profit-detail-row"><span>Portfolio link</span><b>Expected fill snapshot</b><small>Future rows will match portfolio plan, actual filled quantity, and destination hub.</small></div>
-                      <div class="profit-detail-row"><span>Hauler handoff</span><b>Build route from actual assets</b><small>Future button will pass this managed inventory to Hauler without manual edits.</small></div>
+                      <div class="profit-detail-row"><span>Hauler handoff</span><b>Build route from actual assets</b><small>Rows with item names can pass managed inventory to Hauler without manual edits.</small></div>
                     </div>
                   </div>
                 </div>
@@ -21991,7 +21991,7 @@ help</textarea>
     }
 
     function renderDashboardEmptyState(message, options = {}) {
-      const label = options.label ? `<strong>${escapeHtml(options.label)}</strong>` : "";
+      const label = options.label ? `<strong>${escapeHtml(options.label)}</strong> ` : "";
       const detail = options.detail ? `<div class="meta">${escapeHtml(options.detail)}</div>` : "";
       return `<div class="decision-empty">${label}${escapeHtml(message || "No results yet.")}${detail}</div>`;
     }

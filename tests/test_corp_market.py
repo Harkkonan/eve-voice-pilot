@@ -589,6 +589,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-tab-target=\"asset-ledger\"" in page
     assert "id=\"tab-asset-ledger\"" in page
     assert "Trade Asset Ledger" in page
+    assert "Click Refresh Ledger to replace the preview with current ESI-named container rows." in page
+    assert "Waiting for Refresh Ledger" in page
+    assert "before ESI container ingestion is added" not in page
+    assert "Ready to wire ESI source" not in page
     assert "id=\"asset-ledger-refresh\"" in page
     assert "id=\"asset-ledger-preview-duck\"" in page
     assert "id=\"asset-ledger-document\" class=\"decision-output\" data-managed-document=\"trade-asset-ledger\" data-managed-document-watch" in page
