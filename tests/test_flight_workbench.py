@@ -146,6 +146,16 @@ def test_git_status_action_uses_fixed_command(monkeypatch):
     assert observed["args"] == ["git", "status", "--short", "--branch"]
 
 
+def test_run_command_decodes_utf8_output():
+    result = flight_workbench.run_command(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write('eve-flight.service: active ●'.encode('utf-8'))"],
+        timeout_seconds=10,
+    )
+
+    assert result.ok is True
+    assert "eve-flight.service: active" in result.output
+
+
 def test_local_server_start_bridges_user_env_to_child_process(monkeypatch):
     observed = {}
 
