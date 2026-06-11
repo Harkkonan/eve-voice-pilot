@@ -210,6 +210,30 @@ def test_vm_git_status_rejects_unsafe_remote_path(tmp_path):
         flight_workbench.vm_git_status(config)
 
 
+def test_vm_service_status_echoes_readable_state(tmp_path, monkeypatch):
+    observed = {}
+    key_path = tmp_path / "oci.key"
+    key_path.write_text("private", encoding="utf-8")
+    config = flight_workbench.WorkbenchConfig(
+        ssh_host="203.0.113.10",
+        ssh_user="ubuntu",
+        ssh_key_path=str(key_path),
+        vm_service_name="eve-flight.service",
+    )
+
+    def fake_run_ssh_command(config, remote_command, *, timeout_seconds=None):
+        observed["remote_command"] = remote_command
+        return flight_workbench.CommandResult(ok=True, summary="checked")
+
+    monkeypatch.setattr(flight_workbench, "run_ssh_command", fake_run_ssh_command)
+
+    result = flight_workbench.vm_service_status(config)
+
+    assert result.ok is True
+    assert "state=$(systemctl is-active eve-flight.service || true)" in observed["remote_command"]
+    assert 'echo "eve-flight.service: $state"' in observed["remote_command"]
+
+
 def test_vm_update_and_restart_uses_fixed_fast_forward_deploy_command(tmp_path, monkeypatch):
     observed = {}
     key_path = tmp_path / "oci.key"
@@ -236,7 +260,39 @@ def test_vm_update_and_restart_uses_fixed_fast_forward_deploy_command(tmp_path, 
     assert "git status --porcelain" in observed["remote_command"]
     assert ".venv/bin/python -m pip install -r requirements.txt" in observed["remote_command"]
     assert "systemctl restart eve-flight.service" in observed["remote_command"]
+    assert "eve-flight.service: $state" in observed["remote_command"]
+    assert "curl -fsS" not in observed["remote_command"]
     assert observed["timeout_seconds"] >= 90.0
+
+
+def test_vm_update_and_verify_adds_git_and_health_checks(tmp_path, monkeypatch):
+    observed = {}
+    key_path = tmp_path / "oci.key"
+    key_path.write_text("private", encoding="utf-8")
+    config = flight_workbench.WorkbenchConfig(
+        ssh_host="203.0.113.10",
+        ssh_user="ubuntu",
+        ssh_key_path=str(key_path),
+        vm_app_dir="/home/ubuntu/apps/eve-voice-pilot",
+        vm_service_name="eve-flight.service",
+    )
+
+    def fake_run_ssh_command(config, remote_command, *, timeout_seconds=None):
+        observed["remote_command"] = remote_command
+        observed["timeout_seconds"] = timeout_seconds
+        return flight_workbench.CommandResult(ok=True, summary="updated")
+
+    monkeypatch.setattr(flight_workbench, "run_ssh_command", fake_run_ssh_command)
+
+    result = flight_workbench.vm_update_and_verify(config)
+
+    assert result.ok is True
+    assert "git pull --ff-only origin" in observed["remote_command"]
+    assert 'echo "Git status:"' in observed["remote_command"]
+    assert "git status --short --branch" in observed["remote_command"]
+    assert 'echo "Health:"' in observed["remote_command"]
+    assert "curl -fsS http://127.0.0.1:8770/api/health" in observed["remote_command"]
+    assert observed["timeout_seconds"] >= 120.0
 
 
 def test_vm_update_and_restart_rejects_unsafe_remote_values(tmp_path):
@@ -392,3 +448,4 @@ def test_status_payload_contains_expected_cards(monkeypatch):
     assert payload["environment"]["sso_ready"] is False
     assert any(action["id"] == "vm_service_restart" for action in payload["actions"])
     assert any(action["id"] == "vm_update_restart" for action in payload["actions"])
+    assert any(action["id"] == "vm_update_verify" for action in payload["actions"])

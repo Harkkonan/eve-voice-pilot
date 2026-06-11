@@ -652,7 +652,11 @@ def vm_service_status(config: WorkbenchConfig) -> CommandResult:
     service = validate_remote_name(config.vm_service_name, "VM service name")
     return run_ssh_command(
         config,
-        f"systemctl is-active {service}; systemctl status --no-pager --lines=24 {service}",
+        (
+            f"state=$(systemctl is-active {service} || true); "
+            f'echo "{service}: $state"; '
+            f"systemctl status --no-pager --lines=24 {service}"
+        ),
         timeout_seconds=max(20.0, config.command_timeout_seconds),
     )
 
@@ -673,12 +677,32 @@ def vm_service_restart(config: WorkbenchConfig) -> CommandResult:
 def vm_update_and_restart(config: WorkbenchConfig) -> CommandResult:
     app_dir = validate_remote_path(config.vm_app_dir, "VM app directory")
     service = validate_remote_name(config.vm_service_name, "VM service name")
+    remote_command = build_vm_update_command(app_dir, service, verify=False)
+    return run_ssh_command(
+        config,
+        remote_command,
+        timeout_seconds=max(90.0, config.command_timeout_seconds),
+    )
+
+
+def vm_update_and_verify(config: WorkbenchConfig) -> CommandResult:
+    app_dir = validate_remote_path(config.vm_app_dir, "VM app directory")
+    service = validate_remote_name(config.vm_service_name, "VM service name")
+    remote_command = build_vm_update_command(app_dir, service, verify=True)
+    return run_ssh_command(
+        config,
+        remote_command,
+        timeout_seconds=max(120.0, config.command_timeout_seconds),
+    )
+
+
+def build_vm_update_command(app_dir: str, service: str, *, verify: bool) -> str:
     restart_command = (
         'if [ -x "$HOME/bin/eve-flight-restart" ]; then '
         '"$HOME/bin/eve-flight-restart"; '
         f"else sudo -n systemctl restart {service}; fi"
     )
-    remote_command = (
+    command = (
         "set -e; "
         f"cd {app_dir}; "
         'branch="$(git rev-parse --abbrev-ref HEAD)"; '
@@ -692,14 +716,19 @@ def vm_update_and_restart(config: WorkbenchConfig) -> CommandResult:
         "if [ ! -x .venv/bin/python ]; then python3 -m venv .venv; fi; "
         ".venv/bin/python -m pip install -r requirements.txt; "
         f"{restart_command}; "
-        f"systemctl is-active {service}; "
+        f"state=$(systemctl is-active {service} || true); "
+        f'echo "{service}: $state"; '
         f"systemctl status --no-pager --lines=18 {service}"
     )
-    return run_ssh_command(
-        config,
-        remote_command,
-        timeout_seconds=max(90.0, config.command_timeout_seconds),
-    )
+    if verify:
+        command += (
+            "; "
+            'echo "Git status:"; '
+            "git status --short --branch; "
+            'echo "Health:"; '
+            "curl -fsS http://127.0.0.1:8770/api/health"
+        )
+    return command
 
 
 def vm_logs_tail(config: WorkbenchConfig) -> CommandResult:
@@ -753,6 +782,7 @@ def action_definitions() -> dict[str, ActionDefinition]:
         ActionDefinition("vm_service_status", "Service Status", "VM App Service", "Read systemd service status over SSH.", vm_service_status),
         ActionDefinition("vm_service_restart", "Restart VM Service", "VM App Service", "Restart the configured app service over SSH.", vm_service_restart, True),
         ActionDefinition("vm_update_restart", "Update VM App", "VM App Service", "Fast-forward VM Git checkout, install requirements, and restart the service.", vm_update_and_restart, True),
+        ActionDefinition("vm_update_verify", "Update VM + Verify", "VM App Service", "Update the VM app, restart the service, check Git status, and fetch health.", vm_update_and_verify, True),
         ActionDefinition("vm_logs_tail", "Tail VM Logs", "VM App Service", "Read recent service logs over SSH.", vm_logs_tail),
         ActionDefinition("vm_git_status", "VM Git Status", "VM App Service", "Show Git status in the VM app directory.", vm_git_status),
     ]

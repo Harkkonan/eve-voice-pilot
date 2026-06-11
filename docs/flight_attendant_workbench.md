@@ -68,6 +68,7 @@ The first version allows fixed, allowlisted actions only:
 - Run local `git status --short --branch` and `git diff --check`.
 - Run fixed SSH checks for VM health, service status, service restart, service logs, and VM Git status.
 - Fast-forward the configured VM checkout from GitHub, install `requirements.txt`, restart the configured VM service, and show service status.
+- Run the same VM update with built-in Git status and local health verification.
 
 The workbench does not accept arbitrary shell commands from the browser.
 
@@ -77,13 +78,13 @@ After a local change has been tested, committed, and pushed to GitHub, use the V
 
 ```text
 VM Git Status
-Update VM App
-VM Health
-Service Status
+Update VM + Verify
 Tail VM Logs
 ```
 
-`Update VM App` refuses to continue if the VM checkout has uncommitted local changes. It uses `git pull --ff-only`, so it also refuses merge commits or conflict resolution on the VM.
+`Update VM + Verify` refuses to continue if the VM checkout has uncommitted local changes. It uses `git pull --ff-only`, so it also refuses merge commits or conflict resolution on the VM. It restarts the configured service, checks VM Git status, and fetches the VM-local `/api/health` endpoint.
+
+Use `Update VM App` when you only want the update/restart portion. Use `Service Status`, `VM Health`, and `Tail VM Logs` when you need more detail.
 
 ## Manual-Only Work
 
