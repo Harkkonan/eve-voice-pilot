@@ -4699,14 +4699,12 @@ def asset_ledger_container_status(name: str) -> dict[str, str] | None:
     compact = re.sub(r"[\s_-]+", "", str(name or "").strip().casefold())
     if not compact:
         return None
-    if compact.startswith("cmreadyhaul") or compact.startswith("readyhaul"):
-        return {"key": "ready-to-haul", "label": "Ready to haul", "reason": "ready-haul container name"}
-    if compact.startswith("cmasset") or compact.startswith("cmledger"):
-        return {"key": "asset", "label": "Managed asset", "reason": "CM asset container name"}
-    if compact.startswith("managed"):
-        return {"key": "asset", "label": "Managed trade stock", "reason": "Managed container name"}
-    if compact.startswith("asset"):
-        return {"key": "asset", "label": "Managed asset", "reason": "asset container name"}
+    if compact.startswith("cmreadyhaul#") or compact.startswith("readyhaul#"):
+        return {"key": "ready-to-haul", "label": "Ready to haul", "reason": "CM-READY-HAUL-# container marker"}
+    if compact.startswith("cmasset#"):
+        return {"key": "asset", "label": "Managed asset", "reason": "CM-ASSET-# container marker"}
+    if compact.startswith("managed#"):
+        return {"key": "asset", "label": "Managed trade stock", "reason": "Managed# container marker"}
     return None
 
 
@@ -4857,7 +4855,7 @@ def build_asset_ledger_payload(*, config: EveSsoConfig, session: FlightEsiSessio
     rows.sort(key=lambda row: (str(row.get("status_key") or ""), str(row.get("container_name") or "").casefold()))
     notes = list(lookup_errors)
     if not rows:
-        notes.append("No managed asset containers were found. Rename a freight container to Managed1, asset12, CM-ASSET-*, or CM-READY-HAUL and refresh.")
+        notes.append("No managed asset containers were found. Rename a freight container to Managed#Trade, CM-ASSET-#Bucket, or CM-READY-HAUL-#Route and refresh.")
     return {
         "ok": True,
         "generated_at": now_iso(),
@@ -4870,7 +4868,7 @@ def build_asset_ledger_payload(*, config: EveSsoConfig, session: FlightEsiSessio
             "stack_count": sum(int(row.get("stack_count") or 0) for row in rows),
             "total_units": sum(int(row.get("total_units") or 0) for row in rows),
             "rows": rows,
-            "naming_hint": "Rename freight containers as Managed1, asset12, CM-ASSET-*, or CM-READY-HAUL to include them here.",
+            "naming_hint": "Rename freight containers as Managed#Trade, CM-ASSET-#Bucket, or CM-READY-HAUL-#Route to include them here.",
             "notes": notes,
         },
     }
@@ -20720,7 +20718,7 @@ help</textarea>
             <div class="tester-cockpit-note">
               <strong>This ledger is not hand editable.</strong>
               <span>The app will own rows from Portfolio expectations, ESI assets, ESI named containers, and later wallet or Trade P&amp;L matches.</span>
-              <span>Freight containers named like <code>Managed1</code>, <code>CM-ASSET-JITA-01</code>, or <code>CM-READY-HAUL</code> become source buckets when you click Refresh Ledger.</span>
+              <span>Freight containers named like <code>Managed#Trade</code>, <code>CM-ASSET-#Jita</code>, or <code>CM-READY-HAUL-#Route</code> become source buckets when you click Refresh Ledger.</span>
             </div>
             <div class="completed-run-actions">
               <button id="asset-ledger-refresh" class="primary" type="button">Refresh Ledger</button>
@@ -20762,7 +20760,7 @@ help</textarea>
                 <div id="asset-ledger-document" class="decision-output" data-managed-document="trade-asset-ledger" data-managed-document-watch>
                   <div class="decision-row">
                     <div class="decision-head">
-                      <strong>CM-ASSET-JITA-01</strong>
+                      <strong>Managed#Trade</strong>
                       <span class="pill decision-source">Example container</span>
                       <span class="pill reserved">Read-only</span>
                     </div>
@@ -31366,7 +31364,7 @@ help</textarea>
       if (!rows.length) {
         return renderDashboardEmptyState("No matching ESI-named containers were found.", {
           label: "No ledger rows",
-          detail: ledger?.naming_hint || "Connect ESI, rename a freight container to Managed1, asset12, CM-ASSET-*, or CM-READY-HAUL, place items directly inside it, then click Refresh Ledger again.",
+          detail: ledger?.naming_hint || "Connect ESI, rename a freight container to Managed#Trade, CM-ASSET-#Bucket, or CM-READY-HAUL-#Route, place items directly inside it, then click Refresh Ledger again.",
         });
       }
       return rows.map((row, index) => {
@@ -31409,7 +31407,7 @@ help</textarea>
         const containerCount = Number(ledger.container_count || 0);
         assetLedgerStatus.textContent = containerCount
           ? `Loaded ${formatNumber(containerCount)} managed container${containerCount === 1 ? "" : "s"} from ${formatNumber(ledger.scanned_asset_count)} ESI asset row${Number(ledger.scanned_asset_count || 0) === 1 ? "" : "s"}.`
-          : "No managed containers found yet. Rename a freight container to Managed1, asset12, or CM-ASSET-* and refresh.";
+          : "No managed containers found yet. Rename a freight container to Managed#Trade, CM-ASSET-#Bucket, or CM-READY-HAUL-#Route and refresh.";
         assetLedgerStatus.classList.remove("error");
       }
       triggerAssetLedgerDocumentChanged();

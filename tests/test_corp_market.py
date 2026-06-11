@@ -3658,8 +3658,8 @@ def test_fetch_flight_asset_names_uses_private_asset_name_endpoint(monkeypatch):
         def read(self):
             return json.dumps(
                 [
-                    {"item_id": 100, "name": "CM-ASSET-JITA-01"},
-                    {"item_id": 200, "name": "asset12"},
+                    {"item_id": 100, "name": "CM-ASSET-#Jita"},
+                    {"item_id": 200, "name": "Managed#Trade"},
                 ]
             ).encode("utf-8")
 
@@ -3675,13 +3675,29 @@ def test_fetch_flight_asset_names_uses_private_asset_name_endpoint(monkeypatch):
         [200, 100, 100],
     )
 
-    assert names == {100: "CM-ASSET-JITA-01", 200: "asset12"}
+    assert names == {100: "CM-ASSET-#Jita", 200: "Managed#Trade"}
     request, timeout = requests[0]
     assert timeout == 45.0
     assert request.full_url == "https://esi.test/latest/characters/123456789/assets/names/?datasource=tranquility"
     assert json.loads(request.data.decode("utf-8")) == [100, 200]
     assert request.headers["Accept"] == "application/json"
     assert request.headers["Authorization"] == "Bearer access-token"
+
+
+def test_asset_ledger_container_status_uses_hash_marker_convention():
+    assert corp_market.asset_ledger_container_status("Managed1") is None
+    assert corp_market.asset_ledger_container_status("asset12") is None
+    assert corp_market.asset_ledger_container_status("CM-ASSET-JITA-01") is None
+    assert corp_market.asset_ledger_container_status("CM-READY-HAUL") is None
+
+    managed = corp_market.asset_ledger_container_status("Managed#Trade")
+    assert managed == {"key": "asset", "label": "Managed trade stock", "reason": "Managed# container marker"}
+
+    tracked = corp_market.asset_ledger_container_status("CM-ASSET-#Jita")
+    assert tracked == {"key": "asset", "label": "Managed asset", "reason": "CM-ASSET-# container marker"}
+
+    hauling = corp_market.asset_ledger_container_status("CM-READY-HAUL-#Jita-Amarr")
+    assert hauling == {"key": "ready-to-haul", "label": "Ready to haul", "reason": "CM-READY-HAUL-# container marker"}
 
 
 def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
@@ -3718,11 +3734,11 @@ def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
         corp_market,
         "fetch_flight_asset_names",
         lambda config, session, item_ids: {
-            100: "CM-ASSET-JITA-01",
+            100: "CM-ASSET-#Jita",
             200: "asset12",
-            300: "CM-READY-HAUL",
+            300: "CM-READY-HAUL-#Amarr",
             400: "Personal Notes",
-            500: "Managed1",
+            500: "Managed#Trade",
         },
     )
 
@@ -3749,37 +3765,35 @@ def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
     assert ledger["source"] == "esi-assets.read_assets.v1"
     assert ledger["scanned_asset_count"] == 10
     assert ledger["named_asset_count"] == 5
-    assert ledger["container_count"] == 4
+    assert ledger["container_count"] == 3
     assert ledger["stack_count"] == 5
     assert ledger["total_units"] == 5617
     names = {row["container_name"]: row for row in ledger["rows"]}
-    assert set(names) == {"CM-ASSET-JITA-01", "asset12", "CM-READY-HAUL", "Managed1"}
-    assert names["CM-ASSET-JITA-01"]["status_label"] == "Managed asset"
-    assert names["CM-ASSET-JITA-01"]["location_name"] == "Jita 4-4"
-    assert names["CM-ASSET-JITA-01"]["stack_count"] == 3
-    assert [item["type_name"] for item in names["CM-ASSET-JITA-01"]["items"]] == ["Pyerite", "Tritanium", "Tritanium"]
-    assert names["CM-ASSET-JITA-01"]["handoff_item_names"] == ["Pyerite", "Tritanium"]
-    assert names["CM-ASSET-JITA-01"]["handoff_total_units"] == 5275
-    assert names["CM-ASSET-JITA-01"]["handoff_items"] == [
+    assert set(names) == {"CM-ASSET-#Jita", "CM-READY-HAUL-#Amarr", "Managed#Trade"}
+    assert "asset12" not in names
+    assert names["CM-ASSET-#Jita"]["status_label"] == "Managed asset"
+    assert names["CM-ASSET-#Jita"]["match_reason"] == "CM-ASSET-# container marker"
+    assert names["CM-ASSET-#Jita"]["location_name"] == "Jita 4-4"
+    assert names["CM-ASSET-#Jita"]["stack_count"] == 3
+    assert [item["type_name"] for item in names["CM-ASSET-#Jita"]["items"]] == ["Pyerite", "Tritanium", "Tritanium"]
+    assert names["CM-ASSET-#Jita"]["handoff_item_names"] == ["Pyerite", "Tritanium"]
+    assert names["CM-ASSET-#Jita"]["handoff_total_units"] == 5275
+    assert names["CM-ASSET-#Jita"]["handoff_items"] == [
         {"type_id": 35, "type_name": "Pyerite", "quantity_total": 200, "stack_count": 1},
         {"type_id": 34, "type_name": "Tritanium", "quantity_total": 5075, "stack_count": 2},
     ]
-    assert names["asset12"]["stack_count"] == 0
-    assert names["asset12"]["handoff_item_names"] == []
-    assert names["asset12"]["handoff_items"] == []
-    assert names["asset12"]["handoff_total_units"] == 0
-    assert "no direct child assets" in names["asset12"]["notes"][0]
-    assert names["Managed1"]["status_label"] == "Managed trade stock"
-    assert names["Managed1"]["match_reason"] == "Managed container name"
-    assert names["Managed1"]["handoff_items"] == [
+    assert names["Managed#Trade"]["status_label"] == "Managed trade stock"
+    assert names["Managed#Trade"]["match_reason"] == "Managed# container marker"
+    assert names["Managed#Trade"]["handoff_items"] == [
         {"type_id": 37, "type_name": "Isogen", "quantity_total": 42, "stack_count": 1},
     ]
-    assert names["CM-READY-HAUL"]["status_key"] == "ready-to-haul"
-    assert names["CM-READY-HAUL"]["handoff_item_names"] == ["Mexallon"]
-    assert names["CM-READY-HAUL"]["handoff_items"] == [
+    assert names["CM-READY-HAUL-#Amarr"]["status_key"] == "ready-to-haul"
+    assert names["CM-READY-HAUL-#Amarr"]["match_reason"] == "CM-READY-HAUL-# container marker"
+    assert names["CM-READY-HAUL-#Amarr"]["handoff_item_names"] == ["Mexallon"]
+    assert names["CM-READY-HAUL-#Amarr"]["handoff_items"] == [
         {"type_id": 36, "type_name": "Mexallon", "quantity_total": 300, "stack_count": 1}
     ]
-    assert names["CM-READY-HAUL"]["items"][0]["type_name"] == "Mexallon"
+    assert names["CM-READY-HAUL-#Amarr"]["items"][0]["type_name"] == "Mexallon"
 
 
 def test_load_industry_recipe_cache_reads_compact_cache(tmp_path):

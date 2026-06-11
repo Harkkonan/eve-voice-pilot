@@ -284,7 +284,7 @@ This tab does not place, update, or cancel market orders. The pilot still create
 
 ### Trade Asset Ledger
 
-The `Trade Asset Ledger` tab is a read-only managed document for assets the app can see through `esi-assets.read_assets.v1`. The first pass recognizes character-owned containers whose custom names start with `Managed`, `Managed1`, `asset`, `asset12`, `CM-ASSET-*`, `CM-LEDGER-*`, or `CM-READY-HAUL`.
+The `Trade Asset Ledger` tab is a read-only managed document for assets the app can see through `esi-assets.read_assets.v1`. It recognizes character-owned containers with a literal `#` marker in the managed name: `Managed#tag` for active trade inventory, `CM-READY-HAUL-#tag` for goods already decided as ready to move, and `CM-ASSET-#tag` for broader tracking buckets. The text after `#` is only a personal label; the app uses the marker before it.
 
 When the pilot clicks `Refresh Ledger`, the server reads ESI assets, asks ESI for custom asset names, groups direct child assets under those named containers, and shows the result as managed ledger rows. The page is intentionally browseable and copyable but not hand editable, so it can later become a trustworthy bridge from filled portfolio orders to hauler load planning and expected-vs-actual review.
 
