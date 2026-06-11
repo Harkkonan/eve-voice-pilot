@@ -614,6 +614,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Opt In To Mining Ledger" in page
     assert "ore/sec and m3/sec" in page
     assert "No inventory deltas" in page
+    assert "Server memory" in page
     assert "@@TAB_SCOPE_MINING_YIELD@@" not in page
     assert "id=\"flight-blueprint-summary\"" in industry_section
     assert "id=\"flight-profit-scan\"" in industry_section
@@ -2200,6 +2201,7 @@ def test_fetch_flight_mining_ledger_uses_read_only_mining_scope(monkeypatch):
 
 
 def test_build_flight_mining_yield_payload_uses_daily_ledger_and_manual_session_average(monkeypatch):
+    corp_market.clear_mining_ledger_cache()
     session = FlightEsiSession(
         character_id=123456789,
         character_name="Miner Pilot",
@@ -2249,6 +2251,9 @@ def test_build_flight_mining_yield_payload_uses_daily_ledger_and_manual_session_
     totals = mining["totals"]
     assert payload["ok"] is True
     assert mining["source"] == corp_market.FLIGHT_MINING_SCOPE
+    assert mining["cache"]["reused"] is False
+    assert mining["cache"]["ttl_seconds"] == 600
+    assert mining["cache"]["storage"] == "server-memory-only"
     assert mining["ledger_row_count"] == 3
     assert mining["raw_ledger_row_count"] == 4
     assert mining["active_day_count"] == 2
@@ -2262,6 +2267,50 @@ def test_build_flight_mining_yield_payload_uses_daily_ledger_and_manual_session_
     assert mining["items"][0]["type_name"] == "Tritanium"
     assert mining["items"][0]["quantity"] == 1500
     assert mining["daily"][0]["date"] == today.isoformat()
+    corp_market.clear_mining_ledger_cache()
+
+
+def test_flight_mining_yield_reuses_memory_cache_for_session_average(monkeypatch):
+    corp_market.clear_mining_ledger_cache()
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Miner Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(corp_market.FLIGHT_MINING_SCOPE,),
+        access_token="access-token",
+        connected_at="2026-06-10T00:00:00Z",
+        expires_at=9999999999,
+    )
+    today = datetime.now(timezone.utc).date()
+    calls = []
+
+    def fake_fetch_flight_mining_ledger(config, session):
+        calls.append((config.esi_base_url, session.character_id))
+        return [{"date": today.isoformat(), "type_id": 34, "quantity": 3600, "solar_system_id": 30000142}]
+
+    monkeypatch.setattr(corp_market, "fetch_flight_mining_ledger", fake_fetch_flight_mining_ledger)
+    monkeypatch.setattr(
+        corp_market,
+        "resolve_mining_type_metadata",
+        lambda config, type_ids: ({34: {"type_id": 34, "name": "Tritanium", "volume_m3": 0.01, "source": "test"}}, True),
+    )
+
+    config = corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest")
+    first = build_flight_mining_yield_payload(config=config, session=session, days=7, session_hours=1)
+    second = build_flight_mining_yield_payload(config=config, session=session, days=7, session_hours=2)
+
+    assert len(calls) == 1
+    assert first["mining_yield"]["cache"]["reused"] is False
+    assert second["mining_yield"]["cache"]["reused"] is True
+    assert second["mining_yield"]["cache"]["expires_in_seconds"] <= 600
+    assert first["mining_yield"]["totals"]["quantity_per_second"] == pytest.approx(1.0)
+    assert second["mining_yield"]["totals"]["quantity_per_second"] == pytest.approx(0.5)
+    assert corp_market.mining_ledger_cache_status()["entries"] == 1
+    corp_market.clear_mining_ledger_cache_for_session(config, session)
+    assert corp_market.mining_ledger_cache_status()["entries"] == 0
 
 
 def test_build_flight_mining_yield_payload_requires_mining_scope():

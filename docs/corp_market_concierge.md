@@ -294,7 +294,7 @@ The ledger does not move items, create contracts, place market orders, or write 
 
 ### Mining Yield
 
-The `Mining Yield` tab is an optional opt-in view for the character mining ledger. It uses `esi-industry.read_character_mining.v1` only after the pilot chooses the mining opt-in link. The server keeps the access token in memory only and does not store mining ledger rows.
+The `Mining Yield` tab is an optional opt-in view for the character mining ledger. It uses `esi-industry.read_character_mining.v1` only after the pilot chooses the mining opt-in link. The server keeps the access token in memory only. Mining ledger rows are held in server memory for up to 600 seconds so repeated refreshes respect the ESI cache window, then they expire; rows are not written to disk, docs, or the local database.
 
 The output is deliberately labeled as cached ledger math:
 

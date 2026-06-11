@@ -186,6 +186,7 @@ MAX_FLIGHT_MINING_WINDOW_DAYS = 30
 DEFAULT_FLIGHT_MINING_SESSION_HOURS = 2.0
 MAX_FLIGHT_MINING_SESSION_HOURS = 720.0
 MAX_FLIGHT_MINING_ROWS = 24
+MINING_LEDGER_CACHE_TTL_SECONDS = 600.0
 DEFAULT_PLANETARY_HUB_SYSTEM = "Jita"
 DEFAULT_PLANETARY_OUTPUT_TIER = "P2"
 DEFAULT_PLANETARY_CHAIN_TARGET = "Microfiber Shielding"
@@ -686,6 +687,8 @@ MARKET_PRICE_CACHE_LOCK = threading.Lock()
 MARKET_PRICE_CACHE: dict[str, tuple[float, dict[int, dict[str, Any]]]] = {}
 MARKET_HISTORY_CACHE_LOCK = threading.Lock()
 MARKET_HISTORY_CACHE: dict[tuple[str, int, int], tuple[float, list[dict[str, Any]]]] = {}
+MINING_LEDGER_CACHE_LOCK = threading.Lock()
+MINING_LEDGER_CACHE: dict[tuple[str, int], tuple[float, str, list[dict[str, Any]]]] = {}
 FUZZWORK_MARKET_AGGREGATE_CACHE_LOCK = threading.Lock()
 FUZZWORK_MARKET_AGGREGATE_CACHE: dict[tuple[int, int], tuple[float, dict[str, Any]]] = {}
 SYSTEM_KILLS_CACHE_LOCK = threading.Lock()
@@ -2019,6 +2022,76 @@ def fetch_flight_mining_ledger(config: EveSsoConfig, session: FlightEsiSession) 
     )
 
 
+def mining_ledger_cache_key(config: EveSsoConfig, session: FlightEsiSession) -> tuple[str, int]:
+    return (config.esi_base_url.rstrip("/"), int(session.character_id))
+
+
+def cached_mining_ledger_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def fetch_cached_flight_mining_ledger(config: EveSsoConfig, session: FlightEsiSession) -> dict[str, Any]:
+    require_flight_scopes(session, (FLIGHT_MINING_SCOPE,))
+    cache_key = mining_ledger_cache_key(config, session)
+    now = time.monotonic()
+    with MINING_LEDGER_CACHE_LOCK:
+        cached = MINING_LEDGER_CACHE.get(cache_key)
+        if cached is not None:
+            cached_at, fetched_at, cached_rows = cached
+            age_seconds = now - cached_at
+            if age_seconds < MINING_LEDGER_CACHE_TTL_SECONDS:
+                expires_in = max(0, int(MINING_LEDGER_CACHE_TTL_SECONDS - age_seconds))
+                return {
+                    "rows": cached_mining_ledger_rows(cached_rows),
+                    "cache_hit": True,
+                    "fetched_at": fetched_at,
+                    "expires_in_seconds": expires_in,
+                }
+            MINING_LEDGER_CACHE.pop(cache_key, None)
+    rows = fetch_flight_mining_ledger(config, session)
+    stored_rows = cached_mining_ledger_rows(rows)
+    fetched_at = now_iso()
+    with MINING_LEDGER_CACHE_LOCK:
+        MINING_LEDGER_CACHE[cache_key] = (time.monotonic(), fetched_at, stored_rows)
+    return {
+        "rows": cached_mining_ledger_rows(stored_rows),
+        "cache_hit": False,
+        "fetched_at": fetched_at,
+        "expires_in_seconds": int(MINING_LEDGER_CACHE_TTL_SECONDS),
+    }
+
+
+def clear_mining_ledger_cache() -> None:
+    with MINING_LEDGER_CACHE_LOCK:
+        MINING_LEDGER_CACHE.clear()
+
+
+def clear_mining_ledger_cache_for_session(config: EveSsoConfig, session: FlightEsiSession | None) -> None:
+    if session is None:
+        return
+    with MINING_LEDGER_CACHE_LOCK:
+        MINING_LEDGER_CACHE.pop(mining_ledger_cache_key(config, session), None)
+
+
+def mining_ledger_cache_status() -> dict[str, Any]:
+    now = time.monotonic()
+    with MINING_LEDGER_CACHE_LOCK:
+        expired_keys = [
+            cache_key
+            for cache_key, (cached_at, _fetched_at, _rows) in MINING_LEDGER_CACHE.items()
+            if now - cached_at >= MINING_LEDGER_CACHE_TTL_SECONDS
+        ]
+        for cache_key in expired_keys:
+            MINING_LEDGER_CACHE.pop(cache_key, None)
+        entry_count = len(MINING_LEDGER_CACHE)
+    return {
+        "ttl_seconds": int(MINING_LEDGER_CACHE_TTL_SECONDS),
+        "entries": entry_count,
+        "storage": "server-memory-only",
+        "note": "Character mining ledger rows are cached in server memory for up to 600 seconds to avoid re-requesting before ESI's cache window.",
+    }
+
+
 def fetch_flight_wallet_transactions(
     config: EveSsoConfig,
     session: FlightEsiSession,
@@ -2279,7 +2352,8 @@ def build_flight_mining_yield_payload(
     require_flight_scopes(session, (FLIGHT_MINING_SCOPE,))
     clean_days = clamp_mining_window_days(days)
     clean_session_hours = clamp_mining_session_hours(session_hours)
-    ledger_rows = fetch_flight_mining_ledger(config, session)
+    ledger_cache = fetch_cached_flight_mining_ledger(config, session)
+    ledger_rows = [row for row in ledger_cache.get("rows", []) if isinstance(row, dict)]
     today = datetime.now(timezone.utc).date()
     start_date = today - timedelta(days=clean_days - 1)
     filtered_rows: list[dict[str, Any]] = []
@@ -2392,8 +2466,16 @@ def build_flight_mining_yield_payload(
         "mining_yield": {
             "source": FLIGHT_MINING_SCOPE,
             "source_label": "ESI character mining ledger",
-            "cache_seconds": 600,
+            "cache_seconds": int(MINING_LEDGER_CACHE_TTL_SECONDS),
             "cache_note": "ESI character mining ledger is cached for up to 600 seconds and reports daily ledger rows, not live mining-cycle telemetry.",
+            "cache": {
+                "ttl_seconds": int(MINING_LEDGER_CACHE_TTL_SECONDS),
+                "reused": bool(ledger_cache.get("cache_hit")),
+                "fetched_at": str(ledger_cache.get("fetched_at") or ""),
+                "expires_in_seconds": clean_optional_int(ledger_cache.get("expires_in_seconds")) or 0,
+                "storage": "server-memory-only",
+                "note": "Ledger rows are held only in server memory during the cache window and are cleared when the pilot logs out.",
+            },
             "window_days": clean_days,
             "session_hours": clean_session_hours,
             "start_date": start_date.isoformat(),
@@ -14038,6 +14120,8 @@ def build_http_server(
 
         def _handle_flight_logout(self) -> None:
             session_id = request_cookie(self, FLIGHT_SESSION_COOKIE_NAME)
+            session = flight_session_store.get(session_id)
+            clear_mining_ledger_cache_for_session(sso_config, session)
             flight_session_store.delete(session_id)
             self.send_response(302)
             self.send_header("Location", "/#flight")
@@ -20741,6 +20825,7 @@ help</textarea>
             <ul class="charter-list">
               <li><strong>Read-only:</strong> this only reads the signed-in pilot's character mining ledger after explicit SSO consent.</li>
               <li><strong>Cached:</strong> ESI mining ledger data can be up to 600 seconds old; refresh buttons should respect that cache.</li>
+              <li><strong>Server memory:</strong> ledger rows are held in process memory for up to 600 seconds, then expire or clear on logout.</li>
               <li><strong>Daily ledger:</strong> ore/day is calculated from selected calendar days, not from laser cycles.</li>
               <li><strong>Session average:</strong> ore/sec and m3/sec divide the selected ledger total by the manual hours field.</li>
               <li><strong>No inventory deltas:</strong> inventory assets are not used to infer live mining yield.</li>
@@ -27844,6 +27929,16 @@ help</textarea>
       return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 4})} ${suffix}`;
     }
 
+    function miningCacheSummary(cache) {
+      const cacheData = cache || {};
+      const expiresIn = Math.max(0, Number(cacheData.expires_in_seconds || 0));
+      const fetchedAt = cacheData.fetched_at ? ` Source copy fetched ${escapeHtml(cacheData.fetched_at)}.` : "";
+      if (cacheData.reused) {
+        return `Server cache reused; next ESI refresh in about ${formatNumber(expiresIn)}s.${fetchedAt}`;
+      }
+      return `Fetched from ESI; server will reuse this ledger for up to ${formatNumber(cacheData.ttl_seconds || 600)}s.${fetchedAt}`;
+    }
+
     async function loadMiningYield() {
       if (!miningYieldForm) return;
       const settings = writeMiningYieldSettings({
@@ -27890,6 +27985,7 @@ help</textarea>
     function renderMiningYield(data) {
       const yieldData = data.mining_yield || {};
       const totals = yieldData.totals || {};
+      const cacheSummary = miningCacheSummary(yieldData.cache || {});
       const volumeNote = totals.volume_partial
         ? ` m3 totals are partial because ${formatNumber(totals.unknown_volume_quantity || 0)} units lacked local static volume.`
         : "";
@@ -27897,7 +27993,7 @@ help</textarea>
         ? ` Showing largest ${formatNumber(yieldData.item_limit)} of ${formatNumber(yieldData.item_count)} mined types.`
         : "";
       if (miningYieldStatus) {
-        miningYieldStatus.textContent = `Updated from cached daily ledger rows at ${yieldData.end_date || "current ESI date"}.`;
+        miningYieldStatus.textContent = `Updated from cached daily ledger rows at ${yieldData.end_date || "current ESI date"}. ${cacheSummary}`;
       }
       if (miningYieldSummary) {
         miningYieldSummary.innerHTML = `
@@ -27911,6 +28007,7 @@ help</textarea>
           </div>
           <div class="meta">${formatNumber(yieldData.ledger_row_count || 0)} ledger row${Number(yieldData.ledger_row_count || 0) === 1 ? "" : "s"} across ${formatNumber(yieldData.active_day_count || 0)} active day${Number(yieldData.active_day_count || 0) === 1 ? "" : "s"} in the selected ${formatNumber(yieldData.window_days || 0)} day window. Session average uses ${formatNumber(yieldData.session_hours || 0)} manually entered hour${Number(yieldData.session_hours || 0) === 1 ? "" : "s"}.${escapeHtml(itemLimit + volumeNote)}</div>
           <div class="meta">${escapeHtml(yieldData.cache_note || "ESI mining ledger is cached and not live telemetry.")}</div>
+          <div class="meta">${cacheSummary}</div>
         `;
       }
       if (miningYieldResults) {
