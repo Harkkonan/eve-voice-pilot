@@ -595,6 +595,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Use In Hauler" in page
     assert "data-asset-ledger-hauler" in page
     assert "useAssetLedgerRowInHauler" in page
+    assert "assetLedgerHandoffItems" in page
     assert "previewAssetLedgerDuck" in page
     assert "@@TAB_SCOPE_ASSET_LEDGER@@" not in page
     assert "id=\"flight-blueprint-summary\"" in industry_section
@@ -686,6 +687,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Search opens matching categories and reveals exact item checkboxes." in page
     assert "id=\"haul-pasted-items\" name=\"market_type_names\"" in page
     assert "id=\"haul-pasted-items-status\"" in page
+    assert "id=\"haul-ledger-handoff-summary\"" in page
+    assert "Ledger handoff source" in page
     assert "id=\"haul-pasted-items-only\" name=\"pasted_items_only\" type=\"checkbox\" checked" in page
     assert "Search pasted items only" in page
     assert "Fast mode: pasted names ignore Common materials and market category selections." in page
@@ -3479,6 +3482,7 @@ def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
             {"item_id": 100, "type_id": 3296, "quantity": 1, "location_id": 60008494, "location_flag": "Hangar", "location_type": "station"},
             {"item_id": 101, "type_id": 34, "quantity": 5000, "location_id": 100, "location_flag": "Unlocked", "location_type": "item"},
             {"item_id": 102, "type_id": 35, "quantity": 200, "location_id": 100, "location_flag": "Unlocked", "location_type": "item"},
+            {"item_id": 103, "type_id": 34, "quantity": 75, "location_id": 100, "location_flag": "Unlocked", "location_type": "item"},
             {"item_id": 200, "type_id": 3296, "quantity": 1, "location_id": 60008494, "location_flag": "Hangar", "location_type": "station"},
             {"item_id": 300, "type_id": 3296, "quantity": 1, "location_id": 60003760, "location_flag": "Hangar", "location_type": "station"},
             {"item_id": 301, "type_id": 36, "quantity": 300, "location_id": 300, "location_flag": "Unlocked", "location_type": "item"},
@@ -3516,23 +3520,33 @@ def test_build_asset_ledger_payload_groups_named_containers(monkeypatch):
     ledger = payload["ledger"]
     assert payload["ok"] is True
     assert ledger["source"] == "esi-assets.read_assets.v1"
-    assert ledger["scanned_asset_count"] == 7
+    assert ledger["scanned_asset_count"] == 8
     assert ledger["named_asset_count"] == 4
     assert ledger["container_count"] == 3
-    assert ledger["stack_count"] == 3
-    assert ledger["total_units"] == 5500
+    assert ledger["stack_count"] == 4
+    assert ledger["total_units"] == 5575
     names = {row["container_name"]: row for row in ledger["rows"]}
     assert set(names) == {"CM-ASSET-JITA-01", "asset12", "CM-READY-HAUL"}
     assert names["CM-ASSET-JITA-01"]["status_label"] == "Managed asset"
     assert names["CM-ASSET-JITA-01"]["location_name"] == "Jita 4-4"
-    assert names["CM-ASSET-JITA-01"]["stack_count"] == 2
-    assert [item["type_name"] for item in names["CM-ASSET-JITA-01"]["items"]] == ["Pyerite", "Tritanium"]
+    assert names["CM-ASSET-JITA-01"]["stack_count"] == 3
+    assert [item["type_name"] for item in names["CM-ASSET-JITA-01"]["items"]] == ["Pyerite", "Tritanium", "Tritanium"]
     assert names["CM-ASSET-JITA-01"]["handoff_item_names"] == ["Pyerite", "Tritanium"]
+    assert names["CM-ASSET-JITA-01"]["handoff_total_units"] == 5275
+    assert names["CM-ASSET-JITA-01"]["handoff_items"] == [
+        {"type_id": 35, "type_name": "Pyerite", "quantity_total": 200, "stack_count": 1},
+        {"type_id": 34, "type_name": "Tritanium", "quantity_total": 5075, "stack_count": 2},
+    ]
     assert names["asset12"]["stack_count"] == 0
     assert names["asset12"]["handoff_item_names"] == []
+    assert names["asset12"]["handoff_items"] == []
+    assert names["asset12"]["handoff_total_units"] == 0
     assert "no direct child assets" in names["asset12"]["notes"][0]
     assert names["CM-READY-HAUL"]["status_key"] == "ready-to-haul"
     assert names["CM-READY-HAUL"]["handoff_item_names"] == ["Mexallon"]
+    assert names["CM-READY-HAUL"]["handoff_items"] == [
+        {"type_id": 36, "type_name": "Mexallon", "quantity_total": 300, "stack_count": 1}
+    ]
     assert names["CM-READY-HAUL"]["items"][0]["type_name"] == "Mexallon"
 
 

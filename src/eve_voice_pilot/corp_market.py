@@ -4423,6 +4423,28 @@ def build_asset_ledger_items(
     return sorted(items, key=lambda item: (str(item.get("type_name") or ""), int(item.get("item_id") or 0)))
 
 
+def build_asset_ledger_handoff_items(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[int, str], dict[str, Any]] = {}
+    for item in items:
+        type_name = str(item.get("type_name") or "").strip()
+        if not type_name:
+            continue
+        type_id = clean_optional_int(item.get("type_id")) or 0
+        key = (type_id, type_name.casefold())
+        entry = grouped.setdefault(
+            key,
+            {
+                "type_id": type_id,
+                "type_name": type_name,
+                "quantity_total": 0,
+                "stack_count": 0,
+            },
+        )
+        entry["quantity_total"] += max(0, clean_int(item.get("quantity"), 0))
+        entry["stack_count"] += 1
+    return sorted(grouped.values(), key=lambda item: str(item.get("type_name") or "").casefold())
+
+
 def build_asset_ledger_payload(*, config: EveSsoConfig, session: FlightEsiSession) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_ASSETS_SCOPE,))
     assets = [item for item in fetch_flight_assets(config, session) if isinstance(item, dict)]
@@ -4485,6 +4507,7 @@ def build_asset_ledger_payload(*, config: EveSsoConfig, session: FlightEsiSessio
             {str(item.get("type_name") or "").strip() for item in items if str(item.get("type_name") or "").strip()},
             key=str.casefold,
         )
+        handoff_items = build_asset_ledger_handoff_items(items)
         total_units = sum(int(item.get("quantity") or 0) for item in items)
         rows.append(
             {
@@ -4505,6 +4528,8 @@ def build_asset_ledger_payload(*, config: EveSsoConfig, session: FlightEsiSessio
                 "total_units": total_units,
                 "items": items[:ASSET_LEDGER_ITEM_PREVIEW_LIMIT],
                 "handoff_item_names": handoff_item_names,
+                "handoff_items": handoff_items,
+                "handoff_total_units": sum(int(item.get("quantity_total") or 0) for item in handoff_items),
                 "item_preview_limit": ASSET_LEDGER_ITEM_PREVIEW_LIMIT,
                 "truncated_items": max(0, len(items) - ASSET_LEDGER_ITEM_PREVIEW_LIMIT),
                 "notes": [] if items else ["Container is tracked but has no direct child assets in the latest ESI asset tree."],
@@ -19976,6 +20001,7 @@ help</textarea>
                   <small class="input-note">One item per line. Commas and semicolons also work.</small>
                 </label>
                 <div id="haul-pasted-items-status" class="meta market-search-status">No pasted items.</div>
+                <div id="haul-ledger-handoff-summary" class="market-search-status ledger-handoff-summary" hidden></div>
                 <label class="checkline">
                   <input id="haul-pasted-items-only" name="pasted_items_only" type="checkbox" checked>
                   <span>
@@ -21181,6 +21207,7 @@ help</textarea>
     const haulItemSearchStatus = document.querySelector("#haul-item-search-status");
     const haulPastedItems = document.querySelector("#haul-pasted-items");
     const haulPastedItemsStatus = document.querySelector("#haul-pasted-items-status");
+    const haulLedgerHandoffSummary = document.querySelector("#haul-ledger-handoff-summary");
     const haulPastedItemsOnly = document.querySelector("#haul-pasted-items-only");
     const haulMarketGroups = document.querySelector("#haul-market-groups");
     const haulMarketGroupInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-group]"));
@@ -30442,6 +30469,7 @@ help</textarea>
     if (haulPastedItems) {
       haulPastedItems.addEventListener("input", () => {
         window.localStorage.setItem(haulPastedItemsKey, String(haulPastedItems.value || "").trim());
+        setHaulLedgerHandoffSummary(null);
         updateHaulItemScopeSummary();
       });
       haulPastedItems.addEventListener("change", updateHaulScopeAndReset);
@@ -30532,6 +30560,58 @@ help</textarea>
       return `<div class="completed-run-row-list">${rows}</div>${truncated}`;
     }
 
+    function assetLedgerHandoffItems(row) {
+      const rawItems = Array.isArray(row?.handoff_items) && row.handoff_items.length
+        ? row.handoff_items
+        : Array.isArray(row?.handoff_item_names)
+          ? row.handoff_item_names.map((name) => ({
+              type_name: name,
+              quantity_total: 0,
+              stack_count: 0,
+            }))
+          : [];
+      return rawItems.map((item) => ({
+        typeName: String(item.type_name || "").trim(),
+        quantityTotal: Number(item.quantity_total || 0),
+        stackCount: Number(item.stack_count || 0),
+      })).filter((item) => item.typeName);
+    }
+
+    function setHaulLedgerHandoffSummary(row) {
+      if (!haulLedgerHandoffSummary) return;
+      if (!row) {
+        haulLedgerHandoffSummary.hidden = true;
+        haulLedgerHandoffSummary.innerHTML = "";
+        return;
+      }
+      const items = assetLedgerHandoffItems(row);
+      const totalUnits = Number(row.handoff_total_units || row.total_units || 0);
+      const topItems = items.slice(0, 6).map((item) => {
+        const quantityText = item.quantityTotal > 0 ? `${formatNumber(item.quantityTotal)} units` : "quantity not returned";
+        const stackText = item.stackCount > 0 ? `${formatNumber(item.stackCount)} stack${item.stackCount === 1 ? "" : "s"}` : "ledger handoff";
+        return `
+          <div class="completed-run-row">
+            <strong>${escapeHtml(item.typeName)}</strong>
+            <b>${escapeHtml(quantityText)}</b>
+            <span>${escapeHtml(stackText)}</span>
+          </div>
+        `;
+      }).join("");
+      const moreCount = Math.max(0, items.length - 6);
+      haulLedgerHandoffSummary.innerHTML = `
+        <div class="decision-head">
+          <strong>Ledger handoff source</strong>
+          <span class="pill decision-source">${escapeHtml(row.container_name || "Managed container")}</span>
+          <span class="pill reserved">${formatNumber(items.length)} item type${items.length === 1 ? "" : "s"}</span>
+        </div>
+        <div class="decision-lede">${escapeHtml(row.location_name || "Unknown location")} · ${formatNumber(totalUnits)} owned unit${totalUnits === 1 ? "" : "s"} visible for review.</div>
+        <div class="completed-run-row-list">${topItems}</div>
+        ${moreCount ? `<div class="meta">Plus ${formatNumber(moreCount)} more item type${moreCount === 1 ? "" : "s"} in this handoff.</div>` : ""}
+        <div class="meta">The route scan still uses pasted item names; owned quantities are shown here so you can compare the route suggestion against the actual container.</div>
+      `;
+      haulLedgerHandoffSummary.hidden = false;
+    }
+
     function renderAssetLedgerRows(ledger) {
       const rows = Array.isArray(ledger?.rows) ? ledger.rows : [];
       assetLedgerHandoffRows = rows;
@@ -30542,7 +30622,9 @@ help</textarea>
         });
       }
       return rows.map((row, index) => {
-        const handoffCount = Array.isArray(row.handoff_item_names) ? row.handoff_item_names.length : 0;
+        const handoffItems = assetLedgerHandoffItems(row);
+        const handoffCount = handoffItems.length;
+        const handoffUnits = Number(row.handoff_total_units || row.total_units || 0);
         const handoffButton = handoffCount
           ? `<button class="secondary" type="button" data-asset-ledger-hauler="${index}">Use In Hauler</button>`
           : "";
@@ -30558,13 +30640,13 @@ help</textarea>
             <div class="profit-detail-row"><span>Container type</span><b>${escapeHtml(row.container_type_name || "Unknown container")}</b><small>${escapeHtml(row.match_reason || "Matched by container name.")}</small></div>
             <div class="profit-detail-row"><span>Location flag</span><b>${escapeHtml(row.location_flag || "unknown")}</b><small>${escapeHtml(row.location_type || "unknown location type")}</small></div>
             <div class="profit-detail-row"><span>Unique item types</span><b>${formatNumber(row.unique_types)}</b><small>Direct child assets only for this first ledger pass.</small></div>
-            <div class="profit-detail-row"><span>Hauler handoff</span><b>${escapeHtml(row.status_key === "ready-to-haul" ? "Ready bucket" : "Asset bucket")}</b><small>Future slice can pass these actual assets into the hauler load planner.</small></div>
+            <div class="profit-detail-row"><span>Hauler handoff</span><b>${formatNumber(handoffCount)} type${handoffCount === 1 ? "" : "s"}</b><small>${handoffUnits ? `${formatNumber(handoffUnits)} owned units travel with the handoff summary.` : escapeHtml(row.status_key === "ready-to-haul" ? "Ready bucket" : "Asset bucket")}</small></div>
           </div>
           ${renderAssetLedgerItemPreview(row.items || [], row.truncated_items || 0)}
           ${(row.notes || []).map((note) => `<div class="meta">${escapeHtml(note)}</div>`).join("")}
           <div class="completed-run-actions">
             ${handoffButton}
-            <span class="meta">${handoffCount ? `${formatNumber(handoffCount)} unique item type${handoffCount === 1 ? "" : "s"} ready for Hauler pasted-item mode.` : "No item names ready for Hauler handoff yet."}</span>
+            <span class="meta">${handoffCount ? `${formatNumber(handoffCount)} unique item type${handoffCount === 1 ? "" : "s"} and ${formatNumber(handoffUnits)} owned unit${handoffUnits === 1 ? "" : "s"} ready for Hauler review.` : "No item names ready for Hauler handoff yet."}</span>
           </div>
         </div>
       `;
@@ -30588,9 +30670,8 @@ help</textarea>
     function useAssetLedgerRowInHauler(indexValue) {
       const index = Number(indexValue);
       const row = Number.isInteger(index) ? assetLedgerHandoffRows[index] : null;
-      const itemNames = Array.isArray(row?.handoff_item_names)
-        ? row.handoff_item_names.map((name) => String(name || "").trim()).filter(Boolean)
-        : [];
+      const handoffItems = assetLedgerHandoffItems(row);
+      const itemNames = handoffItems.map((item) => item.typeName).filter(Boolean);
       if (!row || !itemNames.length) {
         if (assetLedgerStatus) {
           assetLedgerStatus.textContent = "That ledger row has no item names ready for Hauler handoff.";
@@ -30609,11 +30690,13 @@ help</textarea>
         window.localStorage.setItem(haulPastedItemsOnlyKey, "1");
       }
       updateHaulScopeAndReset();
+      setHaulLedgerHandoffSummary(row);
       showTab("hauling");
       scrollTabIntoView("hauling");
       window.location.hash = "hauling";
       if (assetLedgerStatus) {
-        assetLedgerStatus.textContent = `Sent ${formatNumber(itemNames.length)} item type${itemNames.length === 1 ? "" : "s"} from ${row.container_name || "the ledger"} to Hauler pasted-item mode.`;
+        const totalUnits = Number(row.handoff_total_units || row.total_units || 0);
+        assetLedgerStatus.textContent = `Sent ${formatNumber(itemNames.length)} item type${itemNames.length === 1 ? "" : "s"} and ${formatNumber(totalUnits)} owned unit${totalUnits === 1 ? "" : "s"} from ${row.container_name || "the ledger"} to Hauler pasted-item mode.`;
         assetLedgerStatus.classList.remove("error");
       }
     }
