@@ -21,6 +21,7 @@ def test_load_config_defaults_when_file_missing(tmp_path):
     assert config.local_app_host == "127.0.0.1"
     assert config.local_app_port == 8770
     assert config.vm_configured is False
+    assert config.vm_public_hosting_mode is False
     assert config.public_dict()["ssh_key_configured"] is False
 
 
@@ -48,6 +49,63 @@ def test_load_config_reads_vm_fields_without_secrets_in_public_dict(tmp_path):
     assert public["ssh_host_configured"] is True
     assert public["ssh_key_exists"] is True
     assert "oci.key" not in json.dumps(public)
+
+
+def test_update_vm_public_config_saves_allowlists(tmp_path):
+    config_path = tmp_path / "flight_workbench.local.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "ssh_host": "203.0.113.10",
+                "ssh_user": "ubuntu",
+                "ssh_key_path": str(tmp_path / "missing.key"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = flight_workbench.update_vm_public_config(
+        config_path,
+        {
+            "vm_public_base_url": "https://flight.example.test",
+            "vm_sso_callback_url": "https://flight.example.test/flight/callback",
+            "vm_allowed_character_ids": "2124413713, 123456789",
+            "vm_allowed_corporation_ids": "1000045",
+            "vm_allowed_alliance_ids": "",
+            "vm_public_hosting_mode": True,
+            "vm_trusted_members_can_write_market": False,
+        },
+    )
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config.vm_allowed_character_ids == (2124413713, 123456789)
+    assert saved["vm_allowed_corporation_ids"] == [1000045]
+
+
+def test_public_env_from_config_requires_allowlist():
+    config = flight_workbench.WorkbenchConfig(
+        vm_public_base_url="https://flight.example.test",
+        vm_sso_callback_url="https://flight.example.test/flight/callback",
+        vm_public_hosting_mode=True,
+    )
+
+    with pytest.raises(flight_workbench.WorkbenchError, match="at least one allowed"):
+        flight_workbench.public_env_from_config(config)
+
+
+def test_public_env_from_config_includes_character_allowlist():
+    config = flight_workbench.WorkbenchConfig(
+        vm_public_base_url="https://flight.example.test",
+        vm_sso_callback_url="https://flight.example.test/flight/callback",
+        vm_allowed_character_ids=(2124413713,),
+        vm_public_hosting_mode=True,
+    )
+
+    env = flight_workbench.public_env_from_config(config)
+
+    assert env["CORP_MARKET_PUBLIC_HOSTING_MODE"] == "1"
+    assert env["CORP_MARKET_ALLOWED_CHARACTER_IDS"] == "2124413713"
+    assert env["CORP_MARKET_SSO_CALLBACK_URL"] == "https://flight.example.test/flight/callback"
 
 
 def test_load_config_rejects_non_loopback_local_targets(tmp_path):
@@ -126,6 +184,12 @@ def test_child_environment_with_user_vars_bridges_allowlisted_user_env(monkeypat
     assert child_env["CORP_MARKET_SSO_CLIENT_ID"] == "user-client-id"
 
 
+def test_default_user_env_bridge_excludes_public_hosting_config():
+    assert "CORP_MARKET_SSO_CLIENT_SECRET" in flight_workbench.USER_ENV_BRIDGE_NAMES
+    assert "CORP_MARKET_PUBLIC_BASE_URL" not in flight_workbench.USER_ENV_BRIDGE_NAMES
+    assert "CORP_MARKET_ALLOWED_CHARACTER_IDS" not in flight_workbench.USER_ENV_BRIDGE_NAMES
+
+
 def test_run_action_rejects_unknown_action():
     with pytest.raises(flight_workbench.WorkbenchError):
         flight_workbench.run_action("git pull", flight_workbench.WorkbenchConfig())
@@ -176,10 +240,19 @@ def test_local_server_start_bridges_user_env_to_child_process(monkeypatch):
 
     monkeypatch.setattr(flight_workbench, "start_managed_process", fake_start_managed_process)
 
-    result = flight_workbench.local_server_start(flight_workbench.WorkbenchConfig())
+    result = flight_workbench.local_server_start(
+        flight_workbench.WorkbenchConfig(
+            vm_public_base_url="https://flight.example.test",
+            vm_sso_callback_url="https://flight.example.test/flight/callback",
+            vm_allowed_character_ids=(2124413713,),
+            vm_public_hosting_mode=True,
+        )
+    )
 
     assert result.ok is True
     assert observed["env"]["CORP_MARKET_SSO_CLIENT_ID"] == "user-client-id"
+    assert observed["env"]["CORP_MARKET_PUBLIC_HOSTING_MODE"] == "1"
+    assert observed["env"]["CORP_MARKET_ALLOWED_CHARACTER_IDS"] == "2124413713"
 
 
 def test_local_server_start_reports_stale_listener(monkeypatch):
@@ -321,6 +394,31 @@ def test_vm_service_status_echoes_readable_state(tmp_path, monkeypatch):
     assert result.ok is True
     assert "state=$(systemctl is-active eve-flight.service || true)" in observed["remote_command"]
     assert 'echo "eve-flight.service: $state"' in observed["remote_command"]
+
+
+def test_build_vm_public_env_command_writes_public_allowlist(tmp_path):
+    key_path = tmp_path / "oci.key"
+    key_path.write_text("private", encoding="utf-8")
+    config = flight_workbench.WorkbenchConfig(
+        ssh_host="203.0.113.10",
+        ssh_user="ubuntu",
+        ssh_key_path=str(key_path),
+        vm_service_name="eve-flight.service",
+        vm_public_base_url="https://flight.example.test",
+        vm_sso_callback_url="https://flight.example.test/flight/callback",
+        vm_allowed_character_ids=(2124413713,),
+        vm_allowed_corporation_ids=(1000045,),
+        vm_public_hosting_mode=True,
+    )
+
+    command = flight_workbench.build_vm_public_env_command(config)
+
+    assert "CORP_MARKET_ALLOWED_CHARACTER_IDS" in command
+    assert "2124413713" in command
+    assert "CORP_MARKET_PUBLIC_HOSTING_MODE" in command
+    assert "systemctl restart eve-flight.service" in command
+    assert "CORP_MARKET_SSO_CLIENT_SECRET" in command
+    assert "secret-value" not in command
 
 
 def test_vm_update_and_restart_uses_fixed_fast_forward_deploy_command(tmp_path, monkeypatch):

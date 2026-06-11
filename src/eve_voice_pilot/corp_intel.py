@@ -220,6 +220,7 @@ class EveSsoConfig:
     client_secret: str = ""
     callback_url: str = ""
     scopes: tuple[str, ...] = ()
+    allowed_character_ids: tuple[int, ...] = ()
     allowed_corporation_ids: tuple[int, ...] = ()
     allowed_alliance_ids: tuple[int, ...] = ()
     trusted_members_can_edit: bool = False
@@ -232,12 +233,13 @@ class EveSsoConfig:
 
     @property
     def membership_restricted(self) -> bool:
-        return bool(self.allowed_corporation_ids or self.allowed_alliance_ids)
+        return bool(self.allowed_character_ids or self.allowed_corporation_ids or self.allowed_alliance_ids)
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
             "scopes": list(self.scopes),
+            "allowed_character_ids": list(self.allowed_character_ids),
             "allowed_corporation_ids": list(self.allowed_corporation_ids),
             "allowed_alliance_ids": list(self.allowed_alliance_ids),
             "membership_restricted": self.membership_restricted,
@@ -1735,8 +1737,16 @@ def fetch_esi_alliance(config: EveSsoConfig, alliance_id: int) -> dict[str, Any]
     return payload if isinstance(payload, dict) else {}
 
 
-def membership_allowed(config: EveSsoConfig, *, corporation_id: int, alliance_id: int | None = None) -> bool:
+def membership_allowed(
+    config: EveSsoConfig,
+    *,
+    character_id: int | None = None,
+    corporation_id: int,
+    alliance_id: int | None = None,
+) -> bool:
     if not config.membership_restricted:
+        return True
+    if character_id and character_id in config.allowed_character_ids:
         return True
     if corporation_id in config.allowed_corporation_ids:
         return True
@@ -1772,7 +1782,12 @@ def verify_sso_character(
         alliance_name=str(alliance_info.get("name") or ""),
         owner_hash=str(token_payload.get("owner") or ""),
         scopes=scopes_from_sso_payload(token_payload),
-        membership_ok=membership_allowed(config, corporation_id=corporation_id, alliance_id=alliance_id),
+        membership_ok=membership_allowed(
+            config,
+            character_id=character_id,
+            corporation_id=corporation_id,
+            alliance_id=alliance_id,
+        ),
         verified_at=timestamp,
         last_login_at=timestamp,
     )

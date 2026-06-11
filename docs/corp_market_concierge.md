@@ -122,7 +122,7 @@ Do not commit SSO secrets. Keep them in your local shell, Windows environment, o
 
 ### Public Flight Attendant Hosting
 
-For a corp-clickable Flight Attendant link, use HTTPS, EVE SSO, and a corporation or alliance allowlist. Re-open the live CCP/EVE policy pages before sharing the link beyond a small trusted test group.
+For a corp-clickable Flight Attendant link, use HTTPS, EVE SSO, and a character, corporation, or alliance allowlist. Re-open the live CCP/EVE policy pages before sharing the link beyond a small trusted test group.
 
 Register the hosted callback URL in the EVE Developers portal:
 
@@ -137,11 +137,12 @@ $env:CORP_MARKET_SSO_CLIENT_ID = "client-id"
 $env:CORP_MARKET_SSO_CLIENT_SECRET = "client-secret"
 $env:CORP_MARKET_PUBLIC_BASE_URL = "https://YOUR-DOMAIN-OR-TUNNEL"
 $env:CORP_MARKET_SSO_CALLBACK_URL = "https://YOUR-DOMAIN-OR-TUNNEL/flight/callback"
+$env:CORP_MARKET_ALLOWED_CHARACTER_IDS = "2124413713"
 $env:CORP_MARKET_ALLOWED_CORPORATION_IDS = "123456789"
 .\scripts\run_corp_market.ps1 serve --public-hosting-mode
 ```
 
-Public hosting mode refuses to start unless the public base URL and callback URL use HTTPS, EVE SSO is configured, and at least one allowed corporation or alliance id is present. Flight Attendant access tokens remain in server memory only; no refresh token or token file is stored by this version.
+Public hosting mode refuses to start unless the public base URL and callback URL use HTTPS, EVE SSO is configured, and at least one allowed character, corporation, or alliance id is present. Flight Attendant access tokens remain in server memory only; no refresh token or token file is stored by this version.
 
 Use the diagnostics endpoint after startup:
 

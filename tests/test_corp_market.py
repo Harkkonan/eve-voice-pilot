@@ -1330,7 +1330,7 @@ def test_flight_status_rejects_non_allowlisted_session_before_esi_fetch():
     assert payload["connected"] is True
     assert payload["membership"]["required"] is True
     assert payload["membership"]["allowed"] is False
-    assert payload["error"] == "This EVE character is not in the configured corp/alliance allowlist."
+    assert payload["error"] == "This EVE character is not in the configured character/corp/alliance allowlist."
     assert payload["location"] is None
 
 

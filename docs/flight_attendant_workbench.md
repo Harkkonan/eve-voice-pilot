@@ -57,6 +57,30 @@ Action history is stored locally in:
 profiles/flight_workbench_actions.jsonl
 ```
 
+## Public Hosting Config
+
+The Configuration panel can save non-secret public-hosting settings in the same ignored local config file:
+
+- public base URL, such as `https://YOUR-DOMAIN/`
+- SSO callback URL, such as `https://YOUR-DOMAIN/flight/callback`
+- allowed EVE character IDs
+- allowed corporation IDs
+- allowed alliance IDs
+- public-hosting mode on/off
+- trusted member market-write mode on/off
+
+Use `Save Public Config` after editing those fields. `Start Local Server` passes the saved public-hosting settings into the local Corp Market process, so you do not need to paste those non-secret public variables into PowerShell for normal workbench-started local testing. SSO client ID and secret are still read from your private Windows User environment or process environment and are intentionally not edited by the Workbench.
+
+Use `Apply VM Public Config` to write the saved public-hosting settings to `/home/ubuntu/.eve-flight-env` on the configured VM and restart the configured service. This action preserves existing SSO client ID/secret lines and does not display or rotate secrets.
+
+Keep the EVE Developer portal callback in sync manually. If the saved callback URL is:
+
+```text
+https://YOUR-DOMAIN/flight/callback
+```
+
+then the EVE Developer application must use that exact callback URL.
+
 ## Button Boundaries
 
 The first version allows fixed, allowlisted actions only:
@@ -67,6 +91,7 @@ The first version allows fixed, allowlisted actions only:
 - Check static cache preflight.
 - Run local `git status --short --branch` and `git diff --check`.
 - Run fixed SSH checks for VM health, service status, service restart, service logs, and VM Git status.
+- Save non-secret public-hosting config locally and apply it to the configured VM env file.
 - Fast-forward the configured VM checkout from GitHub, install `requirements.txt`, restart the configured VM service, and show service status.
 - Run the same VM update with built-in Git status and local health verification.
 - Check VM public-hosting readiness without changing Oracle networking, DNS, SSO secrets, or reverse-proxy config.

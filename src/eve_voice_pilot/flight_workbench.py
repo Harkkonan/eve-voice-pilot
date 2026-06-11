@@ -55,12 +55,13 @@ SENSITIVE_ENV_NAMES = (
 CONFIG_ENV_NAMES = (
     "CORP_MARKET_PUBLIC_BASE_URL",
     "CORP_MARKET_SSO_CALLBACK_URL",
+    "CORP_MARKET_ALLOWED_CHARACTER_IDS",
     "CORP_MARKET_ALLOWED_CORPORATION_IDS",
     "CORP_MARKET_ALLOWED_ALLIANCE_IDS",
     "CORP_MARKET_PUBLIC_HOSTING_MODE",
     "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET",
 )
-USER_ENV_BRIDGE_NAMES = SENSITIVE_ENV_NAMES + CONFIG_ENV_NAMES
+USER_ENV_BRIDGE_NAMES = SENSITIVE_ENV_NAMES
 SECRET_NAME_MARKERS = ("SECRET", "TOKEN", "WEBHOOK", "PASSWORD", "AUTHORIZATION", "KEY")
 DISCORD_WEBHOOK_RE = re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9._-]+")
 KEY_VALUE_SECRET_RE = re.compile(
@@ -91,6 +92,13 @@ class WorkbenchConfig:
     ssh_key_path: str = ""
     vm_app_dir: str = DEFAULT_VM_APP_DIR
     vm_service_name: str = DEFAULT_VM_SERVICE_NAME
+    vm_public_base_url: str = ""
+    vm_sso_callback_url: str = ""
+    vm_allowed_character_ids: tuple[int, ...] = ()
+    vm_allowed_corporation_ids: tuple[int, ...] = ()
+    vm_allowed_alliance_ids: tuple[int, ...] = ()
+    vm_public_hosting_mode: bool = False
+    vm_trusted_members_can_write_market: bool = False
     command_timeout_seconds: float = 25.0
 
     @property
@@ -125,6 +133,13 @@ class WorkbenchConfig:
             "ssh_key_exists": Path(self.ssh_key_path).expanduser().is_file() if self.ssh_key_path else False,
             "vm_app_dir": self.vm_app_dir,
             "vm_service_name": self.vm_service_name,
+            "vm_public_base_url": self.vm_public_base_url,
+            "vm_sso_callback_url": self.vm_sso_callback_url,
+            "vm_allowed_character_ids": list(self.vm_allowed_character_ids),
+            "vm_allowed_corporation_ids": list(self.vm_allowed_corporation_ids),
+            "vm_allowed_alliance_ids": list(self.vm_allowed_alliance_ids),
+            "vm_public_hosting_mode": self.vm_public_hosting_mode,
+            "vm_trusted_members_can_write_market": self.vm_trusted_members_can_write_market,
         }
 
 
@@ -183,6 +198,19 @@ def clean_float(value: Any, default: float, *, minimum: float = 1.0, maximum: fl
     return max(minimum, min(maximum, number))
 
 
+def clean_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def clean_text(value: Any, default: str = "", *, max_length: int = 500) -> str:
     if value is None:
         return default
@@ -190,6 +218,35 @@ def clean_text(value: Any, default: str = "", *, max_length: int = 500) -> str:
     if len(text) > max_length:
         return text[:max_length]
     return text
+
+
+def clean_int_list(value: Any) -> tuple[int, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        raw_items = re.split(r"[,\s]+", value)
+    elif isinstance(value, Iterable):
+        raw_items = list(value)
+    else:
+        raw_items = [value]
+    ids: list[int] = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        try:
+            item_id = int(text)
+        except ValueError as exc:
+            raise WorkbenchError(f"Allowlist IDs must be positive numbers; got {text!r}.") from exc
+        if item_id <= 0:
+            raise WorkbenchError(f"Allowlist IDs must be positive numbers; got {text!r}.")
+        if item_id not in ids:
+            ids.append(item_id)
+    return tuple(ids)
+
+
+def int_list_text(values: Iterable[int]) -> str:
+    return ",".join(str(int(value)) for value in values if int(value) > 0)
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> WorkbenchConfig:
@@ -219,6 +276,91 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> WorkbenchConfig:
         ssh_key_path=clean_text(data.get("ssh_key_path"), "", max_length=500),
         vm_app_dir=clean_text(data.get("vm_app_dir"), DEFAULT_VM_APP_DIR, max_length=500),
         vm_service_name=clean_text(data.get("vm_service_name"), DEFAULT_VM_SERVICE_NAME, max_length=120),
+        vm_public_base_url=clean_text(data.get("vm_public_base_url"), "", max_length=240),
+        vm_sso_callback_url=clean_text(
+            data.get("vm_sso_callback_url"),
+            "",
+            max_length=280,
+        ),
+        vm_allowed_character_ids=clean_int_list(data.get("vm_allowed_character_ids")),
+        vm_allowed_corporation_ids=clean_int_list(data.get("vm_allowed_corporation_ids")),
+        vm_allowed_alliance_ids=clean_int_list(data.get("vm_allowed_alliance_ids")),
+        vm_public_hosting_mode=clean_bool(data.get("vm_public_hosting_mode"), False),
+        vm_trusted_members_can_write_market=clean_bool(data.get("vm_trusted_members_can_write_market"), False),
+        command_timeout_seconds=clean_float(data.get("command_timeout_seconds"), 25.0),
+    )
+
+
+def read_config_data(path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorkbenchError(f"Could not read workbench config: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise WorkbenchError("Workbench config must be a JSON object.")
+    return parsed
+
+
+def save_config_data(path: Path, data: dict[str, Any]) -> None:
+    ensure_ignored_dirs()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def update_vm_public_config(path: Path, payload: dict[str, Any]) -> WorkbenchConfig:
+    data = read_config_data(path)
+    data.update(
+        {
+            "vm_public_base_url": clean_text(payload.get("vm_public_base_url"), "", max_length=240),
+            "vm_sso_callback_url": clean_text(payload.get("vm_sso_callback_url"), "", max_length=280),
+            "vm_allowed_character_ids": list(clean_int_list(payload.get("vm_allowed_character_ids"))),
+            "vm_allowed_corporation_ids": list(clean_int_list(payload.get("vm_allowed_corporation_ids"))),
+            "vm_allowed_alliance_ids": list(clean_int_list(payload.get("vm_allowed_alliance_ids"))),
+            "vm_public_hosting_mode": clean_bool(payload.get("vm_public_hosting_mode"), False),
+            "vm_trusted_members_can_write_market": clean_bool(
+                payload.get("vm_trusted_members_can_write_market"),
+                False,
+            ),
+        }
+    )
+    candidate = load_config_from_data(path, data)
+    validate_vm_public_config(candidate)
+    save_config_data(path, data)
+    return candidate
+
+
+def load_config_from_data(path: Path, data: dict[str, Any]) -> WorkbenchConfig:
+    temp_path = path
+    local_app_host = clean_text(data.get("local_app_host"), DEFAULT_LOCAL_APP_HOST, max_length=80)
+    tunnel_remote_host = clean_text(data.get("tunnel_remote_host"), "127.0.0.1", max_length=80)
+    require_loopback_host(local_app_host, "Local app host")
+    require_loopback_host(tunnel_remote_host, "Tunnel remote host")
+    return WorkbenchConfig(
+        config_path=temp_path,
+        action_log_path=DEFAULT_ACTION_LOG_PATH,
+        local_app_host=local_app_host,
+        local_app_port=clean_int(data.get("local_app_port"), DEFAULT_CORP_MARKET_PORT),
+        tunnel_local_port=clean_int(data.get("tunnel_local_port"), DEFAULT_TUNNEL_LOCAL_PORT),
+        tunnel_remote_host=tunnel_remote_host,
+        tunnel_remote_port=clean_int(data.get("tunnel_remote_port"), DEFAULT_TUNNEL_REMOTE_PORT),
+        ssh_host=clean_text(data.get("ssh_host"), "", max_length=180),
+        ssh_user=clean_text(data.get("ssh_user"), "ubuntu", max_length=80),
+        ssh_key_path=clean_text(data.get("ssh_key_path"), "", max_length=500),
+        vm_app_dir=clean_text(data.get("vm_app_dir"), DEFAULT_VM_APP_DIR, max_length=500),
+        vm_service_name=clean_text(data.get("vm_service_name"), DEFAULT_VM_SERVICE_NAME, max_length=120),
+        vm_public_base_url=clean_text(data.get("vm_public_base_url"), "", max_length=240),
+        vm_sso_callback_url=clean_text(
+            data.get("vm_sso_callback_url"),
+            "",
+            max_length=280,
+        ),
+        vm_allowed_character_ids=clean_int_list(data.get("vm_allowed_character_ids")),
+        vm_allowed_corporation_ids=clean_int_list(data.get("vm_allowed_corporation_ids")),
+        vm_allowed_alliance_ids=clean_int_list(data.get("vm_allowed_alliance_ids")),
+        vm_public_hosting_mode=clean_bool(data.get("vm_public_hosting_mode"), False),
+        vm_trusted_members_can_write_market=clean_bool(data.get("vm_trusted_members_can_write_market"), False),
         command_timeout_seconds=clean_float(data.get("command_timeout_seconds"), 25.0),
     )
 
@@ -705,11 +847,13 @@ def local_server_start(config: WorkbenchConfig) -> CommandResult:
         "--port",
         str(config.local_app_port),
     ]
+    child_env = child_environment_with_user_vars()
+    child_env.update(public_env_from_config(config))
     return start_managed_process(
         "local server",
         args,
         log_name="flight_workbench_corp_market.log",
-        env=child_environment_with_user_vars(),
+        env=child_env,
     )
 
 
@@ -782,6 +926,47 @@ def validate_remote_name(value: str, label: str) -> str:
     return clean
 
 
+def require_https_url(value: str, label: str) -> str:
+    clean = value.strip().rstrip("/")
+    parsed = urlparse(clean)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise WorkbenchError(f"{label} must be an HTTPS URL.")
+    return clean
+
+
+def validate_vm_public_config(config: WorkbenchConfig) -> None:
+    if not config.vm_public_hosting_mode:
+        return
+    public_base_url = require_https_url(config.vm_public_base_url, "VM public base URL")
+    callback_url = require_https_url(config.vm_sso_callback_url, "VM SSO callback URL")
+    expected_callback = f"{public_base_url.rstrip('/')}/flight/callback"
+    if callback_url != expected_callback:
+        raise WorkbenchError(f"VM SSO callback URL should be {expected_callback}.")
+    if not (
+        config.vm_allowed_character_ids
+        or config.vm_allowed_corporation_ids
+        or config.vm_allowed_alliance_ids
+    ):
+        raise WorkbenchError("Public hosting needs at least one allowed character, corporation, or alliance ID.")
+
+
+def public_env_from_config(config: WorkbenchConfig) -> dict[str, str]:
+    if not config.vm_public_hosting_mode:
+        return {}
+    validate_vm_public_config(config)
+    return {
+        "CORP_MARKET_PUBLIC_BASE_URL": require_https_url(config.vm_public_base_url, "VM public base URL"),
+        "CORP_MARKET_SSO_CALLBACK_URL": require_https_url(config.vm_sso_callback_url, "VM SSO callback URL"),
+        "CORP_MARKET_PUBLIC_HOSTING_MODE": "1",
+        "CORP_MARKET_ALLOWED_CHARACTER_IDS": int_list_text(config.vm_allowed_character_ids),
+        "CORP_MARKET_ALLOWED_CORPORATION_IDS": int_list_text(config.vm_allowed_corporation_ids),
+        "CORP_MARKET_ALLOWED_ALLIANCE_IDS": int_list_text(config.vm_allowed_alliance_ids),
+        "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET": "1"
+        if config.vm_trusted_members_can_write_market
+        else "0",
+    }
+
+
 def ssh_base_args(config: WorkbenchConfig) -> list[str]:
     validate_ssh_config(config)
     return [
@@ -834,6 +1019,89 @@ def vm_service_restart(config: WorkbenchConfig) -> CommandResult:
             f"else sudo -n systemctl restart {service}; fi"
         ),
         timeout_seconds=max(30.0, config.command_timeout_seconds),
+    )
+
+
+def build_vm_public_env_command(config: WorkbenchConfig) -> str:
+    service = validate_remote_name(config.vm_service_name, "VM service name")
+    updates = public_env_from_config(config)
+    payload = json.dumps(updates, sort_keys=True)
+    script = f"""
+import json
+from pathlib import Path
+
+path = Path("/home/ubuntu/.eve-flight-env")
+updates = json.loads({payload!r})
+env = {{}}
+comments = []
+if path.exists():
+    for line in path.read_text(encoding="utf-8").splitlines():
+        clean = line.strip()
+        if not clean or clean.startswith("#"):
+            comments.append(line)
+            continue
+        if clean.startswith("export "):
+            clean = clean[len("export "):].strip()
+        if "=" not in clean:
+            comments.append(line)
+            continue
+        key, value = clean.split("=", 1)
+        env[key.strip()] = value.strip()
+env.update(updates)
+ordered = [
+    "CORP_MARKET_SSO_CLIENT_ID",
+    "CORP_MARKET_SSO_CLIENT_SECRET",
+    "CORP_MARKET_PUBLIC_BASE_URL",
+    "CORP_MARKET_SSO_CALLBACK_URL",
+    "CORP_MARKET_PUBLIC_HOSTING_MODE",
+    "CORP_MARKET_ALLOWED_CHARACTER_IDS",
+    "CORP_MARKET_ALLOWED_CORPORATION_IDS",
+    "CORP_MARKET_ALLOWED_ALLIANCE_IDS",
+    "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET",
+]
+lines = [line for line in comments if line.strip().startswith("#")]
+for key in ordered:
+    if key in env:
+        lines.append(f"{{key}}={{env[key]}}")
+for key in sorted(env):
+    if key not in ordered:
+        lines.append(f"{{key}}={{env[key]}}")
+path.write_text("\\n".join(lines).rstrip() + "\\n", encoding="utf-8")
+path.chmod(0o600)
+print("Updated /home/ubuntu/.eve-flight-env")
+print("Public base URL:", updates.get("CORP_MARKET_PUBLIC_BASE_URL", ""))
+print("Callback URL:", updates.get("CORP_MARKET_SSO_CALLBACK_URL", ""))
+print("Allowed character IDs:", updates.get("CORP_MARKET_ALLOWED_CHARACTER_IDS", ""))
+print("Allowed corporation IDs:", updates.get("CORP_MARKET_ALLOWED_CORPORATION_IDS", ""))
+print("Allowed alliance IDs:", updates.get("CORP_MARKET_ALLOWED_ALLIANCE_IDS", ""))
+"""
+    return (
+        "set -e; "
+        f"python3 - <<'PY'\n{script}\nPY\n"
+        "sudo -n systemctl daemon-reload; "
+        f"sudo -n systemctl restart {service}; "
+        f"state=$(systemctl is-active {service} || true); "
+        f'echo "{service}: $state"; '
+        "sleep 2; "
+        "curl -fsS http://127.0.0.1:8770/api/flight/diagnostics | "
+        "python3 -c 'import json,sys; d=json.load(sys.stdin); "
+        'print("public_hosting_mode:", d["hosting"]["public_hosting_mode"]); '
+        'print("public_base_url:", d["hosting"]["public_base_url"]); '
+        'print("callback_url:", d["sso"]["callback_url"]); '
+        'print("membership_restricted:", d["sso"]["membership_restricted"]); '
+        'print("character_allowlist_count:", d["sso"].get("character_allowlist_count", 0)); '
+        'print("corporation_allowlist_count:", d["sso"]["corporation_allowlist_count"]); '
+        'print("alliance_allowlist_count:", d["sso"]["alliance_allowlist_count"])\''
+    )
+
+
+def vm_apply_public_config(config: WorkbenchConfig) -> CommandResult:
+    validate_vm_public_config(config)
+    remote_command = build_vm_public_env_command(config)
+    return run_ssh_command(
+        config,
+        remote_command,
+        timeout_seconds=max(45.0, config.command_timeout_seconds),
     )
 
 
@@ -1053,6 +1321,7 @@ def action_definitions() -> dict[str, ActionDefinition]:
         ActionDefinition("vm_health", "VM Health", "VM App Service", "Run hostname, uptime, and memory checks over SSH.", vm_health),
         ActionDefinition("vm_service_status", "Service Status", "VM App Service", "Read systemd service status over SSH.", vm_service_status),
         ActionDefinition("vm_service_restart", "Restart VM Service", "VM App Service", "Restart the configured app service over SSH.", vm_service_restart, True),
+        ActionDefinition("vm_apply_public_config", "Apply VM Public Config", "VM App Service", "Write saved public hosting settings to the VM env file and restart the service.", vm_apply_public_config, True),
         ActionDefinition("vm_update_restart", "Update VM App", "VM App Service", "Fast-forward VM Git checkout, install requirements, and restart the service.", vm_update_and_restart, True),
         ActionDefinition("vm_update_verify", "Update VM + Verify", "VM App Service", "Update the VM app, restart the service, check Git status, and fetch health.", vm_update_and_verify, True),
         ActionDefinition("vm_logs_tail", "Tail VM Logs", "VM App Service", "Read recent service logs over SSH.", vm_logs_tail),
@@ -1345,6 +1614,37 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
       font-size: 0.92rem;
     }}
     .row:last-child {{ border-bottom: 0; }}
+    .form-grid {{
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--soft);
+    }}
+    label.field {{
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 700;
+    }}
+    input[type="text"] {{
+      width: 100%;
+      border: 1px solid #b9c3bc;
+      border-radius: 7px;
+      padding: 8px 10px;
+      font: 0.9rem/1.3 "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      background: #fff;
+    }}
+    .check-row {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 700;
+    }}
     code, pre {{
       font-family: Consolas, "Cascadia Mono", monospace;
       font-size: 0.86rem;
@@ -1433,6 +1733,32 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
           <div class="panel-head"><h2>Configuration</h2><span id="config-status" class="pill neutral">Local</span></div>
           <div class="panel-body">
             <div class="rows" id="config-rows"></div>
+            <form id="public-config-form" class="form-grid">
+              <label class="field">Public base URL
+                <input id="vm-public-base-url" name="vm_public_base_url" type="text" autocomplete="off" placeholder="https://flight.example.com">
+              </label>
+              <label class="field">SSO callback URL
+                <input id="vm-sso-callback-url" name="vm_sso_callback_url" type="text" autocomplete="off" placeholder="https://flight.example.com/flight/callback">
+              </label>
+              <label class="field">Allowed character IDs
+                <input id="vm-allowed-character-ids" name="vm_allowed_character_ids" type="text" autocomplete="off" placeholder="2124413713, 123456789">
+              </label>
+              <label class="field">Allowed corporation IDs
+                <input id="vm-allowed-corporation-ids" name="vm_allowed_corporation_ids" type="text" autocomplete="off" placeholder="1000045">
+              </label>
+              <label class="field">Allowed alliance IDs
+                <input id="vm-allowed-alliance-ids" name="vm_allowed_alliance_ids" type="text" autocomplete="off">
+              </label>
+              <label class="check-row">
+                <input id="vm-public-hosting-mode" name="vm_public_hosting_mode" type="checkbox">
+                Public hosting mode
+              </label>
+              <label class="check-row">
+                <input id="vm-trusted-members-can-write-market" name="vm_trusted_members_can_write_market" type="checkbox">
+                Allow trusted members to write market listings
+              </label>
+              <button id="save-public-config" type="submit">Save Public Config</button>
+            </form>
           </div>
         </div>
         <div class="panel">
@@ -1468,6 +1794,20 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
 
     function row(label, value, cls = "pill neutral") {{
       return `<div class="row"><span>${{escapeHtml(label)}}</span><span class="${{cls}}">${{escapeHtml(value)}}</span></div>`;
+    }}
+
+    function idListText(values) {{
+      return Array.isArray(values) ? values.join(",") : "";
+    }}
+
+    function setInputValue(selector, value) {{
+      const element = document.querySelector(selector);
+      if (element) element.value = value ?? "";
+    }}
+
+    function setChecked(selector, value) {{
+      const element = document.querySelector(selector);
+      if (element) element.checked = Boolean(value);
     }}
 
     function escapeHtml(value) {{
@@ -1514,8 +1854,16 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
         row("Tunnel", config.tunnel_forward || ""),
         row("SSH host", config.ssh_host_configured ? "Set" : "Missing", config.ssh_host_configured ? "pill ok" : "pill warn"),
         row("SSH key", config.ssh_key_exists ? "Found" : (config.ssh_key_configured ? "Missing file" : "Missing"), config.ssh_key_exists ? "pill ok" : "pill warn"),
-        row("VM service", config.vm_service_name || "")
+        row("VM service", config.vm_service_name || ""),
+        row("Public mode", config.vm_public_hosting_mode ? "On" : "Off", config.vm_public_hosting_mode ? "pill ok" : "pill warn")
       ].join("");
+      setInputValue("#vm-public-base-url", config.vm_public_base_url || "");
+      setInputValue("#vm-sso-callback-url", config.vm_sso_callback_url || "");
+      setInputValue("#vm-allowed-character-ids", idListText(config.vm_allowed_character_ids));
+      setInputValue("#vm-allowed-corporation-ids", idListText(config.vm_allowed_corporation_ids));
+      setInputValue("#vm-allowed-alliance-ids", idListText(config.vm_allowed_alliance_ids));
+      setChecked("#vm-public-hosting-mode", config.vm_public_hosting_mode);
+      setChecked("#vm-trusted-members-can-write-market", config.vm_trusted_members_can_write_market);
 
       const envRows = data.environment?.rows || [];
       document.querySelector("#env-rows").innerHTML = envRows.map(item => row(item.name, item.value || (item.configured ? "Set" : "Missing"), item.configured ? "pill ok" : "pill warn")).join("");
@@ -1560,10 +1908,43 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
       }}
     }}
 
+    async function savePublicConfig(event) {{
+      event.preventDefault();
+      resultStatus.textContent = "Saving";
+      resultStatus.className = "pill warn";
+      const payload = {{
+        vm_public_base_url: document.querySelector("#vm-public-base-url").value,
+        vm_sso_callback_url: document.querySelector("#vm-sso-callback-url").value,
+        vm_allowed_character_ids: document.querySelector("#vm-allowed-character-ids").value,
+        vm_allowed_corporation_ids: document.querySelector("#vm-allowed-corporation-ids").value,
+        vm_allowed_alliance_ids: document.querySelector("#vm-allowed-alliance-ids").value,
+        vm_public_hosting_mode: document.querySelector("#vm-public-hosting-mode").checked,
+        vm_trusted_members_can_write_market: document.querySelector("#vm-trusted-members-can-write-market").checked
+      }};
+      try {{
+        const response = await fetch("/api/config/vm-public", {{
+          method: "POST",
+          headers: {{"Accept": "application/json", "Content-Type": "application/json", "X-Workbench-Token": operatorToken}},
+          body: JSON.stringify(payload)
+        }});
+        const data = await response.json();
+        resultStatus.textContent = data.ok ? "OK" : "Check";
+        resultStatus.className = data.ok ? "pill ok" : "pill bad";
+        actionOutput.textContent = data.summary || JSON.stringify(data, null, 2);
+      }} catch (error) {{
+        resultStatus.textContent = "Error";
+        resultStatus.className = "pill bad";
+        actionOutput.textContent = error.message || String(error);
+      }} finally {{
+        await refreshStatus();
+      }}
+    }}
+
     document.addEventListener("click", event => {{
       const button = event.target.closest("button[data-action]");
       if (button) runAction(button.dataset.action);
     }});
+    document.querySelector("#public-config-form").addEventListener("submit", savePublicConfig);
     document.querySelector("#refresh-button").addEventListener("click", refreshStatus);
     renderActions(initialActions);
     refreshStatus();
@@ -1614,6 +1995,32 @@ def build_http_server(host: str, port: int, state: WorkbenchState) -> ThreadingH
                 self._send_json({"ok": False, "error": "Origin was not allowed."}, status=403)
                 return
             path = urlparse(self.path).path
+            if path == "/api/config/vm-public":
+                try:
+                    payload = self._read_json_body()
+                    state.config = update_vm_public_config(state.config.config_path, payload)
+                except WorkbenchError as exc:
+                    self._send_json({"ok": False, "summary": str(exc)}, status=400)
+                    return
+                except Exception as exc:
+                    self._send_json({"ok": False, "summary": f"Could not save public config: {exc}"}, status=400)
+                    return
+                append_action_log(
+                    state.config,
+                    {
+                        "ok": True,
+                        "action": "save_public_config",
+                        "summary": "Saved public hosting config locally.",
+                    },
+                )
+                self._send_json(
+                    {
+                        "ok": True,
+                        "summary": "Saved public hosting config locally. Use Apply VM Public Config to write it to the VM service.",
+                        "config": state.config.public_dict(),
+                    }
+                )
+                return
             prefix = "/api/actions/"
             if not path.startswith(prefix):
                 self.send_error(404, "Not found")
@@ -1641,6 +2048,19 @@ def build_http_server(host: str, port: int, state: WorkbenchState) -> ThreadingH
                 payload = command_result_payload(action_id, result)
             append_action_log(state.config, payload)
             self._send_json(payload, status=200 if payload.get("ok") else 400)
+
+        def _read_json_body(self) -> dict[str, Any]:
+            length = int(self.headers.get("Content-Length") or "0")
+            if length <= 0 or length > 64_000:
+                raise WorkbenchError("Request body was empty or too large.")
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise WorkbenchError("Request body must be JSON.") from exc
+            if not isinstance(parsed, dict):
+                raise WorkbenchError("Request body must be a JSON object.")
+            return parsed
 
         def _require_loopback(self) -> bool:
             if client_is_loopback(str(self.client_address[0])):

@@ -12,6 +12,7 @@ from eve_voice_pilot.flight_server_routes import (
     dispatch_flight_get_route,
     dispatch_flight_post_route,
     flight_member_access_error,
+    flight_membership_status,
     flight_session_cookie_header,
     flight_session_has_member_access,
     admin_token_write_access_allowed,
@@ -75,8 +76,24 @@ def test_flight_access_helpers_enforce_member_allowlist():
     assert flight_session_has_member_access(config, allowed_session) is True
     assert flight_session_has_member_access(config, denied_session) is False
     assert flight_member_access_error(config, denied_session) == (
-        "This EVE character is not in the configured corp/alliance allowlist."
+        "This EVE character is not in the configured character/corp/alliance allowlist."
     )
+    assert flight_membership_status(config, denied_session)["character_allowlist_count"] == 0
+
+
+def test_flight_access_helpers_report_character_allowlist():
+    config = EveSsoConfig(
+        client_id="client",
+        client_secret="secret",
+        callback_url="https://flight.example.test/flight/callback",
+        allowed_character_ids=(2124413713,),
+    )
+
+    status = flight_membership_status(config, SimpleNamespace(membership_ok=True))
+
+    assert config.membership_restricted is True
+    assert status["allowed"] is True
+    assert status["character_allowlist_count"] == 1
 
 
 def test_public_hosting_helpers_keep_https_sso_and_cookie_rules():

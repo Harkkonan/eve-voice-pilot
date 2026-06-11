@@ -13889,6 +13889,7 @@ def build_flight_hosting_diagnostics(
             "callback_url_https": is_https_url(sso_config.callback_url),
             "scopes": list(sso_config.scopes or DEFAULT_FLIGHT_ESI_SCOPES),
             "membership_restricted": sso_config.membership_restricted,
+            "character_allowlist_count": len(sso_config.allowed_character_ids),
             "corporation_allowlist_count": len(sso_config.allowed_corporation_ids),
             "alliance_allowlist_count": len(sso_config.allowed_alliance_ids),
             "trusted_members_can_write_market": bool(sso_config.trusted_members_can_edit),
@@ -24714,7 +24715,7 @@ help</textarea>
       const discord = data.discord || {};
       const staticCaches = data.static_caches || {};
       const localPaths = data.local_paths || {};
-      const allowlistCount = Number(sso.corporation_allowlist_count || 0) + Number(sso.alliance_allowlist_count || 0);
+      const allowlistCount = Number(sso.character_allowlist_count || 0) + Number(sso.corporation_allowlist_count || 0) + Number(sso.alliance_allowlist_count || 0);
 
       if (testerOverallPill) {
         testerOverallPill.textContent = attention.length ? "Needs Attention" : "Ready";
@@ -33932,6 +33933,7 @@ def run_server(args: argparse.Namespace) -> int:
         client_secret=args.sso_client_secret,
         callback_url=sso_callback_url,
         scopes=tuple(parse_csv(args.sso_scopes)) or DEFAULT_FLIGHT_ESI_SCOPES,
+        allowed_character_ids=parse_int_csv(args.allowed_character_ids),
         allowed_corporation_ids=parse_int_csv(args.allowed_corporation_ids),
         allowed_alliance_ids=parse_int_csv(args.allowed_alliance_ids),
         trusted_members_can_edit=args.trusted_members_can_write_market,
@@ -33975,6 +33977,7 @@ def run_server(args: argparse.Namespace) -> int:
         if sso_config.membership_restricted:
             print(
                 "Flight Attendant member allowlist: "
+                f"characters={list(sso_config.allowed_character_ids)}, "
                 f"corps={list(sso_config.allowed_corporation_ids)}, "
                 f"alliances={list(sso_config.allowed_alliance_ids)}"
             )
@@ -34111,6 +34114,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--sso-scopes",
         default=os.environ.get("CORP_MARKET_SSO_SCOPES", " ".join(DEFAULT_FLIGHT_ESI_SCOPES)),
         help="Space or comma-separated EVE SSO scopes for Flight Attendant.",
+    )
+    serve.add_argument(
+        "--allowed-character-ids",
+        default=os.environ.get("CORP_MARKET_ALLOWED_CHARACTER_IDS", ""),
+        help="Comma-separated character ids allowed to use the hosted Flight Attendant.",
     )
     serve.add_argument(
         "--allowed-corporation-ids",

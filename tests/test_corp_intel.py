@@ -306,6 +306,12 @@ def test_membership_allowed_accepts_configured_corporation_or_alliance():
     assert not membership_allowed(config, corporation_id=9999, alliance_id=None)
 
 
+def test_membership_allowed_accepts_configured_character():
+    config = EveSsoConfig(allowed_character_ids=(2124413713,))
+    assert membership_allowed(config, character_id=2124413713, corporation_id=9999, alliance_id=None)
+    assert not membership_allowed(config, character_id=123456789, corporation_id=9999, alliance_id=None)
+
+
 def test_dashboard_access_requires_enabled_sso():
     access = dashboard_access_status(EveSsoConfig(), None)
     assert access.ok is False

@@ -82,16 +82,17 @@ def flight_membership_status(config: EveSsoConfig, session: FlightSessionLike | 
     required = config.membership_restricted
     allowed = flight_session_has_member_access(config, session) if session else None
     if not required:
-        message = "No corp or alliance allowlist is configured."
+        message = "No character, corp, or alliance allowlist is configured."
     elif session is None:
-        message = "Sign in with an allowlisted corporation or alliance character."
+        message = "Sign in with an allowlisted EVE character or a member of an allowlisted corporation/alliance."
     elif allowed:
-        message = "Signed-in character is in the configured corp/alliance allowlist."
+        message = "Signed-in character matches the configured character, corp, or alliance allowlist."
     else:
-        message = "Signed-in character is not in the configured corp/alliance allowlist."
+        message = "Signed-in character is not in the configured character, corp, or alliance allowlist."
     return {
         "required": required,
         "allowed": allowed,
+        "character_allowlist_count": len(config.allowed_character_ids),
         "corporation_allowlist_count": len(config.allowed_corporation_ids),
         "alliance_allowlist_count": len(config.allowed_alliance_ids),
         "trusted_members_can_write_market": bool(config.trusted_members_can_edit),
@@ -103,7 +104,7 @@ def flight_member_access_error(config: EveSsoConfig, session: FlightSessionLike 
     if session is None:
         return "Connect ESI before using Flight Attendant."
     if config.membership_restricted and not session.membership_ok:
-        return "This EVE character is not in the configured corp/alliance allowlist."
+        return "This EVE character is not in the configured character/corp/alliance allowlist."
     return ""
 
 
@@ -132,7 +133,10 @@ def public_hosting_config_errors(*, public_base_url: str, sso_config: EveSsoConf
     elif not is_https_url(sso_config.callback_url):
         errors.append("--sso-callback-url must be an https URL in public hosting mode")
     if not sso_config.membership_restricted:
-        errors.append("configure --allowed-corporation-ids or --allowed-alliance-ids for member-only access")
+        errors.append(
+            "configure --allowed-character-ids, --allowed-corporation-ids, or --allowed-alliance-ids "
+            "for member-only access"
+        )
     return errors
 
 
