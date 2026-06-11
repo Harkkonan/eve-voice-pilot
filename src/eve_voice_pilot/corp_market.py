@@ -155,7 +155,12 @@ EXPECTED_REALIZED_REPORT_COLUMNS = (
     "Estimated Broker Fee %",
     "Estimated Broker Fee ISK",
     "Expected Return Per Item",
+    "Destination Sell Hub",
+    "Destination Sell Target Price",
+    "Destination Sell Target Units",
+    "Destination Sell Target Details",
     "Realized Return Per Item",
+    "Actual Sell Price Per Item",
     "Expected Total Cost",
     "Estimated Total ISK Needed",
     "Expected Total Return",
@@ -2292,11 +2297,39 @@ def build_flight_trade_pnl_payload(
         historical_transactions=historical_transactions,
         now=current_time,
     )
+    generated_at = now_iso()
+    learning_store = trade_ledger_store or expectation_store
+    learning_signals: list[dict[str, Any]] = []
+    learning_saved = 0
+    if learning_store is not None:
+        learning_evidence = build_trade_learning_signal_evidence(
+            trade_pnl,
+            updated_at=generated_at,
+            now=current_time,
+        )
+        if learning_evidence:
+            saved_learning = learning_store.save_trade_learning_signals(
+                character_id=session.character_id,
+                signals=learning_evidence,
+            )
+            learning_saved = int(saved_learning.get("saved") or 0)
+            learning_signals = [signal for signal in saved_learning.get("signals") or [] if isinstance(signal, dict)]
+        if not learning_signals:
+            learning_signals = learning_store.latest_trade_learning_signals(
+                character_id=session.character_id,
+                type_ids=type_ids,
+            )
+        attach_trade_learning_signals(
+            trade_pnl.get("items") or [],
+            trade_learning_signals_by_type(learning_signals),
+            include_empty=True,
+        )
+    trade_pnl["learning"] = trade_learning_summary(learning_signals, saved=learning_saved)
     trade_pnl["market_valuation"]["cache"] = fuzzwork_market_aggregate_cache_status()
     trade_pnl["trade_ledger"] = ledger_status
     return {
         "ok": True,
-        "generated_at": now_iso(),
+        "generated_at": generated_at,
         "character": session.to_public_dict(),
         "trade_pnl": trade_pnl,
     }
@@ -3325,6 +3358,196 @@ def round_optional_float(value: Any, digits: int = 4) -> float | None:
         return round(float(value), digits)
     except (TypeError, ValueError):
         return None
+
+
+def trade_learning_signal_evidence(
+    item: Mapping[str, Any],
+    *,
+    updated_at: str,
+    now: datetime,
+) -> dict[str, Any] | None:
+    type_id = clean_optional_int(item.get("type_id"))
+    if type_id is None:
+        return None
+    matched_quantity = clean_optional_int(item.get("matched_quantity")) or 0
+    open_quantity = clean_optional_int(item.get("open_quantity")) or 0
+    actual_profit = clean_optional_float(item.get("actual_profit_isk")) or 0.0
+    plan = item.get("plan_reconciliation") if isinstance(item.get("plan_reconciliation"), Mapping) else {}
+    expected_gross_sell = clean_optional_float(plan.get("expected_gross_sell_unit_price"))
+    average_sell = clean_optional_float(plan.get("average_sell_unit_price"))
+    expected_net_sell = clean_optional_float(plan.get("expected_net_sell_unit_price"))
+    actual_net_result = clean_optional_float(plan.get("actual_net_result_unit_price"))
+    expected_profit_for_matched = clean_optional_float(plan.get("expected_profit_for_matched_isk"))
+    actual_vs_plan = clean_optional_float(plan.get("actual_vs_expected_profit_isk")) or 0.0
+    planned_units = clean_optional_int(plan.get("planned_units")) or 0
+    matched_for_plan = clean_optional_int(plan.get("matched_units")) or matched_quantity
+    proportional_units = (matched_for_plan / planned_units) if planned_units > 0 and matched_for_plan > 0 else 1.0
+    expected_fee = 0.0
+    for key in ("expected_sales_tax_isk", "expected_broker_fee_isk"):
+        fee_value = clean_optional_float(plan.get(key))
+        if fee_value is not None:
+            expected_fee += abs(fee_value) * proportional_units
+    actual_fee = abs(min(clean_optional_float(item.get("allocated_fee_isk")) or 0.0, 0.0))
+
+    sold_below = False
+    gross_delta_total = 0.0
+    if matched_quantity > 0 and expected_gross_sell is not None and average_sell is not None:
+        gross_delta_per_unit = average_sell - expected_gross_sell
+        gross_delta_total = gross_delta_per_unit * matched_quantity
+        sold_below = gross_delta_per_unit < -max(100_000.0, expected_gross_sell * 0.01)
+
+    net_below = False
+    net_delta_total = 0.0
+    if matched_quantity > 0 and expected_net_sell is not None and actual_net_result is not None:
+        net_delta_per_unit = actual_net_result - expected_net_sell
+        net_delta_total = net_delta_per_unit * matched_quantity
+        net_below = net_delta_per_unit < -max(100_000.0, expected_net_sell * 0.01)
+
+    fee_gap = actual_fee - expected_fee
+    fees_high = expected_fee > 0 and fee_gap > max(1_000_000.0, expected_fee * 0.15)
+
+    loss_vs_plan = False
+    if expected_profit_for_matched is not None:
+        loss_vs_plan = actual_vs_plan < -max(1_000_000.0, abs(expected_profit_for_matched) * 0.10)
+
+    fills_slowly = False
+    planned_at = trade_record_datetime(plan.get("planned_at"))
+    if open_quantity > 0 and planned_at is not None:
+        age_days = max(0.0, (now - planned_at).total_seconds() / 86400.0)
+        target_days = clean_optional_int(plan.get("target_days"))
+        if target_days is not None and target_days > 0:
+            fills_slowly = age_days > target_days
+        elif planned_units > 0:
+            fills_slowly = age_days >= 7.0 and open_quantity >= max(1, planned_units // 2)
+
+    evidence = {
+        "type_id": type_id,
+        "item_name": str(item.get("item_name") or f"Type {type_id}"),
+        "updated_at": updated_at,
+        "sample_count": 1,
+        "matched_quantity": matched_quantity,
+        "open_quantity": open_quantity,
+        "profitable_count": 1 if matched_quantity > 0 and actual_profit > 0 else 0,
+        "sold_below_target_count": 1 if sold_below else 0,
+        "net_return_below_plan_count": 1 if net_below else 0,
+        "fees_higher_than_expected_count": 1 if fees_high else 0,
+        "fills_too_slowly_count": 1 if fills_slowly else 0,
+        "loss_vs_plan_count": 1 if loss_vs_plan else 0,
+        "actual_profit_isk": actual_profit,
+        "actual_vs_plan_profit_isk": actual_vs_plan,
+        "gross_sell_delta_total_isk": gross_delta_total,
+        "net_sell_delta_total_isk": net_delta_total,
+        "fee_gap_total_isk": fee_gap,
+        "payload": {
+            "latest_status": str(item.get("status") or ""),
+            "matched_quantity": matched_quantity,
+            "open_quantity": open_quantity,
+            "average_sell_unit_price": round_optional_float(average_sell),
+            "expected_gross_sell_unit_price": round_optional_float(expected_gross_sell),
+            "actual_net_result_unit_price": round_optional_float(actual_net_result),
+            "expected_net_sell_unit_price": round_optional_float(expected_net_sell),
+            "actual_fee_isk": round_optional_float(actual_fee),
+            "expected_fee_isk": round_optional_float(expected_fee),
+        },
+    }
+    if (
+        evidence["profitable_count"]
+        or evidence["sold_below_target_count"]
+        or evidence["net_return_below_plan_count"]
+        or evidence["fees_higher_than_expected_count"]
+        or evidence["fills_too_slowly_count"]
+        or evidence["loss_vs_plan_count"]
+    ):
+        return evidence
+    return None
+
+
+def build_trade_learning_signal_evidence(
+    trade_pnl: Mapping[str, Any],
+    *,
+    updated_at: str,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for item in trade_pnl.get("items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        signal = trade_learning_signal_evidence(item, updated_at=updated_at, now=now)
+        if signal is not None:
+            evidence.append(signal)
+    return evidence
+
+
+def attach_trade_learning_signals(
+    items: Iterable[dict[str, Any]],
+    signals_by_type: Mapping[int, dict[str, Any]],
+    *,
+    include_empty: bool = False,
+) -> None:
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        type_id = clean_optional_int(item.get("type_id"))
+        if type_id is None:
+            continue
+        signal = signals_by_type.get(type_id)
+        if not signal:
+            continue
+        if signal.get("signal_keys") or include_empty:
+            item["learning_signals"] = [signal]
+
+
+def trade_learning_summary(signals: Iterable[Mapping[str, Any]], *, saved: int = 0) -> dict[str, Any]:
+    signal_rows = [signal for signal in signals if isinstance(signal, Mapping)]
+    active = [signal for signal in signal_rows if signal.get("signal_keys")]
+    counts: dict[str, int] = {}
+    for signal in active:
+        for key in signal.get("signal_keys") or []:
+            counts[str(key)] = counts.get(str(key), 0) + 1
+    return {
+        "saved": int(saved or 0),
+        "source": "local-corp-market-sqlite",
+        "signal_count": len(active),
+        "evidence_item_count": len(signal_rows),
+        "signal_counts": dict(sorted(counts.items())),
+    }
+
+
+def trade_learning_signals_by_type(signals: Iterable[Mapping[str, Any]]) -> dict[int, dict[str, Any]]:
+    by_type: dict[int, dict[str, Any]] = {}
+    for signal in signals:
+        if not isinstance(signal, Mapping):
+            continue
+        type_id = clean_optional_int(signal.get("type_id"))
+        if type_id is None:
+            continue
+        by_type[type_id] = dict(signal)
+    return by_type
+
+
+def attach_local_trade_learning_signals(
+    *,
+    learning_store: MarketStore | None,
+    character_id: int,
+    item_groups: Iterable[Iterable[dict[str, Any]]],
+) -> dict[str, Any]:
+    if learning_store is None or int(character_id or 0) <= 0:
+        return trade_learning_summary([], saved=0)
+    groups = [list(group) for group in item_groups]
+    type_ids = {
+        type_id
+        for group in groups
+        for item in group
+        for type_id in [clean_optional_int(item.get("type_id")) if isinstance(item, Mapping) else None]
+        if type_id is not None
+    }
+    if not type_ids:
+        return trade_learning_summary([], saved=0)
+    signals = learning_store.latest_trade_learning_signals(character_id=character_id, type_ids=type_ids)
+    by_type = trade_learning_signals_by_type(signals)
+    for group in groups:
+        attach_trade_learning_signals(group, by_type)
+    return trade_learning_summary(signals, saved=0)
 
 
 def trade_pnl_item_status(item: dict[str, Any]) -> str:
@@ -5492,6 +5715,7 @@ def build_flight_hauling_payload(
     sort_by: str = DEFAULT_HAUL_SORT_BY,
     min_profit_per_m3: float = 0.0,
     min_profit_per_extra_jump: float = 0.0,
+    learning_store: MarketStore | None = None,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     server_timer = StageTimer()
@@ -5594,6 +5818,15 @@ def build_flight_hauling_payload(
         "diagnostics": build_haul_route_diagnostics(route_plan, route_jumps=route_jumps),
         "systems": route_systems,
     }
+    load_plan = opportunities.get("load_plan") if isinstance(opportunities.get("load_plan"), Mapping) else {}
+    opportunities["learning"] = attach_local_trade_learning_signals(
+        learning_store=learning_store,
+        character_id=session.character_id,
+        item_groups=(
+            [item for item in opportunities.get("opportunities") or [] if isinstance(item, dict)],
+            [item for item in load_plan.get("lines") or [] if isinstance(item, dict)],
+        ),
+    )
     opportunities["report_rows"] = build_haul_expected_realized_report_rows(
         generated_at=generated_at,
         route=route_payload,
@@ -5659,6 +5892,7 @@ def build_flight_hauling_comparison_payload(
     sort_by: str = DEFAULT_HAUL_SORT_BY,
     min_profit_per_m3: float = 0.0,
     min_profit_per_extra_jump: float = 0.0,
+    learning_store: MarketStore | None = None,
 ) -> dict[str, Any]:
     destination_names = clean_haul_compare_destinations(destinations) or DEFAULT_HAUL_COMPARE_DESTINATIONS
     results: list[dict[str, Any]] = []
@@ -5682,6 +5916,7 @@ def build_flight_hauling_comparison_payload(
                 sort_by=sort_by,
                 min_profit_per_m3=min_profit_per_m3,
                 min_profit_per_extra_jump=min_profit_per_extra_jump,
+                learning_store=learning_store,
             )
         except CorpMarketError as exc:
             results.append({"ok": False, "destination": destination_name, "destination_name": destination_name, "error": str(exc)})
@@ -5810,6 +6045,7 @@ def build_flight_acquisition_comparison_payload(
     market_type_ids: Iterable[int] = (),
     market_type_names: Iterable[Any] = (),
     item_workers: int = DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS,
+    learning_store: MarketStore | None = None,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     clean_destination_name = str(destination_name or DEFAULT_HAUL_DESTINATION_SYSTEM).strip() or DEFAULT_HAUL_DESTINATION_SYSTEM
@@ -5893,6 +6129,7 @@ def build_flight_acquisition_comparison_payload(
                 market_type_names=market_type_names,
                 item_workers=item_workers,
                 expectation_store=None,
+                learning_store=learning_store,
                 progress=hub_progress,
             )
         except CorpMarketError as exc:
@@ -5994,6 +6231,14 @@ def build_flight_acquisition_comparison_payload(
         "portfolio": combined_portfolio,
         "opportunities": combined_opportunity_rows,
     }
+    combined_acquisition["learning"] = attach_local_trade_learning_signals(
+        learning_store=learning_store,
+        character_id=session.character_id,
+        item_groups=(
+            [item for item in combined_opportunity_rows if isinstance(item, dict)],
+            [item for item in combined_portfolio.get("lines") or [] if isinstance(item, dict)],
+        ),
+    )
     combined_route = {
         "origin": {"name": "Multiple buy hubs"},
         "destination": destination_payload,
@@ -6067,6 +6312,7 @@ def build_flight_acquisition_payload(
     market_type_names: Iterable[Any] = (),
     item_workers: int = DEFAULT_FLIGHT_ACQUISITION_ITEM_WORKERS,
     expectation_store: MarketStore | None = None,
+    learning_store: MarketStore | None = None,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     require_flight_scopes(session, (FLIGHT_LOCATION_SCOPE, FLIGHT_SKILLS_SCOPE))
@@ -6179,6 +6425,15 @@ def build_flight_acquisition_payload(
         "route_warning": route_plan["warning"],
         "systems": route_systems,
     }
+    portfolio = acquisition.get("portfolio") if isinstance(acquisition.get("portfolio"), Mapping) else {}
+    acquisition["learning"] = attach_local_trade_learning_signals(
+        learning_store=learning_store or expectation_store,
+        character_id=session.character_id,
+        item_groups=(
+            [item for item in acquisition.get("opportunities") or [] if isinstance(item, dict)],
+            [item for item in portfolio.get("lines") or [] if isinstance(item, dict)],
+        ),
+    )
     acquisition["report_rows"] = build_acquisition_expected_realized_report_rows(
         generated_at=generated_at,
         route=route_payload,
@@ -7494,6 +7749,11 @@ def build_expected_realized_report_row(
     buy_order_price_to_enter: Any = None,
     estimated_broker_fee_percent: Any = None,
     estimated_broker_fee_isk: Any = None,
+    destination_sell_hub: str = "",
+    destination_sell_target_price: Any = None,
+    destination_sell_target_units: Any = None,
+    destination_sell_target_details: str = "",
+    actual_sell_price_per_item: Any = None,
     actual_buy_order_total: Any = None,
     actual_broker_fee_paid: Any = None,
     actual_total_cost: Any = None,
@@ -7570,7 +7830,12 @@ def build_expected_realized_report_row(
             "Estimated Broker Fee %": expected_realized_report_number(estimated_broker_fee_percent),
             "Estimated Broker Fee ISK": expected_realized_report_number(estimated_broker_fee_isk),
             "Expected Return Per Item": expected_realized_report_number(expected_return_number),
+            "Destination Sell Hub": str(destination_sell_hub or ""),
+            "Destination Sell Target Price": expected_realized_report_number(destination_sell_target_price),
+            "Destination Sell Target Units": expected_realized_report_number(destination_sell_target_units),
+            "Destination Sell Target Details": str(destination_sell_target_details or ""),
             "Realized Return Per Item": expected_realized_report_number(realized_return_number),
+            "Actual Sell Price Per Item": expected_realized_report_number(actual_sell_price_per_item),
             "Expected Total Cost": expected_realized_report_number(expected_total_cost),
             "Estimated Total ISK Needed": expected_realized_report_number(expected_total_cost),
             "Expected Total Return": expected_realized_report_number(expected_total_return),
@@ -7648,6 +7913,99 @@ def haul_report_opportunity_pickup_system_label(opportunity: Mapping[str, Any]) 
 def asset_ledger_container_tag(value: str, fallback: str) -> str:
     tag = re.sub(r"[^A-Za-z0-9]+", "-", str(value or "").strip()).strip("-")
     return tag[:40] or fallback
+
+
+def report_quantity_text(value: Any) -> str:
+    number = clean_optional_float(value)
+    if number is None:
+        return ""
+    rounded = round(number)
+    if abs(number - rounded) < 1e-9:
+        return f"{int(rounded):,}"
+    return f"{number:,.4f}".rstrip("0").rstrip(".")
+
+
+def destination_sell_target_details(
+    *,
+    destination_name: str,
+    price: Any,
+    units: Any,
+    matched_buy_order_count: Any = None,
+    visible_units: Any = None,
+    weighted: bool = False,
+) -> str:
+    clean_destination = str(destination_name or "destination").strip() or "destination"
+    price_text = format_isk(clean_optional_float(price)) if clean_optional_float(price) is not None else "unknown price"
+    units_number = clean_optional_float(units)
+    units_text = f"{report_quantity_text(units_number)} planned unit{'s' if units_number != 1 else ''}" if units_number is not None else "planned units"
+    parts = [
+        f"Sell into {clean_destination} public buy orders at {'weighted ' if weighted else ''}{price_text} for {units_text}."
+    ]
+    matched_count = clean_optional_int(matched_buy_order_count)
+    if matched_count is not None and matched_count > 0:
+        parts.append(
+            f"{report_quantity_text(matched_count)} destination buy order{'s' if matched_count != 1 else ''} matched."
+        )
+    visible = clean_optional_float(visible_units)
+    if visible is not None and visible > 0:
+        parts.append(f"{report_quantity_text(visible)} visible unit{'s' if visible != 1 else ''} at scan time.")
+    return " ".join(parts)
+
+
+def haul_destination_sell_target_fields(
+    item: Mapping[str, Any],
+    *,
+    destination_name: str,
+    units: Any,
+) -> dict[str, Any]:
+    destination_order = item.get("destination_order") if isinstance(item.get("destination_order"), Mapping) else {}
+    destination_hub = str(destination_order.get("system_name") or destination_name or "").strip()
+    target_price = clean_optional_float(item.get("average_destination_price"))
+    if target_price is None:
+        target_price = clean_optional_float(destination_order.get("price"))
+    matched_count = clean_optional_int(item.get("matched_buy_order_count"))
+    visible_units = clean_optional_float(destination_order.get("volume_remain"))
+    return {
+        "destination_sell_hub": destination_hub,
+        "destination_sell_target_price": target_price,
+        "destination_sell_target_units": units,
+        "destination_sell_target_details": destination_sell_target_details(
+            destination_name=destination_hub or destination_name,
+            price=target_price,
+            units=units,
+            matched_buy_order_count=matched_count,
+            visible_units=visible_units,
+            weighted=matched_count is not None and matched_count > 1,
+        ),
+    }
+
+
+def acquisition_destination_sell_target_fields(
+    item: Mapping[str, Any],
+    *,
+    destination_name: str,
+    units: Any,
+) -> dict[str, Any]:
+    destination_buy = item.get("best_destination_buy") if isinstance(item.get("best_destination_buy"), Mapping) else {}
+    destination_hub = str(destination_buy.get("system_name") or destination_name or "").strip()
+    target_price = clean_optional_float(destination_buy.get("price"))
+    if target_price is None:
+        gross_revenue = clean_optional_float(item.get("gross_destination_revenue"))
+        clean_units = clean_optional_float(units)
+        if gross_revenue is not None and clean_units and clean_units > 0:
+            target_price = gross_revenue / clean_units
+    visible_units = clean_optional_float(destination_buy.get("volume_remain"))
+    return {
+        "destination_sell_hub": destination_hub,
+        "destination_sell_target_price": target_price,
+        "destination_sell_target_units": units,
+        "destination_sell_target_details": destination_sell_target_details(
+            destination_name=destination_hub or destination_name,
+            price=target_price,
+            units=units,
+            visible_units=visible_units,
+        ),
+    }
 
 
 def haul_report_direction_fields(
@@ -7773,6 +8131,11 @@ def build_haul_expected_realized_report_rows(
                 destination_name=destination_name,
                 status=status,
             )
+            sell_target = haul_destination_sell_target_fields(
+                opportunity,
+                destination_name=destination_name,
+                units=units,
+            )
             notes = (
                 f"Hauler visible opportunity from {origin_name} to {destination_name}; "
                 f"{matched_pickup_count} pickup system(s); risk {risk_level}; "
@@ -7790,6 +8153,7 @@ def build_haul_expected_realized_report_rows(
                 quantity=units,
                 price_per_item=price_per_item,
                 expected_return_per_item=expected_return_per_item,
+                **sell_target,
                 status=status,
                 reason_for_entry=(
                     f"Manual hauling arbitrage: buy at pickup sell orders, haul from {origin_name} "
@@ -7836,6 +8200,11 @@ def build_haul_expected_realized_report_rows(
             destination_name=destination_name,
             status="Planned",
         )
+        sell_target = haul_destination_sell_target_fields(
+            line,
+            destination_name=destination_name,
+            units=units,
+        )
         notes = (
             f"Hauler load-plan row from {origin_name} to {destination_name}; "
             f"{pickup_system_count} pickup system(s); risk {risk_level}; "
@@ -7852,6 +8221,7 @@ def build_haul_expected_realized_report_rows(
             quantity=units,
             price_per_item=price_per_item,
             expected_return_per_item=expected_return_per_item,
+            **sell_target,
             reason_for_entry=(
                 f"Manual hauling load plan: buy at pickup sell orders, haul from {origin_name} "
                 f"toward {destination_name}, then sell into destination buy orders if still available."
@@ -7936,6 +8306,11 @@ def build_acquisition_expected_realized_report_rows(
             destination_name=destination_name,
             order_duration_label=order_duration_label,
         )
+        sell_target = acquisition_destination_sell_target_fields(
+            line,
+            destination_name=destination_name,
+            units=units,
+        )
         rows.append(
             build_expected_realized_report_row(
                 date_created=generated_at,
@@ -7951,6 +8326,7 @@ def build_acquisition_expected_realized_report_rows(
                 estimated_broker_fee_percent=broker_fee_rate * 100.0 if broker_fee_rate is not None else None,
                 estimated_broker_fee_isk=estimated_broker_fee,
                 expected_return_per_item=expected_return_per_item,
+                **sell_target,
                 expected_total_cost=estimated_committed,
                 reason_for_entry=reason_for_entry,
                 verification_notes=verification_notes,
@@ -14196,6 +14572,7 @@ def build_http_server(
                 payload = build_flight_hauling_payload(
                     config=sso_config,
                     session=session,
+                    learning_store=store,
                     **request.payload_kwargs(),
                 )
             except CorpMarketError as exc:
@@ -14214,6 +14591,7 @@ def build_http_server(
                     config=sso_config,
                     session=session,
                     destinations=request.destinations,
+                    learning_store=store,
                     **request.scan.comparison_kwargs(),
                 )
             except CorpMarketError as exc:
@@ -14248,6 +14626,7 @@ def build_http_server(
                     config=sso_config,
                     session=session,
                     progress=emit,
+                    learning_store=store,
                     **request.payload_kwargs(),
                 )
             except (BrokenPipeError, ConnectionResetError):
@@ -14272,6 +14651,7 @@ def build_http_server(
                     config=sso_config,
                     session=session,
                     expectation_store=store,
+                    learning_store=store,
                     **request.payload_kwargs(),
                 )
             except CorpMarketError as exc:
@@ -14290,6 +14670,7 @@ def build_http_server(
                     config=sso_config,
                     session=session,
                     source_hubs=request.source_hubs,
+                    learning_store=store,
                     **request.payload_kwargs(),
                 )
             except CorpMarketError as exc:
@@ -14326,6 +14707,7 @@ def build_http_server(
                     config=sso_config,
                     session=session,
                     expectation_store=store,
+                    learning_store=store,
                     progress=emit,
                     **request.payload_kwargs(),
                 )
@@ -14369,6 +14751,7 @@ def build_http_server(
                     config=sso_config,
                     session=session,
                     source_hubs=request.source_hubs,
+                    learning_store=store,
                     progress=emit,
                     **request.payload_kwargs(),
                 )
@@ -23636,7 +24019,12 @@ help</textarea>
       "Estimated Broker Fee %",
       "Estimated Broker Fee ISK",
       "Expected Return Per Item",
+      "Destination Sell Hub",
+      "Destination Sell Target Price",
+      "Destination Sell Target Units",
+      "Destination Sell Target Details",
       "Realized Return Per Item",
+      "Actual Sell Price Per Item",
       "Expected Total Cost",
       "Estimated Total ISK Needed",
       "Expected Total Return",
@@ -23753,6 +24141,100 @@ help</textarea>
       if (!normalized) return null;
       const number = Number(normalized);
       return Number.isFinite(number) ? number : null;
+    }
+
+    function reportDestinationSellTargetLabel(row) {
+      const hub = String(row?.["Destination Sell Hub"] || "destination").trim() || "destination";
+      const price = parseReportNumber(row?.["Destination Sell Target Price"]);
+      const units = parseReportNumber(row?.["Destination Sell Target Units"]);
+      const priceText = price == null ? "unknown price" : formatIsk(price);
+      const unitText = units == null ? "planned units" : `${formatNumber(units)} planned unit${units === 1 ? "" : "s"}`;
+      return `${hub} @ ${priceText} for ${unitText}`;
+    }
+
+    function reportDestinationSellTargetDetail(row) {
+      return String(row?.["Destination Sell Target Details"] || "Gross destination public buy-order target. Expected return is after tax/fee assumptions.").trim();
+    }
+
+    function itemDestinationSellTarget(item, kind = "hauling") {
+      const order = kind === "acquisition" ? (item.best_destination_buy || {}) : (item.destination_order || {});
+      const hub = order.system_name || "destination";
+      const price = kind === "acquisition"
+        ? order.price
+        : (item.average_destination_price == null ? order.price : item.average_destination_price);
+      const units = kind === "acquisition" ? item.recommended_units : item.units;
+      const matchedCount = Number(item.matched_buy_order_count || 0);
+      const visibleUnits = Number(order.volume_remain || 0);
+      const detailParts = [];
+      if (matchedCount > 0) {
+        detailParts.push(`${formatNumber(matchedCount)} destination buy order${matchedCount === 1 ? "" : "s"} matched.`);
+      }
+      if (visibleUnits > 0) {
+        detailParts.push(`${formatNumber(visibleUnits)} visible unit${visibleUnits === 1 ? "" : "s"} at scan time.`);
+      }
+      detailParts.push("Expected return is the after-tax/net value.");
+      return {
+        label: `${hub} @ ${formatIsk(price)}`,
+        detail: `${formatNumber(units || 0)} planned unit${Number(units || 0) === 1 ? "" : "s"}. ${detailParts.join(" ")}`,
+      };
+    }
+
+    function learningSignalMeta(key) {
+      const map = {
+        worked_before: {
+          label: "Worked before",
+          cls: "decision-build",
+          note: "This pilot has local Trade P&L evidence of profitable matched sales for this item.",
+        },
+        sold_below_target: {
+          label: "Sold below target",
+          cls: "decision-price",
+          note: "Repeated gross sell prices landed below the planned destination sell target.",
+        },
+        net_return_below_plan: {
+          label: "Net return below plan",
+          cls: "decision-watch",
+          note: "Repeated after-tax/fee net returns landed below plan.",
+        },
+        fees_higher_than_expected: {
+          label: "Fees higher than expected",
+          cls: "decision-watch",
+          note: "Repeated local P&L rows showed higher fee drag than the planner expected.",
+        },
+        fills_too_slowly: {
+          label: "Fills too slowly",
+          cls: "decision-watch",
+          note: "Repeated local evidence shows planned stock staying open past the target window.",
+        },
+        loss_vs_plan: {
+          label: "Loss vs plan",
+          cls: "decision-price",
+          note: "Repeated local P&L rows missed expected plan profit by the warning threshold.",
+        },
+      };
+      return map[key] || {
+        label: String(key || "Learning signal").replace(/_/g, " "),
+        cls: "decision-watch",
+        note: "Local Trade P&L advisory signal.",
+      };
+    }
+
+    function learningSignalPills(signals, limit = 3) {
+      const keys = [];
+      (Array.isArray(signals) ? signals : []).forEach((signal) => {
+        (Array.isArray(signal.signal_keys) ? signal.signal_keys : []).forEach((key) => {
+          if (key && !keys.includes(key)) keys.push(key);
+        });
+      });
+      return keys.slice(0, limit).map((key) => {
+        const meta = learningSignalMeta(key);
+        return `<span class="pill ${meta.cls}" title="${escapeHtml(meta.note)}">${escapeHtml(meta.label)}</span>`;
+      }).join(" ");
+    }
+
+    function renderLearningSignalBadges(signals) {
+      const pills = learningSignalPills(signals, 4);
+      return pills ? `<div class="meta">${pills}</div>` : "";
     }
 
     function parseReportCsvRows(csvText) {
@@ -27607,6 +28089,8 @@ help</textarea>
 
     function renderHaulScannerBadges(item) {
       const badges = [];
+      const learning = learningSignalPills(item.learning_signals || [], 1);
+      if (learning) badges.push(learning);
       const pickup = item.pickup_order || {};
       const destination = item.destination_order || {};
       if (item.cargo_limited) badges.push(`<span class="pill decision-watch">Cargo limited</span>`);
@@ -27617,7 +28101,7 @@ help</textarea>
         const cls = flag.severity === "trap" ? "decision-price" : flag.severity === "caution" ? "decision-watch" : "decision-build";
         badges.push(`<span class="pill ${cls}" title="${escapeHtml(flag.detail || "")}">${escapeHtml(flag.label || "History signal")}</span>`);
       });
-      return badges.slice(0, 2).join("");
+      return badges.slice(0, 3).join("");
     }
 
     function renderHaulDetailAccordion(title, body, options = {}) {
@@ -27634,6 +28118,7 @@ help</textarea>
     function renderHaulBeforeBuyingChecklist(item) {
       const pickup = item.pickup_order || {};
       const destination = item.destination_order || {};
+      const sellTarget = itemDestinationSellTarget(item, "hauling");
       const pickupMinVolume = pickup.min_volume == null ? "unknown" : formatNumber(pickup.min_volume);
       const destinationMinVolume = destination.min_volume == null ? "unknown" : formatNumber(destination.min_volume);
       const matchedRouteJumps = item.matched_pickup_route_jumps == null ? "unknown" : formatNumber(item.matched_pickup_route_jumps);
@@ -27663,9 +28148,9 @@ help</textarea>
           detail: "Confirm the route, ship, cargo value, and risk before undocking.",
         },
         {
-          label: "Destination Demand",
-          value: `${formatIsk(item.average_destination_price == null ? destination.price : item.average_destination_price)} avg`,
-          detail: `${formatNumber(destination.volume_remain)} units visible at destination buy orders.`,
+          label: "Destination Sell Target",
+          value: sellTarget.label,
+          detail: sellTarget.detail,
         },
         {
           label: "Sales Tax",
@@ -27694,15 +28179,19 @@ help</textarea>
       if (!reportRow) {
         return `<div class="decision-empty">No tracking row returned for this opportunity.</div>`;
       }
+      const sellTargetLabel = reportDestinationSellTargetLabel(reportRow);
+      const sellTargetDetail = reportDestinationSellTargetDetail(reportRow);
       return `
         <div class="decision-lede">Expected vs Actual: compare the plan against what happened in EVE.</div>
         <div class="decision-metrics">
           <div class="decision-metric"><span>Expected Cost</span><b>${formatIsk(reportRow["Expected Total Cost"])}</b><small>Pickup buy cost planned by the scanner.</small></div>
           <div class="decision-metric"><span>Expected Tax</span><b>${formatIsk(reportRow["Expected Sales Tax ISK"])}</b><small>Sales tax estimate for selling into destination buy orders.</small></div>
+          <div class="decision-metric"><span>Destination Sell Target</span><b>${escapeHtml(sellTargetLabel)}</b><small>${escapeHtml(sellTargetDetail)}</small></div>
           <div class="decision-metric"><span>Expected Route</span><b>${escapeHtml(String(reportRow["Expected Route Jumps"] || "unknown"))} jumps</b><small>Actual route may differ after you undock.</small></div>
           <div class="decision-metric"><span>Expected Profit</span><b>${formatSignedIsk(reportRow["Expected Total Profit"])}</b><small>After expected pickup cost and sales tax.</small></div>
         </div>
         <div class="profit-detail-grid">
+          <div class="profit-detail-row"><span>Actual sell price per item</span><b>${escapeHtml(String(reportRow["Actual Sell Price Per Item"] || "fill after sale"))}</b></div>
           <div class="profit-detail-row"><span>Actual buy/order cost</span><b>${escapeHtml(String(reportRow["Actual Total Cost"] || "fill after run"))}</b></div>
           <div class="profit-detail-row"><span>Actual filled quantity</span><b>${escapeHtml(String(reportRow["Actual Filled Quantity"] || "fill after run"))}</b></div>
           <div class="profit-detail-row"><span>Actual route jumps</span><b>${escapeHtml(String(reportRow["Actual Route Jumps"] || "fill after run"))}</b></div>
@@ -27802,6 +28291,7 @@ help</textarea>
             <div>
               <strong>${escapeHtml(item.item_name || "Unknown item")}</strong>
               <div class="meta">${escapeHtml(status)} opportunity; ${escapeHtml(acquisitionRiskLabel(item.risk_level))}; expected profit ${formatSignedIsk(item.net_profit)}.</div>
+              ${renderLearningSignalBadges(item.learning_signals || [])}
             </div>
             <div class="haul-detail-status">
               <span class="pill ${statusClass}">${escapeHtml(status)}</span>
@@ -28577,6 +29067,7 @@ help</textarea>
       const destinationBuy = item.best_destination_buy || {};
       const sourceBuy = item.best_source_buy || {};
       const sourceSell = item.best_source_sell || {};
+      const sellTarget = itemDestinationSellTarget(item, "acquisition");
       const brokerRate = item.broker_fee_rate == null ? null : Number(item.broker_fee_rate) * 100;
       const checklist = [
         {
@@ -28605,9 +29096,9 @@ help</textarea>
           detail: "Bid escrow plus broker fee estimate.",
         },
         {
-          label: "Destination Demand",
-          value: `${formatIsk(destinationBuy.price)} buy`,
-          detail: `${formatNumber(destinationBuy.volume_remain)} visible units in ${destinationBuy.system_name || "destination"}.`,
+          label: "Destination Sell Target",
+          value: sellTarget.label,
+          detail: sellTarget.detail,
         },
         {
           label: "Competing Source Buy",
@@ -28639,6 +29130,7 @@ help</textarea>
     function renderAcquisitionWhySelected(item) {
       const range = item.range_recommendation || {};
       const destinationBuy = item.best_destination_buy || {};
+      const sellTarget = itemDestinationSellTarget(item, "acquisition");
       const sourceHub = item.source_hub_name || item.comparison_source_hub || item.placement_system || "";
       const scaled = Number(item.original_recommended_units || 0) > Number(item.recommended_units || 0);
       return `
@@ -28650,6 +29142,7 @@ help</textarea>
           <div class="profit-detail-row"><span>Budget fit</span><b>${formatIsk(item.estimated_isk_committed)}</b><small>${formatPercent(item.portfolio_weight_percent)} of total portfolio budget.</small></div>
           <div class="profit-detail-row"><span>Jump fit</span><b>${formatNumber(item.estimated_collection_jumps)}</b><small>Inside the portfolio jump budget.</small></div>
           <div class="profit-detail-row"><span>Demand signal</span><b>${formatNumber(destinationBuy.volume_remain)} units</b><small>${formatIsk(destinationBuy.price)} destination buy price.</small></div>
+          <div class="profit-detail-row"><span>Destination sell target</span><b>${escapeHtml(sellTarget.label)}</b><small>${escapeHtml(sellTarget.detail)}</small></div>
           <div class="profit-detail-row"><span>Size logic</span><b>${scaled ? "scaled" : "full first order"}</b><small>${scaled ? `Reduced from ${formatNumber(item.original_recommended_units)} units to fit the budget.` : "Fits history, budget, and destination demand."}</small></div>
           <div class="profit-detail-row"><span>Range logic</span><b>${escapeHtml(range.range || "station")}</b><small>${escapeHtml(range.reason || "Keep the order easy to monitor.")}</small></div>
           <div class="profit-detail-row"><span>Profit logic</span><b>${formatSignedIsk(item.net_profit)}</b><small>${formatPercent(item.margin_percent)} estimated margin after fee assumptions.</small></div>
@@ -28733,6 +29226,7 @@ help</textarea>
           const destinationBuy = item.best_destination_buy || {};
           const riskClass = acquisitionRiskClass(item.risk_level);
           const sourceHub = item.source_hub_name || item.comparison_source_hub || item.placement_system || "";
+          const learning = learningSignalPills(item.learning_signals || [], 3);
           const scaledNote = Number(item.original_recommended_units || 0) > Number(item.recommended_units || 0)
             ? `Scaled down from ${formatNumber(item.original_recommended_units)} units to fit the portfolio budget.`
             : "Uses the full first-order size suggested by market history and destination demand.";
@@ -28743,6 +29237,7 @@ help</textarea>
                 <span class="pill decision-source">${escapeHtml(item.category || "Selected scope")}</span>
                 ${sourceHub ? `<span class="pill decision-source">Buy hub ${escapeHtml(sourceHub)}</span>` : ""}
                 <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
+                ${learning}
               </div>
               <div class="decision-lede">${escapeHtml(decision.label || "Review")} at ${formatIsk(item.suggested_bid)} or less; ${escapeHtml(range.range || "station")} range. ${escapeHtml(scaledNote)}</div>
               ${renderAcquisitionTheoryPills(item)}
@@ -28805,11 +29300,13 @@ help</textarea>
         const destinationBuy = item.best_destination_buy || {};
         const riskClass = acquisitionRiskClass(item.risk_level);
         const sourceLabels = (item.source_labels || []).join(", ") || "Selected scope";
+        const learning = learningSignalPills(item.learning_signals || [], 3);
         return `
           <div class="decision-row">
             <div class="decision-head">
               <strong>${escapeHtml(item.item_name)}</strong>
               <span class="pill ${riskClass}">${escapeHtml(acquisitionRiskLabel(item.risk_level))}</span>
+              ${learning}
             </div>
             <div class="decision-lede">${escapeHtml(decision.label || "Review")} in ${escapeHtml(item.placement_system || "source")} at ${formatIsk(item.suggested_bid)} or less; ${escapeHtml(range.range || "station")} range.</div>
             ${renderAcquisitionTheoryPills(item)}
@@ -29308,6 +29805,7 @@ help</textarea>
       const pnl = data.trade_pnl || {};
       const totals = pnl.totals || {};
       const valuation = pnl.market_valuation || {};
+      const learning = pnl.learning || {};
       const itemLimit = pnl.items_truncated ? ` Showing largest ${formatNumber(pnl.item_limit)} of ${formatNumber(pnl.item_count)} item types.` : "";
       const excludedText = totals.excluded_item_count
         ? ` Ignored ${formatNumber(totals.excluded_item_count)} item types for considered result; ignored actual ${formatSignedIsk(totals.excluded_actual_profit_isk)}.`
@@ -29334,9 +29832,25 @@ help</textarea>
         Loss-making matched item types ${formatNumber(totals.loss_item_count)}. Older ledger buys matched ${formatNumber(totals.historical_matched_quantity)} units from ${formatNumber(totals.historical_transaction_count)} replayed local rows.
         ${renderTradePnlValuationNote(valuation, totals)}
         ${renderTradePnlPlanNote(totals)}
+        ${renderTradeLearningNote(learning)}
         ${renderTradeFeeRefs(pnl.fee_ref_counts || {})}
       `;
       tradePnlResults.innerHTML = renderTradePnlItems(pnl.items || []);
+    }
+
+    function renderTradeLearningNote(learning) {
+      const saved = Number(learning.saved || 0);
+      const signalCount = Number(learning.signal_count || 0);
+      const evidenceCount = Number(learning.evidence_item_count || 0);
+      if (!saved && !signalCount && !evidenceCount) {
+        return "No local Trade P&L learning signals matched this scan.";
+      }
+      const counts = learning.signal_counts || {};
+      const countText = Object.entries(counts).map(([key, count]) => {
+        const meta = learningSignalMeta(key);
+        return `${meta.label} ${formatNumber(count)}`;
+      }).join(", ");
+      return `Learning signals: saved ${formatNumber(saved)} local evidence row${saved === 1 ? "" : "s"}; ${formatNumber(signalCount)} active advisory item${signalCount === 1 ? "" : "s"}${countText ? ` (${escapeHtml(countText)})` : ""}.`;
     }
 
     function renderTradePnlValuationNote(valuation, totals) {
@@ -29396,6 +29910,7 @@ help</textarea>
         const excludedNote = item.excluded ? `<div class="meta">${escapeHtml(item.excluded_reason || "Excluded from considered result.")}</div>` : "";
         const matches = item.matches || [];
         const badges = renderTradePnlBadges(item.source_badges || []);
+        const learningBadges = renderLearningSignalBadges(item.learning_signals || []);
         const valuationDetail = renderTradePnlItemValuationDetail(item);
         const plan = item.plan_reconciliation || {};
         const planLede = plan.available ? `; plan ${escapeHtml(plan.status_label || "Plan check")} ${formatSignedIsk(plan.actual_vs_expected_profit_isk)}` : "";
@@ -29406,6 +29921,7 @@ help</textarea>
               <span class="pill ${statusClass}">${escapeHtml(tradePnlStatusLabel(status))}</span>
             </div>
             ${badges}
+            ${learningBadges}
             ${excludedNote}
             <div class="decision-lede">Realized ${formatSignedIsk(item.actual_profit_isk)} vs expected ${formatSignedIsk(item.expected_profit_isk)}; inventory result ${formatSignedIsk(item.inventory_result_isk)}${planLede}.</div>
             <div class="decision-metrics">

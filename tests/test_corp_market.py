@@ -274,6 +274,59 @@ def test_market_store_rejects_non_eve_fitting_text(tmp_path):
         store.create_shared_fitting({"fitting_text": "Hawk\nBallistic Control System II"})
 
 
+def test_market_store_trade_learning_signals_require_repeated_misses(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    miss = {
+        "type_id": 34,
+        "item_name": "Tritanium",
+        "updated_at": "2026-06-11T12:00:00Z",
+        "sample_count": 1,
+        "matched_quantity": 10,
+        "sold_below_target_count": 1,
+        "net_return_below_plan_count": 1,
+        "payload": {"average_sell_unit_price": 900_000, "expected_gross_sell_unit_price": 1_200_000},
+    }
+
+    first = store.save_trade_learning_signals(character_id=123, signals=[miss])["signals"][0]
+    second = store.save_trade_learning_signals(character_id=123, signals=[miss])["signals"][0]
+    other_pilot = store.latest_trade_learning_signals(character_id=456, type_ids=[34])
+
+    assert first["signal_keys"] == []
+    assert set(second["signal_keys"]) == {"sold_below_target", "net_return_below_plan"}
+    assert second["sold_below_target_count"] == 2
+    assert other_pilot == []
+
+
+def test_trade_learning_signals_attach_by_type_without_reordering(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    store.save_trade_learning_signals(
+        character_id=123,
+        signals=[
+            {
+                "type_id": 34,
+                "item_name": "Tritanium",
+                "updated_at": "2026-06-11T12:00:00Z",
+                "sample_count": 1,
+                "matched_quantity": 10,
+                "profitable_count": 1,
+                "payload": {"latest_status": "profit"},
+            }
+        ],
+    )
+    rows = [{"type_id": 35, "item_name": "Pyerite"}, {"type_id": 34, "item_name": "Tritanium"}]
+
+    summary = corp_market.attach_local_trade_learning_signals(
+        learning_store=store,
+        character_id=123,
+        item_groups=(rows,),
+    )
+
+    assert [row["item_name"] for row in rows] == ["Pyerite", "Tritanium"]
+    assert "learning_signals" not in rows[0]
+    assert rows[1]["learning_signals"][0]["signal_keys"] == ["worked_before"]
+    assert summary["signal_count"] == 1
+
+
 def test_discord_fitting_payload_posts_exact_eve_clipboard_block_to_forum(tmp_path):
     store = MarketStore(tmp_path / "market.sqlite3")
     fitting = store.create_shared_fitting(
@@ -832,6 +885,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Expected vs Actual" in page
     assert "renderHaulBeforeBuyingChecklist" in page
     assert "renderHaulExpectedActualTracker" in page
+    assert "Destination Sell Target" in page
+    assert "Actual sell price per item" in page
+    assert "Sold below target" in page
+    assert "Net return below plan" in page
     assert "Min Volume" in page
     assert "Actual route jumps" in page
     assert "Export Preview (CSV Row)" in page
@@ -860,6 +917,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "\"Buy Directions\"" in page
     assert "\"Container Directions\"" in page
     assert "\"Sell Directions\"" in page
+    assert "\"Destination Sell Target Price\"" in page
+    assert "\"Actual Sell Price Per Item\"" in page
     assert "id=\"acq-results\" class=\"decision-output\"" in page
     assert "Market Investment Portfolio" in page
     assert "Possible trap" in page
@@ -1953,6 +2012,92 @@ def test_build_flight_trade_pnl_payload_uses_saved_acquisition_expectation(monke
     assert plan["suggested_bid"] == pytest.approx(100)
 
 
+def test_build_flight_trade_pnl_payload_saves_repeated_learning_signals(monkeypatch, tmp_path):
+    current_time = datetime.now(timezone.utc)
+    buy_date = (current_time - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    sell_date = (current_time - timedelta(hours=12)).isoformat().replace("+00:00", "Z")
+    store = MarketStore(tmp_path / "corp_market.sqlite3")
+    store.save_acquisition_expectations(
+        character_id=123456789,
+        generated_at=(current_time - timedelta(hours=18)).isoformat().replace("+00:00", "Z"),
+        acquisition={
+            "origin_system": {"name": "Water"},
+            "destination_system": {"name": "Jita"},
+            "opportunities": [
+                {
+                    "type_id": 34,
+                    "item_name": "Tritanium",
+                    "suggested_bid": 1_000_000,
+                    "max_safe_bid": 1_050_000,
+                    "recommended_units": 10,
+                    "net_profit_per_unit": 100_000,
+                    "net_profit": 1_000_000,
+                    "net_destination_price": 1_100_000,
+                    "estimated_isk_committed": 10_100_000,
+                    "estimated_broker_fee": 100_000,
+                    "estimated_sales_tax": 100_000,
+                    "risk_level": "clear",
+                    "placement_system": "Water",
+                    "target_days": 3,
+                    "best_destination_buy": {"price": 1_200_000},
+                }
+            ],
+        },
+    )
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Trader Pilot",
+        corporation_id=1001,
+        corporation_name="Star Fleet",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-wallet.read_character_wallet.v1",),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+    )
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_wallet_transactions",
+        lambda config, session: [
+            {
+                "transaction_id": 100,
+                "date": buy_date,
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 1_000_000,
+                "is_buy": True,
+            },
+            {
+                "transaction_id": 101,
+                "date": sell_date,
+                "type_id": 34,
+                "quantity": 10,
+                "unit_price": 900_000,
+                "is_buy": False,
+            },
+        ],
+    )
+    monkeypatch.setattr(corp_market, "fetch_flight_wallet_journal", lambda config, session: [])
+    monkeypatch.setattr(corp_market, "fetch_universe_names", lambda config, type_ids: {34: "Tritanium"})
+
+    for _ in range(2):
+        payload = build_flight_trade_pnl_payload(
+            config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+            session=session,
+            expectation_store=store,
+        )
+
+    signal = payload["trade_pnl"]["items"][0]["learning_signals"][0]
+    assert set(signal["signal_keys"]) >= {"sold_below_target", "net_return_below_plan", "loss_vs_plan"}
+    assert signal["sold_below_target_count"] == 2
+    assert payload["trade_pnl"]["learning"]["signal_count"] == 1
+    assert "transaction_id" not in json.dumps(signal)
+    assert payload["trade_pnl"]["items"][0]["plan_reconciliation"]["average_sell_unit_price"] == pytest.approx(900_000)
+    assert payload["trade_pnl"]["items"][0]["plan_reconciliation"]["expected_gross_sell_unit_price"] == pytest.approx(1_200_000)
+
+
 def test_build_flight_trade_pnl_payload_uses_local_trade_ledger_for_older_buys(monkeypatch, tmp_path):
     current_time = datetime.now(timezone.utc)
     older_buy_date = (current_time - timedelta(days=45)).isoformat().replace("+00:00", "Z")
@@ -2597,6 +2742,11 @@ def test_expected_realized_report_row_calculates_and_quotes_csv():
     assert row["Container Directions"] == ""
     assert row["Sell Directions"] == ""
     assert row["Buy Hub"] == ""
+    assert row["Destination Sell Hub"] == ""
+    assert row["Destination Sell Target Price"] == ""
+    assert row["Destination Sell Target Units"] == ""
+    assert row["Destination Sell Target Details"] == ""
+    assert row["Actual Sell Price Per Item"] == ""
     assert row["Actual Buy Order Total"] == ""
     assert row["Actual Broker Fee Paid"] == ""
     assert row["Actual Total Cost"] == ""
@@ -2607,6 +2757,8 @@ def test_expected_realized_report_row_calculates_and_quotes_csv():
     assert "Buy Order Price To Enter" in csv_text
     assert "Buy Directions" in csv_text
     assert "Buy Hub" in csv_text
+    assert "Destination Sell Target Price" in csv_text
+    assert "Actual Sell Price Per Item" in csv_text
     assert "Container Directions" in csv_text
     assert "Sell Directions" in csv_text
     assert "Actual Buy Order Total" in csv_text
@@ -2632,12 +2784,19 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
                 "pickup_cost": 2200.0,
                 "net_destination_revenue": 7488.4375,
                 "average_pickup_price": 2.2,
+                "average_destination_price": 7.75,
                 "average_net_destination_price": 7.4884375,
                 "sales_tax_total": 261.5625,
                 "matched_pickup_route_jumps": 4,
                 "extra_route_jumps": 2,
                 "risk_level": "clear",
                 "matched_pickup_system_count": 2,
+                "matched_buy_order_count": 2,
+                "destination_order": {
+                    "system_name": "Jita",
+                    "price": 7.75,
+                    "volume_remain": 5000,
+                },
                 "matched_pickup_systems": [
                     {"system_name": "Middle"},
                     {"system_name": "Side Pickup"},
@@ -2703,6 +2862,12 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
     assert row["Quantity"] == 1000
     assert row["Price Per Item"] == pytest.approx(2.2)
     assert row["Expected Return Per Item"] == pytest.approx(7.4884375)
+    assert row["Destination Sell Hub"] == "Jita"
+    assert row["Destination Sell Target Price"] == pytest.approx(7.75)
+    assert row["Destination Sell Target Units"] == 1000
+    assert "Sell into Jita public buy orders" in row["Destination Sell Target Details"]
+    assert "2 destination buy orders matched" in row["Destination Sell Target Details"]
+    assert "5,000 visible units" in row["Destination Sell Target Details"]
     assert row["Expected Total Cost"] == pytest.approx(2200.0)
     assert row["Expected Sales Tax ISK"] == pytest.approx(261.5625)
     assert row["Expected Route Jumps"] == 4
@@ -2748,8 +2913,14 @@ def test_acquisition_report_rows_use_committed_cost_basis():
                     "max_safe_bid": 12.0,
                     "estimated_broker_fee": 17_250.0,
                     "estimated_isk_committed": 592_250.0,
+                    "gross_destination_revenue": 800_000.0,
                     "estimated_net_revenue": 750_000.0,
                     "risk_level": "caution",
+                    "best_destination_buy": {
+                        "system_name": "Jita",
+                        "price": 16.0,
+                        "volume_remain": 200_000,
+                    },
                 }
             ],
         }
@@ -2775,6 +2946,11 @@ def test_acquisition_report_rows_use_committed_cost_basis():
     assert row["Estimated Broker Fee %"] == pytest.approx(3.0)
     assert row["Estimated Broker Fee ISK"] == pytest.approx(17_250.0)
     assert row["Expected Return Per Item"] == pytest.approx(15.0)
+    assert row["Destination Sell Hub"] == "Jita"
+    assert row["Destination Sell Target Price"] == pytest.approx(16.0)
+    assert row["Destination Sell Target Units"] == 50_000
+    assert "Sell into Jita public buy orders" in row["Destination Sell Target Details"]
+    assert "200,000 visible units" in row["Destination Sell Target Details"]
     assert row["Expected Total Cost"] == pytest.approx(592_250.0)
     assert row["Estimated Total ISK Needed"] == pytest.approx(592_250.0)
     assert row["Expected Total Profit"] == pytest.approx(157_750.0)

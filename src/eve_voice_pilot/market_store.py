@@ -189,6 +189,39 @@ class MarketStore:
                 ON flight_trade_ledger_transactions(character_id, type_id, date)
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS flight_trade_learning_signals (
+                    character_id INTEGER NOT NULL,
+                    type_id INTEGER NOT NULL,
+                    item_name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    matched_quantity INTEGER NOT NULL DEFAULT 0,
+                    open_quantity INTEGER NOT NULL DEFAULT 0,
+                    profitable_count INTEGER NOT NULL DEFAULT 0,
+                    sold_below_target_count INTEGER NOT NULL DEFAULT 0,
+                    net_return_below_plan_count INTEGER NOT NULL DEFAULT 0,
+                    fees_higher_than_expected_count INTEGER NOT NULL DEFAULT 0,
+                    fills_too_slowly_count INTEGER NOT NULL DEFAULT 0,
+                    loss_vs_plan_count INTEGER NOT NULL DEFAULT 0,
+                    actual_profit_isk REAL NOT NULL DEFAULT 0,
+                    actual_vs_plan_profit_isk REAL NOT NULL DEFAULT 0,
+                    gross_sell_delta_total_isk REAL NOT NULL DEFAULT 0,
+                    net_sell_delta_total_isk REAL NOT NULL DEFAULT 0,
+                    fee_gap_total_isk REAL NOT NULL DEFAULT 0,
+                    signal_keys_json TEXT NOT NULL DEFAULT '[]',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (character_id, type_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_flight_trade_learning_character_updated
+                ON flight_trade_learning_signals(character_id, updated_at DESC)
+                """
+            )
 
     def create_listing(self, payload: dict[str, Any]) -> Any:
         listing_id = self.deps.clean_listing_id(payload.get("id") or uuid.uuid4().hex[:12])
@@ -714,4 +747,202 @@ class MarketStore:
             )
             transactions.append(payload)
         return transactions
+
+    def save_trade_learning_signals(
+        self,
+        *,
+        character_id: int,
+        signals: Iterable[dict[str, Any]],
+    ) -> dict[str, Any]:
+        clean_character_id = int(character_id or 0)
+        if clean_character_id <= 0:
+            return {"saved": 0, "signals": []}
+        rows: list[tuple[Any, ...]] = []
+        touched_type_ids: list[int] = []
+        for signal in signals:
+            if not isinstance(signal, dict):
+                continue
+            type_id = self.deps.clean_optional_int(signal.get("type_id"))
+            if type_id is None:
+                continue
+            item_name = self.deps.clean_text(
+                signal.get("item_name") or f"Type {type_id}",
+                "item_name",
+                max_length=160,
+            )
+            updated_at = str(signal.get("updated_at") or self.deps.now_iso())
+            payload = signal.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+            row = (
+                clean_character_id,
+                type_id,
+                item_name,
+                updated_at,
+                _nonnegative_int(signal.get("sample_count"), default=1),
+                _nonnegative_int(signal.get("matched_quantity")),
+                _nonnegative_int(signal.get("open_quantity")),
+                _nonnegative_int(signal.get("profitable_count")),
+                _nonnegative_int(signal.get("sold_below_target_count")),
+                _nonnegative_int(signal.get("net_return_below_plan_count")),
+                _nonnegative_int(signal.get("fees_higher_than_expected_count")),
+                _nonnegative_int(signal.get("fills_too_slowly_count")),
+                _nonnegative_int(signal.get("loss_vs_plan_count")),
+                _float_value(signal.get("actual_profit_isk")),
+                _float_value(signal.get("actual_vs_plan_profit_isk")),
+                _float_value(signal.get("gross_sell_delta_total_isk")),
+                _float_value(signal.get("net_sell_delta_total_isk")),
+                _float_value(signal.get("fee_gap_total_isk")),
+                "[]",
+                json.dumps(payload, sort_keys=True),
+            )
+            rows.append(row)
+            touched_type_ids.append(type_id)
+        if not rows:
+            return {"saved": 0, "signals": []}
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO flight_trade_learning_signals (
+                    character_id, type_id, item_name, updated_at, sample_count, matched_quantity,
+                    open_quantity, profitable_count, sold_below_target_count, net_return_below_plan_count,
+                    fees_higher_than_expected_count, fills_too_slowly_count, loss_vs_plan_count,
+                    actual_profit_isk, actual_vs_plan_profit_isk, gross_sell_delta_total_isk,
+                    net_sell_delta_total_isk, fee_gap_total_isk, signal_keys_json, payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(character_id, type_id) DO UPDATE SET
+                    item_name = excluded.item_name,
+                    updated_at = excluded.updated_at,
+                    sample_count = flight_trade_learning_signals.sample_count + excluded.sample_count,
+                    matched_quantity = flight_trade_learning_signals.matched_quantity + excluded.matched_quantity,
+                    open_quantity = excluded.open_quantity,
+                    profitable_count = flight_trade_learning_signals.profitable_count + excluded.profitable_count,
+                    sold_below_target_count = flight_trade_learning_signals.sold_below_target_count + excluded.sold_below_target_count,
+                    net_return_below_plan_count = flight_trade_learning_signals.net_return_below_plan_count + excluded.net_return_below_plan_count,
+                    fees_higher_than_expected_count = flight_trade_learning_signals.fees_higher_than_expected_count + excluded.fees_higher_than_expected_count,
+                    fills_too_slowly_count = flight_trade_learning_signals.fills_too_slowly_count + excluded.fills_too_slowly_count,
+                    loss_vs_plan_count = flight_trade_learning_signals.loss_vs_plan_count + excluded.loss_vs_plan_count,
+                    actual_profit_isk = flight_trade_learning_signals.actual_profit_isk + excluded.actual_profit_isk,
+                    actual_vs_plan_profit_isk = flight_trade_learning_signals.actual_vs_plan_profit_isk + excluded.actual_vs_plan_profit_isk,
+                    gross_sell_delta_total_isk = flight_trade_learning_signals.gross_sell_delta_total_isk + excluded.gross_sell_delta_total_isk,
+                    net_sell_delta_total_isk = flight_trade_learning_signals.net_sell_delta_total_isk + excluded.net_sell_delta_total_isk,
+                    fee_gap_total_isk = flight_trade_learning_signals.fee_gap_total_isk + excluded.fee_gap_total_isk,
+                    payload_json = excluded.payload_json
+                """,
+                rows,
+            )
+            placeholders = ",".join("?" for _ in sorted(set(touched_type_ids)))
+            query = f"""
+                SELECT * FROM flight_trade_learning_signals
+                WHERE character_id = ? AND type_id IN ({placeholders})
+            """
+            updated_rows = connection.execute(query, (clean_character_id, *sorted(set(touched_type_ids)))).fetchall()
+            for row in updated_rows:
+                keys = _trade_learning_signal_keys(row)
+                connection.execute(
+                    """
+                    UPDATE flight_trade_learning_signals
+                    SET signal_keys_json = ?
+                    WHERE character_id = ? AND type_id = ?
+                    """,
+                    (json.dumps(keys), clean_character_id, int(row["type_id"])),
+                )
+        return {
+            "saved": len(rows),
+            "signals": self.latest_trade_learning_signals(
+                character_id=clean_character_id,
+                type_ids=sorted(set(touched_type_ids)),
+            ),
+        }
+
+    def latest_trade_learning_signals(
+        self,
+        *,
+        character_id: int,
+        type_ids: Iterable[int],
+    ) -> list[dict[str, Any]]:
+        clean_character_id = int(character_id or 0)
+        clean_type_ids = sorted({type_id for type_id in (self.deps.clean_optional_int(value) for value in type_ids) if type_id is not None})
+        if clean_character_id <= 0 or not clean_type_ids:
+            return []
+        placeholders = ",".join("?" for _ in clean_type_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM flight_trade_learning_signals
+                WHERE character_id = ? AND type_id IN ({placeholders})
+                ORDER BY item_name ASC
+                """,
+                (clean_character_id, *clean_type_ids),
+            ).fetchall()
+        return [_trade_learning_signal_from_row(row) for row in rows]
+
+
+def _nonnegative_int(value: Any, *, default: int = 0) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(0, number)
+
+
+def _float_value(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _trade_learning_signal_keys(row: sqlite3.Row) -> list[str]:
+    keys: list[str] = []
+    if int(row["profitable_count"] or 0) > 0:
+        keys.append("worked_before")
+    if int(row["sold_below_target_count"] or 0) > 1:
+        keys.append("sold_below_target")
+    if int(row["net_return_below_plan_count"] or 0) > 1:
+        keys.append("net_return_below_plan")
+    if int(row["fees_higher_than_expected_count"] or 0) > 1:
+        keys.append("fees_higher_than_expected")
+    if int(row["fills_too_slowly_count"] or 0) > 1:
+        keys.append("fills_too_slowly")
+    if int(row["loss_vs_plan_count"] or 0) > 1:
+        keys.append("loss_vs_plan")
+    return keys
+
+
+def _trade_learning_signal_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        signal_keys = json.loads(str(row["signal_keys_json"] or "[]"))
+    except json.JSONDecodeError:
+        signal_keys = []
+    if not isinstance(signal_keys, list):
+        signal_keys = []
+    try:
+        payload = json.loads(str(row["payload_json"] or "{}"))
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "type_id": int(row["type_id"]),
+        "item_name": str(row["item_name"] or ""),
+        "updated_at": str(row["updated_at"] or ""),
+        "sample_count": int(row["sample_count"] or 0),
+        "matched_quantity": int(row["matched_quantity"] or 0),
+        "open_quantity": int(row["open_quantity"] or 0),
+        "profitable_count": int(row["profitable_count"] or 0),
+        "sold_below_target_count": int(row["sold_below_target_count"] or 0),
+        "net_return_below_plan_count": int(row["net_return_below_plan_count"] or 0),
+        "fees_higher_than_expected_count": int(row["fees_higher_than_expected_count"] or 0),
+        "fills_too_slowly_count": int(row["fills_too_slowly_count"] or 0),
+        "loss_vs_plan_count": int(row["loss_vs_plan_count"] or 0),
+        "actual_profit_isk": float(row["actual_profit_isk"] or 0.0),
+        "actual_vs_plan_profit_isk": float(row["actual_vs_plan_profit_isk"] or 0.0),
+        "gross_sell_delta_total_isk": float(row["gross_sell_delta_total_isk"] or 0.0),
+        "net_sell_delta_total_isk": float(row["net_sell_delta_total_isk"] or 0.0),
+        "fee_gap_total_isk": float(row["fee_gap_total_isk"] or 0.0),
+        "signal_keys": [str(key) for key in signal_keys if str(key or "").strip()],
+        "payload": payload,
+    }
 
