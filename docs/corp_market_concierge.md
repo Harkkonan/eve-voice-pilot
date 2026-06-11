@@ -302,6 +302,8 @@ The output is deliberately labeled as cached ledger math:
 - `ore/sec` and `m3/sec` divide the selected ledger total by the manual session-hours field.
 - `m3` totals use local static type volume when available and are marked partial when volume is unknown.
 
+The tab includes a manual browser timer for pilots who do not want to calculate session hours. Start and stop it yourself; when stopped, it writes elapsed hours into the manual session-hours field. Timer state stays in browser local storage and does not read live game state, inventory changes, laser cycles, or the EVE client.
+
 This tab does not use inventory deltas, screen reading, mining-cycle timing, cache scraping, game memory, or EVE client control. Treat it as a practical "how did that mining block go?" summary, not live automation telemetry.
 
 ### Industry Library And Blueprint Profitability

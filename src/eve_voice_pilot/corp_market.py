@@ -20805,9 +20805,20 @@ help</textarea>
                   <small class="input-note">ESI returns daily mining ledger rows for the past 30 days.</small>
                 </label>
                 <label>Manual session hours
-                  <input id="mining-yield-session-hours" name="session_hours" type="number" min="0.05" max="720" step="0.05" value="2">
+                  <input id="mining-yield-session-hours" name="session_hours" type="number" min="0.05" max="720" step="0.0001" value="2">
                   <small class="input-note">Used only for session-average ore/sec and m3/sec labels.</small>
                 </label>
+              </div>
+              <div class="tester-cockpit-note">
+                <strong>Manual session timer</strong>
+                <span id="mining-yield-timer-display">00:00:00 elapsed</span>
+                <span>Local browser timer only. It does not read the EVE client, inventory, laser cycles, or live state.</span>
+                <div class="completed-run-actions">
+                  <button id="mining-yield-timer-start" class="secondary" type="button">Start Timer</button>
+                  <button id="mining-yield-timer-stop" class="secondary" type="button">Stop + Use Hours</button>
+                  <button id="mining-yield-timer-reset" class="ghost" type="button">Reset Timer</button>
+                  <span id="mining-yield-timer-status" class="meta quickbar-copy-status" aria-live="polite">Ready to time a manual mining block.</span>
+                </div>
               </div>
               <div class="completed-run-actions">
                 <button id="mining-yield-refresh" class="ghost" type="submit">Refresh Mining Ledger</button>
@@ -20830,6 +20841,7 @@ help</textarea>
               <li><strong>Server memory:</strong> ledger rows are held in process memory for up to 600 seconds, then expire or clear on logout.</li>
               <li><strong>Daily ledger:</strong> ore/day is calculated from selected calendar days, not from laser cycles.</li>
               <li><strong>Session average:</strong> ore/sec and m3/sec divide the selected ledger total by the manual hours field.</li>
+              <li><strong>Manual timer:</strong> start and stop the local timer yourself if you want the hours field filled for a session average.</li>
               <li><strong>No inventory deltas:</strong> inventory assets are not used to infer live mining yield.</li>
               <li><strong>No client control:</strong> no screen reading, cache scraping, keyboard input, target decisions, or mining automation.</li>
             </ul>
@@ -21731,6 +21743,11 @@ help</textarea>
     const miningYieldStatus = document.querySelector("#mining-yield-status");
     const miningYieldSummary = document.querySelector("#mining-yield-summary");
     const miningYieldResults = document.querySelector("#mining-yield-results");
+    const miningYieldTimerDisplay = document.querySelector("#mining-yield-timer-display");
+    const miningYieldTimerStart = document.querySelector("#mining-yield-timer-start");
+    const miningYieldTimerStop = document.querySelector("#mining-yield-timer-stop");
+    const miningYieldTimerReset = document.querySelector("#mining-yield-timer-reset");
+    const miningYieldTimerStatus = document.querySelector("#mining-yield-timer-status");
     const bulkAppraisalForm = document.querySelector("#bulk-appraisal-form");
     const bulkAppraisalHub = document.querySelector("#bulk-appraisal-hub");
     const bulkAppraisalMode = document.querySelector("#bulk-appraisal-mode");
@@ -21864,6 +21881,8 @@ help</textarea>
     const bulkAppraisalModeKey = "eve-flight-bulk-appraisal-mode-v1";
     const miningYieldDaysKey = "eve-flight-mining-yield-days-v1";
     const miningYieldSessionHoursKey = "eve-flight-mining-yield-session-hours-v1";
+    const miningYieldTimerStartedAtKey = "eve-flight-mining-yield-timer-started-at-v1";
+    const miningYieldTimerElapsedMsKey = "eve-flight-mining-yield-timer-elapsed-ms-v1";
     const tradePnlWindowHoursKey = "eve-flight-trade-pnl-window-hours-v1";
     const tradePnlLensKey = "eve-flight-trade-pnl-lens-v1";
     const tradePnlConsiderationRuleKey = "eve-flight-trade-pnl-consideration-rule-v1";
@@ -21947,6 +21966,7 @@ help</textarea>
     let acquisitionReportRows = [];
     let assetLedgerPreviewCount = 0;
     let assetLedgerHandoffRows = [];
+    let miningYieldTimerInterval = null;
     let bulkAppraisalLastExportText = "";
     let planetaryShoppingQuickbarItems = [];
     let planetarySellQuickbarItems = [];
@@ -27919,6 +27939,80 @@ help</textarea>
       return {days, sessionHours};
     }
 
+    function readMiningYieldTimerState() {
+      const startedAt = Number(window.localStorage.getItem(miningYieldTimerStartedAtKey) || 0);
+      const storedElapsedMs = Math.max(0, Number(window.localStorage.getItem(miningYieldTimerElapsedMsKey) || 0));
+      const now = Date.now();
+      const running = Number.isFinite(startedAt) && startedAt > 0 && startedAt <= now + 10000;
+      const runningElapsedMs = running ? Math.max(0, now - startedAt) : 0;
+      const elapsedMs = Math.max(0, Math.min(720 * 60 * 60 * 1000, storedElapsedMs + runningElapsedMs));
+      return {running, elapsedMs, storedElapsedMs};
+    }
+
+    function formatMiningYieldTimerElapsed(elapsedMs) {
+      const totalSeconds = Math.max(0, Math.floor(Number(elapsedMs || 0) / 1000));
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    }
+
+    function miningYieldTimerHours(elapsedMs) {
+      const hours = Number(elapsedMs || 0) / (60 * 60 * 1000);
+      return Math.max(0.05, Math.min(720, hours));
+    }
+
+    function syncMiningYieldTimerInterval(running) {
+      if (running && !miningYieldTimerInterval) {
+        miningYieldTimerInterval = window.setInterval(() => renderMiningYieldTimer(), 1000);
+      } else if (!running && miningYieldTimerInterval) {
+        window.clearInterval(miningYieldTimerInterval);
+        miningYieldTimerInterval = null;
+      }
+    }
+
+    function renderMiningYieldTimer(statusMessage = "") {
+      const state = readMiningYieldTimerState();
+      if (miningYieldTimerDisplay) {
+        miningYieldTimerDisplay.textContent = `${formatMiningYieldTimerElapsed(state.elapsedMs)} elapsed`;
+      }
+      if (miningYieldTimerStart) miningYieldTimerStart.disabled = state.running;
+      if (miningYieldTimerStop) miningYieldTimerStop.disabled = !state.running && state.elapsedMs <= 0;
+      if (miningYieldTimerReset) miningYieldTimerReset.disabled = !state.running && state.elapsedMs <= 0;
+      if (statusMessage && miningYieldTimerStatus) {
+        miningYieldTimerStatus.textContent = statusMessage;
+      }
+      syncMiningYieldTimerInterval(state.running);
+      return state;
+    }
+
+    function startMiningYieldTimer() {
+      const state = readMiningYieldTimerState();
+      if (state.running) return;
+      window.localStorage.setItem(miningYieldTimerStartedAtKey, String(Date.now()));
+      renderMiningYieldTimer("Timer running. Stop it yourself when the mining block ends.");
+    }
+
+    function stopMiningYieldTimer() {
+      const state = readMiningYieldTimerState();
+      window.localStorage.setItem(miningYieldTimerElapsedMsKey, String(state.elapsedMs));
+      window.localStorage.removeItem(miningYieldTimerStartedAtKey);
+      const elapsedLabel = formatMiningYieldTimerElapsed(state.elapsedMs);
+      const sessionHours = Number(miningYieldTimerHours(state.elapsedMs).toFixed(4));
+      writeMiningYieldSettings({
+        ...readMiningYieldSettings(),
+        sessionHours,
+      });
+      resetMiningYield(`Timer stopped at ${elapsedLabel}. Refresh Mining Ledger to use ${formatNumber(sessionHours)} manual session hours.`);
+      renderMiningYieldTimer(`Stopped at ${elapsedLabel}; manual session hours updated.`);
+    }
+
+    function resetMiningYieldTimer() {
+      window.localStorage.removeItem(miningYieldTimerStartedAtKey);
+      window.localStorage.removeItem(miningYieldTimerElapsedMsKey);
+      renderMiningYieldTimer("Timer reset. Manual session hours are unchanged.");
+    }
+
     function resetMiningYield(message) {
       if (miningYieldStatus) miningYieldStatus.textContent = message;
       if (miningYieldSummary) miningYieldSummary.textContent = message;
@@ -31474,6 +31568,15 @@ help</textarea>
         loadMiningYield();
       });
     }
+    if (miningYieldTimerStart) {
+      miningYieldTimerStart.addEventListener("click", startMiningYieldTimer);
+    }
+    if (miningYieldTimerStop) {
+      miningYieldTimerStop.addEventListener("click", stopMiningYieldTimer);
+    }
+    if (miningYieldTimerReset) {
+      miningYieldTimerReset.addEventListener("click", resetMiningYieldTimer);
+    }
     [miningYieldDays, miningYieldSessionHours].filter(Boolean).forEach((control) => {
       control.addEventListener("change", () => {
         const settings = writeMiningYieldSettings({
@@ -31890,6 +31993,7 @@ help</textarea>
     applyMarketItemSearch(haulMarketGroups, haulItemSearch.value, haulItemSearchStatus);
     writeAcquisitionSettings(readAcquisitionSettings());
     writeMiningYieldSettings(readMiningYieldSettings());
+    renderMiningYieldTimer();
     if (bulkAppraisalHub) {
       bulkAppraisalHub.value = window.localStorage.getItem(bulkAppraisalHubKey) || bulkAppraisalHub.value || "jita";
     }

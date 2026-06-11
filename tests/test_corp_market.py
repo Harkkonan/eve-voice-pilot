@@ -608,8 +608,14 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"mining-yield-session-hours\"" in page
     assert (
         'id="mining-yield-session-hours" name="session_hours" type="number" '
-        'min="0.05" max="720" step="0.05"'
+        'min="0.05" max="720" step="0.0001"'
     ) in page
+    assert "id=\"mining-yield-timer-display\"" in page
+    assert "id=\"mining-yield-timer-start\"" in page
+    assert "id=\"mining-yield-timer-stop\"" in page
+    assert "id=\"mining-yield-timer-reset\"" in page
+    assert "Local browser timer only" in page
+    assert "Stop + Use Hours" in page
     assert "id=\"mining-yield-results\"" in page
     assert "Opt In To Mining Ledger" in page
     assert "ore/sec and m3/sec" in page
