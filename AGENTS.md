@@ -52,6 +52,7 @@ This project should stay on the conservative side of EVE third-party-tool rules.
 - Prefer the repo's existing simple standard-library style before adding dependencies.
 - Use `rg` / `rg --files` for search.
 - Use `apply_patch` for manual edits.
+- For user-facing UI changes, use Browser-backed Playwright when available, or local Playwright as a fallback, to verify the rendered app. Check the actual page, tab/control visibility, console health, and at least one target interaction; source grep or unit tests alone are not enough.
 - Keep user-facing text beginner-friendly and practical.
 - Keep code comments sparse and useful.
 - Stay inside the current checkout unless the user explicitly names another path.
