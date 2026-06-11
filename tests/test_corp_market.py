@@ -742,9 +742,15 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-pasted-items-only\" name=\"pasted_items_only\" type=\"checkbox\" checked" in page
     assert "Search pasted items only" in page
     assert "Fast mode: pasted names ignore Common materials and market category selections." in page
+    assert "id=\"haul-assets-only\" name=\"assets_only\" type=\"checkbox\"" in page
+    assert "Search managed assets only" in page
+    assert "Uses item names currently loaded in the Trade Asset Ledger; refresh the ledger first." in page
+    assert "assetLedgerUniqueItemNames" in page
+    assert "managedAssetsOnlyEmptyMessage" in page
     assert "parseHaulPastedItemNames" in page
     assert "effectiveHaulScanSettings" in page
     assert "eve-flight-haul-pasted-items-only-v1" in page
+    assert "eve-flight-haul-assets-only-v1" in page
     assert "applyMarketItemSearch" in page
     assert "id=\"haul-market-groups\"" in page
     assert "Items to search" in page
@@ -862,6 +868,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "renderAcquisitionStrategy" in page
     assert "renderAcquisitionPortfolio" in page
     assert "writeAcquisitionSettings" in page
+    assert "id=\"acq-assets-only\" name=\"assets_only\" type=\"checkbox\"" in page
+    assert "Builds candidates only from item names currently loaded in the Trade Asset Ledger." in page
+    assert "effectiveAcquisitionScanSettings" in page
+    assert "eve-flight-acq-assets-only-v1" in page
     assert "appendAcquisitionProgress" in page
     assert "renderAcquisitionOpportunities" in page
     assert "Liquidity confidence" in page

@@ -20923,6 +20923,13 @@ help</textarea>
                     <small>Fast mode: pasted names ignore Common materials and market category selections.</small>
                   </span>
                 </label>
+                <label class="checkline">
+                  <input id="haul-assets-only" name="assets_only" type="checkbox">
+                  <span>
+                    Search managed assets only
+                    <small>Uses item names currently loaded in the Trade Asset Ledger; refresh the ledger first.</small>
+                  </span>
+                </label>
                 <details>
                   <summary>Market categories</summary>
                   <div id="haul-market-groups" class="haul-market-groups">
@@ -21156,6 +21163,13 @@ help</textarea>
                   <span>
                     Search pasted items only
                     <small>Fast mode: pasted names ignore Common materials and market category selections.</small>
+                  </span>
+                </label>
+                <label class="checkline">
+                  <input id="acq-assets-only" name="assets_only" type="checkbox">
+                  <span>
+                    Search managed assets only
+                    <small>Builds candidates only from item names currently loaded in the Trade Asset Ledger.</small>
                   </span>
                 </label>
                 <details>
@@ -22226,6 +22240,7 @@ help</textarea>
     const haulPastedItemsStatus = document.querySelector("#haul-pasted-items-status");
     const haulLedgerHandoffSummary = document.querySelector("#haul-ledger-handoff-summary");
     const haulPastedItemsOnly = document.querySelector("#haul-pasted-items-only");
+    const haulAssetsOnly = document.querySelector("#haul-assets-only");
     const haulMarketGroups = document.querySelector("#haul-market-groups");
     const haulMarketGroupInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-group]"));
     const haulMarketTypeInputs = Array.from(haulMarketGroups.querySelectorAll("input[data-haul-market-type]"));
@@ -22270,6 +22285,7 @@ help</textarea>
     const acqPastedItems = document.querySelector("#acq-pasted-items");
     const acqPastedItemsStatus = document.querySelector("#acq-pasted-items-status");
     const acqPastedItemsOnly = document.querySelector("#acq-pasted-items-only");
+    const acqAssetsOnly = document.querySelector("#acq-assets-only");
     const acqMarketGroups = document.querySelector("#acq-market-groups");
     const acqMarketGroupInputs = Array.from(acqMarketGroups.querySelectorAll("input[data-haul-market-group]"));
     const acqMarketTypeInputs = Array.from(acqMarketGroups.querySelectorAll("input[data-haul-market-type]"));
@@ -22424,6 +22440,7 @@ help</textarea>
     const haulMarketTypeIdsKey = "eve-flight-haul-market-type-ids-v1";
     const haulPastedItemsKey = "eve-flight-haul-pasted-items-v1";
     const haulPastedItemsOnlyKey = "eve-flight-haul-pasted-items-only-v1";
+    const haulAssetsOnlyKey = "eve-flight-haul-assets-only-v1";
     const haulCompareDestinationsKey = "eve-flight-haul-compare-destinations-v1";
     const acqOriginKey = "eve-flight-acq-origin-v1";
     const acqDestinationKey = "eve-flight-acq-destination-v1";
@@ -22441,6 +22458,7 @@ help</textarea>
     const acqMarketTypeIdsKey = "eve-flight-acq-market-type-ids-v1";
     const acqPastedItemsKey = "eve-flight-acq-pasted-items-v1";
     const acqPastedItemsOnlyKey = "eve-flight-acq-pasted-items-only-v1";
+    const acqAssetsOnlyKey = "eve-flight-acq-assets-only-v1";
     const acqCompareSourceHubsKey = "eve-flight-acq-compare-source-hubs-v1";
     const bulkAppraisalHubKey = "eve-flight-bulk-appraisal-hub-v1";
     const bulkAppraisalTextKey = "eve-flight-bulk-appraisal-text-v1";
@@ -25338,6 +25356,33 @@ help</textarea>
       return names;
     }
 
+    function assetLedgerUniqueItemNames() {
+      const seen = new Set();
+      const names = [];
+      assetLedgerHandoffRows.forEach((row) => {
+        assetLedgerHandoffItems(row).forEach((item) => {
+          const name = String(item.typeName || "").trim().replace(/\\s+/g, " ");
+          const key = name.toLocaleLowerCase();
+          if (!name || seen.has(key)) return;
+          seen.add(key);
+          names.push(name);
+        });
+      });
+      return names;
+    }
+
+    function managedAssetsOnlyEmptyMessage() {
+      return "Refresh the Trade Asset Ledger before scanning managed assets only.";
+    }
+
+    function managedAssetsOnlyEmptyDetail() {
+      return "Connect ESI, put items inside Managed#tag, CM-ASSET-#tag, or CM-READY-HAUL-#tag containers, then refresh the Trade Asset Ledger.";
+    }
+
+    function managedAssetsOnlyScopeHasItems(settings) {
+      return !settings?.assetsOnly || parseHaulPastedItemNames(settings.pastedItemNames || "").length > 0;
+    }
+
     function updateHaulPastedItemsStatus(text) {
       if (!haulPastedItemsStatus) return;
       const names = parseHaulPastedItemNames(text);
@@ -25355,6 +25400,12 @@ help</textarea>
     }
 
     function haulItemScopeLabel(settings) {
+      if (settings.assetsOnly) {
+        const assetCount = settings.assetItemCount == null ? assetLedgerUniqueItemNames().length : Number(settings.assetItemCount || 0);
+        return assetCount
+          ? `managed assets only (${formatNumber(assetCount)} item type${assetCount === 1 ? "" : "s"})`
+          : "managed assets only (no loaded item types)";
+      }
       const pastedCount = parseHaulPastedItemNames(settings.pastedItemNames || "").length;
       if (settings.pastedItemsOnly && pastedCount) {
         return `pasted items only (${formatNumber(pastedCount)} pasted item${pastedCount === 1 ? "" : "s"})`;
@@ -25370,6 +25421,18 @@ help</textarea>
     }
 
     function effectiveHaulScanSettings(settings) {
+      if (settings.assetsOnly) {
+        const assetItemNames = assetLedgerUniqueItemNames();
+        return {
+          ...settings,
+          includeCommonMaterials: false,
+          marketGroupIds: [],
+          marketTypeIds: [],
+          pastedItemNames: assetItemNames.join("\\n"),
+          pastedItemsOnly: true,
+          assetItemCount: assetItemNames.length,
+        };
+      }
       if (!haulPastedOnlyActive(settings)) return settings;
       return {
         ...settings,
@@ -25394,9 +25457,17 @@ help</textarea>
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
         pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
         pastedItemsOnly: haulPastedItemsOnly ? haulPastedItemsOnly.checked : true,
+        assetsOnly: haulAssetsOnly ? haulAssetsOnly.checked : false,
       };
-      const scopeLabel = haulItemScopeLabel(activeSettings);
+      const effectiveSettings = effectiveHaulScanSettings(activeSettings);
+      const scopeLabel = haulItemScopeLabel(effectiveSettings);
       updateHaulPastedItemsStatus(activeSettings.pastedItemNames || "");
+      if (activeSettings.assetsOnly) {
+        haulItemScopeSummary.textContent = managedAssetsOnlyScopeHasItems(effectiveSettings)
+          ? `${scopeLabel}. Managed-assets-only mode is on; Common materials, market categories, exact items, and pasted names are ignored for this scan.`
+          : `${scopeLabel}. ${managedAssetsOnlyEmptyMessage()}`;
+        return;
+      }
       haulItemScopeSummary.textContent = haulPastedOnlyActive(activeSettings)
         ? `${scopeLabel}. Fast mode is on; Common materials and market categories are ignored for this scan.`
         : `${scopeLabel}. More item types means a longer route calculation.`;
@@ -25541,6 +25612,7 @@ help</textarea>
       const commonStored = window.localStorage.getItem(haulCommonMaterialsKey);
       const pastedItemNames = String(window.localStorage.getItem(haulPastedItemsKey) || (haulPastedItems ? haulPastedItems.value : "") || "").trim();
       const pastedOnlyStored = window.localStorage.getItem(haulPastedItemsOnlyKey);
+      const assetsOnlyStored = window.localStorage.getItem(haulAssetsOnlyKey);
       return {
         originName,
         destination,
@@ -25558,6 +25630,7 @@ help</textarea>
         marketTypeIds: readStoredHaulMarketTypeIds(),
         pastedItemNames,
         pastedItemsOnly: pastedOnlyStored == null ? true : pastedOnlyStored !== "0",
+        assetsOnly: assetsOnlyStored == null ? (haulAssetsOnly ? haulAssetsOnly.checked : false) : assetsOnlyStored !== "0",
       };
     }
 
@@ -25578,6 +25651,7 @@ help</textarea>
       const marketTypeIds = Array.isArray(settings.marketTypeIds) ? settings.marketTypeIds : readHaulMarketTypeIdsFromInputs();
       const pastedItemNames = String(settings.pastedItemNames == null ? (haulPastedItems ? haulPastedItems.value : "") : settings.pastedItemNames).trim();
       const pastedItemsOnly = settings.pastedItemsOnly == null ? (haulPastedItemsOnly ? haulPastedItemsOnly.checked : true) : Boolean(settings.pastedItemsOnly);
+      const assetsOnly = settings.assetsOnly == null ? (haulAssetsOnly ? haulAssetsOnly.checked : false) : Boolean(settings.assetsOnly);
       haulOrigin.value = originName;
       haulDestination.value = destination;
       haulCargoM3.value = String(cargoM3);
@@ -25595,10 +25669,11 @@ help</textarea>
         haulPastedItemsOnly.checked = pastedItemsOnly;
         haulPastedItemsOnly.disabled = parseHaulPastedItemNames(pastedItemNames).length === 0;
       }
+      if (haulAssetsOnly) haulAssetsOnly.checked = assetsOnly;
       applyHaulMarketGroupIds(marketGroupIds);
       applyHaulMarketTypeIds(marketTypeIds);
       haulMinMarginValue.textContent = `${formatNumber(minDetourMarginPercent)}%`;
-      updateHaulItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly});
+      updateHaulItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly, assetsOnly});
       window.localStorage.setItem(haulOriginKey, originName);
       window.localStorage.setItem(haulDestinationKey, destination);
       window.localStorage.setItem(haulCargoKey, String(cargoM3));
@@ -25615,7 +25690,8 @@ help</textarea>
       window.localStorage.setItem(haulMarketTypeIdsKey, JSON.stringify(marketTypeIds));
       window.localStorage.setItem(haulPastedItemsKey, pastedItemNames);
       window.localStorage.setItem(haulPastedItemsOnlyKey, pastedItemsOnly ? "1" : "0");
-      return {originName, destination, cargoM3, purchaseBudgetIsk, detourJumps, minDetourMarginPercent, routePreference, sortBy, minProfitPerM3, minProfitPerExtraJump, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly};
+      window.localStorage.setItem(haulAssetsOnlyKey, assetsOnly ? "1" : "0");
+      return {originName, destination, cargoM3, purchaseBudgetIsk, detourJumps, minDetourMarginPercent, routePreference, sortBy, minProfitPerM3, minProfitPerExtraJump, avoidRecentPodKills, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly, assetsOnly};
     }
 
     function clampAcquisitionBudget(value) {
@@ -25740,6 +25816,12 @@ help</textarea>
     }
 
     function acquisitionItemScopeLabel(settings) {
+      if (settings.assetsOnly) {
+        const assetCount = settings.assetItemCount == null ? assetLedgerUniqueItemNames().length : Number(settings.assetItemCount || 0);
+        return assetCount
+          ? `managed assets only (${formatNumber(assetCount)} item type${assetCount === 1 ? "" : "s"})`
+          : "managed assets only (no loaded item types)";
+      }
       const pastedCount = parseHaulPastedItemNames(settings.pastedItemNames || "").length;
       if (settings.pastedItemsOnly && pastedCount) {
         return `pasted items only (${formatNumber(pastedCount)} pasted item${pastedCount === 1 ? "" : "s"})`;
@@ -25755,6 +25837,18 @@ help</textarea>
     }
 
     function effectiveAcquisitionScanSettings(settings) {
+      if (settings.assetsOnly) {
+        const assetItemNames = assetLedgerUniqueItemNames();
+        return {
+          ...settings,
+          includeCommonMaterials: false,
+          marketGroupIds: [],
+          marketTypeIds: [],
+          pastedItemNames: assetItemNames.join("\\n"),
+          pastedItemsOnly: true,
+          assetItemCount: assetItemNames.length,
+        };
+      }
       if (!acquisitionPastedOnlyActive(settings)) return settings;
       return {
         ...settings,
@@ -25771,14 +25865,22 @@ help</textarea>
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
         pastedItemNames: acqPastedItems ? acqPastedItems.value : "",
         pastedItemsOnly: acqPastedItemsOnly ? acqPastedItemsOnly.checked : true,
+        assetsOnly: acqAssetsOnly ? acqAssetsOnly.checked : false,
         historyAnalysisMode: acqHistoryAnalysis ? acqHistoryAnalysis.value : "basic",
       };
-      const scopeLabel = acquisitionItemScopeLabel(activeSettings);
+      const effectiveSettings = effectiveAcquisitionScanSettings(activeSettings);
+      const scopeLabel = acquisitionItemScopeLabel(effectiveSettings);
       const historyMode = normalizeAcquisitionHistoryAnalysis(activeSettings.historyAnalysisMode || (acqHistoryAnalysis ? acqHistoryAnalysis.value : "basic"));
       const historyText = historyMode === "fast"
         ? "History audit is off for speed; results are shortlist candidates."
         : `${acquisitionHistoryAnalysisLabel(historyMode)} checks market-history evidence for every scanned item type.`;
       updateAcqPastedItemsStatus(activeSettings.pastedItemNames || "");
+      if (activeSettings.assetsOnly) {
+        acqItemScopeSummary.textContent = managedAssetsOnlyScopeHasItems(effectiveSettings)
+          ? `${scopeLabel}. Managed-assets-only mode is on; Common materials, market categories, and pasted names are ignored for this scan. ${historyText}`
+          : `${scopeLabel}. ${managedAssetsOnlyEmptyMessage()} ${historyText}`;
+        return;
+      }
       acqItemScopeSummary.textContent = acquisitionPastedOnlyActive(activeSettings)
         ? `${scopeLabel}. Fast item-scope mode is on; Common materials and market categories are ignored for this scan. ${historyText}`
         : `${scopeLabel}. ${historyText}`;
@@ -25803,6 +25905,7 @@ help</textarea>
       const commonStored = window.localStorage.getItem(acqCommonMaterialsKey);
       const pastedItemNames = String(window.localStorage.getItem(acqPastedItemsKey) || (acqPastedItems ? acqPastedItems.value : "") || "").trim();
       const pastedOnlyStored = window.localStorage.getItem(acqPastedItemsOnlyKey);
+      const assetsOnlyStored = window.localStorage.getItem(acqAssetsOnlyKey);
       return {
         originName,
         destination,
@@ -25820,6 +25923,7 @@ help</textarea>
         marketTypeIds: readStoredAcqMarketTypeIds(),
         pastedItemNames,
         pastedItemsOnly: pastedOnlyStored == null ? true : pastedOnlyStored !== "0",
+        assetsOnly: assetsOnlyStored == null ? (acqAssetsOnly ? acqAssetsOnly.checked : false) : assetsOnlyStored !== "0",
       };
     }
 
@@ -25840,6 +25944,7 @@ help</textarea>
       const marketTypeIds = Array.isArray(settings.marketTypeIds) ? settings.marketTypeIds : readAcqMarketTypeIdsFromInputs();
       const pastedItemNames = String(settings.pastedItemNames == null ? (acqPastedItems ? acqPastedItems.value : "") : settings.pastedItemNames).trim();
       const pastedItemsOnly = settings.pastedItemsOnly == null ? (acqPastedItemsOnly ? acqPastedItemsOnly.checked : true) : Boolean(settings.pastedItemsOnly);
+      const assetsOnly = settings.assetsOnly == null ? (acqAssetsOnly ? acqAssetsOnly.checked : false) : Boolean(settings.assetsOnly);
       acqOrigin.value = originName;
       acqDestination.value = destination;
       acqBudget.value = String(budgetIsk);
@@ -25857,10 +25962,11 @@ help</textarea>
         acqPastedItemsOnly.checked = pastedItemsOnly;
         acqPastedItemsOnly.disabled = parseHaulPastedItemNames(pastedItemNames).length === 0;
       }
+      if (acqAssetsOnly) acqAssetsOnly.checked = assetsOnly;
       applyAcqMarketGroupIds(marketGroupIds);
       applyAcqMarketTypeIds(marketTypeIds);
       acqMinMarginValue.textContent = `${formatNumber(minMarginPercent)}%`;
-      updateAcquisitionItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly, historyAnalysisMode});
+      updateAcquisitionItemScopeSummary({includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly, assetsOnly, historyAnalysisMode});
       window.localStorage.setItem(acqOriginKey, originName);
       window.localStorage.setItem(acqDestinationKey, destination);
       window.localStorage.setItem(acqBudgetKey, String(budgetIsk));
@@ -25877,7 +25983,8 @@ help</textarea>
       window.localStorage.setItem(acqMarketTypeIdsKey, JSON.stringify(marketTypeIds));
       window.localStorage.setItem(acqPastedItemsKey, pastedItemNames);
       window.localStorage.setItem(acqPastedItemsOnlyKey, pastedItemsOnly ? "1" : "0");
-      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, historyAnalysisMode, orderDurationDays, itemWorkers, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly};
+      window.localStorage.setItem(acqAssetsOnlyKey, assetsOnly ? "1" : "0");
+      return {originName, destination, budgetIsk, brokerFeePercent, pickupJumps, portfolioJumps, targetDays, historyAnalysisMode, orderDurationDays, itemWorkers, minMarginPercent, includeCommonMaterials, marketGroupIds, marketTypeIds, pastedItemNames, pastedItemsOnly, assetsOnly};
     }
 
     async function loadFlightStatus() {
@@ -26722,10 +26829,18 @@ help</textarea>
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
         pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
         pastedItemsOnly: haulPastedItemsOnly ? haulPastedItemsOnly.checked : true,
+        assetsOnly: haulAssetsOnly ? haulAssetsOnly.checked : false,
       });
       const scanSettings = effectiveHaulScanSettings(settings);
+      if (!managedAssetsOnlyScopeHasItems(scanSettings)) {
+        haulCompareSummary.textContent = managedAssetsOnlyEmptyMessage();
+        haulCompareResults.innerHTML = renderDashboardErrorState("No managed asset item names are loaded.", {
+          detail: managedAssetsOnlyEmptyDetail(),
+        });
+        return;
+      }
       haulCompareButton.disabled = true;
-      haulCompareSummary.textContent = `Comparing ${formatNumber(destinations.length)} hub${destinations.length === 1 ? "" : "s"} with ${haulItemScopeLabel(settings)}...`;
+      haulCompareSummary.textContent = `Comparing ${formatNumber(destinations.length)} hub${destinations.length === 1 ? "" : "s"} with ${haulItemScopeLabel(scanSettings)}...`;
       haulCompareResults.innerHTML = `<div class="decision-empty">Hub comparison is running. Large item scopes can take longer.</div>`;
       const params = new URLSearchParams({
         origin_name: scanSettings.originName,
@@ -26774,15 +26889,35 @@ help</textarea>
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
         pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
         pastedItemsOnly: haulPastedItemsOnly ? haulPastedItemsOnly.checked : true,
+        assetsOnly: haulAssetsOnly ? haulAssetsOnly.checked : false,
       });
       const scanSettings = effectiveHaulScanSettings(settings);
+      if (!managedAssetsOnlyScopeHasItems(scanSettings)) {
+        closeHaulEventSource();
+        stopHaulProgressTimer();
+        haulRouteSummary.textContent = managedAssetsOnlyEmptyMessage();
+        haulRoutePath.textContent = "";
+        haulProgressLog.hidden = false;
+        haulProgressLog.innerHTML = "";
+        appendHaulProgress("Stopped", {message: managedAssetsOnlyEmptyDetail(), elapsed_seconds: 0});
+        haulOpportunitySummary.textContent = "No managed asset item names are loaded yet.";
+        haulLoadPlan.textContent = "";
+        resetQuickbarList(haulQuickbarPanel, haulQuickbarStatus, "hauling");
+        resetReportPanel("hauling");
+        resetHaulOpportunitySelection();
+        haulOpportunityTop.innerHTML = renderDashboardErrorState("No managed asset item names are loaded.", {
+          detail: managedAssetsOnlyEmptyDetail(),
+        });
+        haulScanButton.disabled = false;
+        return;
+      }
       closeHaulEventSource();
       stopHaulProgressTimer();
       haulScanFinished = false;
       haulScanButton.disabled = true;
       const routeRule = settings.routePreference === "shorter" ? "Prefer shorter" : settings.routePreference === "less_secure" ? "Prefer less secure" : "Prefer safer";
       const podRule = settings.avoidRecentPodKills ? "avoiding recent pod kills" : "not avoiding recent pod kills";
-      const itemScope = haulItemScopeLabel(settings);
+      const itemScope = haulItemScopeLabel(scanSettings);
       const efficiencyFilter = haulEfficiencyFilterLabel(settings);
       haulRouteSummary.textContent = `Scanning ${routeRule.toLowerCase()} route from ${haulStartLabel(settings)} to ${settings.destination}, ${podRule}, ranked by ${haulSortLabel(settings.sortBy)}, ${efficiencyFilter}, with ${formatNumber(settings.detourJumps)} detour jumps and ${itemScope}...`;
       haulRoutePath.textContent = "";
@@ -27786,8 +27921,27 @@ help</textarea>
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
         pastedItemNames: acqPastedItems ? acqPastedItems.value : "",
         pastedItemsOnly: acqPastedItemsOnly ? acqPastedItemsOnly.checked : true,
+        assetsOnly: acqAssetsOnly ? acqAssetsOnly.checked : false,
       });
       const scanSettings = effectiveAcquisitionScanSettings(settings);
+      if (!managedAssetsOnlyScopeHasItems(scanSettings)) {
+        closeAcquisitionEventSource();
+        stopAcquisitionProgressTimer();
+        acqSummary.textContent = managedAssetsOnlyEmptyMessage();
+        acqStrategy.innerHTML = "";
+        acqRoute.textContent = "";
+        acqProgressLog.hidden = false;
+        acqProgressLog.innerHTML = "";
+        appendAcquisitionProgress("Stopped", {message: managedAssetsOnlyEmptyDetail(), elapsed_seconds: 0});
+        resetQuickbarList(acqQuickbarPanel, acqQuickbarStatus, "acquisition");
+        resetReportPanel("acquisition");
+        acqResults.innerHTML = renderDashboardErrorState("No managed asset item names are loaded.", {
+          detail: managedAssetsOnlyEmptyDetail(),
+        });
+        acqScanButton.disabled = false;
+        if (acqCompareButton) acqCompareButton.disabled = false;
+        return;
+      }
       closeAcquisitionEventSource();
       stopAcquisitionProgressTimer();
       acquisitionScanFinished = false;
@@ -27986,6 +28140,7 @@ help</textarea>
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
         pastedItemNames: acqPastedItems ? acqPastedItems.value : "",
         pastedItemsOnly: acqPastedItemsOnly ? acqPastedItemsOnly.checked : true,
+        assetsOnly: acqAssetsOnly ? acqAssetsOnly.checked : false,
       });
       updateAcqCompareHubAvailability(settings.destination);
       const sourceHubs = writeAcqCompareSourceHubs(readAcqCompareSourceHubsFromInputs(settings.destination));
@@ -27995,6 +28150,13 @@ help</textarea>
         return;
       }
       const scanSettings = effectiveAcquisitionScanSettings(settings);
+      if (!managedAssetsOnlyScopeHasItems(scanSettings)) {
+        acqCompareSummary.textContent = managedAssetsOnlyEmptyMessage();
+        acqCompareResults.innerHTML = renderDashboardErrorState("No managed asset item names are loaded.", {
+          detail: managedAssetsOnlyEmptyDetail(),
+        });
+        return;
+      }
       closeAcquisitionEventSource();
       stopAcquisitionProgressTimer();
       acquisitionScanFinished = false;
@@ -32121,6 +32283,7 @@ help</textarea>
         marketTypeIds: readHaulMarketTypeIdsFromInputs(),
         pastedItemNames: haulPastedItems ? haulPastedItems.value : "",
         pastedItemsOnly: haulPastedItemsOnly ? haulPastedItemsOnly.checked : true,
+        assetsOnly: haulAssetsOnly ? haulAssetsOnly.checked : false,
       });
       const settings = readHaulSettings();
       resetFlightHauling(`Ready to scan route hauling opportunities from ${haulStartLabel(settings)} to ${settings.destination}.`);
@@ -32154,6 +32317,9 @@ help</textarea>
     }
     if (haulPastedItemsOnly) {
       haulPastedItemsOnly.addEventListener("change", updateHaulScopeAndReset);
+    }
+    if (haulAssetsOnly) {
+      haulAssetsOnly.addEventListener("change", updateHaulScopeAndReset);
     }
     haulMarketGroups.addEventListener("click", (event) => {
       if (handleMarketGroupShowMore(haulMarketGroups, event)) return;
@@ -32343,6 +32509,8 @@ help</textarea>
         assetLedgerStatus.classList.remove("error");
       }
       triggerAssetLedgerDocumentChanged();
+      updateHaulItemScopeSummary();
+      updateAcquisitionItemScopeSummary();
     }
 
     function useAssetLedgerRowInHauler(indexValue) {
@@ -32366,6 +32534,10 @@ help</textarea>
         haulPastedItemsOnly.checked = true;
         haulPastedItemsOnly.disabled = false;
         window.localStorage.setItem(haulPastedItemsOnlyKey, "1");
+      }
+      if (haulAssetsOnly) {
+        haulAssetsOnly.checked = false;
+        window.localStorage.setItem(haulAssetsOnlyKey, "0");
       }
       updateHaulScopeAndReset();
       setHaulLedgerHandoffSummary(row);
@@ -32443,6 +32615,7 @@ help</textarea>
         marketTypeIds: readAcqMarketTypeIdsFromInputs(),
         pastedItemNames: acqPastedItems ? acqPastedItems.value : "",
         pastedItemsOnly: acqPastedItemsOnly ? acqPastedItemsOnly.checked : true,
+        assetsOnly: acqAssetsOnly ? acqAssetsOnly.checked : false,
       });
       const settings = readAcquisitionSettings();
       updateAcqCompareHubAvailability(settings.destination);
@@ -32483,6 +32656,9 @@ help</textarea>
     }
     if (acqPastedItemsOnly) {
       acqPastedItemsOnly.addEventListener("change", updateAcquisitionScopeAndReset);
+    }
+    if (acqAssetsOnly) {
+      acqAssetsOnly.addEventListener("change", updateAcquisitionScopeAndReset);
     }
     acqMarketGroups.addEventListener("click", (event) => {
       if (handleMarketGroupShowMore(acqMarketGroups, event)) return;
