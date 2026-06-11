@@ -282,9 +282,19 @@ For investment report rows, `Location to Post Order` is the suggested buy-order 
 
 This tab does not place, update, or cancel market orders. The pilot still creates every buy order manually in EVE.
 
+When those buy orders fill and the pilot wants the app to track the resulting inventory, put the filled items in a character-owned container named `Managed#Trade` or another `Managed#tag` label, then refresh the `Trade Asset Ledger`. Use this for active trade stock that is still being evaluated, sold, or grouped. Do not move it to a route-ready container until the hauling trip has actually been chosen.
+
 ### Trade Asset Ledger
 
 The `Trade Asset Ledger` tab is a read-only managed document for assets the app can see through `esi-assets.read_assets.v1`. It recognizes character-owned containers with a literal `#` marker in the managed name: `Managed#tag` for active trade inventory, `CM-READY-HAUL-#tag` for goods already decided as ready to move, and `CM-ASSET-#tag` for broader tracking buckets. The text after `#` is only a personal label; the app uses the marker before it.
+
+Use the container families this way:
+
+- `Managed#tag`: filled portfolio buys, active trade stock, or items you still need to review against expected cost/profit.
+- `CM-READY-HAUL-#tag`: a packed bucket already selected for a specific hauling trip, such as `CM-READY-HAUL-#Jita-Amarr`.
+- `CM-ASSET-#tag`: broader tracked inventory, materials, or station buckets that should be visible in the ledger but are not yet committed to one haul.
+
+The `#` is required. Under the current rule, names such as `Managed1`, `asset12`, `CM-ASSET-Jita`, and `CM-READY-HAUL` are not ledger markers.
 
 When the pilot clicks `Refresh Ledger`, the server reads ESI assets, asks ESI for custom asset names, groups direct child assets under those named containers, and shows the result as managed ledger rows. The page is intentionally browseable and copyable but not hand editable, so it can later become a trustworthy bridge from filled portfolio orders to hauler load planning and expected-vs-actual review.
 
@@ -343,6 +353,8 @@ Future modules should be added one calculator at a time:
 ### Hauler Route Scanner
 
 The `Hauler Routes` tab uses your connected ESI location as the route start unless you enter a manual start system. Pick a destination such as Jita, Amarr, Hek, Rens, Dodixie, or Dihra, then scan common build materials, whole market categories, exact item types, or pasted item names that can be bought from public sell orders on or near the route and sold into public buy orders in the destination system. The item picker includes an exact-item search, so a pilot can type a family such as `bomb` and reveal matching item checkboxes without manually opening every market category. When pasted item names are present, `Search pasted items only` is on by default; that fast mode ignores Common materials and market category selections for the scan so a narrow paste does not accidentally trigger a broad material scan.
+
+For owned inventory that has already been bought or gathered, put the exact cargo for a planned trip in a `CM-READY-HAUL-#tag` container before refreshing the `Trade Asset Ledger`. The current hauler handoff still sends item names into pasted-items mode and shows owned quantities as review context; it does not move items, enforce exact cargo, or replace manual route and market verification.
 
 The scan can rank opportunities by total after-tax profit, after-tax profit per extra jump, after-tax profit per m3, or margin using your Accounting skill. Optional efficiency floors can hide low ISK/m3 or low ISK/extra-jump candidates before the manual load plan is built. It checks destination buy demand first, then skips pickup-region sell-order lookups for item types that have no reachable destination buy order. For remaining candidates, it walks reachable public sell-order depth against destination public buy-order depth until the profitable depth, cargo capacity, or purchase-budget cap runs out, then checks public market history for the matched pickup and destination regions. Results show route diagnostics, a manual load plan, a cargo-fill visualization, weighted average pickup/destination prices, matched order counts, pickup systems, pickup cost, remaining budget, sales-tax drag, after-tax profit per extra jump, after-tax profit per m3, and plain-language history warnings such as `Possible trap` or `Caution`. The load plan combines the best clear/caution opportunities with known volume into pickup stops and item lines while respecting cargo capacity and purchase budget.
 

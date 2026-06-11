@@ -589,6 +589,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-tab-target=\"asset-ledger\"" in page
     assert "id=\"tab-asset-ledger\"" in page
     assert "Trade Asset Ledger" in page
+    assert "The <code>#</code> is literal" in page
+    assert "<code>Managed#Trade</code> for filled trade stock" in page
+    assert "<code>CM-ASSET-#Jita</code> for broader tracked inventory" in page
+    assert "<code>CM-READY-HAUL-#Route</code> only when the container is ready to move" in page
+    assert "<code>Managed#tag</code> for portfolio or trade stock" in page
     assert "Click Refresh Ledger to replace the preview with current ESI-named container rows." in page
     assert "Waiting for Refresh Ledger" in page
     assert "before ESI container ingestion is added" not in page
@@ -648,6 +653,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Route scan rehearsal" in page
     assert "Run This Portfolio Test" in page
     assert "Buy-order rehearsal" in page
+    assert "put the exact cargo in a <code>CM-READY-HAUL-#Route</code> container" in page
+    assert "move the filled items into <code>Managed#Trade</code>" in page
     assert "To avoid requesting wallet scopes, enter this manually" in page
     assert "id=\"acq-order-duration\"" in page
     assert "Planned order duration" in page

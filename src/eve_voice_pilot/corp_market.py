@@ -20275,7 +20275,8 @@ help</textarea>
               <ol class="tester-run-steps">
                 <li><b>1</b><span><strong>Confirm the route</strong><small>Leave Start system blank for live ESI, then choose the hub your tester expects to haul toward.</small></span></li>
                 <li><b>2</b><span><strong>Keep the scope small</strong><small>Use pasted items only for a quick test, or keep Common materials for a broader scan.</small></span></li>
-                <li><b>3</b><span><strong>Verify in EVE</strong><small>After Scan Route, compare pickup access, cargo size, order depth, and destination buy orders manually.</small></span></li>
+                <li><b>3</b><span><strong>Mark owned hauls</strong><small>If these are already your items, put the exact cargo in a <code>CM-READY-HAUL-#Route</code> container before refreshing the Asset Ledger.</small></span></li>
+                <li><b>4</b><span><strong>Verify in EVE</strong><small>After Scan Route, compare pickup access, cargo size, order depth, and destination buy orders manually.</small></span></li>
               </ol>
               <div class="tester-run-actions">
                 <a class="button-link ghost-link" href="#haul-scan">Go To Scan Route</a>
@@ -20514,7 +20515,8 @@ help</textarea>
               <ol class="tester-run-steps">
                 <li><b>1</b><span><strong>Pick the budget</strong><small>Start with a small Total investment ISK so any recommendation is easy to sanity-check.</small></span></li>
                 <li><b>2</b><span><strong>Choose item scope</strong><small>Search pasted items only is the fast default; turn it off only when you mean to scan Common materials too.</small></span></li>
-                <li><b>3</b><span><strong>Read the warnings</strong><small>After Build Portfolio, check Possible trap, history volume, bid ceiling, and manual order size before placing anything.</small></span></li>
+                <li><b>3</b><span><strong>Stage filled buys</strong><small>When portfolio buy orders fill, move the filled items into <code>Managed#Trade</code>; switch to <code>CM-READY-HAUL-#Route</code> only when you have chosen a hauling trip.</small></span></li>
+                <li><b>4</b><span><strong>Read the warnings</strong><small>After Build Portfolio, check Possible trap, history volume, bid ceiling, and manual order size before placing anything.</small></span></li>
               </ol>
               <div class="tester-run-actions">
                 <a class="button-link ghost-link" href="#acq-scan">Go To Build Portfolio</a>
@@ -20718,7 +20720,7 @@ help</textarea>
             <div class="tester-cockpit-note">
               <strong>This ledger is not hand editable.</strong>
               <span>The app will own rows from Portfolio expectations, ESI assets, ESI named containers, and later wallet or Trade P&amp;L matches.</span>
-              <span>Freight containers named like <code>Managed#Trade</code>, <code>CM-ASSET-#Jita</code>, or <code>CM-READY-HAUL-#Route</code> become source buckets when you click Refresh Ledger.</span>
+              <span>The <code>#</code> is literal: use <code>Managed#Trade</code> for filled trade stock, <code>CM-ASSET-#Jita</code> for broader tracked inventory, and <code>CM-READY-HAUL-#Route</code> only when the container is ready to move.</span>
             </div>
             <div class="completed-run-actions">
               <button id="asset-ledger-refresh" class="primary" type="button">Refresh Ledger</button>
@@ -20739,6 +20741,7 @@ help</textarea>
             <ul class="charter-list">
               <li><strong>Readable:</strong> browse, filter, copy, and export ledger rows.</li>
               <li><strong>Managed:</strong> quantities, locations, container names, and status come from app-managed sources.</li>
+              <li><strong>Container names:</strong> use <code>Managed#tag</code> for portfolio or trade stock, <code>CM-ASSET-#tag</code> for general tracked assets, and <code>CM-READY-HAUL-#tag</code> for items already selected for hauling.</li>
               <li><strong>Not hand edited:</strong> no manual row edits that could drift from ESI or the app's portfolio snapshots.</li>
               <li><strong>Handoff:</strong> ready-to-haul rows will become input for a Hauler route/load plan.</li>
             </ul>
