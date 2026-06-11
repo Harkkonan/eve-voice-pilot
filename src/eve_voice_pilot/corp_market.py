@@ -146,6 +146,9 @@ EXPECTED_REALIZED_REPORT_COLUMNS = (
     "Item Name",
     "Quantity",
     "Planned Order Duration",
+    "Buy Directions",
+    "Container Directions",
+    "Sell Directions",
     "Price Per Item",
     "Buy Order Price To Enter",
     "Estimated Broker Fee %",
@@ -7136,6 +7139,9 @@ def build_expected_realized_report_row(
     actual_broker_fee_paid: Any = None,
     actual_total_cost: Any = None,
     actual_filled_quantity: Any = None,
+    buy_directions: str = "",
+    container_directions: str = "",
+    sell_directions: str = "",
     reason_for_entry: str = "",
     verification_notes: str = "",
     lesson_learned: str = "",
@@ -7196,6 +7202,9 @@ def build_expected_realized_report_row(
             "Item Name": str(item_name or ""),
             "Quantity": expected_realized_report_number(quantity_number),
             "Planned Order Duration": str(planned_order_duration or ""),
+            "Buy Directions": str(buy_directions or ""),
+            "Container Directions": str(container_directions or ""),
+            "Sell Directions": str(sell_directions or ""),
             "Price Per Item": expected_realized_report_number(price_number),
             "Buy Order Price To Enter": expected_realized_report_number(buy_order_price_to_enter),
             "Estimated Broker Fee %": expected_realized_report_number(estimated_broker_fee_percent),
@@ -7276,6 +7285,65 @@ def haul_report_opportunity_pickup_system_label(opportunity: Mapping[str, Any]) 
     return pickup_system_name or "Route pickup corridor"
 
 
+def asset_ledger_container_tag(value: str, fallback: str) -> str:
+    tag = re.sub(r"[^A-Za-z0-9]+", "-", str(value or "").strip()).strip("-")
+    return tag[:40] or fallback
+
+
+def haul_report_direction_fields(
+    *,
+    item_name: str,
+    pickup_label: str,
+    destination_name: str,
+    status: str,
+) -> dict[str, str]:
+    destination_tag = asset_ledger_container_tag(destination_name, "Route")
+    planned_note = (
+        "This row is in the current manual load plan."
+        if str(status or "").casefold() == "planned"
+        else "This row is only a candidate until you choose it for the manual load plan."
+    )
+    return {
+        "buy_directions": (
+            f"Buy {item_name or 'this item'} from the public sell orders shown in EVE for {pickup_label or 'the pickup system'}; "
+            "verify the exact station/structure, price, quantity, min volume, and docking access before purchasing."
+        ),
+        "container_directions": (
+            f"After purchase, keep the stack at the pickup station/structure where the order fills and put the route-ready cargo in "
+            f"`CM-READY-HAUL-#{destination_tag}`. If you are only parking inventory for later review, use `CM-ASSET-#{destination_tag}` instead. "
+            f"{planned_note}"
+        ),
+        "sell_directions": (
+            f"Haul only after manual route verification, then sell into the destination public buy orders in {destination_name or 'the destination'} "
+            "if the buy price and demand are still present."
+        ),
+    }
+
+
+def acquisition_report_direction_fields(
+    *,
+    item_name: str,
+    placement_system: str,
+    destination_name: str,
+    order_duration_label: str,
+) -> dict[str, str]:
+    destination_tag = asset_ledger_container_tag(destination_name, "Route")
+    duration_adjective = re.sub(r"\s+days?\b", "-day", str(order_duration_label or "").strip()) or "manual"
+    return {
+        "buy_directions": (
+            f"Place a manual {duration_adjective} buy order for {item_name or 'this item'} in {placement_system or 'the selected buy-order system'}; "
+            "enter the suggested bid, confirm the broker-fee preview, range, and expected quantity in EVE before submitting."
+        ),
+        "container_directions": (
+            f"When the order fills, put the filled stack in `Managed#Trade` at the station where the buy order filled. "
+            f"Move it to `CM-READY-HAUL-#{destination_tag}` only after you choose it for a hauling trip toward {destination_name or 'the destination'}."
+        ),
+        "sell_directions": (
+            f"After the fill is staged and reviewed, sell or haul toward {destination_name or 'the downstream demand hub'} only if the destination demand and margin still match the report."
+        ),
+    }
+
+
 def haul_report_load_plan_keys(load_plan: Mapping[str, Any]) -> set[str]:
     keys: set[str] = set()
     for line in load_plan.get("lines") or ():
@@ -7338,6 +7406,13 @@ def build_haul_expected_realized_report_rows(
                 expected_route_jumps = route_jumps + extra_route_jumps
             in_load_plan = bool(haul_report_opportunity_key(opportunity) in load_plan_keys)
             status = "Planned" if in_load_plan else "Candidate"
+            pickup_label = haul_report_opportunity_pickup_system_label(opportunity)
+            directions = haul_report_direction_fields(
+                item_name=str(opportunity.get("item_name") or ""),
+                pickup_label=pickup_label,
+                destination_name=destination_name,
+                status=status,
+            )
             notes = (
                 f"Hauler visible opportunity from {origin_name} to {destination_name}; "
                 f"{matched_pickup_count} pickup system(s); risk {risk_level}; "
@@ -7349,7 +7424,7 @@ def build_haul_expected_realized_report_rows(
             row = build_expected_realized_report_row(
                 date_created=generated_at,
                 category="Haul",
-                location_to_post_order=haul_report_opportunity_pickup_system_label(opportunity),
+                location_to_post_order=pickup_label,
                 order_type="Trade",
                 item_name=str(opportunity.get("item_name") or ""),
                 quantity=units,
@@ -7365,6 +7440,9 @@ def build_haul_expected_realized_report_rows(
                     "destination buy price, destination demand quantity, and your sales tax. After the run, fill "
                     "actual buy/order cost, actual filled quantity, realized return, actual route jumps, and lesson learned."
                 ),
+                buy_directions=directions["buy_directions"],
+                container_directions=directions["container_directions"],
+                sell_directions=directions["sell_directions"],
                 notes=notes,
             )
             row["Expected Sales Tax ISK"] = expected_realized_report_number(expected_sales_tax)
@@ -7391,6 +7469,13 @@ def build_haul_expected_realized_report_rows(
         expected_sales_tax = clean_optional_float(line.get("sales_tax_total"))
         extra_route_jumps = clean_optional_int(line.get("extra_route_jumps"))
         expected_route_jumps = route_jumps + extra_route_jumps if route_jumps is not None and extra_route_jumps is not None else None
+        pickup_label = haul_report_pickup_system_label(line, stops)
+        directions = haul_report_direction_fields(
+            item_name=str(line.get("item_name") or ""),
+            pickup_label=pickup_label,
+            destination_name=destination_name,
+            status="Planned",
+        )
         notes = (
             f"Hauler load-plan row from {origin_name} to {destination_name}; "
             f"{pickup_system_count} pickup system(s); risk {risk_level}; "
@@ -7401,7 +7486,7 @@ def build_haul_expected_realized_report_rows(
         row = build_expected_realized_report_row(
             date_created=generated_at,
             category="Haul",
-            location_to_post_order=haul_report_pickup_system_label(line, stops),
+            location_to_post_order=pickup_label,
             order_type="Trade",
             item_name=str(line.get("item_name") or ""),
             quantity=units,
@@ -7416,6 +7501,9 @@ def build_haul_expected_realized_report_rows(
                 "destination buy price, destination demand quantity, and your sales tax. After the run, fill "
                 "actual buy/order cost, actual filled quantity, realized return, actual route jumps, and lesson learned."
             ),
+            buy_directions=directions["buy_directions"],
+            container_directions=directions["container_directions"],
+            sell_directions=directions["sell_directions"],
             notes=notes,
         )
         row["Expected Sales Tax ISK"] = expected_realized_report_number(expected_sales_tax)
@@ -7482,6 +7570,12 @@ def build_acquisition_expected_realized_report_rows(
             f"Price Per Item is the buy-order price to enter; "
             f"Expected Total Cost includes {broker_fee_note}."
         )
+        directions = acquisition_report_direction_fields(
+            item_name=str(line.get("item_name") or ""),
+            placement_system=placement_system,
+            destination_name=destination_name,
+            order_duration_label=order_duration_label,
+        )
         rows.append(
             build_expected_realized_report_row(
                 date_created=generated_at,
@@ -7499,6 +7593,9 @@ def build_acquisition_expected_realized_report_rows(
                 expected_total_cost=estimated_committed,
                 reason_for_entry=reason_for_entry,
                 verification_notes=verification_notes,
+                buy_directions=directions["buy_directions"],
+                container_directions=directions["container_directions"],
+                sell_directions=directions["sell_directions"],
                 notes=notes,
             )
         )
@@ -20464,7 +20561,7 @@ help</textarea>
                   <div class="spreadsheet-report-head">
                     <div>
                       <strong>Expected vs Realized Report</strong>
-                      <div class="meta">CSV rows for visible hauler opportunities. Realized columns are blank for later review.</div>
+                      <div class="meta">CSV rows for visible hauler opportunities, including buy, station/container, and sell directions. Realized columns are blank for later review.</div>
                       <div id="haul-report-status" class="meta quickbar-copy-status" aria-live="polite"></div>
                     </div>
                     <div class="spreadsheet-report-actions">
@@ -20674,7 +20771,7 @@ help</textarea>
                   <div class="spreadsheet-report-head">
                     <div>
                       <strong>Expected vs Realized Report</strong>
-                      <div class="meta">CSV rows for portfolio tracking. Realized columns are blank for later review.</div>
+                      <div class="meta">CSV rows for portfolio tracking, including buy, station/container, and sell directions. Realized columns are blank for later review.</div>
                       <div id="acq-report-status" class="meta quickbar-copy-status" aria-live="polite"></div>
                     </div>
                     <div class="spreadsheet-report-actions">
@@ -23040,6 +23137,9 @@ help</textarea>
       "Item Name",
       "Quantity",
       "Planned Order Duration",
+      "Buy Directions",
+      "Container Directions",
+      "Sell Directions",
       "Price Per Item",
       "Buy Order Price To Enter",
       "Estimated Broker Fee %",

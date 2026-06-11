@@ -835,6 +835,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"acq-report-panel\" class=\"spreadsheet-report-panel\" hidden" in page
     assert "data-copy-report=\"acquisition\"" in page
     assert "data-download-report=\"acquisition\"" in page
+    assert "buy, station/container, and sell directions" in page
+    assert "\"Buy Directions\"" in page
+    assert "\"Container Directions\"" in page
+    assert "\"Sell Directions\"" in page
     assert "id=\"acq-results\" class=\"decision-output\"" in page
     assert "Market Investment Portfolio" in page
     assert "Possible trap" in page
@@ -2564,6 +2568,9 @@ def test_expected_realized_report_row_calculates_and_quotes_csv():
     assert row["Expected Total Return"] == pytest.approx(52.0)
     assert row["Expected Total Profit"] == pytest.approx(11.0)
     assert row["Buy Order Price To Enter"] == ""
+    assert row["Buy Directions"] == ""
+    assert row["Container Directions"] == ""
+    assert row["Sell Directions"] == ""
     assert row["Actual Buy Order Total"] == ""
     assert row["Actual Broker Fee Paid"] == ""
     assert row["Actual Total Cost"] == ""
@@ -2572,6 +2579,9 @@ def test_expected_realized_report_row_calculates_and_quotes_csv():
 
     assert csv_text.startswith("Date Created,Date Completed,Status,Category,Location to Post Order")
     assert "Buy Order Price To Enter" in csv_text
+    assert "Buy Directions" in csv_text
+    assert "Container Directions" in csv_text
+    assert "Sell Directions" in csv_text
     assert "Actual Buy Order Total" in csv_text
     assert "Actual Broker Fee Paid" in csv_text
     assert "Actual Total Cost" in csv_text
@@ -2672,6 +2682,13 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
     assert row["Expected Total Profit"] == pytest.approx(5288.4375)
     assert row["Realized Return Per Item"] == ""
     assert row["Actual Route Jumps"] == ""
+    assert "Buy Tritanium from the public sell orders shown in EVE for Middle; Side Pickup" in row["Buy Directions"]
+    assert "verify the exact station/structure" in row["Buy Directions"]
+    assert "pickup station/structure where the order fills" in row["Container Directions"]
+    assert "`CM-READY-HAUL-#Jita`" in row["Container Directions"]
+    assert "`CM-ASSET-#Jita`" in row["Container Directions"]
+    assert "current manual load plan" in row["Container Directions"]
+    assert "sell into the destination public buy orders in Jita" in row["Sell Directions"]
     assert "Manual hauling arbitrage" in row["Reason For Entry"]
     assert "verify pickup price" in row["Verification Notes"]
     assert candidate_row["Status"] == "Candidate"
@@ -2681,6 +2698,7 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
     assert candidate_row["Expected Route Jumps"] == 3
     assert candidate_row["Expected Total Profit"] == pytest.approx(300.0)
     assert "not selected into the current manual load plan" in candidate_row["Notes"]
+    assert "only a candidate" in candidate_row["Container Directions"]
 
 
 def test_acquisition_report_rows_use_committed_cost_basis():
@@ -2733,6 +2751,13 @@ def test_acquisition_report_rows_use_committed_cost_basis():
     assert row["Estimated Total ISK Needed"] == pytest.approx(592_250.0)
     assert row["Expected Total Profit"] == pytest.approx(157_750.0)
     assert row["Realized Total Profit"] == ""
+    assert "Place a manual 90-day buy order" in row["Buy Directions"]
+    assert "in Amarr" in row["Buy Directions"]
+    assert "confirm the broker-fee preview" in row["Buy Directions"]
+    assert "`Managed#Trade`" in row["Container Directions"]
+    assert "station where the buy order filled" in row["Container Directions"]
+    assert "`CM-READY-HAUL-#Jita`" in row["Container Directions"]
+    assert "sell or haul toward Jita" in row["Sell Directions"]
     assert "Price Per Item is the buy-order price to enter" in row["Notes"]
     assert "Expected Total Cost includes 3% estimated broker fee" in row["Notes"]
     assert "planned order duration 90 days" in row["Notes"]
