@@ -488,3 +488,14 @@ def inject_plex_button_effect(markup: str) -> str:
         return markup
     with_style = markup.replace("  </style>", f"{PLEX_BUTTON_EFFECT_CSS}\n  </style>", 1)
     return with_style.replace("  <script>", f"  <script>\n{PLEX_BUTTON_EFFECT_SCRIPT}\n", 1)
+
+
+def apply_csp_nonce(markup: str, nonce: str) -> str:
+    """Attach a response CSP nonce to inline style and script blocks."""
+    clean_nonce = str(nonce or "").strip()
+    if not clean_nonce:
+        return markup
+    return markup.replace("<style>", f'<style nonce="{clean_nonce}">').replace(
+        "<script>",
+        f'<script nonce="{clean_nonce}">',
+    )

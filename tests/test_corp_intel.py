@@ -1,7 +1,9 @@
 import base64
+import http.client
 import json
 from pathlib import Path
 import sys
+import threading
 import time
 
 import jwt
@@ -521,6 +523,35 @@ def test_fetch_remote_watchlist_sends_bearer_token(monkeypatch):
     assert captured["url"] == "http://example.test/api/watchlist"
     assert captured["timeout_seconds"] == 3
     assert captured["headers"] == {"Authorization": "Bearer cit_token"}
+
+
+def test_corp_intel_dashboard_sends_nonce_csp():
+    store = IntelEventStore()
+    server = corp_intel.build_http_server("127.0.0.1", 0, store)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    connection = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        connection.request("GET", "/")
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        headers = dict(response.getheaders())
+    finally:
+        connection.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    csp = headers["Content-Security-Policy"]
+    assert response.status == 200
+    assert "default-src 'self'" in csp
+    assert "script-src 'self' 'nonce-" in csp
+    assert "style-src 'self' 'nonce-" in csp
+    assert "script-src-attr 'none'" in csp
+    assert "nonce=" in body
+    assert headers["X-Frame-Options"] == "DENY"
+    assert headers["Referrer-Policy"] == "no-referrer"
 
 
 def test_system_matcher_finds_canonical_system_names():

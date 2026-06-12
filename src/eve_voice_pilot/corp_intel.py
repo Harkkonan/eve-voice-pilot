@@ -28,7 +28,7 @@ import jwt
 from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError, PyJWKClientError
 
-from eve_voice_pilot.ui_effects import inject_plex_button_effect
+from eve_voice_pilot.ui_effects import apply_csp_nonce, inject_plex_button_effect
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -2143,6 +2143,11 @@ def build_http_server(
     class CorpIntelHandler(BaseHTTPRequestHandler):
         server_version = "CorpIntelBoard/0.1"
 
+        def end_headers(self) -> None:
+            if not getattr(self, "_security_headers_sent", False):
+                self._send_security_headers(secrets.token_urlsafe(16))
+            super().end_headers()
+
         def do_GET(self) -> None:
             path = urlparse(self.path).path
             if path in {"/", "/index.html"}:
@@ -2376,18 +2381,22 @@ def build_http_server(
             except CorpIntelError as exc:
                 self._send_html(render_auth_result(str(exc), ok=False))
                 return
+            csp_nonce = secrets.token_urlsafe(16)
             self.send_response(302)
             self.send_header("Location", "/")
             self.send_header("Set-Cookie", session_cookie_header(session_id))
+            self._send_security_headers(csp_nonce)
             self.end_headers()
 
         def _handle_auth_logout(self) -> None:
             session_id = request_cookie(self, "corp_intel_session")
             if session_id:
                 session_store.delete(session_id)
+            csp_nonce = secrets.token_urlsafe(16)
             self.send_response(302)
             self.send_header("Location", "/")
             self.send_header("Set-Cookie", clear_session_cookie_header())
+            self._send_security_headers(csp_nonce)
             self.end_headers()
 
         def _read_json_body(self) -> Any:
@@ -2427,24 +2436,55 @@ def build_http_server(
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
+            csp_nonce = secrets.token_urlsafe(16)
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers(csp_nonce)
             self.end_headers()
             self.wfile.write(body)
 
         def _send_html(self, markup: str, *, status: int = 200) -> None:
-            body = markup.encode("utf-8")
+            csp_nonce = secrets.token_urlsafe(16)
+            body = apply_csp_nonce(markup, csp_nonce).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers(csp_nonce)
             self.end_headers()
             self.wfile.write(body)
 
         def _redirect(self, url: str) -> None:
+            csp_nonce = secrets.token_urlsafe(16)
             self.send_response(302)
             self.send_header("Location", url)
+            self._send_security_headers(csp_nonce)
             self.end_headers()
+
+        def _send_security_headers(self, csp_nonce: str) -> None:
+            if getattr(self, "_security_headers_sent", False):
+                return
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+            self.send_header(
+                "Content-Security-Policy",
+                (
+                    "default-src 'self'; "
+                    "connect-src 'self'; "
+                    "img-src 'self' data:; "
+                    "object-src 'none'; "
+                    f"style-src 'self' 'nonce-{csp_nonce}'; "
+                    "style-src-attr 'unsafe-inline'; "
+                    f"script-src 'self' 'nonce-{csp_nonce}'; "
+                    "script-src-attr 'none'; "
+                    "base-uri 'self'; "
+                    "frame-ancestors 'none'; "
+                    "form-action 'self'"
+                ),
+            )
+            self._security_headers_sent = True
 
     return ThreadingHTTPServer((host, port), CorpIntelHandler)
 

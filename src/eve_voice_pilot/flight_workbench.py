@@ -985,7 +985,15 @@ def validate_vm_public_config(config: WorkbenchConfig) -> None:
 
 def public_env_from_config(config: WorkbenchConfig) -> dict[str, str]:
     if not config.vm_public_hosting_mode:
-        return {}
+        return {
+            "CORP_MARKET_PUBLIC_BASE_URL": "",
+            "CORP_MARKET_SSO_CALLBACK_URL": "",
+            "CORP_MARKET_PUBLIC_HOSTING_MODE": "0",
+            "CORP_MARKET_ALLOWED_CHARACTER_IDS": "",
+            "CORP_MARKET_ALLOWED_CORPORATION_IDS": "",
+            "CORP_MARKET_ALLOWED_ALLIANCE_IDS": "",
+            "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET": "0",
+        }
     validate_vm_public_config(config)
     return {
         "CORP_MARKET_PUBLIC_BASE_URL": require_https_url(config.vm_public_base_url, "VM public base URL"),

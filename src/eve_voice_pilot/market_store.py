@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -220,6 +221,39 @@ class MarketStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_flight_trade_learning_character_updated
                 ON flight_trade_learning_signals(character_id, updated_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS flight_trade_learning_events (
+                    character_id INTEGER NOT NULL,
+                    evidence_key TEXT NOT NULL,
+                    type_id INTEGER NOT NULL,
+                    item_name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    matched_quantity INTEGER NOT NULL DEFAULT 0,
+                    open_quantity INTEGER NOT NULL DEFAULT 0,
+                    profitable_count INTEGER NOT NULL DEFAULT 0,
+                    sold_below_target_count INTEGER NOT NULL DEFAULT 0,
+                    net_return_below_plan_count INTEGER NOT NULL DEFAULT 0,
+                    fees_higher_than_expected_count INTEGER NOT NULL DEFAULT 0,
+                    fills_too_slowly_count INTEGER NOT NULL DEFAULT 0,
+                    loss_vs_plan_count INTEGER NOT NULL DEFAULT 0,
+                    actual_profit_isk REAL NOT NULL DEFAULT 0,
+                    actual_vs_plan_profit_isk REAL NOT NULL DEFAULT 0,
+                    gross_sell_delta_total_isk REAL NOT NULL DEFAULT 0,
+                    net_sell_delta_total_isk REAL NOT NULL DEFAULT 0,
+                    fee_gap_total_isk REAL NOT NULL DEFAULT 0,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (character_id, evidence_key)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_flight_trade_learning_events_character_type
+                ON flight_trade_learning_events(character_id, type_id, updated_at DESC)
                 """
             )
 
@@ -774,8 +808,14 @@ class MarketStore:
             payload = signal.get("payload")
             if not isinstance(payload, dict):
                 payload = {}
+            evidence_key = self.deps.clean_text(
+                signal.get("evidence_key") or _trade_learning_evidence_key(clean_character_id, type_id, signal),
+                "evidence_key",
+                max_length=240,
+            )
             row = (
                 clean_character_id,
+                evidence_key,
                 type_id,
                 item_name,
                 updated_at,
@@ -793,63 +833,130 @@ class MarketStore:
                 _float_value(signal.get("gross_sell_delta_total_isk")),
                 _float_value(signal.get("net_sell_delta_total_isk")),
                 _float_value(signal.get("fee_gap_total_isk")),
-                "[]",
                 json.dumps(payload, sort_keys=True),
             )
             rows.append(row)
             touched_type_ids.append(type_id)
         if not rows:
             return {"saved": 0, "signals": []}
+        inserted_count = 0
         with self._connect() as connection:
-            connection.executemany(
+            cursor = connection.executemany(
                 """
-                INSERT INTO flight_trade_learning_signals (
-                    character_id, type_id, item_name, updated_at, sample_count, matched_quantity,
+                INSERT OR IGNORE INTO flight_trade_learning_events (
+                    character_id, evidence_key, type_id, item_name, updated_at, sample_count, matched_quantity,
                     open_quantity, profitable_count, sold_below_target_count, net_return_below_plan_count,
                     fees_higher_than_expected_count, fills_too_slowly_count, loss_vs_plan_count,
                     actual_profit_isk, actual_vs_plan_profit_isk, gross_sell_delta_total_isk,
-                    net_sell_delta_total_isk, fee_gap_total_isk, signal_keys_json, payload_json
+                    net_sell_delta_total_isk, fee_gap_total_isk, payload_json
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(character_id, type_id) DO UPDATE SET
-                    item_name = excluded.item_name,
-                    updated_at = excluded.updated_at,
-                    sample_count = flight_trade_learning_signals.sample_count + excluded.sample_count,
-                    matched_quantity = flight_trade_learning_signals.matched_quantity + excluded.matched_quantity,
-                    open_quantity = excluded.open_quantity,
-                    profitable_count = flight_trade_learning_signals.profitable_count + excluded.profitable_count,
-                    sold_below_target_count = flight_trade_learning_signals.sold_below_target_count + excluded.sold_below_target_count,
-                    net_return_below_plan_count = flight_trade_learning_signals.net_return_below_plan_count + excluded.net_return_below_plan_count,
-                    fees_higher_than_expected_count = flight_trade_learning_signals.fees_higher_than_expected_count + excluded.fees_higher_than_expected_count,
-                    fills_too_slowly_count = flight_trade_learning_signals.fills_too_slowly_count + excluded.fills_too_slowly_count,
-                    loss_vs_plan_count = flight_trade_learning_signals.loss_vs_plan_count + excluded.loss_vs_plan_count,
-                    actual_profit_isk = flight_trade_learning_signals.actual_profit_isk + excluded.actual_profit_isk,
-                    actual_vs_plan_profit_isk = flight_trade_learning_signals.actual_vs_plan_profit_isk + excluded.actual_vs_plan_profit_isk,
-                    gross_sell_delta_total_isk = flight_trade_learning_signals.gross_sell_delta_total_isk + excluded.gross_sell_delta_total_isk,
-                    net_sell_delta_total_isk = flight_trade_learning_signals.net_sell_delta_total_isk + excluded.net_sell_delta_total_isk,
-                    fee_gap_total_isk = flight_trade_learning_signals.fee_gap_total_isk + excluded.fee_gap_total_isk,
-                    payload_json = excluded.payload_json
                 """,
                 rows,
             )
+            inserted_count = max(0, int(cursor.rowcount or 0))
             placeholders = ",".join("?" for _ in sorted(set(touched_type_ids)))
-            query = f"""
-                SELECT * FROM flight_trade_learning_signals
+            aggregate_rows = connection.execute(
+                f"""
+                SELECT
+                    type_id,
+                    MAX(item_name) AS item_name,
+                    MAX(updated_at) AS updated_at,
+                    SUM(sample_count) AS sample_count,
+                    SUM(matched_quantity) AS matched_quantity,
+                    MAX(open_quantity) AS open_quantity,
+                    SUM(profitable_count) AS profitable_count,
+                    SUM(sold_below_target_count) AS sold_below_target_count,
+                    SUM(net_return_below_plan_count) AS net_return_below_plan_count,
+                    SUM(fees_higher_than_expected_count) AS fees_higher_than_expected_count,
+                    SUM(fills_too_slowly_count) AS fills_too_slowly_count,
+                    SUM(loss_vs_plan_count) AS loss_vs_plan_count,
+                    SUM(actual_profit_isk) AS actual_profit_isk,
+                    SUM(actual_vs_plan_profit_isk) AS actual_vs_plan_profit_isk,
+                    SUM(gross_sell_delta_total_isk) AS gross_sell_delta_total_isk,
+                    SUM(net_sell_delta_total_isk) AS net_sell_delta_total_isk,
+                    SUM(fee_gap_total_isk) AS fee_gap_total_isk
+                FROM flight_trade_learning_events
                 WHERE character_id = ? AND type_id IN ({placeholders})
-            """
-            updated_rows = connection.execute(query, (clean_character_id, *sorted(set(touched_type_ids)))).fetchall()
-            for row in updated_rows:
+                GROUP BY type_id
+                """,
+                (clean_character_id, *sorted(set(touched_type_ids))),
+            ).fetchall()
+            latest_payloads = {
+                int(row["type_id"]): str(row["payload_json"] or "{}")
+                for row in connection.execute(
+                    f"""
+                    SELECT event.type_id, event.payload_json
+                    FROM flight_trade_learning_events event
+                    JOIN (
+                        SELECT type_id, MAX(updated_at) AS updated_at
+                        FROM flight_trade_learning_events
+                        WHERE character_id = ? AND type_id IN ({placeholders})
+                        GROUP BY type_id
+                    ) latest
+                    ON latest.type_id = event.type_id AND latest.updated_at = event.updated_at
+                    WHERE event.character_id = ?
+                    """,
+                    (clean_character_id, *sorted(set(touched_type_ids)), clean_character_id),
+                ).fetchall()
+            }
+            for row in aggregate_rows:
                 keys = _trade_learning_signal_keys(row)
                 connection.execute(
                     """
-                    UPDATE flight_trade_learning_signals
-                    SET signal_keys_json = ?
-                    WHERE character_id = ? AND type_id = ?
+                    INSERT INTO flight_trade_learning_signals (
+                        character_id, type_id, item_name, updated_at, sample_count, matched_quantity,
+                        open_quantity, profitable_count, sold_below_target_count, net_return_below_plan_count,
+                        fees_higher_than_expected_count, fills_too_slowly_count, loss_vs_plan_count,
+                        actual_profit_isk, actual_vs_plan_profit_isk, gross_sell_delta_total_isk,
+                        net_sell_delta_total_isk, fee_gap_total_isk, signal_keys_json, payload_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(character_id, type_id) DO UPDATE SET
+                        item_name = excluded.item_name,
+                        updated_at = excluded.updated_at,
+                        sample_count = excluded.sample_count,
+                        matched_quantity = excluded.matched_quantity,
+                        open_quantity = excluded.open_quantity,
+                        profitable_count = excluded.profitable_count,
+                        sold_below_target_count = excluded.sold_below_target_count,
+                        net_return_below_plan_count = excluded.net_return_below_plan_count,
+                        fees_higher_than_expected_count = excluded.fees_higher_than_expected_count,
+                        fills_too_slowly_count = excluded.fills_too_slowly_count,
+                        loss_vs_plan_count = excluded.loss_vs_plan_count,
+                        actual_profit_isk = excluded.actual_profit_isk,
+                        actual_vs_plan_profit_isk = excluded.actual_vs_plan_profit_isk,
+                        gross_sell_delta_total_isk = excluded.gross_sell_delta_total_isk,
+                        net_sell_delta_total_isk = excluded.net_sell_delta_total_isk,
+                        fee_gap_total_isk = excluded.fee_gap_total_isk,
+                        signal_keys_json = excluded.signal_keys_json,
+                        payload_json = excluded.payload_json
                     """,
-                    (json.dumps(keys), clean_character_id, int(row["type_id"])),
+                    (
+                        clean_character_id,
+                        int(row["type_id"]),
+                        str(row["item_name"] or f"Type {int(row['type_id'])}"),
+                        str(row["updated_at"] or self.deps.now_iso()),
+                        int(row["sample_count"] or 0),
+                        int(row["matched_quantity"] or 0),
+                        int(row["open_quantity"] or 0),
+                        int(row["profitable_count"] or 0),
+                        int(row["sold_below_target_count"] or 0),
+                        int(row["net_return_below_plan_count"] or 0),
+                        int(row["fees_higher_than_expected_count"] or 0),
+                        int(row["fills_too_slowly_count"] or 0),
+                        int(row["loss_vs_plan_count"] or 0),
+                        float(row["actual_profit_isk"] or 0.0),
+                        float(row["actual_vs_plan_profit_isk"] or 0.0),
+                        float(row["gross_sell_delta_total_isk"] or 0.0),
+                        float(row["net_sell_delta_total_isk"] or 0.0),
+                        float(row["fee_gap_total_isk"] or 0.0),
+                        json.dumps(keys),
+                        latest_payloads.get(int(row["type_id"]), "{}"),
+                    ),
                 )
         return {
-            "saved": len(rows),
+            "saved": inserted_count,
             "signals": self.latest_trade_learning_signals(
                 character_id=clean_character_id,
                 type_ids=sorted(set(touched_type_ids)),
@@ -892,6 +999,26 @@ def _float_value(value: Any) -> float:
         return float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _trade_learning_evidence_key(character_id: int, type_id: int, signal: Mapping[str, Any]) -> str:
+    payload = signal.get("payload")
+    fingerprint = {
+        "character_id": character_id,
+        "type_id": type_id,
+        "updated_at": str(signal.get("updated_at") or ""),
+        "matched_quantity": _nonnegative_int(signal.get("matched_quantity")),
+        "open_quantity": _nonnegative_int(signal.get("open_quantity")),
+        "profitable_count": _nonnegative_int(signal.get("profitable_count")),
+        "sold_below_target_count": _nonnegative_int(signal.get("sold_below_target_count")),
+        "net_return_below_plan_count": _nonnegative_int(signal.get("net_return_below_plan_count")),
+        "fees_higher_than_expected_count": _nonnegative_int(signal.get("fees_higher_than_expected_count")),
+        "fills_too_slowly_count": _nonnegative_int(signal.get("fills_too_slowly_count")),
+        "loss_vs_plan_count": _nonnegative_int(signal.get("loss_vs_plan_count")),
+        "payload": payload if isinstance(payload, dict) else {},
+    }
+    digest = hashlib.sha256(json.dumps(fingerprint, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return f"trade-pnl:{type_id}:{digest[:32]}"
 
 
 def _trade_learning_signal_keys(row: sqlite3.Row) -> list[str]:

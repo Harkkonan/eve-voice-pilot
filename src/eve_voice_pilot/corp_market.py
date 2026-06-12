@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import fnmatch
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
 import io
@@ -78,7 +79,7 @@ from eve_voice_pilot.planetary_industry import (
     planetary_chain_material_type_ids,
     rank_planetary_opportunities,
 )
-from eve_voice_pilot.ui_effects import inject_plex_button_effect
+from eve_voice_pilot.ui_effects import apply_csp_nonce, inject_plex_button_effect
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -3361,6 +3362,27 @@ def round_optional_float(value: Any, digits: int = 4) -> float | None:
         return None
 
 
+def trade_learning_evidence_key(item: Mapping[str, Any], plan: Mapping[str, Any], *, type_id: int) -> str:
+    fingerprint = {
+        "type_id": type_id,
+        "first_date": str(item.get("first_date") or ""),
+        "last_date": str(item.get("last_date") or ""),
+        "transaction_count": clean_optional_int(item.get("transaction_count")) or 0,
+        "matched_quantity": clean_optional_int(item.get("matched_quantity")) or 0,
+        "open_quantity": clean_optional_int(item.get("open_quantity")) or 0,
+        "matched_buy_cost_isk": round_optional_float(item.get("matched_buy_cost_isk"), 2),
+        "matched_sell_revenue_isk": round_optional_float(item.get("matched_sell_revenue_isk"), 2),
+        "allocated_fee_isk": round_optional_float(item.get("allocated_fee_isk"), 2),
+        "expectation_id": str(plan.get("expectation_id") or ""),
+        "snapshot_id": str(plan.get("snapshot_id") or ""),
+        "planned_at": str(plan.get("planned_at") or ""),
+        "planned_units": clean_optional_int(plan.get("planned_units")) or 0,
+        "matched_units": clean_optional_int(plan.get("matched_units")) or 0,
+    }
+    digest = hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode("utf-8")).hexdigest()
+    return f"trade-pnl:{type_id}:{digest[:32]}"
+
+
 def trade_learning_signal_evidence(
     item: Mapping[str, Any],
     *,
@@ -3422,6 +3444,7 @@ def trade_learning_signal_evidence(
             fills_slowly = age_days >= 7.0 and open_quantity >= max(1, planned_units // 2)
 
     evidence = {
+        "evidence_key": trade_learning_evidence_key(item, plan, type_id=type_id),
         "type_id": type_id,
         "item_name": str(item.get("item_name") or f"Type {type_id}"),
         "updated_at": updated_at,
@@ -13987,6 +14010,11 @@ def build_http_server(
     class CorpMarketHandler(BaseHTTPRequestHandler):
         server_version = "CorpMarketConcierge/0.1"
 
+        def end_headers(self) -> None:
+            if not getattr(self, "_security_headers_sent", False):
+                self._send_security_headers(secrets.token_urlsafe(16))
+            super().end_headers()
+
         def do_GET(self) -> None:
             path = request_path(self.path)
             if path in {"/", "/index.html"}:
@@ -15435,19 +15463,21 @@ def build_http_server(
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
+            csp_nonce = secrets.token_urlsafe(16)
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self._send_security_headers()
+            self._send_security_headers(csp_nonce)
             self.end_headers()
             self.wfile.write(body)
 
         def _send_sse_headers(self) -> None:
+            csp_nonce = secrets.token_urlsafe(16)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
-            self._send_security_headers()
+            self._send_security_headers(csp_nonce)
             self.end_headers()
 
         def _send_sse_event(self, event: str, payload: dict[str, Any]) -> None:
@@ -15462,11 +15492,12 @@ def build_http_server(
                 raise
 
         def _send_html(self, markup: str, *, status: int = 200) -> None:
-            body = markup.encode("utf-8")
+            csp_nonce = secrets.token_urlsafe(16)
+            body = apply_csp_nonce(markup, csp_nonce).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self._send_security_headers()
+            self._send_security_headers(csp_nonce)
             self.end_headers()
             self.wfile.write(body)
 
@@ -15477,25 +15508,46 @@ def build_http_server(
                 return
             body = asset_path.read_bytes()
             content_type = STATIC_CONTENT_TYPES.get(asset_path.suffix.lower(), "application/octet-stream")
+            csp_nonce = secrets.token_urlsafe(16)
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "public, max-age=3600")
-            self._send_security_headers()
+            self._send_security_headers(csp_nonce)
             self.end_headers()
             self.wfile.write(body)
 
         def _redirect(self, url: str) -> None:
+            csp_nonce = secrets.token_urlsafe(16)
             self.send_response(302)
             self.send_header("Location", url)
-            self._send_security_headers()
+            self._send_security_headers(csp_nonce)
             self.end_headers()
 
-        def _send_security_headers(self) -> None:
+        def _send_security_headers(self, csp_nonce: str) -> None:
+            if getattr(self, "_security_headers_sent", False):
+                return
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
-            self.send_header("Referrer-Policy", "same-origin")
-            self.send_header("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+            self.send_header(
+                "Content-Security-Policy",
+                (
+                    "default-src 'self'; "
+                    "connect-src 'self'; "
+                    "img-src 'self' data: https://images.evetech.net; "
+                    "object-src 'none'; "
+                    f"style-src 'self' 'nonce-{csp_nonce}'; "
+                    "style-src-attr 'unsafe-inline'; "
+                    f"script-src 'self' 'nonce-{csp_nonce}'; "
+                    "script-src-attr 'none'; "
+                    "base-uri 'self'; "
+                    "frame-ancestors 'none'; "
+                    "form-action 'self'"
+                ),
+            )
+            self._security_headers_sent = True
 
     return ThreadingHTTPServer((host, port), CorpMarketHandler)
 
@@ -25287,8 +25339,8 @@ help</textarea>
       setBulkAppraisalStatus("No appraisal has run yet.");
       if (clearText && bulkAppraisalText) {
         bulkAppraisalText.value = "";
-        window.localStorage.removeItem(bulkAppraisalTextKey);
       }
+      window.localStorage.removeItem(bulkAppraisalTextKey);
     }
 
     function renderBulkAppraisalSummary(data) {
@@ -25417,7 +25469,7 @@ help</textarea>
       if (bulkAppraisalRun) bulkAppraisalRun.disabled = true;
       setBulkAppraisalStatus("Appraising public hub orders...");
       try {
-        window.localStorage.setItem(bulkAppraisalTextKey, text);
+        window.localStorage.removeItem(bulkAppraisalTextKey);
         if (bulkAppraisalHub) window.localStorage.setItem(bulkAppraisalHubKey, bulkAppraisalHub.value || "jita");
         if (bulkAppraisalMode) window.localStorage.setItem(bulkAppraisalModeKey, bulkAppraisalMode.value || "auto");
         const response = await fetch("/api/flight/appraisal", {
@@ -31836,7 +31888,7 @@ help</textarea>
       if (!url) return missing;
       return `
         <span class="specimen-image-frame ${escapeHtml(className)}" style="--sample-accent: ${escapeHtml(accent)}">
-          <img src="${escapeHtml(url)}" alt="${safeName}" loading="lazy" decoding="async" onerror="this.closest('.specimen-image-frame').classList.add('image-missing'); this.remove();">
+          <img src="${escapeHtml(url)}" alt="${safeName}" loading="lazy" decoding="async">
         </span>
       `;
     }
@@ -33482,6 +33534,13 @@ help</textarea>
         downloadReportCsv(downloadButton.dataset.downloadReport, downloadButton);
       }
     });
+    document.addEventListener("error", (event) => {
+      const image = event.target && event.target.closest ? event.target.closest(".specimen-image-frame img") : null;
+      if (!image) return;
+      const frame = image.closest(".specimen-image-frame");
+      if (frame) frame.classList.add("image-missing");
+      image.remove();
+    }, true);
 
     if (bulkAppraisalForm) {
       bulkAppraisalForm.addEventListener("submit", (event) => {
@@ -33502,7 +33561,7 @@ help</textarea>
     }
     if (bulkAppraisalText) {
       bulkAppraisalText.addEventListener("input", () => {
-        window.localStorage.setItem(bulkAppraisalTextKey, String(bulkAppraisalText.value || ""));
+        window.localStorage.removeItem(bulkAppraisalTextKey);
       });
     }
     if (bulkAppraisalClear) {
@@ -33885,7 +33944,7 @@ help</textarea>
       bulkAppraisalMode.value = window.localStorage.getItem(bulkAppraisalModeKey) || bulkAppraisalMode.value || "auto";
     }
     if (bulkAppraisalText) {
-      bulkAppraisalText.value = window.localStorage.getItem(bulkAppraisalTextKey) || bulkAppraisalText.value || "";
+      window.localStorage.removeItem(bulkAppraisalTextKey);
     }
     resetBulkAppraisal(false);
     writeTradePnlSettings(readTradePnlSettings());

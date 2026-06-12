@@ -108,6 +108,26 @@ def test_public_env_from_config_includes_character_allowlist():
     assert env["CORP_MARKET_SSO_CALLBACK_URL"] == "https://flight.example.test/flight/callback"
 
 
+def test_public_env_from_config_clears_public_mode_when_disabled():
+    config = flight_workbench.WorkbenchConfig(
+        vm_public_base_url="https://flight.example.test",
+        vm_sso_callback_url="https://flight.example.test/flight/callback",
+        vm_allowed_character_ids=(2124413713,),
+        vm_allowed_corporation_ids=(1000045,),
+        vm_public_hosting_mode=False,
+        vm_trusted_members_can_write_market=True,
+    )
+
+    env = flight_workbench.public_env_from_config(config)
+
+    assert env["CORP_MARKET_PUBLIC_HOSTING_MODE"] == "0"
+    assert env["CORP_MARKET_PUBLIC_BASE_URL"] == ""
+    assert env["CORP_MARKET_SSO_CALLBACK_URL"] == ""
+    assert env["CORP_MARKET_ALLOWED_CHARACTER_IDS"] == ""
+    assert env["CORP_MARKET_ALLOWED_CORPORATION_IDS"] == ""
+    assert env["CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET"] == "0"
+
+
 def test_load_config_rejects_non_loopback_local_targets(tmp_path):
     config_path = tmp_path / "flight_workbench.local.json"
     config_path.write_text(json.dumps({"local_app_host": "0.0.0.0"}), encoding="utf-8")
@@ -493,6 +513,25 @@ def test_build_vm_public_env_command_writes_public_allowlist(tmp_path):
     assert "http://127.0.0.1:8770/api/flight/diagnostics" not in command
     assert "CORP_MARKET_SSO_CLIENT_SECRET" in command
     assert "secret-value" not in command
+
+
+def test_build_vm_public_env_command_writes_public_mode_off(tmp_path):
+    key_path = tmp_path / "oci.key"
+    key_path.write_text("private", encoding="utf-8")
+    config = flight_workbench.WorkbenchConfig(
+        ssh_host="203.0.113.10",
+        ssh_user="ubuntu",
+        ssh_key_path=str(key_path),
+        vm_service_name="eve-flight.service",
+        vm_public_hosting_mode=False,
+    )
+
+    command = flight_workbench.build_vm_public_env_command(config)
+
+    assert '"CORP_MARKET_PUBLIC_HOSTING_MODE": "0"' in command
+    assert '"CORP_MARKET_ALLOWED_CHARACTER_IDS": ""' in command
+    assert '"CORP_MARKET_PUBLIC_BASE_URL": ""' in command
+    assert "systemctl restart eve-flight.service" in command
 
 
 def test_vm_update_and_restart_uses_fixed_fast_forward_deploy_command(tmp_path, monkeypatch):

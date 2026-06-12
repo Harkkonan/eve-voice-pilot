@@ -89,6 +89,22 @@ def _get(server, path, *, session_id=""):
     return response.status, body
 
 
+def _get_with_headers(server, path, *, session_id=""):
+    host, port = server.server_address
+    headers = {}
+    if session_id:
+        headers["Cookie"] = f"{corp_market.FLIGHT_SESSION_COOKIE_NAME}={session_id}"
+    connection = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        connection.request("GET", path, headers=headers)
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        response_headers = dict(response.getheaders())
+    finally:
+        connection.close()
+    return response.status, body, response_headers
+
+
 def test_discord_post_settings_round_trip_redacts_webhook_from_response(tmp_path):
     settings_path = tmp_path / "corp_discord_post_settings.json"
     settings = corp_market.clean_discord_post_settings_payload(
@@ -292,6 +308,29 @@ def test_direct_discord_post_preview_uses_read_access_in_public_mode(tmp_path):
     assert data["ok"] is True
     assert data["sent_to_discord"] is False
     assert data["preview_payload"]["embeds"][0]["title"] == "WTB Isogen x1,000,000 at Dihra 24 | 290 ISK per unit"
+
+
+def test_corp_market_dashboard_sends_nonce_csp(tmp_path):
+    server, thread, _session_id = _start_public_discord_post_server(tmp_path)
+    try:
+        status, body, headers = _get_with_headers(server, "/")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    csp = headers["Content-Security-Policy"]
+    assert status == 200
+    assert "default-src 'self'" in csp
+    assert "script-src 'self' 'nonce-" in csp
+    assert "style-src 'self' 'nonce-" in csp
+    assert "script-src-attr 'none'" in csp
+    assert "style-src-attr 'unsafe-inline'" in csp
+    assert "https://images.evetech.net" in csp
+    assert "nonce=" in body
+    assert "onerror=" not in body
+    assert headers["X-Frame-Options"] == "DENY"
+    assert headers["Referrer-Policy"] == "no-referrer"
 
 
 def test_direct_discord_post_send_still_requires_write_access_in_public_mode(tmp_path):

@@ -277,6 +277,7 @@ def test_market_store_rejects_non_eve_fitting_text(tmp_path):
 def test_market_store_trade_learning_signals_require_repeated_misses(tmp_path):
     store = MarketStore(tmp_path / "market.sqlite3")
     miss = {
+        "evidence_key": "trade-pnl:34:first-miss",
         "type_id": 34,
         "item_name": "Tritanium",
         "updated_at": "2026-06-11T12:00:00Z",
@@ -288,10 +289,14 @@ def test_market_store_trade_learning_signals_require_repeated_misses(tmp_path):
     }
 
     first = store.save_trade_learning_signals(character_id=123, signals=[miss])["signals"][0]
-    second = store.save_trade_learning_signals(character_id=123, signals=[miss])["signals"][0]
+    duplicate = store.save_trade_learning_signals(character_id=123, signals=[miss])
+    second_miss = dict(miss, evidence_key="trade-pnl:34:second-miss", updated_at="2026-06-12T12:00:00Z")
+    second = store.save_trade_learning_signals(character_id=123, signals=[second_miss])["signals"][0]
     other_pilot = store.latest_trade_learning_signals(character_id=456, type_ids=[34])
 
     assert first["signal_keys"] == []
+    assert duplicate["saved"] == 0
+    assert duplicate["signals"][0]["sold_below_target_count"] == 1
     assert set(second["signal_keys"]) == {"sold_below_target", "net_return_below_plan"}
     assert second["sold_below_target_count"] == 2
     assert other_pilot == []
@@ -980,6 +985,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "renderBulkAppraisalRows" in page
     assert "renderBulkAppraisalWarnings" in page
     assert "No character ESI scope is used by this tab" in page
+    assert "window.localStorage.setItem(bulkAppraisalTextKey" not in page
+    assert "bulkAppraisalText.value = window.localStorage.getItem(bulkAppraisalTextKey)" not in page
+    assert "window.localStorage.removeItem(bulkAppraisalTextKey)" in page
     assert "data-tab-target=\"trade-pnl\"" in page
     assert "data-tab-target=\"planetary\"" in page
     assert "id=\"trade-pnl-form\"" in page
@@ -2045,7 +2053,7 @@ def test_build_flight_trade_pnl_payload_uses_saved_acquisition_expectation(monke
     assert plan["suggested_bid"] == pytest.approx(100)
 
 
-def test_build_flight_trade_pnl_payload_saves_repeated_learning_signals(monkeypatch, tmp_path):
+def test_build_flight_trade_pnl_payload_dedupes_repeated_learning_refreshes(monkeypatch, tmp_path):
     current_time = datetime.now(timezone.utc)
     buy_date = (current_time - timedelta(days=1)).isoformat().replace("+00:00", "Z")
     sell_date = (current_time - timedelta(hours=12)).isoformat().replace("+00:00", "Z")
@@ -2123,9 +2131,12 @@ def test_build_flight_trade_pnl_payload_saves_repeated_learning_signals(monkeypa
         )
 
     signal = payload["trade_pnl"]["items"][0]["learning_signals"][0]
-    assert set(signal["signal_keys"]) >= {"sold_below_target", "net_return_below_plan", "loss_vs_plan"}
-    assert signal["sold_below_target_count"] == 2
-    assert payload["trade_pnl"]["learning"]["signal_count"] == 1
+    assert signal["signal_keys"] == []
+    assert signal["sold_below_target_count"] == 1
+    assert signal["net_return_below_plan_count"] == 1
+    assert payload["trade_pnl"]["learning"]["signal_count"] == 0
+    assert payload["trade_pnl"]["learning"]["evidence_item_count"] == 1
+    assert payload["trade_pnl"]["learning"]["saved"] == 0
     assert "transaction_id" not in json.dumps(signal)
     assert payload["trade_pnl"]["items"][0]["plan_reconciliation"]["average_sell_unit_price"] == pytest.approx(900_000)
     assert payload["trade_pnl"]["items"][0]["plan_reconciliation"]["expected_gross_sell_unit_price"] == pytest.approx(1_200_000)
