@@ -531,23 +531,24 @@ def test_dashboard_keeps_market_posts_as_primary_market_workflow():
     assert "Legacy Market Board" not in page
 
 
-def test_dashboard_includes_tester_readiness_cockpit():
+def test_dashboard_excludes_member_facing_tester_cockpit_and_directions():
     page = render_dashboard()
-    tester_section = page.split('<section id="tab-tester"', 1)[1].split('<section id="tab-market"', 1)[0]
 
-    assert "data-tab-target=\"tester\"" in page
-    assert "Tester Cockpit" in page
-    assert "Tester Readiness Cockpit" in tester_section
-    assert "id=\"tester-cockpit-summary\"" in tester_section
-    assert "id=\"tester-check-list\" class=\"cache-list\"" in tester_section
-    assert "id=\"tester-discord-list\" class=\"cache-list\"" in tester_section
-    assert "id=\"tester-local-path-list\" class=\"cache-list\"" in tester_section
-    assert "id=\"tester-static-cache-list\" class=\"cache-list\"" in tester_section
-    assert "ESI, hosting, cache, Discord, callback, and local path checks" in page
-    assert "renderTesterCockpit" in page
-    assert "renderTesterDiscordSurface" in page
-    assert "[\"diagnostics\", \"tester\"]" in page
-    assert "[\"test-bench\", \"tester\"]" in page
+    assert "data-tab-target=\"tester\"" not in page
+    assert "id=\"tab-tester\"" not in page
+    assert "Tester Cockpit" not in page
+    assert "Tester Readiness Cockpit" not in page
+    assert "How To Use This With A Tester" not in page
+    assert "Tester operations launcher" not in page
+    assert "Run This Hauling Test" not in page
+    assert "Run This Portfolio Test" not in page
+    assert "Route scan rehearsal" not in page
+    assert "Buy-order rehearsal" not in page
+    assert "renderTesterCockpit" not in page
+    assert "renderTesterDiscordSurface" not in page
+    assert "[\"diagnostics\", \"industry\"]" in page
+    assert "[\"test-bench\", \"tester\"]" not in page
+    assert "/api/flight/diagnostics" in page
 
 
 def test_dashboard_includes_operations_status_and_mobile_switcher():
@@ -726,17 +727,17 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-tab-target=\"acquisition\"" in page
     assert "data-tab-target=\"appraisal\"" in page
     assert "class=\"ops-launcher\"" in page
-    assert "Tester operations launcher" in page
-    assert "Test Session" in page
+    assert "Tester operations launcher" not in page
+    assert "Test Session" not in page
+    assert "Flight Attendant" in page
+    assert "Manual Handoff" in page
     assert "ESI Status" in page
     assert "Open Routes" in page
     assert "Open Portfolio" in page
-    assert "Run This Hauling Test" in page
-    assert "Route scan rehearsal" in page
-    assert "Run This Portfolio Test" in page
-    assert "Buy-order rehearsal" in page
-    assert "put the exact cargo in a <code>CM-READY-HAUL-#Route</code> container" in page
-    assert "move the filled items into <code>Managed#Trade</code>" in page
+    assert "Run This Hauling Test" not in page
+    assert "Route scan rehearsal" not in page
+    assert "Run This Portfolio Test" not in page
+    assert "Buy-order rehearsal" not in page
     assert "To avoid requesting wallet scopes, enter this manually" in page
     assert "id=\"acq-order-duration\"" in page
     assert "Planned order duration" in page
@@ -754,10 +755,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Estimated Broker Fee ISK" in page
     assert "Reason For Entry" in page
     assert "id=\"acq-post-test-review\" class=\"completed-run-review\"" in page
-    assert "Post-Test Review" in page
+    assert "Portfolio Review" in page
     assert "id=\"acq-post-test-csv\"" in page
     assert "id=\"acq-review-post-test\" class=\"secondary\" type=\"button\"" in page
-    assert "Review Portfolio Test" in page
+    assert "Review Portfolio" in page
     assert "buildAcquisitionPostTestReview" in page
     assert "renderAcquisitionPostTestReview" in page
     assert "renderAcquisitionBeforeOrderChecklist" in page
@@ -1018,7 +1019,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Customs Code Expertise" in page
     assert "Can ESI auto-fill these from location?" in page
     assert "Corp-owned customs office rates are a later Director-only corporation mode" in page
-    assert "Customs Fee Field Test" in page
+    assert "Customs Fee Quote Check" in page
     assert "id=\"planetary-test-tier\"" in page
     assert "id=\"planetary-test-transfer\"" in page
     assert "id=\"planetary-test-total-isk\"" in page
@@ -1148,7 +1149,7 @@ def test_dashboard_uses_shared_empty_error_and_checklist_helpers():
     assert "function setDashboardState" in page
     assert "state-callout" in page
     assert 'renderDashboardEmptyState("No completed rows found.")' in page
-    assert 'renderDashboardEmptyState("No readiness checks were returned.")' in page
+    assert 'renderDashboardEmptyState("No readiness checks were returned.")' not in page
     assert 'renderDashboardErrorState(error.message || "Appraisal failed.")' in page
     assert "renderDashboardChecklist(checklist)" in page
     assert "function renderHaulCheckItem" not in page
@@ -4377,7 +4378,7 @@ def test_static_cache_diagnostics_identifies_missing_planetary_cache(monkeypatch
     assert "same machine or container" in diagnostics["same_host_note"]
 
 
-def test_flight_hosting_diagnostics_reports_tester_readiness(monkeypatch):
+def test_flight_hosting_diagnostics_reports_operator_readiness(monkeypatch):
     def cache_row(key, label):
         return {
             "key": key,
@@ -7084,7 +7085,7 @@ def test_dashboard_includes_discord_alert_settings_controls():
     assert "IntelPet webhook" in page
     assert "User-owned sender - future" in page
     assert "The webhook URL is not saved in this settings file." in page
-    assert "Manual tests live" in page
+    assert "Manual sends live" in page
     assert "\"discord-alerts\", \"market\"" in page
     assert "resolveTabName" in page
     assert "event: discordAlertEventFromForm()" in page

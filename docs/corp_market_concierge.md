@@ -62,7 +62,7 @@ The first version is a safe briefing surface:
 
 ### Operations UX Polish
 
-The dashboard shell now includes a compact operations status strip above the tabs. It shows the active workflow, ESI session state, static-cache readiness, and current data posture so testers can see whether the console is ready, waiting for ESI, missing cache data, or blocked by an error. Mobile users also get a `Workspace` selector in addition to the horizontal tab rail.
+The dashboard shell now includes a compact operations status strip above the tabs. It shows the active workflow, ESI session state, static-cache readiness, and current data posture so operators can see whether the console is ready, waiting for ESI, missing cache data, or blocked by an error. Mobile users also get a `Workspace` selector in addition to the horizontal tab rail.
 
 Flight Attendant and Industry Library use workflow cards and source badges to make each area easier to audit: Flight stays focused on briefing, trust, and safety, while Industry labels ESI blueprint reads, ESI asset reads, local cache checks, public market-order scans, and manual handoff boundaries. Waiting, empty, and error states use shared callouts instead of bare text so large output panels are easier to scan.
 
@@ -150,15 +150,15 @@ $env:CORP_MARKET_ALLOWED_CORPORATION_IDS = "123456789"
 
 Public hosting mode refuses to start unless the public base URL and callback URL use HTTPS, EVE SSO is configured, and at least one allowed character, corporation, or alliance id is present. Flight Attendant access tokens remain in server memory only; no refresh token or token file is stored by this version.
 
-Use the diagnostics endpoint after startup:
+Keep the operator diagnostics endpoint available for deployment checks after startup:
 
 ```text
 https://YOUR-DOMAIN-OR-TUNNEL/api/flight/diagnostics
 ```
 
-The dashboard also includes a **Tester Cockpit** tab at `#tester`. Check it before inviting testers or after deploying a new server/container. It summarizes whether EVE SSO is configured, the member allowlist is active, the server mode and public base URL look right, the SSO callback matches the public URL, Discord destinations are configured, local settings/database paths are ignored by Git, and static cache files are present.
+The member-facing dashboard no longer includes a dedicated QA cockpit or embedded test directions. The remaining manual and technical verification work lives in `docs/corp_market_remaining_tests.md`, which is the working checklist for "what tests are left?" and "what should be tested in game next?"
 
-The Industry Library tab also shows a **Static Cache Preflight** panel. If the cockpit or preflight panel reports a missing cache, run the cache refresh on the same host that serves the website, then restart or refresh the page.
+The Industry Library tab also shows a **Static Cache Preflight** panel. If the diagnostics endpoint or preflight panel reports a missing cache, run the cache refresh on the same host that serves the website, then restart or refresh the page.
 
 Remote market listing writes are locked down in public hosting mode. Add an admin token for operator-only writes, or add `--trusted-members-can-write-market` if allowlisted EVE SSO members should be able to create, reserve, and update market listings from the shared site:
 
@@ -246,7 +246,7 @@ This tab is advisory only. It never starts a reprocessing job, moves items, pres
 
 Jita values are immediate liquidation estimates against visible public buy-order depth in Jita. If buy depth does not cover every output material or the whole ore stack, the tab labels the value as partial.
 
-Batch paste mode includes a paste manifest before calculation. It shows accepted ore stacks, total units, merged duplicate ore lines, ignored comment lines, and the first parsing issues so testers can catch inventory-copy mistakes before trusting the assay.
+Batch paste mode includes a paste manifest before calculation. It shows accepted ore stacks, total units, merged duplicate ore lines, ignored comment lines, and the first parsing issues so pilots can catch inventory-copy mistakes before trusting the assay.
 
 ### Buyer Order Scanner
 
@@ -279,9 +279,9 @@ History analysis has three modes:
 - `Basic guardrails` is the default. It checks current public orders against recent regional market history and flags obvious traps or weak history.
 - `Advanced trap audit` keeps the same math but adds stronger warnings for thin liquidity, buyer concentration, and tight source buy competition.
 
-History warnings are intentionally plain-language. A `Possible trap` signal means the top-of-book spread is not supported by recent market history, the competing buy side is already above the safe ceiling, or another market-history/current-order mismatch needs manual checking. It is not proof of bad intent by another player. Treat it as a reason to verify the item in EVE before posting a buy order. The history window comparison shows 7-day, 30-day, and 90-day views so a tester can see whether the market is stable, cooling off, or only recently active.
+History warnings are intentionally plain-language. A `Possible trap` signal means the top-of-book spread is not supported by recent market history, the competing buy side is already above the safe ceiling, or another market-history/current-order mismatch needs manual checking. It is not proof of bad intent by another player. Treat it as a reason to verify the item in EVE before posting a buy order. The history window comparison shows 7-day, 30-day, and 90-day views so a pilot can see whether the market is stable, cooling off, or only recently active.
 
-Liquidity confidence labels are beginner-facing risk language, not guarantees. `Strong` and `Moderate` mean recent source-region completed trades appear able to support the suggested test size. `Thin` and `Sparse/unreliable` mean the app may still show the idea, but the tester should use a smaller order or skip it. Buyer concentration warns when expected resale depends mostly on one destination buy order. Competition pressure shows the highest visible source buy, safe bid ceiling, suggested bid, and remaining headroom so the pilot can avoid bidding away the expected profit.
+Liquidity confidence labels are beginner-facing risk language, not guarantees. `Strong` and `Moderate` mean recent source-region completed trades appear able to support the suggested test size. `Thin` and `Sparse/unreliable` mean the app may still show the idea, but the pilot should use a smaller order or skip it. Buyer concentration warns when expected resale depends mostly on one destination buy order. Competition pressure shows the highest visible source buy, safe bid ceiling, suggested bid, and remaining headroom so the pilot can avoid bidding away the expected profit.
 
 Portfolio recommendations, hauler route opportunities, and Planetary Industry input/output lists include Quickbar copy buttons. Those buttons copy plain market item names, one per line, for EVE's Market Quickbar import flow. They do not copy quantities, place orders, write EVE settings files, or touch the EVE client; the pilot still opens the market window, uses `Quickbar > Import Quickbar`, chooses the add/import option, and verifies the item list manually in EVE.
 

@@ -9329,7 +9329,7 @@ def acquisition_liquidity_confidence(
     else:
         level = "moderate"
         label = "Moderate liquidity"
-        detail = "Recent source-region history supports the size, but this is still a manual test candidate."
+        detail = "Recent source-region history supports the size, but this is still a small manual candidate."
     return {
         "level": level,
         "label": label,
@@ -9776,7 +9776,7 @@ def hauling_decision(*, risk_level: str, margin_percent: float | None) -> dict[s
         return {
             "code": "test",
             "tone": "watch",
-            "label": "Small manual test haul",
+            "label": "Small manual haul",
             "reason": "The spread is positive, but history is thin or unusual enough to recheck before filling the hold.",
         }
     if margin_percent is not None and margin_percent >= 25:
@@ -13759,7 +13759,7 @@ def build_discord_destination_diagnostics(
         "configured_destination_count": configured_destination_count,
         "attention_count": attention_count,
         "surfaces": surfaces,
-        "note": "Webhook URLs are redacted here. Use the existing manual test-send buttons for live Discord checks.",
+        "note": "Webhook URLs are redacted here. Use the existing manual send buttons for live Discord checks.",
     }
 
 
@@ -13838,7 +13838,7 @@ def build_flight_hosting_diagnostics(
             "detail": (
                 f"Expected callback: {expected_callback_url}."
                 if expected_callback_url
-                else "Set a public base URL before public tester hosting."
+                else "Set a public base URL before public sharing."
             ),
         },
         {
@@ -16523,23 +16523,7 @@ def _render_flight_attendant_dashboard() -> str:
     .fitting-share-panel { grid-area: fitting-share; }
     .fitting-list-panel { grid-area: fitting-list; }
     .flight-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; min-width: 0; }
-    .tester-cockpit-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(320px, .52fr);
-      gap: 16px;
-      min-width: 0;
-    }
-    .tester-cockpit-readouts {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      margin: 10px 0 12px;
-    }
-    .tester-cockpit-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 12px;
-    }
-    .tester-cockpit-note {
+    .operator-note {
       background: rgba(5, 9, 11, .48);
       border: 1px solid rgba(63, 85, 80, .62);
       border-radius: 7px;
@@ -16549,24 +16533,7 @@ def _render_flight_attendant_dashboard() -> str:
       line-height: 1.45;
       padding: 12px;
     }
-    .tester-cockpit-note strong { color: var(--text); }
-    .tester-cockpit-path {
-      display: grid;
-      gap: 6px;
-    }
-    .tester-cockpit-path code {
-      overflow-wrap: anywhere;
-      white-space: normal;
-    }
-    .tester-cockpit-surface {
-      display: grid;
-      gap: 6px;
-    }
-    .tester-cockpit-preview {
-      color: var(--muted);
-      font-size: 12px;
-      overflow-wrap: anywhere;
-    }
+    .operator-note strong { color: var(--text); }
     .full-span { grid-column: 1 / -1; }
     .reprocess-page {
       display: grid;
@@ -16802,82 +16769,6 @@ def _render_flight_attendant_dashboard() -> str:
     .checkline span { color: var(--muted); }
     .checkline small { display: block; color: var(--amber); font-size: 12px; line-height: 1.35; margin-top: 3px; }
     .input-note { color: var(--amber); font-size: 12px; line-height: 1.35; }
-    .tester-run-panel {
-      display: grid;
-      gap: 9px;
-      margin: 0 0 14px;
-      padding: 11px 12px;
-      border-left: 3px solid var(--cyan);
-      border-top: 1px solid rgba(63, 85, 80, .58);
-      border-bottom: 1px solid rgba(63, 85, 80, .58);
-      background:
-        linear-gradient(90deg, rgba(97, 199, 217, .1), rgba(5, 9, 11, .34) 42%, transparent);
-    }
-    .tester-run-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-    }
-    .tester-run-head strong {
-      color: var(--text);
-      font-size: 14px;
-    }
-    .tester-run-head span {
-      color: var(--amber);
-      font-size: 12px;
-      white-space: nowrap;
-    }
-    .tester-run-steps {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      margin: 0;
-      padding: 0;
-      list-style: none;
-    }
-    .tester-run-steps li {
-      display: grid;
-      grid-template-columns: 22px minmax(0, 1fr);
-      gap: 7px;
-      min-width: 0;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.35;
-    }
-    .tester-run-steps b {
-      display: grid;
-      place-items: center;
-      width: 22px;
-      height: 22px;
-      border: 1px solid rgba(97, 199, 217, .42);
-      border-radius: 50%;
-      color: var(--cyan);
-      font-size: 11px;
-    }
-    .tester-run-steps strong {
-      display: block;
-      color: var(--text);
-      font-size: 12px;
-      line-height: 1.25;
-      overflow-wrap: anywhere;
-    }
-    .tester-run-steps small {
-      display: block;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.35;
-    }
-    .tester-run-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-    }
-    .tester-run-actions .meta {
-      margin-left: auto;
-      font-size: 12px;
-    }
     .system-suggest-list {
       display: grid;
       gap: 4px;
@@ -19547,7 +19438,7 @@ def _render_flight_attendant_dashboard() -> str:
       color: var(--cyan);
       font-weight: 800;
     }
-    .planetary-customs-tester {
+    .planetary-customs-checker {
       display: grid;
       gap: 10px;
       margin-top: 14px;
@@ -19558,7 +19449,7 @@ def _render_flight_attendant_dashboard() -> str:
         rgba(8, 13, 15, .66);
       padding: 10px;
     }
-    .planetary-customs-tester-head {
+    .planetary-customs-checker-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -19566,12 +19457,12 @@ def _render_flight_attendant_dashboard() -> str:
       border-bottom: 1px solid rgba(97, 199, 217, .22);
       padding-bottom: 8px;
     }
-    .planetary-customs-tester-head strong {
+    .planetary-customs-checker-head strong {
       color: var(--text);
       font-size: 14px;
       overflow-wrap: anywhere;
     }
-    .planetary-customs-tester-head span {
+    .planetary-customs-checker-head span {
       color: var(--cyan);
       font-size: 11px;
       font-weight: 900;
@@ -20364,7 +20255,7 @@ def _render_flight_attendant_dashboard() -> str:
     @media (max-width: 1040px) {
       .ops-status-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .ops-launcher { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .market-grid, #tab-market > .market-grid, .flight-grid, .briefing, .industry-library-grid, .tester-cockpit-grid { grid-template-columns: 1fr; }
+      .market-grid, #tab-market > .market-grid, .flight-grid, .briefing, .industry-library-grid { grid-template-columns: 1fr; }
       .fitting-grid {
         grid-template-columns: 1fr;
         grid-template-areas:
@@ -20448,16 +20339,13 @@ def _render_flight_attendant_dashboard() -> str:
       .tabbar button { flex: 0 0 auto; min-width: 136px; }
       .workflow-strip,
       .workflow-strip.compact { grid-template-columns: 1fr; }
-      .tester-run-head { display: grid; }
-      .tester-run-steps { grid-template-columns: 1fr; }
-      .tester-run-actions .meta { margin-left: 0; }
       .panel-header { display: block; }
       .panel-header .pill { margin-top: 8px; }
       .panel-header .meta { max-width: 100%; }
       h1 { font-size: 24px; }
       .scope-panel { grid-template-columns: 1fr; }
       .scope-chip-row { justify-content: flex-start; }
-      .row, .discord-alert-section .row, .offer-grid, .ops-strip, .tester-cockpit-readouts, .profit-stats, .decision-metrics, .bulk-appraisal-summary-grid, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
+      .row, .discord-alert-section .row, .offer-grid, .ops-strip, .profit-stats, .decision-metrics, .bulk-appraisal-summary-grid, .planetary-strategy-grid, .planetary-target-grid, .planetary-tax-grid, .planetary-chain-metrics, .planetary-ecology-layout, .planetary-node-values { grid-template-columns: 1fr; }
       #tab-market .discord-page-status,
       .workflow-discord-destination,
       .discord-post-settings-grid,
@@ -20591,15 +20479,15 @@ def _render_flight_attendant_dashboard() -> str:
       </div>
     </section>
 
-    <section class="ops-launcher" aria-label="Tester operations launcher">
+    <section class="ops-launcher" aria-label="Operations launcher">
       <div class="ops-launcher-card primary">
-        <strong>Test Session</strong>
-        <div class="meta">Connect ESI once, then compare route and portfolio scans.</div>
+        <strong>Flight Attendant</strong>
+        <div class="meta">Connect ESI for the current-system briefing and authorized read-only summaries.</div>
         <div class="ops-launcher-stat"><span>Mode</span><b>Read-only</b></div>
         <div class="ops-launcher-actions">
           <a class="button-link" href="/flight/login">Connect ESI</a>
-          <a class="button-link ghost-link" href="#tester">Tester Cockpit</a>
           <a class="button-link ghost-link" href="#flight">ESI Status</a>
+          <a class="button-link ghost-link" href="#industry">Industry Library</a>
         </div>
       </div>
       <div class="ops-launcher-card">
@@ -20619,8 +20507,8 @@ def _render_flight_attendant_dashboard() -> str:
         </div>
       </div>
       <div class="ops-launcher-card">
-        <strong>Tester Handoff</strong>
-        <div class="meta">Keep recommendations advisory and verify orders in EVE.</div>
+        <strong>Manual Handoff</strong>
+        <div class="meta">Keep recommendations advisory and verify every order in EVE.</div>
         <div class="ops-launcher-stat"><span>Exports</span><b>CSV + Quickbar</b></div>
         <div class="ops-launcher-actions">
           <a class="button-link ghost-link" href="#trade-pnl">Trade P&amp;L</a>
@@ -20640,7 +20528,6 @@ def _render_flight_attendant_dashboard() -> str:
       <label for="dashboard-tab-select">Workspace</label>
       <select id="dashboard-tab-select" aria-label="Dashboard workspace">
         <option value="market">Market Posts</option>
-        <option value="tester">Tester Cockpit</option>
         <option value="fittings">Shared Fittings</option>
         <option value="flight">Flight Attendant</option>
         <option value="industry">Industry Library</option>
@@ -20657,7 +20544,6 @@ def _render_flight_attendant_dashboard() -> str:
 
     <nav class="tabbar" aria-label="Dashboard tabs">
       <button type="button" data-tab-target="market" data-tab-group="Market" aria-selected="true">Market Posts</button>
-      <button type="button" data-tab-target="tester" data-tab-group="Ops" aria-selected="false">Tester Cockpit</button>
       <button type="button" data-tab-target="fittings" data-tab-group="Fleet" aria-selected="false">Shared Fittings</button>
       <button type="button" data-tab-target="flight" data-tab-group="ESI" aria-selected="false">Flight Attendant</button>
       <button type="button" data-tab-target="industry" data-tab-group="Industry" aria-selected="false">Industry Library</button>
@@ -20672,89 +20558,6 @@ def _render_flight_attendant_dashboard() -> str:
     </nav>
 
     <main>
-      <section id="tab-tester" class="tab-panel" data-tab-panel="tester" hidden>
-        <div class="tester-cockpit-grid">
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Tester Readiness Cockpit</h2>
-                <div class="meta">One test-bench view for public hosting, ESI, Discord, cache, callback, and local-state readiness.</div>
-              </div>
-              <span id="tester-overall-pill" class="pill reserved">Checking</span>
-            </div>
-            <div class="ops-strip tester-cockpit-readouts">
-              <div class="ops-tile"><span>Server mode</span><strong id="tester-server-mode">Checking</strong></div>
-              <div class="ops-tile"><span>ESI</span><strong id="tester-esi-status">Checking</strong></div>
-              <div class="ops-tile"><span>Allowlist</span><strong id="tester-allowlist-status">Checking</strong></div>
-              <div class="ops-tile"><span>Public URL</span><strong id="tester-public-url-status">Checking</strong></div>
-              <div class="ops-tile"><span>Callback</span><strong id="tester-callback-status">Checking</strong></div>
-              <div class="ops-tile"><span>Discord</span><strong id="tester-discord-status">Checking</strong></div>
-            </div>
-            <div id="tester-cockpit-summary" class="profit-summary">Checking tester readiness...</div>
-            <div class="tester-cockpit-actions">
-              <a class="button-link" href="/flight/login">Connect ESI</a>
-              <a class="button-link ghost-link" href="#flight">Flight Status</a>
-              <a class="button-link ghost-link" href="#market">Discord Settings</a>
-              <a class="button-link ghost-link" href="#industry">Static Cache Preflight</a>
-            </div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>How To Use This With A Tester</h2>
-                <div class="meta">Quick checks before you ask someone else to click through the app.</div>
-              </div>
-            </div>
-            <div class="tester-cockpit-note">
-              <strong>Green means ready for a live tester. Yellow means local testing can continue, but fix it before sharing the public URL.</strong>
-              <span>Use Connect ESI first, then check this cockpit. For Discord, this page verifies configuration shape only; use the manual Discord test buttons when you want an actual message sent.</span>
-              <span>Local paths are shown repo-relative and should stay ignored so databases, webhooks, and settings do not get committed.</span>
-            </div>
-          </section>
-
-          <section class="panel full-span">
-            <div class="panel-header">
-              <div>
-                <h2>Readiness Checks</h2>
-                <div class="meta">Hosting and configuration checks from the current running server.</div>
-              </div>
-            </div>
-            <div id="tester-check-list" class="cache-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Discord Destinations</h2>
-                <div class="meta">Redacted webhook destination readiness for market posts, fittings posts, and alert routes.</div>
-              </div>
-            </div>
-            <div id="tester-discord-list" class="cache-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Ignored Local Paths</h2>
-                <div class="meta">Local files that can contain operational state, webhook settings, or test data.</div>
-              </div>
-            </div>
-            <div id="tester-local-path-list" class="cache-list"></div>
-          </section>
-
-          <section class="panel full-span">
-            <div class="panel-header">
-              <div>
-                <h2>Static Cache Files</h2>
-                <div class="meta">Same host-side cache check used by Industry Library, shown here for tester setup.</div>
-              </div>
-            </div>
-            <div id="tester-static-cache-list" class="cache-list"></div>
-          </section>
-        </div>
-      </section>
-
       <section id="tab-market" class="tab-panel" data-tab-panel="market">
         <div class="discord-page">
           <div class="ops-strip discord-page-status">
@@ -20877,7 +20680,7 @@ def _render_flight_attendant_dashboard() -> str:
                       <label class="checkline">
                         <input id="discord-alert-enabled" type="checkbox">
                         <span>Allow matching alerts to use Discord routes</span>
-                        <small>Future automatic forwarding checks this first. Manual test sends still require the button below.</small>
+                        <small>Future automatic forwarding checks this first. Manual sends still require the button below.</small>
                       </label>
                       <label class="checkline">
                         <input id="discord-alert-dry-run" type="checkbox" checked>
@@ -21495,23 +21298,6 @@ help</textarea>
               <span class="pill reserved">Manual Hauling</span>
             </div>
 @@TAB_SCOPE_HAULING@@
-            <section class="tester-run-panel" aria-labelledby="haul-test-run-title">
-              <div class="tester-run-head">
-                <strong id="haul-test-run-title">Run This Hauling Test</strong>
-                <span>Route scan rehearsal</span>
-              </div>
-              <ol class="tester-run-steps">
-                <li><b>1</b><span><strong>Confirm the route</strong><small>Leave Start system blank for live ESI, then choose the hub your tester expects to haul toward.</small></span></li>
-                <li><b>2</b><span><strong>Keep the scope small</strong><small>Use pasted items only for a quick test, or keep Common materials for a broader scan.</small></span></li>
-                <li><b>3</b><span><strong>Mark owned hauls</strong><small>If these are already your items, put the exact cargo in a <code>CM-READY-HAUL-#Route</code> container before refreshing the Asset Ledger.</small></span></li>
-                <li><b>4</b><span><strong>Verify in EVE</strong><small>After Scan Route, compare pickup access, cargo size, order depth, and destination buy orders manually.</small></span></li>
-              </ol>
-              <div class="tester-run-actions">
-                <a class="button-link ghost-link" href="#haul-scan">Go To Scan Route</a>
-                <a class="button-link ghost-link" href="#haul-opportunity-title">View Results Area</a>
-                <span class="meta">Expected output: route summary, opportunity list, Quickbar items, and CSV handoff.</span>
-              </div>
-            </section>
             <form id="haul-route-form" class="note-form">
               <div class="row">
                 <div class="field system-suggest-field">
@@ -21742,23 +21528,6 @@ help</textarea>
               <span class="pill reserved">Advisory Only</span>
             </div>
 @@TAB_SCOPE_ACQUISITION@@
-            <section class="tester-run-panel" aria-labelledby="acq-test-run-title">
-              <div class="tester-run-head">
-                <strong id="acq-test-run-title">Run This Portfolio Test</strong>
-                <span>Buy-order rehearsal</span>
-              </div>
-              <ol class="tester-run-steps">
-                <li><b>1</b><span><strong>Pick the budget</strong><small>Start with a small Total investment ISK so any recommendation is easy to sanity-check.</small></span></li>
-                <li><b>2</b><span><strong>Choose item scope</strong><small>Search pasted items only is the fast default; turn it off only when you mean to scan Common materials too.</small></span></li>
-                <li><b>3</b><span><strong>Stage filled buys</strong><small>When portfolio buy orders fill, move the filled items into <code>Managed#Trade</code>; switch to <code>CM-READY-HAUL-#Route</code> only when you have chosen a hauling trip.</small></span></li>
-                <li><b>4</b><span><strong>Read the warnings</strong><small>After Build Portfolio, check Possible trap, history volume, bid ceiling, and manual order size before placing anything.</small></span></li>
-              </ol>
-              <div class="tester-run-actions">
-                <a class="button-link ghost-link" href="#acq-scan">Go To Build Portfolio</a>
-                <a class="button-link ghost-link" href="#acq-results-title">View Results Area</a>
-                <span class="meta">Expected output: stage timing, portfolio lines, market-history warnings, Quickbar items, and CSV handoff.</span>
-              </div>
-            </section>
             <form id="acquisition-form" class="note-form">
               <div class="row">
                 <label>Buy order system
@@ -21941,16 +21710,16 @@ help</textarea>
                   <div id="acq-report-preview" class="spreadsheet-report-preview"></div>
                   <div id="acq-post-test-review" class="completed-run-review">
                     <div>
-                      <strong>Post-Test Review</strong>
+                      <strong>Portfolio Review</strong>
                       <div class="meta">After placing buy orders, fill actual cost, broker fee, filled quantity, and realized profit in the CSV, then paste it here to see where the estimate was off.</div>
                     </div>
                     <label>Paste completed portfolio CSV
                       <textarea id="acq-post-test-csv" rows="4" spellcheck="false" placeholder="Paste the completed CSV after filling Actual Buy Order Total, Actual Broker Fee Paid, Actual Total Cost, Actual Filled Quantity, and Realized Total Profit"></textarea>
                     </label>
                     <div class="completed-run-actions">
-                      <button id="acq-review-post-test" class="secondary" type="button">Review Portfolio Test</button>
+                      <button id="acq-review-post-test" class="secondary" type="button">Review Portfolio</button>
                       <button id="acq-clear-post-test" class="ghost" type="button">Clear Review</button>
-                      <span id="acq-post-test-status" class="meta quickbar-copy-status" aria-live="polite">No portfolio test reviewed yet.</span>
+                      <span id="acq-post-test-status" class="meta quickbar-copy-status" aria-live="polite">No portfolio review yet.</span>
                     </div>
                     <div id="acq-post-test-results" class="decision-output"></div>
                   </div>
@@ -21973,7 +21742,7 @@ help</textarea>
               <span class="pill reserved">Managed Read-Only</span>
             </div>
 @@TAB_SCOPE_ASSET_LEDGER@@
-            <div class="tester-cockpit-note">
+            <div class="operator-note">
               <strong>This ledger is not hand editable.</strong>
               <span>The app will own rows from Portfolio expectations, ESI assets, ESI named containers, and later wallet or Trade P&amp;L matches.</span>
               <span>The <code>#</code> is literal: use <code>Managed#Trade</code> for filled trade stock, <code>CM-ASSET-#Jita</code> for broader tracked inventory, and <code>CM-READY-HAUL-#Route</code> only when the container is ready to move.</span>
@@ -22066,7 +21835,7 @@ help</textarea>
                   <small class="input-note">Used only for session-average ore/sec and m3/sec labels.</small>
                 </label>
               </div>
-              <div class="tester-cockpit-note">
+              <div class="operator-note">
                 <strong>Manual session timer</strong>
                 <span id="mining-yield-timer-display">00:00:00 elapsed</span>
                 <span>Local browser timer only. It does not read the EVE client, inventory, laser cycles, or live state.</span>
@@ -22439,9 +22208,9 @@ help</textarea>
                 <a href="https://developers.eveonline.com/docs/services/esi/endpoints/" target="_blank" rel="noreferrer">ESI endpoints</a>.
               </div>
             </div>
-            <div class="planetary-customs-tester" aria-label="Customs fee field tester">
-              <div class="planetary-customs-tester-head">
-                <strong>Customs Fee Field Test</strong>
+            <div class="planetary-customs-checker" aria-label="Customs fee quote checker">
+              <div class="planetary-customs-checker-head">
+                <strong>Customs Fee Quote Check</strong>
                 <span>In-game quote check</span>
               </div>
               <div class="meta">Use the in-game customs transfer preview, then enter the quoted ISK here. This does not move goods; it only checks whether our formula matches the exact planet and pilot.</div>
@@ -22479,7 +22248,7 @@ help</textarea>
               </div>
               <div class="planetary-customs-test-actions">
                 <button id="planetary-test-calculate" class="secondary" type="button">Compare Customs Quote</button>
-                <button id="planetary-test-copy" class="secondary" type="button">Copy Test Checklist</button>
+                <button id="planetary-test-copy" class="secondary" type="button">Copy Quote Checklist</button>
               </div>
               <div id="planetary-test-output" class="planetary-customs-test-output" aria-live="polite">
                 <div class="meta">Start with one small quote: P1 x40 export is a good baseline because the math is easy to verify in game.</div>
@@ -23101,18 +22870,6 @@ help</textarea>
     const flightRecipeSummary = document.querySelector("#flight-recipe-summary");
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
-    const testerOverallPill = document.querySelector("#tester-overall-pill");
-    const testerServerMode = document.querySelector("#tester-server-mode");
-    const testerEsiStatus = document.querySelector("#tester-esi-status");
-    const testerAllowlistStatus = document.querySelector("#tester-allowlist-status");
-    const testerPublicUrlStatus = document.querySelector("#tester-public-url-status");
-    const testerCallbackStatus = document.querySelector("#tester-callback-status");
-    const testerDiscordStatus = document.querySelector("#tester-discord-status");
-    const testerCockpitSummary = document.querySelector("#tester-cockpit-summary");
-    const testerCheckList = document.querySelector("#tester-check-list");
-    const testerDiscordList = document.querySelector("#tester-discord-list");
-    const testerLocalPathList = document.querySelector("#tester-local-path-list");
-    const testerStaticCacheList = document.querySelector("#tester-static-cache-list");
     const notesKey = "eve-flight-attendant-notes-v1";
     const jumpsKey = "eve-flight-attendant-max-jumps-v1";
     const industryBuildSystemKey = "eve-flight-industry-build-system-v1";
@@ -23197,19 +22954,15 @@ help</textarea>
       .filter((entry) => entry && entry.optional_mining && entry.scope)
       .map((entry) => entry.scope));
     const optionalActivityScopeNames = new Set([...optionalReprocessingScopeNames, ...optionalMiningScopeNames]);
-    const validTabs = new Set(["market", "tester", "fittings", "flight", "industry", "hauling", "acquisition", "asset-ledger", "mining-yield", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
+    const validTabs = new Set(["market", "fittings", "flight", "industry", "hauling", "acquisition", "asset-ledger", "mining-yield", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
     const tabAliases = new Map([
       ["discord-alerts", "market"],
       ["discord", "market"],
       ["alerts", "market"],
-      ["diagnostics", "tester"],
-      ["test-bench", "tester"],
-      ["readiness", "tester"],
-      ["cockpit", "tester"],
+      ["diagnostics", "industry"],
     ]);
     const tabWorkflowDetails = {
       market: "Discord-facing market posts and manual offer coordination.",
-      tester: "Hosting, ESI, Discord, cache, callback, and local path readiness.",
       fittings: "Shared EVE fitting blocks with Discord handoff.",
       flight: "Current-system briefing, ESI transparency, notes, and safety.",
       industry: "Blueprints, assets, recipes, nearby buyers, and profitability estimates.",
@@ -23546,7 +23299,7 @@ help</textarea>
       if (discordAlertWebhookStatus) discordAlertWebhookStatus.textContent = data?.webhook_configured ? "Configured" : "Missing";
       if (discordAlertSenderStatus) discordAlertSenderStatus.textContent = route.sender_name || settings.default_sender_name || "IntelPet";
       if (discordAlertForwardingStatus) {
-        discordAlertForwardingStatus.textContent = settings.enabled && !settings.dry_run ? "Manual tests live" : "Dry run";
+        discordAlertForwardingStatus.textContent = settings.enabled && !settings.dry_run ? "Manual sends live" : "Dry run";
       }
       if (discordAlertTextStatus) discordAlertTextStatus.textContent = rule.include_matched_text ? "Matched text" : "Summary only";
       if (discordAlertSendTest) discordAlertSendTest.disabled = !data?.webhook_configured;
@@ -24925,7 +24678,7 @@ help</textarea>
     function resetAcquisitionPostTestReview(clearInput = true) {
       if (clearInput && acqPostTestCsv) acqPostTestCsv.value = "";
       if (acqPostTestStatus) {
-        acqPostTestStatus.textContent = "No portfolio test reviewed yet.";
+        acqPostTestStatus.textContent = "No portfolio review yet.";
         acqPostTestStatus.classList.remove("error");
       }
       if (acqPostTestResults) acqPostTestResults.textContent = "";
@@ -25026,14 +24779,12 @@ help</textarea>
         "Reading host-side static cache diagnostics.",
         "waiting",
       );
-      if (testerCockpitSummary) testerCockpitSummary.textContent = "Checking tester readiness...";
       try {
         const data = await readJsonApiResponse(
           await fetch("/api/flight/diagnostics"),
           "Could not load Flight Attendant diagnostics",
         );
         renderStaticCachePreflight(data.static_caches || {});
-        renderTesterCockpit(data);
       } catch (error) {
         setDashboardState(flightCacheSummary, error.message, {
           state: "error",
@@ -25048,7 +24799,6 @@ help</textarea>
           error.message || "Could not read cache readiness.",
           "error",
         );
-        renderTesterCockpitError(error.message);
       }
     }
 
@@ -25082,7 +24832,7 @@ help</textarea>
           opsCacheState,
           opsCacheDetail,
           `${formatNumber(missingCount)} missing`,
-          "Run the cache refresh on the serving host before tester use.",
+          "Run the cache refresh on the serving host before relying on planning tools.",
           "error",
         );
       } else {
@@ -25120,124 +24870,6 @@ help</textarea>
             ${counts ? `<div class="cache-counts">${counts}</div>` : ""}
           </div>
           <span class="pill ${statusClass}">${statusText}</span>
-        </article>
-      `;
-    }
-
-    function renderTesterCockpit(data) {
-      if (!testerCockpitSummary) return;
-      const checks = Array.isArray(data.checks) ? data.checks : [];
-      const attention = checks.filter((check) => !check.ok);
-      const hosting = data.hosting || {};
-      const sso = data.sso || {};
-      const discord = data.discord || {};
-      const staticCaches = data.static_caches || {};
-      const localPaths = data.local_paths || {};
-      const allowlistCount = Number(sso.character_allowlist_count || 0) + Number(sso.corporation_allowlist_count || 0) + Number(sso.alliance_allowlist_count || 0);
-
-      if (testerOverallPill) {
-        testerOverallPill.textContent = attention.length ? "Needs Attention" : "Ready";
-        testerOverallPill.className = `pill ${attention.length ? "decision-price" : "decision-build"}`;
-      }
-      if (testerServerMode) testerServerMode.textContent = hosting.server_mode_label || (hosting.public_hosting_mode ? "Public" : "Local");
-      if (testerEsiStatus) testerEsiStatus.textContent = sso.configured ? "Configured" : "Missing";
-      if (testerAllowlistStatus) {
-        testerAllowlistStatus.textContent = sso.membership_restricted
-          ? `${formatNumber(allowlistCount)} ID${allowlistCount === 1 ? "" : "s"}`
-          : (hosting.public_hosting_mode ? "Missing" : "Local");
-      }
-      if (testerPublicUrlStatus) {
-        testerPublicUrlStatus.textContent = hosting.public_base_url_https ? "HTTPS" : (hosting.public_base_url ? "HTTP" : "Missing");
-      }
-      if (testerCallbackStatus) testerCallbackStatus.textContent = hosting.callback_matches_public_base ? "Matches" : "Check";
-      if (testerDiscordStatus) {
-        testerDiscordStatus.textContent = discord.configured_destination_count
-          ? `${formatNumber(discord.configured_destination_count)} configured`
-          : "Missing";
-      }
-
-      testerCockpitSummary.innerHTML = attention.length
-        ? `<strong>${formatNumber(attention.length)}</strong> readiness check${attention.length === 1 ? " needs" : "s need"} attention before a clean public tester session.`
-        : `<strong>Tester bench is ready.</strong> ESI, hosting, cache, Discord, callback, and local path checks are clean.`;
-
-      if (testerCheckList) {
-        testerCheckList.innerHTML = checks.length
-          ? checks.map(renderTesterCheckRow).join("")
-          : renderDashboardEmptyState("No readiness checks were returned.");
-      }
-      if (testerDiscordList) {
-        const surfaces = Array.isArray(discord.surfaces) ? discord.surfaces : [];
-        testerDiscordList.innerHTML = surfaces.length
-          ? surfaces.map(renderTesterDiscordSurface).join("")
-          : renderDashboardEmptyState("No Discord destination diagnostics were returned.");
-      }
-      if (testerLocalPathList) {
-        const paths = Array.isArray(localPaths.paths) ? localPaths.paths : [];
-        testerLocalPathList.innerHTML = paths.length
-          ? paths.map(renderTesterPathRow).join("")
-          : renderDashboardEmptyState("No local path diagnostics were returned.");
-      }
-      if (testerStaticCacheList) {
-        const caches = Array.isArray(staticCaches.caches) ? staticCaches.caches : [];
-        testerStaticCacheList.innerHTML = caches.length
-          ? caches.map(renderStaticCacheRow).join("")
-          : renderDashboardEmptyState("No static cache diagnostics were returned.");
-      }
-    }
-
-    function renderTesterCockpitError(message) {
-      if (testerOverallPill) {
-        testerOverallPill.textContent = "Error";
-        testerOverallPill.className = "pill decision-price";
-      }
-      if (testerCockpitSummary) testerCockpitSummary.textContent = message || "Could not load tester readiness diagnostics.";
-      [testerCheckList, testerDiscordList, testerLocalPathList, testerStaticCacheList].forEach((target) => {
-        if (target) target.innerHTML = "";
-      });
-    }
-
-    function renderTesterCheckRow(check) {
-      const ready = Boolean(check.ok);
-      return `
-        <article class="cache-row">
-          <div>
-            <strong>${escapeHtml(check.name || "Readiness check")}</strong>
-            <div class="meta">${escapeHtml(check.detail || "")}</div>
-          </div>
-          <span class="pill ${ready ? "decision-build" : "decision-price"}">${ready ? "Ready" : "Check"}</span>
-        </article>
-      `;
-    }
-
-    function renderTesterDiscordSurface(surface) {
-      const ready = Boolean(surface.ok);
-      const previews = (surface.previews || [])
-        .map((preview) => `<div class="tester-cockpit-preview">${escapeHtml(preview.label || "Discord destination")}: ${escapeHtml(preview.webhook_url_preview || "configured webhook")}</div>`)
-        .join("");
-      return `
-        <article class="cache-row">
-          <div class="tester-cockpit-surface">
-            <strong>${escapeHtml(surface.label || "Discord surface")}</strong>
-            <div class="meta">${escapeHtml(surface.detail || "")}</div>
-            <code>${escapeHtml(surface.settings_file || "")}</code>
-            ${previews || `<div class="tester-cockpit-preview">No redacted webhook preview available.</div>`}
-          </div>
-          <span class="pill ${ready ? "decision-build" : "decision-price"}">${ready ? "Configured" : "Missing"}</span>
-        </article>
-      `;
-    }
-
-    function renderTesterPathRow(row) {
-      const ready = Boolean(row.ignored_by_git);
-      const exists = row.exists ? "exists" : "not created yet";
-      return `
-        <article class="cache-row">
-          <div class="tester-cockpit-path">
-            <strong>${escapeHtml(row.label || "Local path")}</strong>
-            <code>${escapeHtml(row.relative_path || "")}</code>
-            <div class="meta">${escapeHtml(row.detail || "")} File is ${exists}.</div>
-          </div>
-          <span class="pill ${ready ? "decision-build" : "decision-price"}">${ready ? "Ignored" : "Check"}</span>
         </article>
       `;
     }
@@ -25985,7 +25617,7 @@ help</textarea>
     function planetaryCustomsChecklistText() {
       const estimate = planetaryCustomsFieldEstimate();
       return [
-        "PI customs fee field test",
+        "PI customs fee quote check",
         `Transfer: ${estimate.transferLabel}`,
         `Tier: ${estimate.tier}`,
         `Quantity: ${estimate.quantity}`,
