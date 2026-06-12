@@ -829,8 +829,38 @@ def local_git_status(config: WorkbenchConfig) -> CommandResult:
     return run_command(["git", "status", "--short", "--branch"], timeout_seconds=config.command_timeout_seconds)
 
 
+LINE_ENDING_WARNING_RE = re.compile(
+    r"^warning: in the working copy of '.+', LF will be replaced by CRLF the next time Git touches it$"
+)
+
+
 def git_diff_check(config: WorkbenchConfig) -> CommandResult:
-    return run_command(["git", "diff", "--check"], timeout_seconds=config.command_timeout_seconds)
+    result = run_command(["git", "diff", "--check"], timeout_seconds=config.command_timeout_seconds)
+    if not result.ok:
+        return result
+
+    lines = [line.strip() for line in result.output.splitlines() if line.strip()]
+    if not lines:
+        return CommandResult(
+            ok=True,
+            summary="No whitespace errors found.",
+            output="No whitespace errors found.",
+            returncode=result.returncode,
+        )
+    if all(LINE_ENDING_WARNING_RE.match(line) for line in lines):
+        note = (
+            "Workbench note: Git only reported Windows line-ending normalization warnings. "
+            "This is not a whitespace failure; it means Git may write those files as CRLF "
+            "the next time it touches them."
+        )
+        return CommandResult(
+            ok=True,
+            summary="No whitespace errors found; only Windows line-ending notices.",
+            output=f"{result.output.strip()}\n\n{note}",
+            returncode=result.returncode,
+            data={"line_ending_warning_only": True},
+        )
+    return result
 
 
 def summarize_git_status(result: CommandResult) -> str:
@@ -1515,6 +1545,7 @@ def workflow_definitions() -> list[dict[str, Any]]:
         {
             "id": "local_test",
             "title": "Local Test Flow",
+            "description": "Run these left to right before local testing. Stop and inspect the result if a step fails.",
             "steps": [
                 {"action_id": "git_status", "label": "Git Status"},
                 {"action_id": "git_diff_check", "label": "Diff Check"},
@@ -1525,6 +1556,7 @@ def workflow_definitions() -> list[dict[str, Any]]:
         {
             "id": "deploy",
             "title": "Deploy Flow",
+            "description": "Run these left to right after local checks pass. This is the normal public-server update path.",
             "steps": [
                 {"action_id": "vm_git_status", "label": "VM Git Status"},
                 {"action_id": "vm_update_verify", "label": "Update VM + Verify"},
@@ -1553,7 +1585,15 @@ def public_workflow_definitions() -> list[dict[str, Any]]:
                     "changes_process": action.changes_process,
                 }
             )
-        workflows.append({"id": flow["id"], "title": flow["title"], "steps": steps})
+        workflows.append(
+            {
+                "id": flow["id"],
+                "title": flow["title"],
+                "description": flow.get("description", ""),
+                "sequence": " -> ".join(step["label"] for step in steps),
+                "steps": steps,
+            }
+        )
     return workflows
 
 
@@ -1784,6 +1824,19 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
       margin: 0 0 10px;
       font-size: 0.92rem;
       line-height: 1.2;
+    }}
+    .workflow-card p {{
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.35;
+    }}
+    .workflow-sequence {{
+      margin: 0 0 10px;
+      color: var(--ink);
+      font-size: 0.82rem;
+      line-height: 1.35;
+      font-weight: 700;
     }}
     .workflow-steps {{
       display: flex;
@@ -2079,6 +2132,8 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
       workflowGuide.innerHTML = (workflows || []).map(flow => `
         <section class="workflow-card">
           <h3>${{escapeHtml(flow.title)}}</h3>
+          <p>${{escapeHtml(flow.description || "")}}</p>
+          <div class="workflow-sequence">${{escapeHtml(flow.sequence || "")}}</div>
           <div class="workflow-steps">
             ${{(flow.steps || []).map((step, index) => `
               ${{index ? `<span class="workflow-arrow" aria-hidden="true">-&gt;</span>` : ""}}

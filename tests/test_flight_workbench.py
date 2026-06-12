@@ -772,7 +772,35 @@ def test_public_workflows_reference_allowlisted_actions():
         "vm_logs_tail",
         "vm_public_readiness",
     ]
+    assert workflows[0]["sequence"] == "Git Status -> Diff Check -> Static Caches -> Start Local Server"
+    assert workflows[1]["sequence"] == "VM Git Status -> Update VM + Verify -> Tail Logs -> Public Readiness"
+    assert "Run these left to right" in workflows[0]["description"]
     assert all(step["action_id"] in actions for flow in workflows for step in flow["steps"])
+
+
+def test_git_diff_check_explains_windows_line_ending_warning(monkeypatch):
+    warning = (
+        "warning: in the working copy of 'src/eve_voice_pilot/flight_workbench.py', "
+        "LF will be replaced by CRLF the next time Git touches it"
+    )
+
+    monkeypatch.setattr(
+        flight_workbench,
+        "run_command",
+        lambda *args, **kwargs: flight_workbench.CommandResult(
+            ok=True,
+            summary="Command completed.",
+            output=warning,
+            returncode=0,
+        ),
+    )
+
+    result = flight_workbench.git_diff_check(flight_workbench.WorkbenchConfig())
+
+    assert result.ok is True
+    assert result.summary == "No whitespace errors found; only Windows line-ending notices."
+    assert "not a whitespace failure" in result.output
+    assert result.data == {"line_ending_warning_only": True}
 
 
 def test_append_action_log_redacts_output(tmp_path, monkeypatch):
