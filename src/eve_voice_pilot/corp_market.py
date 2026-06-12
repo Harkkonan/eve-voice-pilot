@@ -705,6 +705,30 @@ STATIC_CONTENT_TYPES = {
     ".svg": "image/svg+xml",
     ".webp": "image/webp",
 }
+CORP_MARKET_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Flight Attendant market beacon</title>
+  <defs>
+    <radialGradient id="bg" cx="28%" cy="20%" r="86%">
+      <stop offset="0" stop-color="#183133"/>
+      <stop offset=".62" stop-color="#0b1416"/>
+      <stop offset="1" stop-color="#050809"/>
+    </radialGradient>
+    <linearGradient id="coin" x1="16" y1="18" x2="50" y2="52">
+      <stop offset="0" stop-color="#fff0a5"/>
+      <stop offset=".42" stop-color="#f4b84d"/>
+      <stop offset="1" stop-color="#d86e24"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <path d="M9 40c8-18 29-28 48-22" fill="none" stroke="#58d7c4" stroke-width="4" stroke-linecap="round" opacity=".9"/>
+  <path d="M15 45c11 8 27 9 39-2" fill="none" stroke="#79f2da" stroke-width="2.4" stroke-linecap="round" opacity=".55"/>
+  <circle cx="33" cy="34" r="17" fill="url(#coin)" stroke="#ffe28a" stroke-width="2"/>
+  <path d="M27 43V24h9c5 0 8 3 8 7s-3 7-8 7h-4v5h-5Zm5-10h4c2 0 3-1 3-2s-1-2-3-2h-4v4Z" fill="#331b05"/>
+  <path d="M14 27c2.8-4.8 8.4-5.5 13.8-3.2l-4.2 4.1c-3.3-1.2-6.2-.9-9.6-.9Z" fill="#f9c858"/>
+  <path d="M10 28h7l-4 4c-2 0-3.3-.8-4-2.4L10 28Z" fill="#f58a27"/>
+  <circle cx="22.4" cy="23.9" r="1.4" fill="#231307"/>
+</svg>
+"""
 SPACE_RE = re.compile(r"\s+")
 ISK_AMOUNT_RE = re.compile(r"^\s*(?P<number>\d+(?:\.\d+)?)\s*(?P<suffix>[kKmMbB]?)\s*$")
 DISCORD_SNOWFLAKE_RE = re.compile(r"^\d{5,25}$")
@@ -14524,6 +14548,9 @@ def build_http_server(
             if path in {"/", "/index.html"}:
                 self._send_html(render_dashboard())
                 return
+            if path == "/favicon.ico":
+                self._send_favicon()
+                return
             if path.startswith("/static/"):
                 self._handle_static_asset(path)
                 return
@@ -16052,6 +16079,17 @@ def build_http_server(
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_favicon(self) -> None:
+            body = CORP_MARKET_FAVICON_SVG.encode("utf-8")
+            csp_nonce = secrets.token_urlsafe(16)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self._send_security_headers(csp_nonce)
+            self.end_headers()
+            self.wfile.write(body)
+
         def _redirect(self, url: str) -> None:
             csp_nonce = secrets.token_urlsafe(16)
             self.send_response(302)
@@ -16098,6 +16136,7 @@ def _render_legacy_market_dashboard() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <title>Corp Market Concierge</title>
   <style>
     :root {
@@ -16789,6 +16828,7 @@ def _render_flight_attendant_dashboard() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <title>Corp Market Concierge</title>
   <style>
     :root {

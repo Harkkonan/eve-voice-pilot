@@ -333,6 +333,23 @@ def test_corp_market_dashboard_sends_nonce_csp(tmp_path):
     assert headers["Referrer-Policy"] == "no-referrer"
 
 
+def test_corp_market_serves_lore_favicon(tmp_path):
+    server, thread, _session_id = _start_public_discord_post_server(tmp_path)
+    try:
+        status, body, headers = _get_with_headers(server, "/favicon.ico")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert status == 200
+    assert headers["Content-Type"].startswith("image/svg+xml")
+    assert "Flight Attendant market beacon" in body
+    assert "#58d7c4" in body
+    assert "url(#coin)" in body
+    assert headers["Cache-Control"] == "public, max-age=86400"
+
+
 def test_direct_discord_post_send_still_requires_write_access_in_public_mode(tmp_path):
     server, thread, session_id = _start_public_discord_post_server(tmp_path)
     try:

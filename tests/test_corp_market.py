@@ -670,6 +670,7 @@ def test_dashboard_includes_flight_attendant_tab_and_safety_charter():
     page = render_dashboard()
     flight_section = page.split('<section id="tab-flight"', 1)[1].split('<section id="tab-industry"', 1)[0]
 
+    assert '<link rel="icon" href="/favicon.ico" type="image/svg+xml">' in page
     assert "data-tab-target=\"flight\"" in page
     assert "Flight Attendant" in flight_section
     assert "Captain's Notes" in flight_section
