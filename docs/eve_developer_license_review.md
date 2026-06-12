@@ -1,6 +1,6 @@
 # EVE Developer License Review
 
-Last verified: 2026-06-11
+Last verified: 2026-06-12
 
 Authoritative source:
 
@@ -111,3 +111,4 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - 2026-06-09: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before adding optional local Whisper dictation and main Voice Pilot Vosk model selection. The feature adds no ESI scope, stores no raw audio or transcripts, deletes temporary phrase WAV files after local transcription, preserves exact-match command behavior and active-window guarding, and does not add fuzzy command dispatch, screen-reading decisions, input broadcasting, or automated gameplay reactions.
 - 2026-06-11: Re-opened the official EVE Developer License Agreement, developer license docs, EVE third-party policy page, ESI overview/cache guidance, and live ESI Swagger spec before adding optional Mining Yield. The feature adds only the opt-in `esi-industry.read_character_mining.v1` scope, summarizes cached daily character mining-ledger rows, keeps tokens in server memory only, persists no mining ledger rows, labels ore/sec and m3/sec as manual session averages rather than live telemetry, and does not read inventory deltas, screen state, cache files, packets, memory, or control the EVE client.
 - 2026-06-11: Re-opened the official EVE Developer License Agreement, ESI best-practices cache guidance, and EVE third-party policy page before adding a server-memory-only 600-second Mining Yield ledger cache. The cache avoids re-requesting the mining ledger before ESI's cache window, stores no access token beyond the existing session, clears the signed-in pilot's cached rows on logout, writes no mining ledger rows to disk or the local database, and keeps the feature read-only with no screen, cache-file, packet, memory, or client-control behavior.
+- 2026-06-12: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page during a pre-publication Corp Market/Flight Attendant site review. The reviewed local build remains non-commercial, read-only/advisory for ESI features, explicit about scopes, manual for all in-game buying, selling, hauling, contracts, and fitting actions, and does not read EVE client memory, cache files, packets, screen gameplay state, or control the EVE client.
