@@ -137,6 +137,14 @@ MAX_HAUL_MARKET_TYPE_IDS = MAX_FLIGHT_HAUL_SCAN_TYPES
 MAX_HAUL_PASTED_ITEM_NAME_CHARS = 6000
 MAX_FLIGHT_HAUL_OPPORTUNITIES = 20
 MAX_FLIGHT_ACQUISITION_OPPORTUNITIES = 20
+PLEX_TYPE_ID = 44992
+PLEX_TYPE_NAME = "PLEX"
+DEFAULT_PLEX_DEAL_MIN_QUANTITY = 100
+DEFAULT_PLEX_DEAL_MAX_QUANTITY = 1000
+PLEX_DEAL_MIN_QUANTITY = 100
+PLEX_DEAL_MAX_QUANTITY = 1000
+PLEX_DEAL_QUANTITY_STEP = 100
+PLEX_DEAL_ROW_LIMIT = 10
 EXPECTED_REALIZED_REPORT_COLUMNS = (
     "Date Created",
     "Date Completed",
@@ -288,6 +296,13 @@ JITA_SYSTEM_NAME = "Jita"
 JITA_SOLAR_SYSTEM_ID = 30000142
 JITA_REGION_ID = 10000002
 JITA_4_4_STATION_ID = 60003760
+PUBLIC_MARKET_HUB_STATIONS: dict[str, tuple[int, str]] = {
+    "jita": (JITA_4_4_STATION_ID, "Jita 4-4"),
+    "amarr": (60008494, "Amarr VIII (Oris)"),
+    "dodixie": (60011866, "Dodixie IX - Moon 20"),
+    "hek": (60005686, "Hek VIII - Moon 12"),
+    "rens": (60004588, "Rens VI - Moon 8"),
+}
 FUZZWORK_MARKET_AGGREGATES_URL = "https://market.fuzzwork.co.uk/aggregates/"
 FLIGHT_LOCATION_SCOPE = "esi-location.read_location.v1"
 FLIGHT_ASSETS_SCOPE = "esi-assets.read_assets.v1"
@@ -4676,6 +4691,14 @@ def fetch_fuzzwork_market_aggregates(
     return results
 
 
+def fuzzwork_market_station_label(station_id: int) -> str:
+    clean_station_id = int(station_id or JITA_4_4_STATION_ID)
+    for known_station_id, label in PUBLIC_MARKET_HUB_STATIONS.values():
+        if int(known_station_id) == clean_station_id:
+            return label
+    return f"Station {clean_station_id}"
+
+
 def normalize_fuzzwork_market_aggregate(payload: Any, *, station_id: int, type_id: int) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
@@ -4683,22 +4706,31 @@ def normalize_fuzzwork_market_aggregate(payload: Any, *, station_id: int, type_i
     sell = payload.get("sell") if isinstance(payload.get("sell"), dict) else {}
     top_buy = clean_optional_float(buy.get("max"))
     buy_percentile = clean_optional_float(buy.get("percentile"))
+    buy_weighted_average = clean_optional_float(buy.get("weightedAverage"))
+    buy_median = clean_optional_float(buy.get("median"))
     sell_min = clean_optional_float(sell.get("min"))
     sell_percentile = clean_optional_float(sell.get("percentile"))
+    sell_weighted_average = clean_optional_float(sell.get("weightedAverage"))
+    sell_median = clean_optional_float(sell.get("median"))
     liquidation_unit_price = buy_percentile if buy_percentile is not None and buy_percentile > 0 else top_buy
     if liquidation_unit_price is None or liquidation_unit_price <= 0:
         return None
+    location_name = fuzzwork_market_station_label(station_id)
     return {
         "type_id": int(type_id),
         "source": "fuzzwork",
-        "source_label": "Fuzzwork Jita 4-4 aggregate",
+        "source_label": f"Fuzzwork {location_name} aggregate",
         "location_id": int(station_id),
-        "location_name": "Jita 4-4",
+        "location_name": location_name,
         "liquidation_unit_price": liquidation_unit_price,
         "top_buy_unit_price": top_buy,
         "buy_percentile_unit_price": buy_percentile,
+        "buy_weighted_average_unit_price": buy_weighted_average,
+        "buy_median_unit_price": buy_median,
         "sell_min_unit_price": sell_min,
         "sell_percentile_unit_price": sell_percentile,
+        "sell_weighted_average_unit_price": sell_weighted_average,
+        "sell_median_unit_price": sell_median,
         "buy_volume": clean_optional_float(buy.get("volume")),
         "sell_volume": clean_optional_float(sell.get("volume")),
         "buy_order_count": clean_optional_int(buy.get("orderCount")),
@@ -10052,6 +10084,348 @@ def liquidation_value_from_orders(orders: Iterable[dict[str, Any]], *, quantity:
     }
 
 
+def clean_plex_deal_quantity(value: Any, *, default: int) -> int:
+    quantity = clean_optional_int(value)
+    if quantity is None:
+        quantity = default
+    return max(PLEX_DEAL_MIN_QUANTITY, min(PLEX_DEAL_MAX_QUANTITY, quantity))
+
+
+def plex_deal_quantity_targets(min_quantity: Any, max_quantity: Any) -> list[int]:
+    clean_min = clean_plex_deal_quantity(min_quantity, default=DEFAULT_PLEX_DEAL_MIN_QUANTITY)
+    clean_max = clean_plex_deal_quantity(max_quantity, default=DEFAULT_PLEX_DEAL_MAX_QUANTITY)
+    if clean_min > clean_max:
+        raise CorpMarketError("PLEX minimum quantity cannot be greater than maximum quantity.")
+    targets = {clean_min, clean_max}
+    first_step = ((clean_min + PLEX_DEAL_QUANTITY_STEP - 1) // PLEX_DEAL_QUANTITY_STEP) * PLEX_DEAL_QUANTITY_STEP
+    for quantity in range(first_step, clean_max + 1, PLEX_DEAL_QUANTITY_STEP):
+        if clean_min <= quantity <= clean_max:
+            targets.add(quantity)
+    return sorted(targets)
+
+
+def plex_order_depth_quote(orders: Iterable[dict[str, Any]], *, quantity: int) -> dict[str, Any]:
+    required_quantity = clean_plex_deal_quantity(quantity, default=DEFAULT_PLEX_DEAL_MIN_QUANTITY)
+    remaining = required_quantity
+    total_isk = 0.0
+    priced_quantity = 0
+    used_orders = 0
+    used_prices: list[float] = []
+    used_location_ids: list[int] = []
+    visible_units = 0
+    min_volume_blocked_orders = 0
+    for order in orders:
+        price = clean_optional_float(order.get("price"))
+        volume = clean_optional_int(order.get("volume_remain")) or 0
+        min_volume = max(1, clean_optional_int(order.get("min_volume")) or 1)
+        if price is None or price <= 0 or volume <= 0:
+            continue
+        visible_units += volume
+        if remaining <= 0:
+            continue
+        if remaining < min_volume:
+            min_volume_blocked_orders += 1
+            continue
+        fill = min(remaining, volume)
+        if fill < min_volume:
+            min_volume_blocked_orders += 1
+            continue
+        total_isk += fill * price
+        priced_quantity += fill
+        remaining -= fill
+        used_orders += 1
+        used_prices.append(price)
+        location_id = clean_optional_int(order.get("location_id"))
+        if location_id is not None and location_id not in used_location_ids:
+            used_location_ids.append(location_id)
+    average_unit_price = total_isk / priced_quantity if priced_quantity > 0 else None
+    return {
+        "required_quantity": required_quantity,
+        "priced_quantity": priced_quantity,
+        "remaining_quantity": max(0, remaining),
+        "complete": priced_quantity >= required_quantity,
+        "total_isk": round(total_isk, 4),
+        "average_unit_price": round(average_unit_price, 4) if average_unit_price is not None else None,
+        "first_unit_price": used_prices[0] if used_prices else None,
+        "last_unit_price": used_prices[-1] if used_prices else None,
+        "order_count": used_orders,
+        "visible_units": visible_units,
+        "location_count": len(used_location_ids),
+        "location_ids": used_location_ids[:5],
+        "min_volume_blocked_orders": min_volume_blocked_orders,
+    }
+
+
+def plex_fuzzwork_aggregate_quote(
+    aggregate: Mapping[str, Any] | None,
+    *,
+    side: str,
+    quantity: int,
+) -> dict[str, Any]:
+    required_quantity = clean_plex_deal_quantity(quantity, default=DEFAULT_PLEX_DEAL_MIN_QUANTITY)
+    clean_side = "buy" if side == "buy" else "sell"
+    if not aggregate:
+        return {
+            "required_quantity": required_quantity,
+            "priced_quantity": 0,
+            "remaining_quantity": required_quantity,
+            "complete": False,
+            "total_isk": 0.0,
+            "average_unit_price": None,
+            "first_unit_price": None,
+            "last_unit_price": None,
+            "order_count": 0,
+            "visible_units": 0,
+            "location_count": 0,
+            "location_ids": [],
+            "min_volume_blocked_orders": 0,
+        }
+    if clean_side == "sell":
+        unit_price = clean_optional_float(aggregate.get("top_buy_unit_price")) or clean_optional_float(
+            aggregate.get("liquidation_unit_price")
+        )
+        visible_units = clean_optional_int(aggregate.get("buy_volume")) or 0
+        order_count = clean_optional_int(aggregate.get("buy_order_count")) or 0
+    else:
+        unit_price = clean_optional_float(aggregate.get("sell_min_unit_price")) or clean_optional_float(
+            aggregate.get("sell_percentile_unit_price")
+        )
+        visible_units = clean_optional_int(aggregate.get("sell_volume")) or 0
+        order_count = clean_optional_int(aggregate.get("sell_order_count")) or 0
+    if unit_price is None or unit_price <= 0:
+        priced_quantity = 0
+        total_isk = 0.0
+    else:
+        priced_quantity = min(required_quantity, max(0, visible_units))
+        total_isk = priced_quantity * unit_price
+    location_id = clean_optional_int(aggregate.get("location_id"))
+    return {
+        "required_quantity": required_quantity,
+        "priced_quantity": priced_quantity,
+        "remaining_quantity": max(0, required_quantity - priced_quantity),
+        "complete": priced_quantity >= required_quantity,
+        "total_isk": round(total_isk, 4),
+        "average_unit_price": round(unit_price, 4) if unit_price is not None and unit_price > 0 else None,
+        "first_unit_price": round(unit_price, 4) if unit_price is not None and unit_price > 0 else None,
+        "last_unit_price": round(unit_price, 4) if unit_price is not None and unit_price > 0 else None,
+        "order_count": order_count,
+        "visible_units": max(0, visible_units),
+        "location_count": 1 if location_id is not None else 0,
+        "location_ids": [location_id] if location_id is not None else [],
+        "min_volume_blocked_orders": 0,
+        "source": "fuzzwork_aggregate",
+        "source_label": str(aggregate.get("source_label") or "Fuzzwork aggregate"),
+        "aggregate_estimate": True,
+    }
+
+
+def plex_deal_row(*, side: str, hub_name: str, quote: Mapping[str, Any]) -> dict[str, Any]:
+    clean_side = "buy" if side == "buy" else "sell"
+    aggregate_estimate = bool(quote.get("aggregate_estimate"))
+    complete = bool(quote.get("complete"))
+    required_quantity = clean_optional_int(quote.get("required_quantity")) or 0
+    priced_quantity = clean_optional_int(quote.get("priced_quantity")) or 0
+    average_unit_price = clean_optional_float(quote.get("average_unit_price"))
+    total_isk = clean_optional_float(quote.get("total_isk"))
+    if clean_side == "sell":
+        label = f"Sell {required_quantity:,} PLEX now"
+        direction = f"Sell into {hub_name} public buy orders."
+        score = average_unit_price if average_unit_price is not None else -1.0
+    else:
+        label = f"Buy {required_quantity:,} PLEX now"
+        direction = f"Buy from {hub_name} public sell orders."
+        score = -average_unit_price if average_unit_price is not None else -1_000_000_000_000.0
+    status = "complete" if complete else "partial"
+    if priced_quantity <= 0:
+        status = "unpriced"
+    elif aggregate_estimate:
+        status = "aggregate_estimate"
+    return {
+        "side": clean_side,
+        "label": label,
+        "status": status,
+        "complete": complete,
+        "quantity": required_quantity,
+        "priced_quantity": priced_quantity,
+        "remaining_quantity": clean_optional_int(quote.get("remaining_quantity")) or 0,
+        "total_isk": total_isk,
+        "average_unit_price": average_unit_price,
+        "first_unit_price": clean_optional_float(quote.get("first_unit_price")),
+        "last_unit_price": clean_optional_float(quote.get("last_unit_price")),
+        "order_count": clean_optional_int(quote.get("order_count")) or 0,
+        "visible_units": clean_optional_int(quote.get("visible_units")) or 0,
+        "location_count": clean_optional_int(quote.get("location_count")) or 0,
+        "location_ids": list(quote.get("location_ids") or [])[:5],
+        "min_volume_blocked_orders": clean_optional_int(quote.get("min_volume_blocked_orders")) or 0,
+        "source": str(quote.get("source") or "public_esi_orders"),
+        "source_label": str(quote.get("source_label") or "Public ESI market orders"),
+        "aggregate_estimate": aggregate_estimate,
+        "hub": hub_name,
+        "direction": direction,
+        "manual_note": (
+            "Fuzzwork aggregate estimate only; ESI returned no order-depth rows for this side, so verify the live "
+            "market in EVE before acting."
+            if aggregate_estimate
+            else (
+                "Gross public-order math only; verify taxes, fees, order min volume, station/structure access, "
+                "and remaining order depth in EVE before acting."
+            )
+        ),
+        "_score": score,
+    }
+
+
+def rank_plex_deal_rows(rows: Iterable[dict[str, Any]], *, side: str) -> list[dict[str, Any]]:
+    def sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+        complete_rank = 0 if row.get("complete") else 1
+        average_price = clean_optional_float(row.get("average_unit_price"))
+        quantity = clean_optional_int(row.get("quantity")) or 0
+        total = clean_optional_float(row.get("total_isk")) or 0.0
+        if side == "buy":
+            price_rank = average_price if average_price is not None else float("inf")
+            return (complete_rank, price_rank, total, quantity)
+        price_rank = -(average_price if average_price is not None else -1.0)
+        return (complete_rank, price_rank, -total, quantity)
+
+    cleaned_rows = []
+    for row in sorted(rows, key=sort_key)[:PLEX_DEAL_ROW_LIMIT]:
+        cleaned = dict(row)
+        cleaned.pop("_score", None)
+        cleaned_rows.append(cleaned)
+    return cleaned_rows
+
+
+def build_plex_deal_payload(
+    *,
+    config: EveSsoConfig,
+    hub_name: Any = "jita",
+    min_quantity: Any = DEFAULT_PLEX_DEAL_MIN_QUANTITY,
+    max_quantity: Any = DEFAULT_PLEX_DEAL_MAX_QUANTITY,
+) -> dict[str, Any]:
+    hub_key = normalize_bulk_appraisal_hub(hub_name)
+    hub_system = bulk_appraisal_hub_system(hub_key)
+    quantity_targets = plex_deal_quantity_targets(min_quantity, max_quantity)
+    buy_orders_by_type, buy_order_count, buy_errors = scan_system_market_orders(
+        config=config,
+        type_ids=[PLEX_TYPE_ID],
+        system=hub_system,
+        order_type="buy",
+    )
+    sell_orders_by_type, sell_order_count, sell_errors = scan_system_market_orders(
+        config=config,
+        type_ids=[PLEX_TYPE_ID],
+        system=hub_system,
+        order_type="sell",
+    )
+    buy_orders = buy_orders_by_type.get(PLEX_TYPE_ID, [])
+    sell_orders = sell_orders_by_type.get(PLEX_TYPE_ID, [])
+    aggregate_errors: list[str] = []
+    aggregate: dict[str, Any] | None = None
+    station_detail = PUBLIC_MARKET_HUB_STATIONS.get(hub_key)
+    if station_detail and (not buy_orders or not sell_orders):
+        station_id, station_label = station_detail
+        try:
+            aggregate = fetch_fuzzwork_market_aggregates([PLEX_TYPE_ID], station_id=station_id).get(PLEX_TYPE_ID)
+        except CorpMarketError as exc:
+            aggregate_errors.append(f"Fuzzwork {station_label} aggregate fallback failed: {exc}")
+    sell_visible_units = sum(max(0, clean_optional_int(order.get("volume_remain")) or 0) for order in buy_orders)
+    buy_visible_units = sum(max(0, clean_optional_int(order.get("volume_remain")) or 0) for order in sell_orders)
+    if not buy_orders and aggregate:
+        sell_visible_units = clean_optional_int(aggregate.get("buy_volume")) or 0
+        buy_order_count = clean_optional_int(aggregate.get("buy_order_count")) or buy_order_count
+    if not sell_orders and aggregate:
+        buy_visible_units = clean_optional_int(aggregate.get("sell_volume")) or 0
+        sell_order_count = clean_optional_int(aggregate.get("sell_order_count")) or sell_order_count
+    sell_rows = rank_plex_deal_rows(
+        (
+            plex_deal_row(
+                side="sell",
+                hub_name=hub_system.name,
+                quote=(
+                    plex_fuzzwork_aggregate_quote(aggregate, side="sell", quantity=quantity)
+                    if not buy_orders and aggregate
+                    else plex_order_depth_quote(buy_orders, quantity=quantity)
+                ),
+            )
+            for quantity in quantity_targets
+        ),
+        side="sell",
+    )
+    buy_rows = rank_plex_deal_rows(
+        (
+            plex_deal_row(
+                side="buy",
+                hub_name=hub_system.name,
+                quote=(
+                    plex_fuzzwork_aggregate_quote(aggregate, side="buy", quantity=quantity)
+                    if not sell_orders and aggregate
+                    else plex_order_depth_quote(sell_orders, quantity=quantity)
+                ),
+            )
+            for quantity in quantity_targets
+        ),
+        side="buy",
+    )
+    best_sell = next((row for row in sell_rows if row.get("complete")), sell_rows[0] if sell_rows else None)
+    best_buy = next((row for row in buy_rows if row.get("complete")), buy_rows[0] if buy_rows else None)
+    best_sell_price = clean_optional_float((best_sell or {}).get("average_unit_price"))
+    best_buy_price = clean_optional_float((best_buy or {}).get("average_unit_price"))
+    spread = best_buy_price - best_sell_price if best_buy_price is not None and best_sell_price is not None else None
+    spread_percent = (spread / best_sell_price * 100.0) if spread is not None and best_sell_price and best_sell_price > 0 else None
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "item": {
+            "type_id": PLEX_TYPE_ID,
+            "name": PLEX_TYPE_NAME,
+        },
+        "hub": {
+            "key": hub_key,
+            "label": hub_system.name,
+            "system_id": hub_system.solar_system_id,
+            "region_id": hub_system.region_id,
+        },
+        "quantity_targets": quantity_targets,
+        "min_quantity": quantity_targets[0],
+        "max_quantity": quantity_targets[-1],
+        "mode": "public_orders_gross",
+        "fallback_source": {
+            "source": aggregate.get("source") if aggregate else "",
+            "source_label": aggregate.get("source_label") if aggregate else "",
+            "location_id": aggregate.get("location_id") if aggregate else None,
+            "location_name": aggregate.get("location_name") if aggregate else "",
+            "used_for_sell": bool(aggregate and not buy_orders),
+            "used_for_buy": bool(aggregate and not sell_orders),
+        },
+        "sell": {
+            "label": "Sell PLEX into public buy orders",
+            "order_count": buy_order_count,
+            "visible_units": sell_visible_units,
+            "best": best_sell,
+            "deals": sell_rows,
+        },
+        "buy": {
+            "label": "Buy PLEX from public sell orders",
+            "order_count": sell_order_count,
+            "visible_units": buy_visible_units,
+            "best": best_buy,
+            "deals": buy_rows,
+        },
+        "spread": {
+            "gross_per_unit": spread,
+            "gross_percent": spread_percent,
+        },
+        "errors": [*buy_errors, *sell_errors, *aggregate_errors],
+        "market_cache": market_order_cache_status(),
+        "fuzzwork_cache": fuzzwork_market_aggregate_cache_status(),
+        "warnings": [
+            "Public order depth can change quickly. Verify the exact order, min volume, station/structure access, taxes, and fees in EVE before acting.",
+            "When ESI returns no PLEX order-depth rows, this finder uses a Fuzzwork station aggregate estimate and labels those rows as estimates.",
+            "The app does not place market orders, buy PLEX, sell PLEX, create contracts, or read your wallet for this finder.",
+        ],
+    }
+
+
 def market_order_sort_key(order: dict[str, Any], *, order_type: str) -> tuple[float, int, int]:
     price = float(order.get("price") or 0.0)
     price_rank = -price if order_type == "buy" else price
@@ -14523,6 +14897,22 @@ def build_http_server(
                 first_query_value(query, "limit") or MAX_ROUTE_SYSTEM_SUGGESTIONS
             )
             self._send_json(build_route_system_suggestions_payload(term, limit=limit))
+
+        def _handle_flight_plex_deals(self) -> None:
+            if not self._require_public_read_access():
+                return
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                payload = build_plex_deal_payload(
+                    config=sso_config,
+                    hub_name=first_query_value(query, "hub") or "jita",
+                    min_quantity=first_query_value(query, "min_quantity") or DEFAULT_PLEX_DEAL_MIN_QUANTITY,
+                    max_quantity=first_query_value(query, "max_quantity") or DEFAULT_PLEX_DEAL_MAX_QUANTITY,
+                )
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
 
         def _handle_flight_industry(self) -> None:
             session = self._require_flight_session("loading industry analysis")
@@ -20150,6 +20540,101 @@ def _render_flight_attendant_dashboard() -> str:
     .discord-direct-fields .span-3 {
       grid-column: 1 / -1;
     }
+    .plex-deal-panel {
+      position: relative;
+      overflow: visible;
+    }
+    .plex-deal-controls {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: minmax(0, 1.1fr) repeat(2, minmax(110px, .7fr));
+    }
+    .plex-deal-toolbar {
+      align-items: center;
+      min-height: 44px;
+    }
+    .plex-deal-summary {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin: 12px 0;
+    }
+    .plex-deal-results {
+      display: grid;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .plex-deal-section {
+      background: rgba(5, 9, 11, .55);
+      border: 1px solid rgba(63, 85, 80, .58);
+      border-radius: 7px;
+      padding: 11px;
+    }
+    .plex-deal-section h3 {
+      align-items: center;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 0 0 9px;
+      font-size: 15px;
+    }
+    .plex-deal-row-list {
+      display: grid;
+      gap: 8px;
+    }
+    .plex-deal-row {
+      background: rgba(17, 24, 25, .72);
+      border: 1px solid rgba(63, 85, 80, .58);
+      border-radius: 7px;
+      display: grid;
+      gap: 9px;
+      padding: 10px;
+    }
+    .plex-deal-row.is-primary {
+      border-color: rgba(68, 207, 123, .58);
+      box-shadow: inset 0 0 0 1px rgba(68, 207, 123, .12);
+    }
+    .plex-deal-row.is-partial {
+      border-color: rgba(240, 186, 87, .54);
+    }
+    .plex-deal-row-head {
+      align-items: start;
+      display: grid;
+      gap: 8px;
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .plex-deal-row-head strong,
+    .plex-deal-row-head span {
+      overflow-wrap: anywhere;
+    }
+    .plex-deal-metrics {
+      display: grid;
+      gap: 7px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .plex-deal-metric {
+      border: 1px solid rgba(63, 85, 80, .52);
+      border-radius: 6px;
+      min-height: 54px;
+      padding: 7px;
+    }
+    .plex-deal-metric span {
+      color: var(--muted);
+      display: block;
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    .plex-deal-metric b {
+      color: var(--text);
+      display: block;
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .plex-deal-rules {
+      margin-top: 12px;
+    }
     .discord-preview-card {
       background: rgba(5, 9, 11, .68);
       border: 1px solid rgba(97, 199, 217, .34);
@@ -20402,6 +20887,9 @@ def _render_flight_attendant_dashboard() -> str:
       .workflow-discord-destination,
       .discord-post-settings-grid,
       .discord-direct-fields,
+      .plex-deal-controls,
+      .plex-deal-summary,
+      .plex-deal-metrics,
       .discord-preview-field-grid { grid-template-columns: 1fr; }
       .discord-direct-fields .span-2,
       .discord-direct-fields .span-3 { grid-column: 1; }
@@ -20849,6 +21337,52 @@ help</textarea>
             </div>
 
             <div class="discord-column">
+              <section class="panel plex-deal-panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>PLEX Deal Finder</h2>
+                    <div class="meta">Find gross public-order deals for selling or buying 100-1,000 PLEX. Selling is emphasized.</div>
+                  </div>
+                  <span class="pill sell">No ESI scope</span>
+                </div>
+                <form id="plex-deal-form" class="discord-alert-form">
+                  <div class="plex-deal-controls">
+                    <label>Market hub
+                      <select id="plex-deal-hub" name="hub">
+                        <option value="jita">Jita</option>
+                        <option value="amarr">Amarr</option>
+                        <option value="dodixie">Dodixie</option>
+                        <option value="hek">Hek</option>
+                        <option value="rens">Rens</option>
+                      </select>
+                    </label>
+                    <label>Minimum PLEX
+                      <input id="plex-deal-min-quantity" name="min_quantity" type="number" min="100" max="1000" step="1" value="100">
+                    </label>
+                    <label>Maximum PLEX
+                      <input id="plex-deal-max-quantity" name="max_quantity" type="number" min="100" max="1000" step="1" value="1000">
+                    </label>
+                  </div>
+                  <div class="discord-alert-toolbar plex-deal-toolbar">
+                    <button id="plex-deal-find" type="submit">Find PLEX Deals</button>
+                    <span id="plex-deal-status" class="meta" aria-live="polite">Ready to check public PLEX orders.</span>
+                  </div>
+                </form>
+                <div id="plex-deal-summary" class="plex-deal-summary">
+                  <div class="decision-metric"><span>Best Sell</span><b>Not checked</b><small>Sell into public buy orders.</small></div>
+                  <div class="decision-metric"><span>Best Buy</span><b>Not checked</b><small>Buy from public sell orders.</small></div>
+                  <div class="decision-metric"><span>Spread</span><b>Not checked</b><small>Gross buy minus sell average.</small></div>
+                </div>
+                <div id="plex-deal-results" class="plex-deal-results">
+                  <div class="empty">Run a PLEX deal check to rank sell and buy quantities.</div>
+                </div>
+                <ul class="discord-pattern-list plex-deal-rules">
+                  <li>Sell side uses public buy-order depth; buy side uses public sell-order depth.</li>
+                  <li>Gross ISK only: verify taxes, fees, min volume, and station or structure access in EVE.</li>
+                  <li>The app does not buy, sell, contract, move PLEX, or read your wallet.</li>
+                </ul>
+              </section>
+
               <section class="panel">
                 <div class="panel-header">
                   <div>
@@ -22668,6 +23202,14 @@ help</textarea>
     const directDiscordPreviewButton = document.querySelector("#direct-discord-preview-button");
     const directDiscordSend = document.querySelector("#direct-discord-send");
     const directDiscordMessage = document.querySelector("#direct-discord-message");
+    const plexDealForm = document.querySelector("#plex-deal-form");
+    const plexDealHub = document.querySelector("#plex-deal-hub");
+    const plexDealMinQuantity = document.querySelector("#plex-deal-min-quantity");
+    const plexDealMaxQuantity = document.querySelector("#plex-deal-max-quantity");
+    const plexDealFind = document.querySelector("#plex-deal-find");
+    const plexDealStatus = document.querySelector("#plex-deal-status");
+    const plexDealSummary = document.querySelector("#plex-deal-summary");
+    const plexDealResults = document.querySelector("#plex-deal-results");
     const fittingForm = document.querySelector("#fitting-form");
     const fittingErrorEl = document.querySelector("#fitting-form-error");
     const fittingDiscordForm = document.querySelector("#fitting-discord-form");
@@ -22943,6 +23485,9 @@ help</textarea>
     const haulPastedItemsOnlyKey = "eve-flight-haul-pasted-items-only-v1";
     const haulAssetsOnlyKey = "eve-flight-haul-assets-only-v1";
     const haulCompareDestinationsKey = "eve-flight-haul-compare-destinations-v1";
+    const plexDealHubKey = "eve-flight-plex-deal-hub-v1";
+    const plexDealMinQuantityKey = "eve-flight-plex-deal-min-quantity-v1";
+    const plexDealMaxQuantityKey = "eve-flight-plex-deal-max-quantity-v1";
     const acqOriginKey = "eve-flight-acq-origin-v1";
     const acqDestinationKey = "eve-flight-acq-destination-v1";
     const acqBudgetKey = "eve-flight-acq-budget-v1";
@@ -25105,6 +25650,176 @@ help</textarea>
           </div>
         </article>
       `).join("");
+    }
+
+    function setPlexDealStatus(message, isError = false) {
+      if (!plexDealStatus) return;
+      plexDealStatus.textContent = message || "";
+      plexDealStatus.classList.toggle("error", Boolean(isError));
+    }
+
+    function clampPlexDealQuantity(value, fallback) {
+      const number = Math.round(Number(value));
+      if (!Number.isFinite(number)) return fallback;
+      return Math.max(100, Math.min(1000, number));
+    }
+
+    function readPlexDealSettings() {
+      const hub = String(window.localStorage.getItem(plexDealHubKey) || (plexDealHub ? plexDealHub.value : "jita") || "jita");
+      const minQuantity = clampPlexDealQuantity(
+        window.localStorage.getItem(plexDealMinQuantityKey) || (plexDealMinQuantity ? plexDealMinQuantity.value : 100),
+        100,
+      );
+      const maxQuantity = clampPlexDealQuantity(
+        window.localStorage.getItem(plexDealMaxQuantityKey) || (plexDealMaxQuantity ? plexDealMaxQuantity.value : 1000),
+        1000,
+      );
+      return {
+        hub,
+        minQuantity: Math.min(minQuantity, maxQuantity),
+        maxQuantity: Math.max(minQuantity, maxQuantity),
+      };
+    }
+
+    function writePlexDealSettings(settings) {
+      const hub = settings.hub || "jita";
+      const minQuantity = clampPlexDealQuantity(settings.minQuantity, 100);
+      const maxQuantity = clampPlexDealQuantity(settings.maxQuantity, 1000);
+      if (plexDealHub) plexDealHub.value = hub;
+      if (plexDealMinQuantity) plexDealMinQuantity.value = String(Math.min(minQuantity, maxQuantity));
+      if (plexDealMaxQuantity) plexDealMaxQuantity.value = String(Math.max(minQuantity, maxQuantity));
+      window.localStorage.setItem(plexDealHubKey, hub);
+      window.localStorage.setItem(plexDealMinQuantityKey, String(Math.min(minQuantity, maxQuantity)));
+      window.localStorage.setItem(plexDealMaxQuantityKey, String(Math.max(minQuantity, maxQuantity)));
+    }
+
+    function plexDealLineLabel(row) {
+      if (!row) return "unknown";
+      const average = row.average_unit_price == null ? "unknown avg" : `${formatIsk(row.average_unit_price)} avg`;
+      const quantity = `${formatNumber(row.quantity || 0)} PLEX`;
+      return `${quantity} at ${average}`;
+    }
+
+    function renderPlexDealSummary(data) {
+      if (!plexDealSummary) return;
+      const bestSell = data?.sell?.best || null;
+      const bestBuy = data?.buy?.best || null;
+      const spread = data?.spread || {};
+      const spreadText = spread.gross_per_unit == null ? "unknown" : formatSignedIsk(spread.gross_per_unit);
+      const spreadDetail = spread.gross_percent == null
+        ? "Gross buy minus sell average."
+        : `${formatSignedPercent(spread.gross_percent)} gross gap between best buy and sell quotes.`;
+      const sellDetail = bestSell?.aggregate_estimate
+        ? "Fuzzwork aggregate estimate; verify in EVE."
+        : (bestSell?.complete ? "Complete public buy-order depth." : "Partial or unavailable depth.");
+      const buyDetail = bestBuy?.aggregate_estimate
+        ? "Fuzzwork aggregate estimate; verify in EVE."
+        : (bestBuy?.complete ? "Complete public sell-order depth." : "Partial or unavailable depth.");
+      plexDealSummary.innerHTML = `
+        <div class="decision-metric"><span>Best Sell</span><b>${escapeHtml(plexDealLineLabel(bestSell))}</b><small>${escapeHtml(sellDetail)}</small></div>
+        <div class="decision-metric"><span>Best Buy</span><b>${escapeHtml(plexDealLineLabel(bestBuy))}</b><small>${escapeHtml(buyDetail)}</small></div>
+        <div class="decision-metric"><span>Spread</span><b>${escapeHtml(spreadText)}</b><small>${escapeHtml(spreadDetail)}</small></div>
+      `;
+    }
+
+    function renderPlexDealRow(row, index, side) {
+      const complete = Boolean(row.complete);
+      const aggregateEstimate = row.status === "aggregate_estimate" || row.aggregate_estimate;
+      const statusClass = aggregateEstimate ? "want" : (complete ? "sell" : row.priced_quantity ? "reserved" : "sold");
+      const statusText = aggregateEstimate ? "Estimate" : (complete ? "Complete" : row.priced_quantity ? "Partial" : "No depth");
+      const rowClass = `${index === 0 && complete ? " is-primary" : ""}${complete ? "" : " is-partial"}`;
+      const action = side === "buy" ? "Buy" : "Sell";
+      const totalLabel = side === "buy" ? "Gross Cost" : "Gross Return";
+      const worstLabel = side === "buy" ? "Highest Used" : "Lowest Used";
+      const sourceLabel = row.source_label || (aggregateEstimate ? "Fuzzwork aggregate" : "Public ESI market orders");
+      return `
+        <article class="plex-deal-row${rowClass}">
+          <div class="plex-deal-row-head">
+            <div>
+              <strong>${escapeHtml(action)} ${formatNumber(row.quantity || 0)} PLEX</strong>
+              <div class="meta">${escapeHtml(row.direction || "")}</div>
+            </div>
+            <span class="pill ${statusClass}">${statusText}</span>
+          </div>
+          <div class="plex-deal-metrics">
+            <div class="plex-deal-metric"><span>Average</span><b>${row.average_unit_price == null ? "unknown" : formatIsk(row.average_unit_price)}</b></div>
+            <div class="plex-deal-metric"><span>${totalLabel}</span><b>${row.total_isk == null ? "unknown" : formatIsk(row.total_isk)}</b></div>
+            <div class="plex-deal-metric"><span>Depth Used</span><b>${formatNumber(row.priced_quantity || 0)} / ${formatNumber(row.quantity || 0)}</b></div>
+            <div class="plex-deal-metric"><span>Best Price</span><b>${row.first_unit_price == null ? "unknown" : formatIsk(row.first_unit_price)}</b></div>
+            <div class="plex-deal-metric"><span>${worstLabel}</span><b>${row.last_unit_price == null ? "unknown" : formatIsk(row.last_unit_price)}</b></div>
+            <div class="plex-deal-metric"><span>Orders</span><b>${formatNumber(row.order_count || 0)}</b></div>
+          </div>
+          <div class="meta">Source: ${escapeHtml(sourceLabel)}</div>
+          <div class="meta">${escapeHtml(row.manual_note || "Verify the live market order in EVE before acting.")}</div>
+          ${Number(row.min_volume_blocked_orders || 0) ? `<div class="meta warning">${formatNumber(row.min_volume_blocked_orders)} order${Number(row.min_volume_blocked_orders || 0) === 1 ? "" : "s"} skipped by min-volume constraints.</div>` : ""}
+        </article>
+      `;
+    }
+
+    function renderPlexDealSection(title, rows, side, orderCount, visibleUnits) {
+      const rowList = Array.isArray(rows) && rows.length
+        ? rows.map((row, index) => renderPlexDealRow(row, index, side)).join("")
+        : '<div class="empty">No public PLEX depth found for this side.</div>';
+      return `
+        <section class="plex-deal-section">
+          <h3>
+            <span>${escapeHtml(title)}</span>
+            <span class="pill ${side === "buy" ? "want" : "sell"}">${formatNumber(orderCount || 0)} orders</span>
+          </h3>
+          <div class="meta">${formatNumber(visibleUnits || 0)} visible PLEX in the selected hub at scan time.</div>
+          <div class="plex-deal-row-list">${rowList}</div>
+        </section>
+      `;
+    }
+
+    function renderPlexDeals(data) {
+      renderPlexDealSummary(data);
+      if (!plexDealResults) return;
+      const warnings = (data?.warnings || []).map((warning) => `<div class="meta warning">${escapeHtml(warning)}</div>`).join("");
+      const errors = (data?.errors || []).length
+        ? `<div class="meta warning">${formatNumber((data.errors || []).length)} public market lookup warning${(data.errors || []).length === 1 ? "" : "s"} returned.</div>`
+        : "";
+      plexDealResults.innerHTML = `
+        ${renderPlexDealSection("Mostly Sell: Public Buy Orders", data?.sell?.deals || [], "sell", data?.sell?.order_count, data?.sell?.visible_units)}
+        ${renderPlexDealSection("Buy Check: Public Sell Orders", data?.buy?.deals || [], "buy", data?.buy?.order_count, data?.buy?.visible_units)}
+        ${warnings}
+        ${errors}
+      `;
+    }
+
+    async function loadPlexDeals(event) {
+      if (event) event.preventDefault();
+      if (!plexDealForm) return;
+      const settings = {
+        hub: plexDealHub ? plexDealHub.value : "jita",
+        minQuantity: plexDealMinQuantity ? plexDealMinQuantity.value : 100,
+        maxQuantity: plexDealMaxQuantity ? plexDealMaxQuantity.value : 1000,
+      };
+      writePlexDealSettings(settings);
+      const cleanSettings = readPlexDealSettings();
+      const params = new URLSearchParams({
+        hub: cleanSettings.hub,
+        min_quantity: String(cleanSettings.minQuantity),
+        max_quantity: String(cleanSettings.maxQuantity),
+      });
+      if (plexDealFind) {
+        plexDealFind.disabled = true;
+        window.eveVoiceDuckDigPlex?.(plexDealFind, {count: 14});
+      }
+      setPlexDealStatus(`Checking ${formatNumber(cleanSettings.minQuantity)}-${formatNumber(cleanSettings.maxQuantity)} PLEX public orders...`);
+      try {
+        const response = await fetch(`/api/flight/plex-deals?${params}`);
+        const data = await readJsonApiResponse(response, "Could not find PLEX deals");
+        renderPlexDeals(data);
+        const bestSell = data?.sell?.best;
+        const bestText = bestSell ? plexDealLineLabel(bestSell) : "no sell depth";
+        setPlexDealStatus(`Updated ${data?.hub?.label || cleanSettings.hub} PLEX deals; best sell: ${bestText}.`);
+      } catch (error) {
+        setPlexDealStatus(error.message || "PLEX deal lookup failed.", true);
+        if (plexDealResults) plexDealResults.innerHTML = renderDashboardErrorState(error.message || "PLEX deal lookup failed.");
+      } finally {
+        if (plexDealFind) plexDealFind.disabled = false;
+      }
     }
 
     function updateFittingFilterButtons() {
@@ -33911,6 +34626,18 @@ help</textarea>
       directDiscordSend.addEventListener("click", sendDirectDiscordPost);
     }
 
+    if (plexDealForm) {
+      plexDealForm.addEventListener("submit", loadPlexDeals);
+      [plexDealHub, plexDealMinQuantity, plexDealMaxQuantity].forEach((control) => {
+        if (!control) return;
+        control.addEventListener("change", () => writePlexDealSettings({
+          hub: plexDealHub ? plexDealHub.value : "jita",
+          minQuantity: plexDealMinQuantity ? plexDealMinQuantity.value : 100,
+          maxQuantity: plexDealMaxQuantity ? plexDealMaxQuantity.value : 1000,
+        }));
+      });
+    }
+
     function alertDiscordSyncProblem(data) {
       if (data.discord_sync_error) {
         window.alert(`Updated locally, but Discord did not sync: ${data.discord_sync_error}`);
@@ -33959,6 +34686,7 @@ help</textarea>
     loadDiscordAlertSettings();
     loadDiscordPostSettings();
     loadFittingDiscordSettings();
+    writePlexDealSettings(readPlexDealSettings());
     loadFlightStatus();
     loadFlightDiagnostics();
     loadOffers().catch((error) => {

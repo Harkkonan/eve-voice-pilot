@@ -12,6 +12,7 @@ FLIGHT_SESSION_COOKIE_NAME = "corp_market_flight_session"
 FLIGHT_GET_ROUTE_METHODS: dict[str, str] = {
     "/api/flight/status": "_handle_flight_status",
     "/api/flight/diagnostics": "_handle_flight_diagnostics",
+    "/api/flight/plex-deals": "_handle_flight_plex_deals",
     "/api/flight/systems": "_handle_flight_systems",
     "/api/flight/industry": "_handle_flight_industry",
     "/api/flight/buyers": "_handle_flight_buyers",

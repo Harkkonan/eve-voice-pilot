@@ -147,6 +147,107 @@ PLEX_BUTTON_EFFECT_CSS = r"""
       animation: managed-document-duck-splash var(--duck-loop, 18s) ease-out infinite;
       animation-delay: var(--splash-delay);
     }
+    .plex-dig-duck-layer {
+      position: fixed;
+      inset: 0;
+      overflow: visible;
+      pointer-events: none;
+      z-index: 2147482999;
+      contain: layout style paint;
+    }
+    .plex-dig-duck-scene {
+      position: absolute;
+      left: var(--dig-x);
+      top: var(--dig-y);
+      width: 164px;
+      height: 112px;
+      transform: translate(-50%, -50%);
+      opacity: 0;
+      will-change: transform, opacity;
+      animation: plex-dig-scene 1850ms ease-out forwards;
+    }
+    .plex-dig-duck {
+      position: absolute;
+      left: 52px;
+      top: 48px;
+      width: 55px;
+      height: 31px;
+      border-radius: 58% 48% 48% 58% / 62% 62% 42% 42%;
+      background:
+        radial-gradient(circle at 32% 30%, rgba(255, 255, 234, .95) 0 13%, transparent 16%),
+        linear-gradient(135deg, #ffe27c 0%, #f5b844 78%);
+      box-shadow:
+        inset 0 2px 0 rgba(255, 255, 255, .42),
+        inset 0 -7px 10px rgba(142, 84, 5, .22),
+        0 6px 14px rgba(0, 0, 0, .28);
+      animation: plex-dig-duck-peck 420ms ease-in-out 0ms 4;
+    }
+    .plex-dig-duck::before {
+      content: "";
+      position: absolute;
+      right: -9px;
+      top: -17px;
+      width: 27px;
+      height: 27px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 66% 38%, #201104 0 8%, transparent 10%),
+        linear-gradient(135deg, #ffe98c 0%, #f6c24f 88%);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .48);
+    }
+    .plex-dig-duck::after {
+      content: "";
+      position: absolute;
+      right: -27px;
+      top: -6px;
+      width: 24px;
+      height: 11px;
+      border-radius: 62% 38% 54% 46%;
+      background: linear-gradient(90deg, #ff9d31, #e76f1d);
+      transform: rotate(4deg);
+      box-shadow: inset 0 1px 0 rgba(255, 235, 170, .48);
+    }
+    .plex-dig-dirt {
+      position: absolute;
+      left: 35px;
+      right: 22px;
+      bottom: 17px;
+      height: 24px;
+      border-radius: 50%;
+      background:
+        radial-gradient(ellipse at 24% 47%, rgba(122, 78, 36, .9) 0 10%, transparent 12%),
+        radial-gradient(ellipse at 47% 50%, rgba(180, 122, 48, .72) 0 14%, transparent 16%),
+        radial-gradient(ellipse at 70% 52%, rgba(91, 62, 37, .74) 0 12%, transparent 14%),
+        linear-gradient(90deg, rgba(91, 62, 37, .42), rgba(224, 168, 74, .34), rgba(91, 62, 37, .36));
+      filter: drop-shadow(0 3px 7px rgba(0, 0, 0, .26));
+      animation: plex-dig-dirt-pop 420ms ease-in-out 120ms 4;
+    }
+    .plex-dig-token {
+      position: absolute;
+      left: var(--token-x);
+      top: var(--token-y);
+      width: var(--token-size);
+      height: calc(var(--token-size) * .62);
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(255, 226, 122, .88);
+      border-radius: 72% 31% 68% 32% / 54% 62% 38% 46%;
+      background:
+        radial-gradient(circle at 36% 28%, rgba(255, 249, 190, .96) 0 18%, transparent 34%),
+        linear-gradient(135deg, #ffe082 0%, #f2b443 42%, #d97824 100%);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, .45),
+        inset 0 -6px 12px rgba(122, 57, 10, .24),
+        0 0 16px rgba(255, 174, 47, .32),
+        0 8px 18px rgba(0, 0, 0, .22);
+      color: #321904;
+      font: 900 calc(var(--token-size) * .22) / 1 "Segoe UI", system-ui, sans-serif;
+      letter-spacing: .04em;
+      opacity: 0;
+      text-shadow: 0 1px 0 rgba(255, 242, 180, .58);
+      will-change: transform, opacity;
+      animation: plex-dig-token-rise 1280ms ease-out var(--token-delay) forwards;
+    }
     @keyframes plex-petal-fall {
       0% {
         opacity: 0;
@@ -218,12 +319,42 @@ PLEX_BUTTON_EFFECT_CSS = r"""
         transform: translate(var(--splash-drift), -34px) rotate(var(--splash-rot)) scale(.86);
       }
     }
+    @keyframes plex-dig-scene {
+      0% { opacity: 0; transform: translate(-50%, -44%) scale(.9); }
+      12%, 82% { opacity: 1; }
+      100% { opacity: 0; transform: translate(-50%, -58%) scale(.98); }
+    }
+    @keyframes plex-dig-duck-peck {
+      0%, 100% { transform: translateY(0) rotate(-1deg); }
+      48% { transform: translate(10px, 7px) rotate(12deg); }
+    }
+    @keyframes plex-dig-dirt-pop {
+      0%, 100% { transform: scaleX(.9); opacity: .72; }
+      48% { transform: scaleX(1.08) translateY(-2px); opacity: .95; }
+    }
+    @keyframes plex-dig-token-rise {
+      0% {
+        opacity: 0;
+        transform: translate(0, 20px) rotate(-20deg) scale(.52);
+      }
+      22% {
+        opacity: .98;
+      }
+      100% {
+        opacity: 0;
+        transform: translate(var(--token-drift), var(--token-rise)) rotate(var(--token-rot)) scale(.9);
+      }
+    }
     @media (prefers-reduced-motion: reduce) {
       .plex-petal,
       .managed-document-duck-scene,
       .managed-document-duck,
       .managed-document-duck-water,
-      .managed-document-duck-splash {
+      .managed-document-duck-splash,
+      .plex-dig-duck-scene,
+      .plex-dig-duck,
+      .plex-dig-dirt,
+      .plex-dig-token {
         display: none;
         animation: none;
       }
@@ -298,6 +429,18 @@ PLEX_BUTTON_EFFECT_SCRIPT = r"""
         if (!layer) {
           layer = document.createElement("div");
           layer.className = "managed-document-duck-layer";
+          layer.setAttribute("aria-hidden", "true");
+          document.body.appendChild(layer);
+        }
+        return { layer, created };
+      }
+
+      function plexDigDuckLayer() {
+        let layer = document.querySelector(".plex-dig-duck-layer");
+        const created = !layer;
+        if (!layer) {
+          layer = document.createElement("div");
+          layer.className = "plex-dig-duck-layer";
           layer.setAttribute("aria-hidden", "true");
           document.body.appendChild(layer);
         }
@@ -432,6 +575,59 @@ PLEX_BUTTON_EFFECT_SCRIPT = r"""
         };
       }
 
+      function duckDigPlex(target, detail = {}) {
+        const startedAt = performance.now();
+        if (reducedMotion.matches) return null;
+        let anchor = target instanceof Element ? target : null;
+        if (!anchor && typeof target === "string") anchor = document.querySelector(target);
+        if (!anchor && detail.target instanceof Element) anchor = detail.target;
+        const rect = anchor?.getBoundingClientRect?.();
+        const viewportWidth = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+        const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+        const x = rect && rect.width
+          ? Math.max(82, Math.min(viewportWidth - 82, rect.left + rect.width * .54))
+          : viewportWidth * .5;
+        const y = rect && rect.height
+          ? Math.max(82, Math.min(viewportHeight - 72, rect.top + rect.height + 42))
+          : viewportHeight * .42;
+        const layerResult = plexDigDuckLayer();
+        const scene = document.createElement("div");
+        scene.className = "plex-dig-duck-scene";
+        scene.style.setProperty("--dig-x", `${x}px`);
+        scene.style.setProperty("--dig-y", `${y}px`);
+        scene.innerHTML = `
+          <span class="plex-dig-dirt"></span>
+          <span class="plex-dig-duck"></span>
+        `;
+        const tokenCount = Math.max(6, Math.min(18, Number(detail.count || 12)));
+        for (let index = 0; index < tokenCount; index += 1) {
+          const token = document.createElement("span");
+          token.className = "plex-dig-token";
+          token.textContent = "PLEX";
+          token.style.setProperty("--token-x", `${32 + Math.random() * 92}px`);
+          token.style.setProperty("--token-y", `${48 + Math.random() * 25}px`);
+          token.style.setProperty("--token-size", `${17 + Math.random() * 11}px`);
+          token.style.setProperty("--token-delay", `${80 + Math.random() * 360}ms`);
+          token.style.setProperty("--token-drift", `${-70 + Math.random() * 140}px`);
+          token.style.setProperty("--token-rise", `${-84 - Math.random() * 48}px`);
+          token.style.setProperty("--token-rot", `${-140 + Math.random() * 280}deg`);
+          scene.appendChild(token);
+        }
+        scene.addEventListener("animationend", (event) => {
+          if (event.target !== scene) return;
+          scene.remove();
+          const layer = document.querySelector(".plex-dig-duck-layer");
+          if (layer && !layer.childElementCount) layer.remove();
+        });
+        layerResult.layer.appendChild(scene);
+        return {
+          layer_created: layerResult.created,
+          token_count: tokenCount,
+          target_name: anchor?.id || anchor?.textContent?.trim().slice(0, 80) || "viewport",
+          create_ms: performance.now() - startedAt,
+        };
+      }
+
       document.addEventListener("click", (event) => {
         if (event.isTrusted === false) return;
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
@@ -456,6 +652,12 @@ PLEX_BUTTON_EFFECT_SCRIPT = r"""
       window.eveVoiceManagedDocumentChanged = (detail = {}) => {
         const result = startManagedDocumentDuck(detail);
         if (result) reportUiPerf("managed-document-duck", result);
+        return result;
+      };
+
+      window.eveVoiceDuckDigPlex = (target, detail = {}) => {
+        const result = duckDigPlex(target, detail);
+        if (result) reportUiPerf("plex-duck-dig", result);
         return result;
       };
 

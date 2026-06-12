@@ -241,6 +241,115 @@ def test_bulk_appraisal_payload_prices_public_hub_orders_and_export_text(tmp_pat
     assert "Advisory only" in payload["export_text"]
 
 
+def test_plex_deal_quantity_targets_clamp_and_validate():
+    assert corp_market.clean_plex_deal_quantity("50", default=100) == 100
+    assert corp_market.clean_plex_deal_quantity("5000", default=100) == 1000
+    assert corp_market.plex_deal_quantity_targets(150, 350) == [150, 200, 300, 350]
+
+    with pytest.raises(CorpMarketError):
+        corp_market.plex_deal_quantity_targets(900, 100)
+
+
+def test_plex_deal_payload_ranks_sell_and_buy_public_depth(monkeypatch):
+    def fake_scan_system_market_orders(*, config, type_ids, system, order_type):
+        assert type_ids == [corp_market.PLEX_TYPE_ID]
+        assert system.name == "Jita"
+        if order_type == "buy":
+            return {
+                corp_market.PLEX_TYPE_ID: [
+                    {"price": 5_000_000.0, "volume_remain": 100, "min_volume": 1},
+                    {"price": 4_900_000.0, "volume_remain": 900, "min_volume": 1},
+                ]
+            }, 2, []
+        if order_type == "sell":
+            return {
+                corp_market.PLEX_TYPE_ID: [
+                    {"price": 5_200_000.0, "volume_remain": 250, "min_volume": 1},
+                    {"price": 5_350_000.0, "volume_remain": 800, "min_volume": 1},
+                ]
+            }, 2, []
+        raise AssertionError(order_type)
+
+    monkeypatch.setattr(corp_market, "scan_system_market_orders", fake_scan_system_market_orders)
+
+    payload = corp_market.build_plex_deal_payload(
+        config=corp_market.EveSsoConfig(),
+        hub_name="jita",
+        min_quantity=100,
+        max_quantity=1000,
+    )
+
+    assert payload["ok"] is True
+    assert payload["item"] == {"type_id": 44992, "name": "PLEX"}
+    assert payload["quantity_targets"] == list(range(100, 1001, 100))
+    assert payload["sell"]["label"] == "Sell PLEX into public buy orders"
+    assert payload["sell"]["best"]["quantity"] == 100
+    assert payload["sell"]["best"]["average_unit_price"] == 5_000_000.0
+    sell_1000 = next(row for row in payload["sell"]["deals"] if row["quantity"] == 1000)
+    assert sell_1000["complete"] is True
+    assert sell_1000["average_unit_price"] == pytest.approx(4_910_000.0)
+    assert payload["buy"]["label"] == "Buy PLEX from public sell orders"
+    assert payload["buy"]["best"]["quantity"] == 100
+    assert payload["buy"]["best"]["average_unit_price"] == 5_200_000.0
+    assert payload["spread"]["gross_per_unit"] == pytest.approx(200_000.0)
+    assert payload["mode"] == "public_orders_gross"
+    assert any("does not place market orders" in warning for warning in payload["warnings"])
+
+
+def test_plex_deal_payload_uses_fuzzwork_aggregate_when_esi_depth_is_empty(monkeypatch):
+    def fake_scan_system_market_orders(*, config, type_ids, system, order_type):
+        assert type_ids == [corp_market.PLEX_TYPE_ID]
+        return {corp_market.PLEX_TYPE_ID: []}, 0, []
+
+    fuzzwork_calls = []
+
+    def fake_fetch_fuzzwork_market_aggregates(type_ids, *, station_id=corp_market.JITA_4_4_STATION_ID):
+        fuzzwork_calls.append((tuple(type_ids), station_id))
+        return {
+            corp_market.PLEX_TYPE_ID: {
+                "type_id": corp_market.PLEX_TYPE_ID,
+                "source": "fuzzwork",
+                "source_label": "Fuzzwork Jita 4-4 aggregate",
+                "location_id": corp_market.JITA_4_4_STATION_ID,
+                "location_name": "Jita 4-4",
+                "top_buy_unit_price": 4_522_000.0,
+                "liquidation_unit_price": 4_520_274.5734,
+                "sell_min_unit_price": 4_739_000.0,
+                "sell_percentile_unit_price": 4_748_964.788,
+                "buy_volume": 546_189.0,
+                "sell_volume": 265_762.0,
+                "buy_order_count": 112,
+                "sell_order_count": 78,
+            }
+        }
+
+    monkeypatch.setattr(corp_market, "scan_system_market_orders", fake_scan_system_market_orders)
+    monkeypatch.setattr(corp_market, "fetch_fuzzwork_market_aggregates", fake_fetch_fuzzwork_market_aggregates)
+
+    payload = corp_market.build_plex_deal_payload(
+        config=corp_market.EveSsoConfig(),
+        hub_name="jita",
+        min_quantity=100,
+        max_quantity=1000,
+    )
+
+    assert fuzzwork_calls == [((corp_market.PLEX_TYPE_ID,), corp_market.JITA_4_4_STATION_ID)]
+    assert payload["fallback_source"]["used_for_sell"] is True
+    assert payload["fallback_source"]["used_for_buy"] is True
+    assert payload["sell"]["order_count"] == 112
+    assert payload["sell"]["visible_units"] == 546_189
+    assert payload["sell"]["best"]["status"] == "aggregate_estimate"
+    assert payload["sell"]["best"]["aggregate_estimate"] is True
+    assert payload["sell"]["best"]["quantity"] == 1000
+    assert payload["sell"]["best"]["average_unit_price"] == pytest.approx(4_522_000.0)
+    assert payload["sell"]["best"]["total_isk"] == pytest.approx(4_522_000_000.0)
+    assert payload["buy"]["order_count"] == 78
+    assert payload["buy"]["best"]["status"] == "aggregate_estimate"
+    assert payload["buy"]["best"]["average_unit_price"] == pytest.approx(4_739_000.0)
+    assert payload["spread"]["gross_per_unit"] == pytest.approx(217_000.0)
+    assert any("Fuzzwork station aggregate estimate" in warning for warning in payload["warnings"])
+
+
 def test_market_store_creates_and_archives_shared_fitting(tmp_path):
     store = MarketStore(tmp_path / "market.sqlite3")
 
@@ -576,16 +685,33 @@ def test_dashboard_includes_plex_button_press_effect():
     page = render_dashboard()
 
     assert "plex-petal-layer" in page
+    assert "plex-dig-duck-layer" in page
     assert "PLEX" in page
     assert "prefers-reduced-motion" in page
     assert "event.isTrusted" in page
     assert "ui_perf" in page
     assert "/api/ui-performance" in page
+    assert "eveVoiceDuckDigPlex" in page
+    assert "plex-duck-dig" in page
     assert "managed-document-duck-layer" in page
     assert "eve-managed-document-change" in page
     assert "eveVoiceManagedDocumentChanged" in page
     assert "5 * 60 * 1000" in page
     assert "managed-document-duck" in page
+
+
+def test_dashboard_includes_plex_deal_finder():
+    page = render_dashboard()
+
+    assert "PLEX Deal Finder" in page
+    assert "Find gross public-order deals for selling or buying 100-1,000 PLEX" in page
+    assert "id=\"plex-deal-form\"" in page
+    assert "id=\"plex-deal-find\"" in page
+    assert "id=\"plex-deal-results\"" in page
+    assert "Selling is emphasized" in page
+    assert "/api/flight/plex-deals" in page
+    assert "window.eveVoiceDuckDigPlex?.(plexDealFind" in page
+    assert "The app does not buy, sell, contract, move PLEX, or read your wallet." in page
 
 
 def test_dashboard_includes_shared_fittings_tab():
