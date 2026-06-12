@@ -1510,6 +1510,53 @@ def public_action_definitions() -> list[dict[str, Any]]:
     ]
 
 
+def workflow_definitions() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "local_test",
+            "title": "Local Test Flow",
+            "steps": [
+                {"action_id": "git_status", "label": "Git Status"},
+                {"action_id": "git_diff_check", "label": "Diff Check"},
+                {"action_id": "cache_preflight", "label": "Static Caches"},
+                {"action_id": "local_server_start", "label": "Start Local Server"},
+            ],
+        },
+        {
+            "id": "deploy",
+            "title": "Deploy Flow",
+            "steps": [
+                {"action_id": "vm_git_status", "label": "VM Git Status"},
+                {"action_id": "vm_update_verify", "label": "Update VM + Verify"},
+                {"action_id": "vm_logs_tail", "label": "Tail Logs"},
+                {"action_id": "vm_public_readiness", "label": "Public Readiness"},
+            ],
+        },
+    ]
+
+
+def public_workflow_definitions() -> list[dict[str, Any]]:
+    actions = action_definitions()
+    workflows = []
+    for flow in workflow_definitions():
+        steps = []
+        for step in flow["steps"]:
+            action_id = str(step["action_id"])
+            action = actions.get(action_id)
+            if action is None:
+                raise WorkbenchError(f"Workflow references an unknown action: {action_id}")
+            steps.append(
+                {
+                    "action_id": action_id,
+                    "label": str(step.get("label") or action.label),
+                    "description": action.description,
+                    "changes_process": action.changes_process,
+                }
+            )
+        workflows.append({"id": flow["id"], "title": flow["title"], "steps": steps})
+    return workflows
+
+
 def run_action(action_id: str, config: WorkbenchConfig) -> CommandResult:
     action = action_definitions().get(action_id)
     if action is None:
@@ -1588,6 +1635,7 @@ def build_status_payload(config: WorkbenchConfig) -> dict[str, Any]:
         },
         "environment": environment_status(),
         "actions": public_action_definitions(),
+        "workflows": public_workflow_definitions(),
         "recent_actions": recent_action_log(config),
         "manual_only": [
             "Rotate SSO secrets and Discord webhooks outside this workbench.",
@@ -1606,6 +1654,7 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
     token = escape_attr(operator_token)
     nonce = escape_attr(csp_nonce)
     initial_actions_json = json.dumps(public_action_definitions()).replace("</", "<\\/")
+    initial_workflows_json = json.dumps(public_workflow_definitions()).replace("</", "<\\/")
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1719,6 +1768,47 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
     }}
     .panel-body {{
       padding: 16px 18px 18px;
+    }}
+    .workflow-guide {{
+      display: grid;
+      gap: 12px;
+      margin-bottom: 16px;
+    }}
+    .workflow-card {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfb;
+      padding: 12px;
+    }}
+    .workflow-card h3 {{
+      margin: 0 0 10px;
+      font-size: 0.92rem;
+      line-height: 1.2;
+    }}
+    .workflow-steps {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }}
+    .workflow-step {{
+      min-height: 36px;
+      padding: 8px 10px;
+      border-color: #cbd5ce;
+      background: #fff;
+      font-size: 0.86rem;
+    }}
+    .workflow-arrow {{
+      color: var(--muted);
+      font-weight: 800;
+    }}
+    .action-divider {{
+      margin: 4px 0 8px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }}
     .actions {{
       display: grid;
@@ -1885,6 +1975,8 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
         <div class="panel">
           <div class="panel-head"><h2>Actions</h2><span class="pill neutral">Allowlisted</span></div>
           <div class="panel-body">
+            <div id="workflow-guide" class="workflow-guide"></div>
+            <div class="action-divider">Individual actions</div>
             <div id="action-groups"></div>
           </div>
         </div>
@@ -1946,9 +2038,11 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
   <script nonce="{nonce}">
     const operatorToken = "{token}";
     const initialActions = {initial_actions_json};
+    const initialWorkflows = {initial_workflows_json};
     const actionOutput = document.querySelector("#action-output");
     const resultStatus = document.querySelector("#result-status");
     const actionGroups = document.querySelector("#action-groups");
+    const workflowGuide = document.querySelector("#workflow-guide");
 
     function pillClass(ok) {{
       return ok ? "pill ok" : "pill bad";
@@ -1979,6 +2073,22 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
 
     function escapeHtml(value) {{
       return String(value ?? "").replace(/[&<>"']/g, ch => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[ch]));
+    }}
+
+    function renderWorkflows(workflows) {{
+      workflowGuide.innerHTML = (workflows || []).map(flow => `
+        <section class="workflow-card">
+          <h3>${{escapeHtml(flow.title)}}</h3>
+          <div class="workflow-steps">
+            ${{(flow.steps || []).map((step, index) => `
+              ${{index ? `<span class="workflow-arrow" aria-hidden="true">-&gt;</span>` : ""}}
+              <button class="workflow-step" type="button" data-action="${{escapeHtml(step.action_id)}}" title="${{escapeHtml(step.description || "")}}">
+                ${{escapeHtml(step.label)}}
+              </button>
+            `).join("")}}
+          </div>
+        </section>
+      `).join("");
     }}
 
     function renderActions(actions) {{
@@ -2012,6 +2122,7 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
       setText("#sso-status", data.environment?.sso_ready ? "Configured" : "Missing");
       document.querySelector("#sso-status").style.color = data.environment?.sso_ready ? "var(--green)" : "var(--amber)";
       setText("#git-status", data.git?.display || (data.git?.ok ? "Checked" : "Check failed"));
+      renderWorkflows(data.workflows || initialWorkflows);
       renderActions(data.actions || []);
 
       const config = data.config || {{}};
@@ -2113,6 +2224,7 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
     }});
     document.querySelector("#public-config-form").addEventListener("submit", savePublicConfig);
     document.querySelector("#refresh-button").addEventListener("click", refreshStatus);
+    renderWorkflows(initialWorkflows);
     renderActions(initialActions);
     refreshStatus();
   </script>

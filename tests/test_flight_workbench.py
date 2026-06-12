@@ -748,8 +748,31 @@ def test_render_dashboard_includes_initial_action_metadata():
 
     assert 'nonce="YWJjMTIz"' in html
     assert "const initialActions =" in html
+    assert "const initialWorkflows =" in html
     assert "Git Status" in html
+    assert "Local Test Flow" in html
+    assert "Deploy Flow" in html
     assert "operator-token" in html
+
+
+def test_public_workflows_reference_allowlisted_actions():
+    actions = {action["id"] for action in flight_workbench.public_action_definitions()}
+    workflows = flight_workbench.public_workflow_definitions()
+
+    assert [flow["title"] for flow in workflows] == ["Local Test Flow", "Deploy Flow"]
+    assert [step["action_id"] for step in workflows[0]["steps"]] == [
+        "git_status",
+        "git_diff_check",
+        "cache_preflight",
+        "local_server_start",
+    ]
+    assert [step["action_id"] for step in workflows[1]["steps"]] == [
+        "vm_git_status",
+        "vm_update_verify",
+        "vm_logs_tail",
+        "vm_public_readiness",
+    ]
+    assert all(step["action_id"] in actions for flow in workflows for step in flow["steps"])
 
 
 def test_append_action_log_redacts_output(tmp_path, monkeypatch):
@@ -801,6 +824,8 @@ def test_status_payload_contains_expected_cards(monkeypatch):
     assert any(action["id"] == "vm_update_restart" for action in payload["actions"])
     assert any(action["id"] == "vm_update_verify" for action in payload["actions"])
     assert any(action["id"] == "vm_public_readiness" for action in payload["actions"])
+    assert payload["workflows"][0]["title"] == "Local Test Flow"
+    assert payload["workflows"][1]["title"] == "Deploy Flow"
     assert next(action for action in payload["actions"] if action["id"] == "local_server_stop")["label"] == "Stop Local Server"
 
 
