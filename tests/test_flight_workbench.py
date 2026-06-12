@@ -489,6 +489,8 @@ def test_build_vm_public_env_command_writes_public_allowlist(tmp_path):
     assert "2124413713" in command
     assert "CORP_MARKET_PUBLIC_HOSTING_MODE" in command
     assert "systemctl restart eve-flight.service" in command
+    assert "http://127.0.0.1:8770/api/health" in command
+    assert "http://127.0.0.1:8770/api/flight/diagnostics" not in command
     assert "CORP_MARKET_SSO_CLIENT_SECRET" in command
     assert "secret-value" not in command
 

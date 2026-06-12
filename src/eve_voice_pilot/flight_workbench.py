@@ -1116,15 +1116,10 @@ print("Allowed alliance IDs:", updates.get("CORP_MARKET_ALLOWED_ALLIANCE_IDS", "
         f"state=$(systemctl is-active {service} || true); "
         f'echo "{service}: $state"; '
         "sleep 2; "
-        "curl -fsS http://127.0.0.1:8770/api/flight/diagnostics | "
-        "python3 -c 'import json,sys; d=json.load(sys.stdin); "
-        'print("public_hosting_mode:", d["hosting"]["public_hosting_mode"]); '
-        'print("public_base_url:", d["hosting"]["public_base_url"]); '
-        'print("callback_url:", d["sso"]["callback_url"]); '
-        'print("membership_restricted:", d["sso"]["membership_restricted"]); '
-        'print("character_allowlist_count:", d["sso"].get("character_allowlist_count", 0)); '
-        'print("corporation_allowlist_count:", d["sso"]["corporation_allowlist_count"]); '
-        'print("alliance_allowlist_count:", d["sso"]["alliance_allowlist_count"])\''
+        'echo "Health:"; '
+        "curl -fsS http://127.0.0.1:8770/api/health; "
+        "echo; "
+        'echo "Flight diagnostics require an allowlisted SSO browser session in public-hosting mode."'
     )
 
 
@@ -1250,6 +1245,30 @@ def yes_no(value):
     return "yes" if value else "no"
 
 
+def truthy(value):
+    return str(value or "").strip().lower() in {{"1", "true", "yes", "on"}}
+
+
+def read_flight_env():
+    env = {{}}
+    try:
+        with open("/home/ubuntu/.eve-flight-env", encoding="utf-8") as handle:
+            for line in handle:
+                clean = line.strip()
+                if not clean or clean.startswith("#"):
+                    continue
+                if clean.startswith("export "):
+                    clean = clean[len("export "):].strip()
+                if "=" not in clean:
+                    continue
+                key, value = clean.split("=", 1)
+                env[key.strip()] = value.strip().strip('"').strip("'")
+    except OSError as exc:
+        print(f"Flight env file: error: {{exc}}")
+        issues.append("Flight env file is not readable.")
+    return env
+
+
 print("VM public hosting readiness")
 service_state = run(["systemctl", "is-active", SERVICE]).stdout.strip()
 print(f"{{SERVICE}}: {{service_state or 'unknown'}}")
@@ -1266,13 +1285,22 @@ except (OSError, HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc
     print(f"Local app health: error: {{exc}}")
     issues.append("Local app health endpoint is not reachable.")
 
+flight_env = read_flight_env()
+diagnostics = None
 try:
     with urlopen("http://127.0.0.1:8770/api/flight/diagnostics", timeout=5) as response:
         diagnostics = json.loads(response.read().decode("utf-8", errors="replace"))
-except (OSError, HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+except HTTPError as exc:
+    if exc.code == 403:
+        print("Flight diagnostics: protected by public-hosting SSO (HTTP 403)")
+    else:
+        print(f"Flight diagnostics: error: {{exc}}")
+        issues.append("Flight diagnostics endpoint is not reachable from the VM.")
+except (OSError, URLError, TimeoutError, json.JSONDecodeError) as exc:
     print(f"Flight diagnostics: error: {{exc}}")
     issues.append("Flight diagnostics endpoint is not reachable from the VM.")
-else:
+
+if diagnostics is not None:
     hosting = diagnostics.get("hosting") or {{}}
     sso = diagnostics.get("sso") or {{}}
     public_mode = bool(hosting.get("public_hosting_mode"))
@@ -1283,6 +1311,40 @@ else:
     print(f"Server mode: {{hosting.get('server_mode_label') or 'unknown'}}")
     print(f"Public base URL: {{hosting.get('public_base_url') or 'missing'}}")
     print(f"Expected callback: {{hosting.get('expected_callback_url') or 'missing'}}")
+    print(f"Public hosting mode: {{yes_no(public_mode)}}")
+    print(f"Public URL uses HTTPS: {{yes_no(public_https)}}")
+    print(f"Callback matches public base: {{yes_no(callback_match)}}")
+    print(f"SSO configured: {{yes_no(sso_ready)}}")
+    print(f"Member allowlist configured: {{yes_no(restricted)}}")
+    if not public_mode:
+        issues.append("Public hosting mode is not enabled.")
+    if not public_https:
+        issues.append("Public base URL is missing or not HTTPS.")
+    if not callback_match:
+        issues.append("SSO callback does not match the public base URL.")
+    if not sso_ready:
+        issues.append("SSO client ID/secret are not configured.")
+    if not restricted:
+        issues.append("Corp/alliance member allowlist is not configured.")
+else:
+    public_base = flight_env.get("CORP_MARKET_PUBLIC_BASE_URL", "")
+    callback_url = flight_env.get("CORP_MARKET_SSO_CALLBACK_URL", "")
+    expected_callback = f"{{public_base.rstrip('/')}}/flight/callback" if public_base else ""
+    public_mode = truthy(flight_env.get("CORP_MARKET_PUBLIC_HOSTING_MODE"))
+    public_https = public_base.startswith("https://")
+    callback_match = bool(callback_url and expected_callback and callback_url.rstrip("/") == expected_callback.rstrip("/"))
+    sso_ready = bool(
+        flight_env.get("CORP_MARKET_SSO_CLIENT_ID")
+        and flight_env.get("CORP_MARKET_SSO_CLIENT_SECRET")
+    )
+    restricted = bool(
+        flight_env.get("CORP_MARKET_ALLOWED_CHARACTER_IDS")
+        or flight_env.get("CORP_MARKET_ALLOWED_CORPORATION_IDS")
+        or flight_env.get("CORP_MARKET_ALLOWED_ALLIANCE_IDS")
+    )
+    print("Server mode: inferred from /home/ubuntu/.eve-flight-env")
+    print(f"Public base URL: {{public_base or 'missing'}}")
+    print(f"Expected callback: {{expected_callback or 'missing'}}")
     print(f"Public hosting mode: {{yes_no(public_mode)}}")
     print(f"Public URL uses HTTPS: {{yes_no(public_https)}}")
     print(f"Callback matches public base: {{yes_no(callback_match)}}")
