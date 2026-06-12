@@ -246,7 +246,7 @@ def test_local_server_start_bridges_user_env_to_child_process(monkeypatch):
     monkeypatch.setattr(
         flight_workbench,
         "check_local_health",
-        lambda config: {"ok": False, "url": "http://127.0.0.1:8770/api/health", "detail": "offline"},
+        lambda config, **kwargs: {"ok": False, "url": "http://127.0.0.1:8770/api/health", "detail": "offline"},
     )
     monkeypatch.setattr(
         flight_workbench,
@@ -279,7 +279,7 @@ def test_local_server_start_reports_stale_listener(monkeypatch):
     monkeypatch.setattr(
         flight_workbench,
         "check_local_health",
-        lambda config: {"ok": True, "url": "http://127.0.0.1:8770/api/health", "detail": "online"},
+        lambda config, **kwargs: {"ok": True, "url": "http://127.0.0.1:8770/api/health", "detail": "online"},
     )
     monkeypatch.setattr(flight_workbench, "process_is_running", lambda name: False)
     monkeypatch.setattr(
@@ -782,7 +782,7 @@ def test_status_payload_contains_expected_cards(monkeypatch):
     monkeypatch.setattr(
         flight_workbench,
         "check_local_health",
-        lambda config: {"ok": False, "url": "http://127.0.0.1:8770/api/health", "detail": "offline"},
+        lambda config, **kwargs: {"ok": False, "url": "http://127.0.0.1:8770/api/health", "detail": "offline"},
     )
     monkeypatch.setattr(
         flight_workbench,
@@ -802,3 +802,55 @@ def test_status_payload_contains_expected_cards(monkeypatch):
     assert any(action["id"] == "vm_update_verify" for action in payload["actions"])
     assert any(action["id"] == "vm_public_readiness" for action in payload["actions"])
     assert next(action for action in payload["actions"] if action["id"] == "local_server_stop")["label"] == "Stop Local Server"
+
+
+def test_status_payload_reuses_shared_local_and_tunnel_port_query(monkeypatch):
+    calls = []
+    config = flight_workbench.WorkbenchConfig(
+        ssh_host="165.1.66.116",
+        ssh_user="ubuntu",
+        ssh_key_path="C:\\Users\\Example\\.ssh\\oci.key",
+        local_app_port=8770,
+        tunnel_local_port=8770,
+    )
+    processes = [
+        flight_workbench.LocalProcessInfo(
+            pid=111,
+            local_address="127.0.0.1",
+            local_port=8770,
+            command_line="python -m eve_voice_pilot.corp_market serve",
+        ),
+        flight_workbench.LocalProcessInfo(
+            pid=222,
+            local_address="127.0.0.1",
+            local_port=8770,
+            command_line="ssh -i C:\\Users\\Example\\.ssh\\oci.key -N -L 8770:127.0.0.1:8770 ubuntu@165.1.66.116",
+        ),
+    ]
+
+    monkeypatch.setattr(flight_workbench.os, "name", "nt")
+    monkeypatch.setattr(
+        flight_workbench,
+        "check_local_health",
+        lambda config, **kwargs: {"ok": True, "url": "http://127.0.0.1:8770/api/health", "detail": "online"},
+    )
+    monkeypatch.setattr(
+        flight_workbench,
+        "local_git_status",
+        lambda config: flight_workbench.CommandResult(ok=True, summary="ok", output="## master...origin/master"),
+    )
+    monkeypatch.setattr(flight_workbench, "environment_status", lambda: {"sso_ready": True, "rows": [], "note": ""})
+    monkeypatch.setattr(flight_workbench, "recent_action_log", lambda config: [])
+    monkeypatch.setattr(flight_workbench, "managed_process_status", lambda name: {"managed": False, "running": False, "pid": None})
+
+    def fake_local_processes_for_port(port, *, timeout_seconds=8.0):
+        calls.append((port, timeout_seconds))
+        return processes
+
+    monkeypatch.setattr(flight_workbench, "local_processes_for_port", fake_local_processes_for_port)
+
+    payload = flight_workbench.build_status_payload(config)
+
+    assert calls == [(8770, 2.0)]
+    assert payload["local_server"]["processes"][0]["pid"] == 111
+    assert payload["ssh_tunnel"]["processes"][0]["pid"] == 222

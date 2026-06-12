@@ -531,7 +531,7 @@ def managed_process_status(name: str) -> dict[str, Any]:
         return {"managed": True, "running": running, "pid": process.pid if running else None, "returncode": returncode}
 
 
-def run_windows_process_query_for_port(port: int) -> str:
+def run_windows_process_query_for_port(port: int, *, timeout_seconds: float = 8.0) -> str:
     if os.name != "nt":
         return ""
     script = f"""
@@ -553,7 +553,7 @@ $items | ConvertTo-Json -Compress
             encoding="utf-8",
             errors="replace",
             capture_output=True,
-            timeout=8,
+            timeout=timeout_seconds,
             shell=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -593,8 +593,8 @@ def parse_local_process_query(raw: str) -> list[LocalProcessInfo]:
     return processes
 
 
-def local_processes_for_port(port: int) -> list[LocalProcessInfo]:
-    return parse_local_process_query(run_windows_process_query_for_port(port))
+def local_processes_for_port(port: int, *, timeout_seconds: float = 8.0) -> list[LocalProcessInfo]:
+    return parse_local_process_query(run_windows_process_query_for_port(port, timeout_seconds=timeout_seconds))
 
 
 def is_corp_market_process(process: LocalProcessInfo) -> bool:
@@ -613,20 +613,54 @@ def is_configured_ssh_tunnel_process(process: LocalProcessInfo, config: Workbenc
     return bool(re.search(forward_pattern, command_line))
 
 
-def corp_market_processes_for_config(config: WorkbenchConfig) -> list[LocalProcessInfo]:
+def corp_market_processes_for_config(
+    config: WorkbenchConfig,
+    *,
+    timeout_seconds: float = 8.0,
+) -> list[LocalProcessInfo]:
     if os.name != "nt":
         return []
-    return [process for process in local_processes_for_port(config.local_app_port) if is_corp_market_process(process)]
+    return [
+        process
+        for process in local_processes_for_port(config.local_app_port, timeout_seconds=timeout_seconds)
+        if is_corp_market_process(process)
+    ]
 
 
-def ssh_tunnel_processes_for_config(config: WorkbenchConfig) -> list[LocalProcessInfo]:
+def ssh_tunnel_processes_for_config(
+    config: WorkbenchConfig,
+    *,
+    timeout_seconds: float = 8.0,
+) -> list[LocalProcessInfo]:
     if os.name != "nt" or not config.vm_configured:
         return []
     return [
         process
-        for process in local_processes_for_port(config.tunnel_local_port)
+        for process in local_processes_for_port(config.tunnel_local_port, timeout_seconds=timeout_seconds)
         if is_configured_ssh_tunnel_process(process, config)
     ]
+
+
+def local_and_tunnel_processes_for_config(
+    config: WorkbenchConfig,
+    *,
+    timeout_seconds: float = 8.0,
+) -> tuple[list[LocalProcessInfo], list[LocalProcessInfo]]:
+    if os.name != "nt":
+        return [], []
+    if config.local_app_port == config.tunnel_local_port:
+        processes = local_processes_for_port(config.local_app_port, timeout_seconds=timeout_seconds)
+        local_processes = [process for process in processes if is_corp_market_process(process)]
+        tunnel_processes = [
+            process
+            for process in processes
+            if config.vm_configured and is_configured_ssh_tunnel_process(process, config)
+        ]
+        return local_processes, tunnel_processes
+    return (
+        corp_market_processes_for_config(config, timeout_seconds=timeout_seconds),
+        ssh_tunnel_processes_for_config(config, timeout_seconds=timeout_seconds),
+    )
 
 
 def public_process_summary(processes: Iterable[LocalProcessInfo]) -> list[dict[str, Any]]:
@@ -732,9 +766,9 @@ def fetch_json(url: str, *, timeout_seconds: float = 3.0) -> dict[str, Any]:
     return {"ok": False, "error": "Endpoint returned an unexpected payload."}
 
 
-def check_local_health(config: WorkbenchConfig) -> dict[str, Any]:
+def check_local_health(config: WorkbenchConfig, *, timeout_seconds: float = 2.5) -> dict[str, Any]:
     require_loopback_host(config.local_app_host, "Local app host")
-    payload = fetch_json(f"{config.local_base_url}/api/health", timeout_seconds=2.5)
+    payload = fetch_json(f"{config.local_base_url}/api/health", timeout_seconds=timeout_seconds)
     return {
         "ok": bool(payload.get("ok")),
         "url": f"{config.local_base_url}/api/health",
@@ -1528,10 +1562,9 @@ def recent_action_log(config: WorkbenchConfig, limit: int = RECENT_ACTION_LIMIT)
 
 
 def build_status_payload(config: WorkbenchConfig) -> dict[str, Any]:
-    health = check_local_health(config)
+    health = check_local_health(config, timeout_seconds=0.8)
     git_status = local_git_status(config)
-    local_processes = corp_market_processes_for_config(config)
-    tunnel_processes = ssh_tunnel_processes_for_config(config)
+    local_processes, tunnel_processes = local_and_tunnel_processes_for_config(config, timeout_seconds=2.0)
     return {
         "ok": True,
         "generated_at": now_iso(),
