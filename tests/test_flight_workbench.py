@@ -312,6 +312,78 @@ def test_local_server_stop_stops_stale_listener(monkeypatch):
     assert result.data == {"stopped_pids": [4321]}
 
 
+def test_configured_ssh_tunnel_process_matching():
+    config = flight_workbench.WorkbenchConfig(
+        ssh_host="165.1.66.116",
+        ssh_user="ubuntu",
+        ssh_key_path="C:\\Users\\Example\\.ssh\\oci.key",
+    )
+    process = flight_workbench.LocalProcessInfo(
+        pid=28784,
+        local_address="127.0.0.1",
+        local_port=8770,
+        command_line="ssh -i C:\\Users\\Example\\.ssh\\oci.key -N -L 8770:127.0.0.1:8770 ubuntu@165.1.66.116",
+    )
+    other_target = flight_workbench.LocalProcessInfo(
+        pid=28785,
+        local_address="127.0.0.1",
+        local_port=8770,
+        command_line="ssh -N -L 8770:127.0.0.1:8770 ubuntu@203.0.113.10",
+    )
+
+    assert flight_workbench.is_configured_ssh_tunnel_process(process, config) is True
+    assert flight_workbench.is_configured_ssh_tunnel_process(other_target, config) is False
+
+
+def test_local_server_stop_points_at_configured_ssh_tunnel(monkeypatch):
+    tunnel_process = flight_workbench.LocalProcessInfo(
+        pid=28784,
+        local_address="127.0.0.1",
+        local_port=8770,
+        command_line="ssh -N -L 8770:127.0.0.1:8770 ubuntu@165.1.66.116",
+    )
+    monkeypatch.setattr(flight_workbench, "managed_process_status", lambda name: {"managed": False, "running": False, "pid": None})
+    monkeypatch.setattr(flight_workbench, "corp_market_processes_for_config", lambda config: [])
+    monkeypatch.setattr(flight_workbench, "check_local_health", lambda config: {"ok": True, "detail": "online"})
+    monkeypatch.setattr(flight_workbench, "ssh_tunnel_processes_for_config", lambda config: [tunnel_process])
+
+    result = flight_workbench.local_server_stop(flight_workbench.WorkbenchConfig())
+
+    assert result.ok is False
+    assert "SSH tunnel" in result.summary
+    assert "28784" in result.output
+    assert "Stop Managed Tunnel" in result.output
+
+
+def test_tunnel_stop_stops_stale_configured_tunnel(monkeypatch):
+    stopped = []
+    tunnel_process = flight_workbench.LocalProcessInfo(
+        pid=28784,
+        local_address="127.0.0.1",
+        local_port=8770,
+        command_line="ssh -N -L 8770:127.0.0.1:8770 ubuntu@165.1.66.116",
+    )
+    monkeypatch.setattr(
+        flight_workbench,
+        "stop_managed_process",
+        lambda name: flight_workbench.CommandResult(ok=False, summary="ssh tunnel is not managed by this workbench."),
+    )
+    monkeypatch.setattr(flight_workbench, "ssh_tunnel_processes_for_config", lambda config: [tunnel_process])
+
+    def fake_stop_windows_process_tree(pid, *, timeout_seconds=10.0):
+        stopped.append(pid)
+        return flight_workbench.CommandResult(ok=True, summary="stopped")
+
+    monkeypatch.setattr(flight_workbench, "stop_windows_process_tree", fake_stop_windows_process_tree)
+
+    result = flight_workbench.tunnel_stop(flight_workbench.WorkbenchConfig())
+
+    assert result.ok is True
+    assert result.summary == "Stopped SSH tunnel."
+    assert stopped == [28784]
+    assert result.data == {"stopped_pids": [28784]}
+
+
 def test_parse_local_process_query_accepts_single_object():
     raw = json.dumps(
         {

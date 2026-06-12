@@ -602,10 +602,31 @@ def is_corp_market_process(process: LocalProcessInfo) -> bool:
     return "eve_voice_pilot.corp_market" in command_line or "run_corp_market.ps1" in command_line
 
 
+def is_configured_ssh_tunnel_process(process: LocalProcessInfo, config: WorkbenchConfig) -> bool:
+    if not config.vm_configured:
+        return False
+    command_line = process.command_line
+    command_line_lower = command_line.lower()
+    if "ssh" not in command_line_lower or config.ssh_target.lower() not in command_line_lower:
+        return False
+    forward_pattern = rf'(?i)(?:^|\s)-L\s*"?{re.escape(config.tunnel_forward)}"?(?:\s|$)'
+    return bool(re.search(forward_pattern, command_line))
+
+
 def corp_market_processes_for_config(config: WorkbenchConfig) -> list[LocalProcessInfo]:
     if os.name != "nt":
         return []
     return [process for process in local_processes_for_port(config.local_app_port) if is_corp_market_process(process)]
+
+
+def ssh_tunnel_processes_for_config(config: WorkbenchConfig) -> list[LocalProcessInfo]:
+    if os.name != "nt" or not config.vm_configured:
+        return []
+    return [
+        process
+        for process in local_processes_for_port(config.tunnel_local_port)
+        if is_configured_ssh_tunnel_process(process, config)
+    ]
 
 
 def public_process_summary(processes: Iterable[LocalProcessInfo]) -> list[dict[str, Any]]:
@@ -892,6 +913,18 @@ def local_server_stop(config: WorkbenchConfig) -> CommandResult:
 
     health = check_local_health(config)
     if health["ok"]:
+        tunnel_processes = ssh_tunnel_processes_for_config(config)
+        if tunnel_processes:
+            pids = ", ".join(str(process.pid) for process in tunnel_processes)
+            return CommandResult(
+                ok=False,
+                summary="Corp Market is answering through the configured SSH tunnel.",
+                output=(
+                    f"Port {config.local_app_port} is owned by SSH tunnel PID(s): {pids}.\n"
+                    "Use Stop Managed Tunnel to close the tunnel, then start the local server again."
+                ),
+                data={"tunnel_processes": public_process_summary(tunnel_processes)},
+            )
         return CommandResult(
             ok=False,
             summary="Corp Market is answering, but no safe matching local process was found to stop.",
@@ -1305,7 +1338,36 @@ def tunnel_start(config: WorkbenchConfig) -> CommandResult:
 
 
 def tunnel_stop(config: WorkbenchConfig) -> CommandResult:
-    return stop_managed_process("ssh tunnel")
+    result = stop_managed_process("ssh tunnel")
+    if result.ok:
+        return result
+    with _process_lock:
+        _managed_processes.pop("ssh tunnel", None)
+    tunnel_processes = ssh_tunnel_processes_for_config(config)
+    if not tunnel_processes:
+        return result
+    summaries: list[str] = []
+    stopped_pids: list[int] = []
+    for process in tunnel_processes:
+        stop_result = stop_windows_process_tree(process.pid)
+        if stop_result.ok:
+            stopped_pids.append(process.pid)
+            summaries.append(f"Stopped SSH tunnel PID {process.pid}.")
+        else:
+            summaries.append(f"Could not stop SSH tunnel PID {process.pid}: {stop_result.summary}")
+    if stopped_pids:
+        return CommandResult(
+            ok=True,
+            summary="Stopped SSH tunnel.",
+            output="\n".join(summaries),
+            data={"stopped_pids": stopped_pids},
+        )
+    return CommandResult(
+        ok=False,
+        summary="Could not stop the configured SSH tunnel.",
+        output="\n".join(summaries),
+        data={"tunnel_processes": public_process_summary(tunnel_processes)},
+    )
 
 
 def action_definitions() -> dict[str, ActionDefinition]:
@@ -1399,6 +1461,7 @@ def build_status_payload(config: WorkbenchConfig) -> dict[str, Any]:
     health = check_local_health(config)
     git_status = local_git_status(config)
     local_processes = corp_market_processes_for_config(config)
+    tunnel_processes = ssh_tunnel_processes_for_config(config)
     return {
         "ok": True,
         "generated_at": now_iso(),
@@ -1412,6 +1475,7 @@ def build_status_payload(config: WorkbenchConfig) -> dict[str, Any]:
             "managed": managed_process_status("ssh tunnel"),
             "configured": config.vm_configured,
             "forward": config.tunnel_forward,
+            "processes": public_process_summary(tunnel_processes),
         },
         "git": {
             "ok": git_status.ok,
