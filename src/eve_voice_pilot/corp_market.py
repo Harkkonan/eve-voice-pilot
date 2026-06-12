@@ -145,6 +145,7 @@ PLEX_DEAL_MIN_QUANTITY = 100
 PLEX_DEAL_MAX_QUANTITY = 1000
 PLEX_DEAL_QUANTITY_STEP = 100
 PLEX_DEAL_ROW_LIMIT = 10
+PLEX_COMPARISON_HUBS = ("jita", "amarr", "dodixie", "hek", "rens")
 EXPECTED_REALIZED_REPORT_COLUMNS = (
     "Date Created",
     "Date Completed",
@@ -10426,6 +10427,135 @@ def build_plex_deal_payload(
     }
 
 
+def format_plex_share_isk(value: Any) -> str:
+    amount = clean_optional_float(value)
+    if amount is None:
+        return "unknown"
+    return f"{amount:,.0f} ISK"
+
+
+def build_plex_sell_share_line(*, hub_label: str, best_sell: Mapping[str, Any] | None) -> str:
+    if not best_sell:
+        return f"PLEX sell check: no sell-side price found in {hub_label}. Verify in EVE."
+    quantity = clean_optional_int(best_sell.get("quantity")) or 0
+    average_unit_price = clean_optional_float(best_sell.get("average_unit_price"))
+    source_label = str(best_sell.get("source_label") or "Public market data")
+    if quantity <= 0 or average_unit_price is None:
+        return f"PLEX sell check: no sell-side price found in {hub_label}. Verify in EVE."
+    source_prefix = "estimate source" if best_sell.get("aggregate_estimate") else "source"
+    return (
+        f"PLEX sell check: {quantity:,} PLEX in {hub_label} @ {format_plex_share_isk(average_unit_price)} "
+        f"avg gross, {source_prefix}: {source_label}. Verify in EVE."
+    )
+
+
+def build_plex_hub_comparison_row(payload: Mapping[str, Any]) -> dict[str, Any]:
+    hub = dict(payload.get("hub") or {})
+    hub_label = str(hub.get("label") or hub.get("key") or "selected hub")
+    best_sell = dict((payload.get("sell") or {}).get("best") or {})
+    best_buy = dict((payload.get("buy") or {}).get("best") or {})
+    spread = dict(payload.get("spread") or {})
+    sell_average = clean_optional_float(best_sell.get("average_unit_price"))
+    buy_average = clean_optional_float(best_buy.get("average_unit_price"))
+    sell_total = clean_optional_float(best_sell.get("total_isk"))
+    buy_total = clean_optional_float(best_buy.get("total_isk"))
+    aggregate_warning = bool(best_sell.get("aggregate_estimate") or best_buy.get("aggregate_estimate"))
+    return {
+        "hub": hub,
+        "best_sell": best_sell,
+        "best_buy": best_buy,
+        "sell_average_unit_price": sell_average,
+        "buyback_average_unit_price": buy_average,
+        "sell_gross_isk": sell_total,
+        "buyback_gross_isk": buy_total,
+        "buyback_comparison": {
+            "buyback_quantity": clean_optional_int(best_buy.get("quantity")) or 0,
+            "buyback_average_unit_price": buy_average,
+            "buyback_gross_isk": buy_total,
+            "spread_per_unit": clean_optional_float(spread.get("gross_per_unit")),
+            "spread_percent": clean_optional_float(spread.get("gross_percent")),
+        },
+        "spread": spread,
+        "source_label": str(best_sell.get("source_label") or ""),
+        "aggregate_warning": aggregate_warning,
+        "warning": (
+            "Fuzzwork aggregate estimate; ESI returned no PLEX order-depth rows for at least one side."
+            if aggregate_warning
+            else ""
+        ),
+        "share_line": build_plex_sell_share_line(hub_label=hub_label, best_sell=best_sell),
+        "errors": list(payload.get("errors") or []),
+        "_sort_average": sell_average if sell_average is not None else -1.0,
+        "_sort_total": sell_total if sell_total is not None else -1.0,
+        "_sort_complete": 0 if best_sell.get("complete") else 1,
+        "_sort_hub": ROUTE_SYSTEM_HUB_PRIORITY.get(str(hub.get("key") or "").lower(), 999),
+    }
+
+
+def build_plex_hub_comparison_payload(
+    *,
+    config: EveSsoConfig,
+    min_quantity: Any = DEFAULT_PLEX_DEAL_MIN_QUANTITY,
+    max_quantity: Any = DEFAULT_PLEX_DEAL_MAX_QUANTITY,
+) -> dict[str, Any]:
+    quantity_targets = plex_deal_quantity_targets(min_quantity, max_quantity)
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for hub_key in PLEX_COMPARISON_HUBS:
+        try:
+            payload = build_plex_deal_payload(
+                config=config,
+                hub_name=hub_key,
+                min_quantity=quantity_targets[0],
+                max_quantity=quantity_targets[-1],
+            )
+        except CorpMarketError as exc:
+            errors.append(f"{hub_key}: {exc}")
+            continue
+        rows.append(build_plex_hub_comparison_row(payload))
+
+    rows.sort(
+        key=lambda row: (
+            row.get("_sort_complete", 1),
+            -(clean_optional_float(row.get("_sort_average")) or -1.0),
+            -(clean_optional_float(row.get("_sort_total")) or -1.0),
+            int(row.get("_sort_hub", 999)),
+        )
+    )
+    cleaned_rows: list[dict[str, Any]] = []
+    for row in rows:
+        cleaned = dict(row)
+        for key in ("_sort_average", "_sort_total", "_sort_complete", "_sort_hub"):
+            cleaned.pop(key, None)
+        cleaned_rows.append(cleaned)
+    recommendation = cleaned_rows[0] if cleaned_rows else None
+    share_line = str((recommendation or {}).get("share_line") or "PLEX sell check: no hub result available. Verify in EVE.")
+    return {
+        "ok": True,
+        "generated_at": now_iso(),
+        "item": {
+            "type_id": PLEX_TYPE_ID,
+            "name": PLEX_TYPE_NAME,
+        },
+        "quantity_targets": quantity_targets,
+        "min_quantity": quantity_targets[0],
+        "max_quantity": quantity_targets[-1],
+        "hubs": list(PLEX_COMPARISON_HUBS),
+        "mode": "multi_hub_best_sell",
+        "recommendation": recommendation,
+        "rows": cleaned_rows,
+        "share_line": share_line,
+        "errors": errors,
+        "warnings": [
+            "Default recommendation is the best sell outcome. Buying back PLEX is shown only as a comparison.",
+            "Rows marked as Fuzzwork aggregate estimates are not verified order-depth quotes; verify the live market in EVE.",
+            "The app does not place market orders, buy PLEX, sell PLEX, create contracts, or read your wallet for this comparison.",
+        ],
+        "market_cache": market_order_cache_status(),
+        "fuzzwork_cache": fuzzwork_market_aggregate_cache_status(),
+    }
+
+
 def market_order_sort_key(order: dict[str, Any], *, order_type: str) -> tuple[float, int, int]:
     price = float(order.get("price") or 0.0)
     price_rank = -price if order_type == "buy" else price
@@ -14906,6 +15036,21 @@ def build_http_server(
                 payload = build_plex_deal_payload(
                     config=sso_config,
                     hub_name=first_query_value(query, "hub") or "jita",
+                    min_quantity=first_query_value(query, "min_quantity") or DEFAULT_PLEX_DEAL_MIN_QUANTITY,
+                    max_quantity=first_query_value(query, "max_quantity") or DEFAULT_PLEX_DEAL_MAX_QUANTITY,
+                )
+            except CorpMarketError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
+        def _handle_flight_plex_hub_comparison(self) -> None:
+            if not self._require_public_read_access():
+                return
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                payload = build_plex_hub_comparison_payload(
+                    config=sso_config,
                     min_quantity=first_query_value(query, "min_quantity") or DEFAULT_PLEX_DEAL_MIN_QUANTITY,
                     max_quantity=first_query_value(query, "max_quantity") or DEFAULT_PLEX_DEAL_MAX_QUANTITY,
                 )
@@ -20547,7 +20692,7 @@ def _render_flight_attendant_dashboard() -> str:
     .plex-deal-controls {
       display: grid;
       gap: 12px;
-      grid-template-columns: minmax(0, 1.1fr) repeat(2, minmax(110px, .7fr));
+      grid-template-columns: minmax(0, 1.1fr) repeat(3, minmax(96px, .7fr));
     }
     .plex-deal-toolbar {
       align-items: center;
@@ -20634,6 +20779,19 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .plex-deal-rules {
       margin-top: 12px;
+    }
+    .plex-deal-share-line {
+      background: rgba(5, 9, 11, .68);
+      border: 1px solid rgba(97, 199, 217, .34);
+      border-radius: 7px;
+      color: var(--text);
+      margin-top: 10px;
+      overflow-wrap: anywhere;
+      padding: 10px 12px;
+      white-space: pre-wrap;
+    }
+    .plex-deal-share-line[hidden] {
+      display: none;
     }
     .discord-preview-card {
       background: rgba(5, 9, 11, .68);
@@ -21362,9 +21520,14 @@ help</textarea>
                     <label>Maximum PLEX
                       <input id="plex-deal-max-quantity" name="max_quantity" type="number" min="100" max="1000" step="1" value="1000">
                     </label>
+                    <label>Sales Tax %
+                      <input id="plex-deal-sales-tax" name="sales_tax_percent" type="number" min="0" max="25" step="0.1" inputmode="decimal" value="0">
+                    </label>
                   </div>
                   <div class="discord-alert-toolbar plex-deal-toolbar">
                     <button id="plex-deal-find" type="submit">Find PLEX Deals</button>
+                    <button id="plex-deal-compare" class="secondary" type="button">Compare Hubs</button>
+                    <button id="plex-deal-copy-share" class="secondary" type="button" disabled>Copy Share Line</button>
                     <span id="plex-deal-status" class="meta" aria-live="polite">Ready to check public PLEX orders.</span>
                   </div>
                 </form>
@@ -21376,9 +21539,14 @@ help</textarea>
                 <div id="plex-deal-results" class="plex-deal-results">
                   <div class="empty">Run a PLEX deal check to rank sell and buy quantities.</div>
                 </div>
+                <div id="plex-deal-comparison" class="plex-deal-results">
+                  <div class="empty">Run Compare Hubs to find the best sell outcome across Jita, Amarr, Dodixie, Hek, and Rens.</div>
+                </div>
+                <div id="plex-deal-share-line" class="plex-deal-share-line" hidden></div>
                 <ul class="discord-pattern-list plex-deal-rules">
                   <li>Sell side uses public buy-order depth; buy side uses public sell-order depth.</li>
-                  <li>Gross ISK only: verify taxes, fees, min volume, and station or structure access in EVE.</li>
+                  <li>Gross ISK stays visible; Sales Tax % only adds a local net estimate.</li>
+                  <li>Verify taxes, fees, min volume, and station or structure access in EVE.</li>
                   <li>The app does not buy, sell, contract, move PLEX, or read your wallet.</li>
                 </ul>
               </section>
@@ -23206,10 +23374,15 @@ help</textarea>
     const plexDealHub = document.querySelector("#plex-deal-hub");
     const plexDealMinQuantity = document.querySelector("#plex-deal-min-quantity");
     const plexDealMaxQuantity = document.querySelector("#plex-deal-max-quantity");
+    const plexDealSalesTax = document.querySelector("#plex-deal-sales-tax");
     const plexDealFind = document.querySelector("#plex-deal-find");
+    const plexDealCompare = document.querySelector("#plex-deal-compare");
+    const plexDealCopyShare = document.querySelector("#plex-deal-copy-share");
     const plexDealStatus = document.querySelector("#plex-deal-status");
     const plexDealSummary = document.querySelector("#plex-deal-summary");
     const plexDealResults = document.querySelector("#plex-deal-results");
+    const plexDealComparison = document.querySelector("#plex-deal-comparison");
+    const plexDealShareLine = document.querySelector("#plex-deal-share-line");
     const fittingForm = document.querySelector("#fitting-form");
     const fittingErrorEl = document.querySelector("#fitting-form-error");
     const fittingDiscordForm = document.querySelector("#fitting-discord-form");
@@ -23488,6 +23661,7 @@ help</textarea>
     const plexDealHubKey = "eve-flight-plex-deal-hub-v1";
     const plexDealMinQuantityKey = "eve-flight-plex-deal-min-quantity-v1";
     const plexDealMaxQuantityKey = "eve-flight-plex-deal-max-quantity-v1";
+    const plexDealSalesTaxKey = "eve-flight-plex-deal-sales-tax-v1";
     const acqOriginKey = "eve-flight-acq-origin-v1";
     const acqDestinationKey = "eve-flight-acq-destination-v1";
     const acqBudgetKey = "eve-flight-acq-budget-v1";
@@ -25658,10 +25832,18 @@ help</textarea>
       plexDealStatus.classList.toggle("error", Boolean(isError));
     }
 
+    let plexDealLastShareLine = "";
+
     function clampPlexDealQuantity(value, fallback) {
       const number = Math.round(Number(value));
       if (!Number.isFinite(number)) return fallback;
       return Math.max(100, Math.min(1000, number));
+    }
+
+    function clampPlexDealSalesTax(value, fallback = 0) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return fallback;
+      return Math.max(0, Math.min(25, number));
     }
 
     function readPlexDealSettings() {
@@ -25674,10 +25856,15 @@ help</textarea>
         window.localStorage.getItem(plexDealMaxQuantityKey) || (plexDealMaxQuantity ? plexDealMaxQuantity.value : 1000),
         1000,
       );
+      const salesTaxPercent = clampPlexDealSalesTax(
+        window.localStorage.getItem(plexDealSalesTaxKey) || (plexDealSalesTax ? plexDealSalesTax.value : 0),
+        0,
+      );
       return {
         hub,
         minQuantity: Math.min(minQuantity, maxQuantity),
         maxQuantity: Math.max(minQuantity, maxQuantity),
+        salesTaxPercent,
       };
     }
 
@@ -25685,12 +25872,15 @@ help</textarea>
       const hub = settings.hub || "jita";
       const minQuantity = clampPlexDealQuantity(settings.minQuantity, 100);
       const maxQuantity = clampPlexDealQuantity(settings.maxQuantity, 1000);
+      const salesTaxPercent = clampPlexDealSalesTax(settings.salesTaxPercent, 0);
       if (plexDealHub) plexDealHub.value = hub;
       if (plexDealMinQuantity) plexDealMinQuantity.value = String(Math.min(minQuantity, maxQuantity));
       if (plexDealMaxQuantity) plexDealMaxQuantity.value = String(Math.max(minQuantity, maxQuantity));
+      if (plexDealSalesTax) plexDealSalesTax.value = String(salesTaxPercent);
       window.localStorage.setItem(plexDealHubKey, hub);
       window.localStorage.setItem(plexDealMinQuantityKey, String(Math.min(minQuantity, maxQuantity)));
       window.localStorage.setItem(plexDealMaxQuantityKey, String(Math.max(minQuantity, maxQuantity)));
+      window.localStorage.setItem(plexDealSalesTaxKey, String(salesTaxPercent));
     }
 
     function plexDealLineLabel(row) {
@@ -25698,6 +25888,29 @@ help</textarea>
       const average = row.average_unit_price == null ? "unknown avg" : `${formatIsk(row.average_unit_price)} avg`;
       const quantity = `${formatNumber(row.quantity || 0)} PLEX`;
       return `${quantity} at ${average}`;
+    }
+
+    function plexDealEstimatedNet(grossIsk, settings = readPlexDealSettings()) {
+      const gross = Number(grossIsk);
+      if (!Number.isFinite(gross)) return null;
+      const salesTaxPercent = clampPlexDealSalesTax(settings.salesTaxPercent, 0);
+      return Math.max(0, gross * (1 - salesTaxPercent / 100));
+    }
+
+    function plexDealNetDetail(row, settings = readPlexDealSettings()) {
+      if (!row || clampPlexDealSalesTax(settings.salesTaxPercent, 0) <= 0) return "";
+      const net = plexDealEstimatedNet(row.total_isk, settings);
+      if (net == null) return "";
+      return `Estimated net after ${formatPercent(settings.salesTaxPercent)} sales tax: ${formatIsk(net)}.`;
+    }
+
+    function setPlexDealShareLine(line) {
+      plexDealLastShareLine = String(line || "").trim();
+      if (plexDealShareLine) {
+        plexDealShareLine.hidden = !plexDealLastShareLine;
+        plexDealShareLine.textContent = plexDealLastShareLine;
+      }
+      if (plexDealCopyShare) plexDealCopyShare.disabled = !plexDealLastShareLine;
     }
 
     function renderPlexDealSummary(data) {
@@ -25715,8 +25928,9 @@ help</textarea>
       const buyDetail = bestBuy?.aggregate_estimate
         ? "Fuzzwork aggregate estimate; verify in EVE."
         : (bestBuy?.complete ? "Complete public sell-order depth." : "Partial or unavailable depth.");
+      const netSellDetail = plexDealNetDetail(bestSell) || sellDetail;
       plexDealSummary.innerHTML = `
-        <div class="decision-metric"><span>Best Sell</span><b>${escapeHtml(plexDealLineLabel(bestSell))}</b><small>${escapeHtml(sellDetail)}</small></div>
+        <div class="decision-metric"><span>Best Sell</span><b>${escapeHtml(plexDealLineLabel(bestSell))}</b><small>${escapeHtml(netSellDetail)}</small></div>
         <div class="decision-metric"><span>Best Buy</span><b>${escapeHtml(plexDealLineLabel(bestBuy))}</b><small>${escapeHtml(buyDetail)}</small></div>
         <div class="decision-metric"><span>Spread</span><b>${escapeHtml(spreadText)}</b><small>${escapeHtml(spreadDetail)}</small></div>
       `;
@@ -25732,6 +25946,7 @@ help</textarea>
       const totalLabel = side === "buy" ? "Gross Cost" : "Gross Return";
       const worstLabel = side === "buy" ? "Highest Used" : "Lowest Used";
       const sourceLabel = row.source_label || (aggregateEstimate ? "Fuzzwork aggregate" : "Public ESI market orders");
+      const netLine = side === "sell" ? plexDealNetDetail(row) : "";
       return `
         <article class="plex-deal-row${rowClass}">
           <div class="plex-deal-row-head">
@@ -25750,6 +25965,7 @@ help</textarea>
             <div class="plex-deal-metric"><span>Orders</span><b>${formatNumber(row.order_count || 0)}</b></div>
           </div>
           <div class="meta">Source: ${escapeHtml(sourceLabel)}</div>
+          ${netLine ? `<div class="meta">${escapeHtml(netLine)}</div>` : ""}
           <div class="meta">${escapeHtml(row.manual_note || "Verify the live market order in EVE before acting.")}</div>
           ${Number(row.min_volume_blocked_orders || 0) ? `<div class="meta warning">${formatNumber(row.min_volume_blocked_orders)} order${Number(row.min_volume_blocked_orders || 0) === 1 ? "" : "s"} skipped by min-volume constraints.</div>` : ""}
         </article>
@@ -25787,6 +26003,120 @@ help</textarea>
       `;
     }
 
+    function buildPlexDealSingleShareLine(data) {
+      const hub = data?.hub?.label || "selected hub";
+      const bestSell = data?.sell?.best || null;
+      if (!bestSell || bestSell.average_unit_price == null || !bestSell.quantity) {
+        return `PLEX sell check: no sell-side price found in ${hub}. Verify in EVE.`;
+      }
+      const sourcePrefix = bestSell.aggregate_estimate ? "estimate source" : "source";
+      let line = `PLEX sell check: ${formatNumber(bestSell.quantity)} PLEX in ${hub} @ ${formatIsk(bestSell.average_unit_price)} avg gross, ${sourcePrefix}: ${bestSell.source_label || "Public market data"}. Verify in EVE.`;
+      const settings = readPlexDealSettings();
+      const net = plexDealEstimatedNet(bestSell.total_isk, settings);
+      if (settings.salesTaxPercent > 0 && net != null) {
+        line += ` Estimated net after ${formatPercent(settings.salesTaxPercent)} sales tax: ${formatIsk(net)}.`;
+      }
+      return line;
+    }
+
+    function plexComparisonShareLine(row) {
+      if (!row) return "";
+      const baseLine = String(row.share_line || "").trim();
+      const settings = readPlexDealSettings();
+      const net = plexDealEstimatedNet(row.sell_gross_isk, settings);
+      if (baseLine && settings.salesTaxPercent > 0 && net != null) {
+        return `${baseLine} Estimated net after ${formatPercent(settings.salesTaxPercent)} sales tax: ${formatIsk(net)}.`;
+      }
+      return baseLine;
+    }
+
+    function renderPlexComparisonRecommendation(row) {
+      if (!row) return '<div class="empty">No hub comparison result returned.</div>';
+      const hub = row.hub || {};
+      const sell = row.best_sell || {};
+      const buyback = row.buyback_comparison || {};
+      const netLine = plexDealNetDetail(sell);
+      return `
+        <section class="plex-deal-section">
+          <h3>
+            <span>Best Sell Recommendation</span>
+            <span class="pill ${row.aggregate_warning ? "want" : "sell"}">${escapeHtml(row.aggregate_warning ? "Estimate" : "Order depth")}</span>
+          </h3>
+          <div class="plex-deal-summary">
+            <div class="decision-metric"><span>Hub</span><b>${escapeHtml(hub.label || "Unknown")}</b><small>Default is best sell outcome.</small></div>
+            <div class="decision-metric"><span>Sell Gross</span><b>${row.sell_gross_isk == null ? "unknown" : formatIsk(row.sell_gross_isk)}</b><small>${escapeHtml(plexDealLineLabel(sell))}</small></div>
+            <div class="decision-metric"><span>Buyback Check</span><b>${buyback.buyback_average_unit_price == null ? "unknown" : formatIsk(buyback.buyback_average_unit_price)}</b><small>${buyback.spread_per_unit == null ? "Spread unknown." : `${formatSignedIsk(buyback.spread_per_unit)} gross spread.`}</small></div>
+          </div>
+          <div class="meta">Source: ${escapeHtml(row.source_label || "Public market data")}</div>
+          ${netLine ? `<div class="meta">${escapeHtml(netLine)}</div>` : ""}
+          ${row.warning ? `<div class="meta warning">${escapeHtml(row.warning)}</div>` : ""}
+        </section>
+      `;
+    }
+
+    function renderPlexComparisonRow(row, index) {
+      const hub = row.hub || {};
+      const sell = row.best_sell || {};
+      const buyback = row.buyback_comparison || {};
+      const netLine = plexDealNetDetail(sell);
+      return `
+        <article class="plex-deal-row${index === 0 ? " is-primary" : ""}">
+          <div class="plex-deal-row-head">
+            <div>
+              <strong>${escapeHtml(hub.label || "Unknown hub")}</strong>
+              <div class="meta">${escapeHtml(plexDealLineLabel(sell))}</div>
+            </div>
+            <span class="pill ${row.aggregate_warning ? "want" : "sell"}">${escapeHtml(row.aggregate_warning ? "Estimate" : "Depth")}</span>
+          </div>
+          <div class="plex-deal-metrics">
+            <div class="plex-deal-metric"><span>Best Sell Hub</span><b>${escapeHtml(hub.label || "Unknown")}</b></div>
+            <div class="plex-deal-metric"><span>Best Quantity</span><b>${formatNumber(sell.quantity || 0)} PLEX</b></div>
+            <div class="plex-deal-metric"><span>Gross ISK</span><b>${row.sell_gross_isk == null ? "unknown" : formatIsk(row.sell_gross_isk)}</b></div>
+            <div class="plex-deal-metric"><span>Avg Sell</span><b>${row.sell_average_unit_price == null ? "unknown" : formatIsk(row.sell_average_unit_price)}</b></div>
+            <div class="plex-deal-metric"><span>Buyback Avg</span><b>${buyback.buyback_average_unit_price == null ? "unknown" : formatIsk(buyback.buyback_average_unit_price)}</b></div>
+            <div class="plex-deal-metric"><span>Spread</span><b>${buyback.spread_per_unit == null ? "unknown" : formatSignedIsk(buyback.spread_per_unit)}</b></div>
+          </div>
+          <div class="meta">Source: ${escapeHtml(row.source_label || "Public market data")}</div>
+          ${netLine ? `<div class="meta">${escapeHtml(netLine)}</div>` : ""}
+          ${row.warning ? `<div class="meta warning">${escapeHtml(row.warning)}</div>` : ""}
+        </article>
+      `;
+    }
+
+    function renderPlexHubComparison(data) {
+      if (!plexDealComparison) return;
+      const rows = Array.isArray(data?.rows) ? data.rows : [];
+      const warnings = (data?.warnings || []).map((warning) => `<div class="meta warning">${escapeHtml(warning)}</div>`).join("");
+      const errors = (data?.errors || []).length
+        ? `<div class="meta warning">${formatNumber(data.errors.length)} hub comparison warning${data.errors.length === 1 ? "" : "s"} returned.</div>`
+        : "";
+      plexDealComparison.innerHTML = `
+        ${renderPlexComparisonRecommendation(data?.recommendation || rows[0])}
+        <section class="plex-deal-section">
+          <h3>
+            <span>Hub Comparison</span>
+            <span class="pill sell">${formatNumber(rows.length)} hubs</span>
+          </h3>
+          <div class="plex-deal-row-list">
+            ${rows.length ? rows.map((row, index) => renderPlexComparisonRow(row, index)).join("") : '<div class="empty">No hub rows returned.</div>'}
+          </div>
+        </section>
+        ${warnings}
+        ${errors}
+      `;
+      setPlexDealShareLine(plexComparisonShareLine(data?.recommendation || rows[0]) || data?.share_line || "");
+    }
+
+    async function copyPlexDealShareLine() {
+      if (!plexDealLastShareLine) return;
+      try {
+        await writeTextToClipboard(plexDealLastShareLine);
+        setPlexDealStatus("Copied PLEX share line.");
+      } catch (error) {
+        setPlexDealStatus(error.message || "Could not copy PLEX share line.", true);
+      }
+    }
+
     async function loadPlexDeals(event) {
       if (event) event.preventDefault();
       if (!plexDealForm) return;
@@ -25794,6 +26124,7 @@ help</textarea>
         hub: plexDealHub ? plexDealHub.value : "jita",
         minQuantity: plexDealMinQuantity ? plexDealMinQuantity.value : 100,
         maxQuantity: plexDealMaxQuantity ? plexDealMaxQuantity.value : 1000,
+        salesTaxPercent: plexDealSalesTax ? plexDealSalesTax.value : 0,
       };
       writePlexDealSettings(settings);
       const cleanSettings = readPlexDealSettings();
@@ -25813,12 +26144,48 @@ help</textarea>
         renderPlexDeals(data);
         const bestSell = data?.sell?.best;
         const bestText = bestSell ? plexDealLineLabel(bestSell) : "no sell depth";
+        setPlexDealShareLine(buildPlexDealSingleShareLine(data));
         setPlexDealStatus(`Updated ${data?.hub?.label || cleanSettings.hub} PLEX deals; best sell: ${bestText}.`);
       } catch (error) {
         setPlexDealStatus(error.message || "PLEX deal lookup failed.", true);
         if (plexDealResults) plexDealResults.innerHTML = renderDashboardErrorState(error.message || "PLEX deal lookup failed.");
       } finally {
         if (plexDealFind) plexDealFind.disabled = false;
+      }
+    }
+
+    async function loadPlexHubComparison() {
+      if (!plexDealForm) return;
+      const settings = {
+        hub: plexDealHub ? plexDealHub.value : "jita",
+        minQuantity: plexDealMinQuantity ? plexDealMinQuantity.value : 100,
+        maxQuantity: plexDealMaxQuantity ? plexDealMaxQuantity.value : 1000,
+        salesTaxPercent: plexDealSalesTax ? plexDealSalesTax.value : 0,
+      };
+      writePlexDealSettings(settings);
+      const cleanSettings = readPlexDealSettings();
+      const params = new URLSearchParams({
+        min_quantity: String(cleanSettings.minQuantity),
+        max_quantity: String(cleanSettings.maxQuantity),
+      });
+      if (plexDealCompare) {
+        plexDealCompare.disabled = true;
+        window.eveVoiceDuckDigPlex?.(plexDealCompare, {count: 18});
+      }
+      setPlexDealStatus(`Comparing ${formatNumber(cleanSettings.minQuantity)}-${formatNumber(cleanSettings.maxQuantity)} PLEX across public hubs...`);
+      try {
+        const response = await fetch(`/api/flight/plex-hub-comparison?${params}`);
+        const data = await readJsonApiResponse(response, "Could not compare PLEX hubs");
+        renderPlexHubComparison(data);
+        const recommendation = data?.recommendation;
+        const hub = recommendation?.hub?.label || "unknown hub";
+        const sell = recommendation?.best_sell;
+        setPlexDealStatus(`Compared hubs; best sell: ${hub}, ${sell ? plexDealLineLabel(sell) : "no sell depth"}.`);
+      } catch (error) {
+        setPlexDealStatus(error.message || "PLEX hub comparison failed.", true);
+        if (plexDealComparison) plexDealComparison.innerHTML = renderDashboardErrorState(error.message || "PLEX hub comparison failed.");
+      } finally {
+        if (plexDealCompare) plexDealCompare.disabled = false;
       }
     }
 
@@ -34628,12 +34995,15 @@ help</textarea>
 
     if (plexDealForm) {
       plexDealForm.addEventListener("submit", loadPlexDeals);
-      [plexDealHub, plexDealMinQuantity, plexDealMaxQuantity].forEach((control) => {
+      if (plexDealCompare) plexDealCompare.addEventListener("click", loadPlexHubComparison);
+      if (plexDealCopyShare) plexDealCopyShare.addEventListener("click", copyPlexDealShareLine);
+      [plexDealHub, plexDealMinQuantity, plexDealMaxQuantity, plexDealSalesTax].forEach((control) => {
         if (!control) return;
         control.addEventListener("change", () => writePlexDealSettings({
           hub: plexDealHub ? plexDealHub.value : "jita",
           minQuantity: plexDealMinQuantity ? plexDealMinQuantity.value : 100,
           maxQuantity: plexDealMaxQuantity ? plexDealMaxQuantity.value : 1000,
+          salesTaxPercent: plexDealSalesTax ? plexDealSalesTax.value : 0,
         }));
       });
     }

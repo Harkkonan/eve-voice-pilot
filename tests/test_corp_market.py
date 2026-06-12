@@ -350,6 +350,64 @@ def test_plex_deal_payload_uses_fuzzwork_aggregate_when_esi_depth_is_empty(monke
     assert any("Fuzzwork station aggregate estimate" in warning for warning in payload["warnings"])
 
 
+def test_plex_hub_comparison_payload_defaults_to_best_sell(monkeypatch):
+    def fake_scan_system_market_orders(*, config, type_ids, system, order_type):
+        assert type_ids == [corp_market.PLEX_TYPE_ID]
+        return {corp_market.PLEX_TYPE_ID: []}, 0, []
+
+    station_prices = {
+        60003760: (4_522_000.0, 4_739_000.0, "Fuzzwork Jita 4-4 aggregate"),
+        60008494: (4_501_000.0, 4_732_000.0, "Fuzzwork Amarr VIII (Oris) aggregate"),
+        60011866: (4_521_000.0, 4_752_000.0, "Fuzzwork Dodixie IX - Moon 20 aggregate"),
+        60005686: (4_500_000.0, 5_075_000.0, "Fuzzwork Hek VIII - Moon 12 aggregate"),
+        60004588: (4_401_000.0, 4_731_000.0, "Fuzzwork Rens VI - Moon 8 aggregate"),
+    }
+
+    def fake_fetch_fuzzwork_market_aggregates(type_ids, *, station_id=corp_market.JITA_4_4_STATION_ID):
+        buy_price, sell_price, source_label = station_prices[station_id]
+        return {
+            corp_market.PLEX_TYPE_ID: {
+                "type_id": corp_market.PLEX_TYPE_ID,
+                "source": "fuzzwork",
+                "source_label": source_label,
+                "location_id": station_id,
+                "location_name": source_label.removeprefix("Fuzzwork ").removesuffix(" aggregate"),
+                "top_buy_unit_price": buy_price,
+                "liquidation_unit_price": buy_price,
+                "sell_min_unit_price": sell_price,
+                "sell_percentile_unit_price": sell_price,
+                "buy_volume": 10_000.0,
+                "sell_volume": 10_000.0,
+                "buy_order_count": 10,
+                "sell_order_count": 12,
+            }
+        }
+
+    monkeypatch.setattr(corp_market, "scan_system_market_orders", fake_scan_system_market_orders)
+    monkeypatch.setattr(corp_market, "fetch_fuzzwork_market_aggregates", fake_fetch_fuzzwork_market_aggregates)
+
+    payload = corp_market.build_plex_hub_comparison_payload(
+        config=corp_market.EveSsoConfig(),
+        min_quantity=100,
+        max_quantity=1000,
+    )
+
+    assert payload["ok"] is True
+    assert payload["mode"] == "multi_hub_best_sell"
+    assert [row["hub"]["key"] for row in payload["rows"]][:2] == ["jita", "dodixie"]
+    recommendation = payload["recommendation"]
+    assert recommendation["hub"]["label"] == "Jita"
+    assert recommendation["best_sell"]["quantity"] == 1000
+    assert recommendation["sell_gross_isk"] == pytest.approx(4_522_000_000.0)
+    assert recommendation["buyback_comparison"]["buyback_average_unit_price"] == pytest.approx(4_739_000.0)
+    assert recommendation["buyback_comparison"]["spread_per_unit"] == pytest.approx(217_000.0)
+    assert recommendation["aggregate_warning"] is True
+    assert payload["share_line"] == (
+        "PLEX sell check: 1,000 PLEX in Jita @ 4,522,000 ISK avg gross, "
+        "estimate source: Fuzzwork Jita 4-4 aggregate. Verify in EVE."
+    )
+
+
 def test_market_store_creates_and_archives_shared_fitting(tmp_path):
     store = MarketStore(tmp_path / "market.sqlite3")
 
@@ -707,10 +765,18 @@ def test_dashboard_includes_plex_deal_finder():
     assert "Find gross public-order deals for selling or buying 100-1,000 PLEX" in page
     assert "id=\"plex-deal-form\"" in page
     assert "id=\"plex-deal-find\"" in page
+    assert "id=\"plex-deal-compare\"" in page
+    assert "id=\"plex-deal-copy-share\"" in page
+    assert "id=\"plex-deal-sales-tax\"" in page
     assert "id=\"plex-deal-results\"" in page
+    assert "id=\"plex-deal-comparison\"" in page
+    assert "id=\"plex-deal-share-line\"" in page
     assert "Selling is emphasized" in page
     assert "/api/flight/plex-deals" in page
+    assert "/api/flight/plex-hub-comparison" in page
     assert "window.eveVoiceDuckDigPlex?.(plexDealFind" in page
+    assert "window.eveVoiceDuckDigPlex?.(plexDealCompare" in page
+    assert "PLEX sell check:" in page
     assert "The app does not buy, sell, contract, move PLEX, or read your wallet." in page
 
 
