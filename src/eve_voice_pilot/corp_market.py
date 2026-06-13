@@ -16745,6 +16745,8 @@ def render_market_group_root(
     *,
     root_id: int,
     fallback_name: str,
+    input_id_prefix: str = "market-group",
+    input_name: str = "market_group_ids",
     item_preview_limit: int = MARKET_GROUP_ITEM_PREVIEW_LIMIT,
 ) -> str:
     root_name = market_group_display_name(static_data, root_id, fallback_name)
@@ -16759,9 +16761,10 @@ def render_market_group_root(
     child_label = "child group" if child_count == 1 else "child groups"
     direct_label = "direct type" if len(direct_items) == 1 else "direct types"
     scan_label = "scanned item" if len(root_items) == 1 else "scanned items"
+    input_id = f"{input_id_prefix}-{root_id}"
     return f"""
                   <label class="haul-market-group">
-                    <input type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
+                    <input id="{html.escape(input_id, quote=True)}" name="{html.escape(input_name, quote=True)}" value="{root_id}" type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
                     <span class="market-group-summary-main">
                       <span class="market-group-title">{html.escape(root_name)}</span>
                       <span class="market-group-count">{child_count:,} {child_label} · {len(direct_items):,} {direct_label} · {len(root_items):,} {scan_label}</span>
@@ -16769,11 +16772,15 @@ def render_market_group_root(
                   </label>"""
 
 
-def render_fallback_market_group_options() -> str:
+def render_fallback_market_group_options(
+    *,
+    input_id_prefix: str = "market-group",
+    input_name: str = "market_group_ids",
+) -> str:
     return "\n".join(
         f"""
                   <label class="haul-market-group">
-                    <input type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
+                    <input id="{html.escape(f'{input_id_prefix}-{root_id}', quote=True)}" name="{html.escape(input_name, quote=True)}" value="{root_id}" type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
                     <span class="market-group-summary-main">
                       <span class="market-group-title">{html.escape(root_name)}</span>
                       <span class="market-group-count">SDE cache needed for item counts</span>
@@ -16786,16 +16793,20 @@ def render_fallback_market_group_options() -> str:
 def render_market_group_picker_options(
     static_data: StaticMarketData | None = None,
     *,
+    input_id_prefix: str = "market-group",
+    input_name: str = "market_group_ids",
     item_preview_limit: int = MARKET_GROUP_ITEM_PREVIEW_LIMIT,
 ) -> str:
     active_static_data = static_data if static_data is not None else load_static_market_data()
     if active_static_data is None:
-        return render_fallback_market_group_options()
+        return render_fallback_market_group_options(input_id_prefix=input_id_prefix, input_name=input_name)
     return "\n".join(
         render_market_group_root(
             active_static_data,
             root_id=root_id,
             fallback_name=root_name,
+            input_id_prefix=input_id_prefix,
+            input_name=input_name,
             item_preview_limit=item_preview_limit,
         )
         for root_id, root_name in HAUL_MARKET_GROUP_ROOTS
@@ -16896,7 +16907,14 @@ def _render_flight_attendant_dashboard() -> str:
         f'                    <option value="{html.escape(key)}">{html.escape(label)}</option>'
         for key, label in LISTING_CATEGORIES.items()
     )
-    haul_market_group_options = render_market_group_picker_options()
+    haul_market_group_options = render_market_group_picker_options(
+        input_id_prefix="haul-market-group",
+        input_name="market_group_ids",
+    )
+    acquisition_market_group_options = render_market_group_picker_options(
+        input_id_prefix="acq-market-group",
+        input_name="market_group_ids",
+    )
     reprocessing_ore_options = render_reprocessing_ore_options()
     markup = """
 <!doctype html>
@@ -22306,7 +22324,7 @@ help</textarea>
                   </span>
                 </label>
                 <label class="market-item-search">Find exact item
-                  <input id="haul-item-search" type="search" autocomplete="off" placeholder="Search bombs, ships, blueprints...">
+                  <input id="haul-item-search" name="market_type_search" type="search" autocomplete="off" placeholder="Search bombs, ships, blueprints..." aria-autocomplete="list" aria-controls="haul-item-search-results" aria-describedby="haul-item-search-status">
                   <small class="input-note">Search exact item names, then add matches to the pasted item list below.</small>
                 </label>
                 <div id="haul-item-search-status" class="meta market-search-status">Exact item search is idle.</div>
@@ -22354,12 +22372,12 @@ help</textarea>
                 <summary>Compare hubs</summary>
                 <div class="meta">Runs the same hauler scan settings against each checked destination. More hubs means more calculation time.</div>
                 <div id="haul-compare-hubs" class="haul-compare-grid" aria-label="Hub comparison destinations">
-                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Jita" checked><span>Jita</span></label>
-                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Amarr" checked><span>Amarr</span></label>
-                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Hek" checked><span>Hek</span></label>
-                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Rens" checked><span>Rens</span></label>
-                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Dodixie" checked><span>Dodixie</span></label>
-                  <label class="checkline"><input type="checkbox" data-haul-compare-destination="Dihra"><span>Dihra</span></label>
+                  <label class="checkline"><input id="haul-compare-destination-jita" name="compare_destinations" value="Jita" type="checkbox" data-haul-compare-destination="Jita" checked><span>Jita</span></label>
+                  <label class="checkline"><input id="haul-compare-destination-amarr" name="compare_destinations" value="Amarr" type="checkbox" data-haul-compare-destination="Amarr" checked><span>Amarr</span></label>
+                  <label class="checkline"><input id="haul-compare-destination-hek" name="compare_destinations" value="Hek" type="checkbox" data-haul-compare-destination="Hek" checked><span>Hek</span></label>
+                  <label class="checkline"><input id="haul-compare-destination-rens" name="compare_destinations" value="Rens" type="checkbox" data-haul-compare-destination="Rens" checked><span>Rens</span></label>
+                  <label class="checkline"><input id="haul-compare-destination-dodixie" name="compare_destinations" value="Dodixie" type="checkbox" data-haul-compare-destination="Dodixie" checked><span>Dodixie</span></label>
+                  <label class="checkline"><input id="haul-compare-destination-dihra" name="compare_destinations" value="Dihra" type="checkbox" data-haul-compare-destination="Dihra"><span>Dihra</span></label>
                 </div>
                 <button id="haul-compare" class="secondary" type="button">Compare Selected Hubs</button>
                 <div id="haul-compare-summary" class="meta">No hub comparison has run yet.</div>
@@ -22541,7 +22559,7 @@ help</textarea>
                   </span>
                 </label>
                 <label class="market-item-search">Find exact item
-                  <input id="acq-item-search" type="search" autocomplete="off" placeholder="Search ammo, crystals, modules...">
+                  <input id="acq-item-search" name="market_type_search" type="search" autocomplete="off" placeholder="Search ammo, crystals, modules..." aria-autocomplete="list" aria-controls="acq-item-search-results" aria-describedby="acq-item-search-status">
                   <small class="input-note">Search exact item names, then add matches to the pasted item list below.</small>
                 </label>
                 <div id="acq-item-search-status" class="meta market-search-status">Exact item search is idle.</div>
@@ -22571,7 +22589,7 @@ help</textarea>
                     <span class="meta">Broad scans only. Use item search or paste for subgroups and exact items.</span>
                   </div>
                   <div id="acq-market-groups" class="haul-market-groups">
-@@HAUL_MARKET_GROUP_OPTIONS@@
+@@ACQ_MARKET_GROUP_OPTIONS@@
                   </div>
                 </div>
                 <div id="acq-item-scope-summary" class="meta">Scanning common materials only.</div>
@@ -22581,11 +22599,11 @@ help</textarea>
                 <summary>Compare buy hubs</summary>
                 <div class="meta">Runs the same portfolio scan settings against each checked buy hub with the current downstream demand hub. Hub rows are full-budget what-if scans; the combined plan uses one shared budget.</div>
                 <div id="acq-compare-hubs" class="haul-compare-grid" aria-label="Portfolio buy hub comparison sources">
-                  <label class="checkline"><input type="checkbox" data-acq-compare-source="Amarr" checked><span>Amarr</span></label>
-                  <label class="checkline"><input type="checkbox" data-acq-compare-source="Dodixie" checked><span>Dodixie</span></label>
-                  <label class="checkline"><input type="checkbox" data-acq-compare-source="Rens" checked><span>Rens</span></label>
-                  <label class="checkline"><input type="checkbox" data-acq-compare-source="Hek" checked><span>Hek</span></label>
-                  <label class="checkline"><input type="checkbox" data-acq-compare-source="Dihra" checked><span>Dihra</span></label>
+                  <label class="checkline"><input id="acq-compare-source-amarr" name="compare_source_hubs" value="Amarr" type="checkbox" data-acq-compare-source="Amarr" checked><span>Amarr</span></label>
+                  <label class="checkline"><input id="acq-compare-source-dodixie" name="compare_source_hubs" value="Dodixie" type="checkbox" data-acq-compare-source="Dodixie" checked><span>Dodixie</span></label>
+                  <label class="checkline"><input id="acq-compare-source-rens" name="compare_source_hubs" value="Rens" type="checkbox" data-acq-compare-source="Rens" checked><span>Rens</span></label>
+                  <label class="checkline"><input id="acq-compare-source-hek" name="compare_source_hubs" value="Hek" type="checkbox" data-acq-compare-source="Hek" checked><span>Hek</span></label>
+                  <label class="checkline"><input id="acq-compare-source-dihra" name="compare_source_hubs" value="Dihra" type="checkbox" data-acq-compare-source="Dihra" checked><span>Dihra</span></label>
                 </div>
                 <button id="acq-compare" class="secondary" type="button">Compare Buy Hubs</button>
                 <div id="acq-compare-summary" class="meta">No buy-hub comparison has run yet.</div>
@@ -24001,6 +24019,15 @@ help</textarea>
         "'": "&#39;",
       };
       return String(value ?? "").replace(/[&<>"']/g, (char) => replacements[char]);
+    }
+
+    function htmlIdSuffix(value) {
+      const suffix = String(value ?? "")
+        .trim()
+        .toLocaleLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      return suffix || "item";
     }
 
     function normalizeSystemKey(value) {
@@ -26491,7 +26518,7 @@ help</textarea>
           </div>
           <details class="fitting-block-preview">
             <summary>Fitting block</summary>
-            <textarea readonly spellcheck="false" data-fitting-text>${escapeHtml(fitting.fitting_text || "")}</textarea>
+            <textarea id="shared-fitting-text-${escapeHtml(htmlIdSuffix(fitting.id || fitting.fit_name || fitting.display_name))}" name="fitting_text_preview" readonly spellcheck="false" data-fitting-text aria-label="Fitting block for ${escapeHtml(fitting.display_name || fitting.fit_name || "shared fitting")}">${escapeHtml(fitting.fitting_text || "")}</textarea>
           </details>
         </article>
       `).join("");
@@ -35316,6 +35343,7 @@ help</textarea>
     replacements = {
         "@@CATEGORY_OPTIONS@@": category_options,
         "@@HAUL_MARKET_GROUP_OPTIONS@@": haul_market_group_options,
+        "@@ACQ_MARKET_GROUP_OPTIONS@@": acquisition_market_group_options,
         "@@ACQUISITION_COMMON_MATERIAL_LIMIT@@": f"{MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES:,}",
         "@@REPROCESSING_ORE_OPTIONS@@": reprocessing_ore_options,
         "@@OPTIONAL_REPROCESSING_SCOPE_CHIPS@@": render_scope_chip_list(OPTIONAL_REPROCESSING_ESI_SCOPES),

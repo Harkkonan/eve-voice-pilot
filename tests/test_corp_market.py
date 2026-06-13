@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 import re
 import sqlite3
@@ -1013,7 +1014,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-min-profit-per-m3\"" in page
     assert "id=\"haul-min-profit-per-extra-jump\"" in page
     assert "id=\"haul-common-materials\"" in page
-    assert "id=\"haul-item-search\"" in page
+    assert (
+        "id=\"haul-item-search\" name=\"market_type_search\" type=\"search\" autocomplete=\"off\" "
+        "placeholder=\"Search bombs, ships, blueprints...\" aria-autocomplete=\"list\" "
+        "aria-controls=\"haul-item-search-results\" aria-describedby=\"haul-item-search-status\""
+    ) in page
     assert "id=\"haul-item-search-status\"" in page
     assert "id=\"haul-item-search-results\"" in page
     assert "Search exact item names, then add matches to the pasted item list below." in page
@@ -1044,6 +1049,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert 'label class="mini-check"' not in page
     assert all("data-haul-market-group" not in summary for summary in re.findall(r"<summary>[\s\S]*?</summary>", page))
     assert "id=\"haul-compare-hubs\"" in page
+    assert "id=\"haul-compare-destination-jita\" name=\"compare_destinations\" value=\"Jita\"" in page
     assert "id=\"haul-compare\" class=\"secondary\" type=\"button\"" in page
     assert "Compare Selected Hubs" in page
     assert "id=\"haul-compare-summary\"" in page
@@ -1059,8 +1065,15 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Blueprints &amp; Reactions" in page
     assert "Ammunition &amp; Charges" in page
     assert "Scanning more item types increases route calculation time." in page
-    assert "id=\"acq-item-search\"" in page
+    assert (
+        "id=\"acq-item-search\" name=\"market_type_search\" type=\"search\" autocomplete=\"off\" "
+        "placeholder=\"Search ammo, crystals, modules...\" aria-autocomplete=\"list\" "
+        "aria-controls=\"acq-item-search-results\" aria-describedby=\"acq-item-search-status\""
+    ) in page
     assert "id=\"acq-item-search-results\"" in page
+    assert "id=\"acq-compare-source-amarr\" name=\"compare_source_hubs\" value=\"Amarr\"" in page
+    assert "id=\"shared-fitting-text-${escapeHtml(htmlIdSuffix" in page
+    assert "name=\"fitting_text_preview\" readonly spellcheck=\"false\" data-fitting-text" in page
     assert "id=\"haul-progress-log\"" in page
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page
@@ -1346,6 +1359,29 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Sell-order mode" in page
     assert "Build-location costs" in page
     assert "ME-adjusted one-run materials covered" in page
+
+
+class DashboardFormFieldParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fields: list[tuple[tuple[int, int], str, dict[str, str | None]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"input", "select", "textarea"}:
+            self.fields.append((self.getpos(), tag, dict(attrs)))
+
+
+def test_dashboard_form_fields_have_browser_friendly_identifiers():
+    parser = DashboardFormFieldParser()
+    parser.feed(render_dashboard())
+
+    missing = [
+        (position, tag, attrs)
+        for position, tag, attrs in parser.fields
+        if not attrs.get("id") and not attrs.get("name")
+    ]
+
+    assert missing == []
 
 
 def test_dashboard_uses_shared_empty_error_and_checklist_helpers():
@@ -3709,6 +3745,9 @@ def test_market_group_picker_renders_flat_broad_categories_with_counts(tmp_path)
     assert "data-haul-market-type" not in html_options
     assert "class=\"market-item-check\"" not in html_options
     assert "<summary>" not in html_options
+    assert "id=\"market-group-19\"" in html_options
+    assert "name=\"market_group_ids\"" in html_options
+    assert "value=\"19\"" in html_options
     assert "data-haul-market-group=\"19\"" in html_options
 
 
