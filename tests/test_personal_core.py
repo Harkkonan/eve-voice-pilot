@@ -64,6 +64,9 @@ def test_personal_core_recommends_industry_and_profit_audit_from_context():
     assert profit["plain_reason"] == profit["summary"]
     assert profit["data_source_keys"] == profit["source_keys"]
     assert profit["learning_summary"]["source"] == "local-corp-market-sqlite"
+    assert profit["next_actions"][0]["prefill"]["window_hours"] == "720"
+    ship = next(rec for rec in payload["recommendations"] if rec["key"] == "ship-goal")
+    assert any(action.get("prefill", {}).get("bulk_appraisal_text") == "Hawk" for action in ship["next_actions"])
     assert "access-token" not in str(payload)
 
 
@@ -103,3 +106,22 @@ def test_personal_core_cleans_preferences_and_caps_isk_target():
     assert prefs["preferred_hub"] == "rens"
     assert prefs["industry_home"] == "Amarr VIII"
     assert prefs["isk_target"] == 10_000_000_000_000
+
+
+def test_personal_core_corp_need_adds_discord_handoff_and_portfolio_prefill():
+    payload = build_personal_core_payload(
+        preferences={
+            "goal": "what_now",
+            "preferred_hub": "jita",
+            "corp_needs": "Tritanium stock for doctrine hulls",
+        },
+        granted_scopes=CORE_SCOPES,
+        generated_at="2026-06-13T01:00:00Z",
+    )
+
+    rec = next(item for item in payload["recommendations"] if item["key"] == "corp-need-handoff")
+    assert rec["discord_handoff"]["post_type"] == "wtb"
+    market_action = next(action for action in rec["next_actions"] if action["target_tab"] == "market")
+    portfolio_action = next(action for action in rec["next_actions"] if action["target_tab"] == "acquisition")
+    assert market_action["discord_handoff"]["destination_label"] == "Corp Needs"
+    assert portfolio_action["prefill"]["pasted_items"] == "Tritanium stock for doctrine hulls"

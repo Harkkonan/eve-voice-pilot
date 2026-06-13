@@ -11,6 +11,7 @@ from eve_voice_pilot.decision_engine import (  # noqa: E402
     Recommendation,
     checklist_item,
     decision_action,
+    discord_handoff,
     external_link,
 )
 
@@ -27,8 +28,24 @@ def test_recommendation_serializes_shared_and_legacy_aliases():
         missing_data=["Open stock value"],
         source_keys=["wallet", "local-corp-market-sqlite"],
         manual_checklist=[checklist_item("Fee rows", 2, "Broker plus sales tax.")],
-        next_actions=[decision_action("Open Trade P&L", "#trade-pnl", "Refresh wallet rows.", target_tab="trade-pnl")],
+        next_actions=[
+            decision_action(
+                "Open Trade P&L",
+                "#trade-pnl",
+                "Refresh wallet rows.",
+                target_tab="trade-pnl",
+                prefill={"window_hours": "720", "lens": "inventory"},
+            )
+        ],
         links=[external_link("EVE University trading", "https://wiki.eveuniversity.org/Trading")],
+        discord_handoff=discord_handoff(
+            workflow_key="trade-pnl",
+            destination_hint="accounting",
+            destination_label="Trade P&L",
+            post_type="announcement",
+            category="general",
+            title="Profit audit ready",
+        ),
         learning_summary=LearningSummary(
             source="local-corp-market-sqlite",
             status="available",
@@ -47,6 +64,8 @@ def test_recommendation_serializes_shared_and_legacy_aliases():
     assert rec["data_source_keys"] == rec["source_keys"]
     assert rec["manual_checklist"][0]["value"] == "2"
     assert rec["next_actions"][0]["target_tab"] == "trade-pnl"
+    assert rec["next_actions"][0]["prefill"]["window_hours"] == "720"
+    assert rec["discord_handoff"]["workflow_key"] == "trade-pnl"
     assert rec["links"][0]["url"].startswith("https://")
     assert rec["learning_summary"]["signal_count"] == 2
 

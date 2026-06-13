@@ -42,13 +42,56 @@ class DecisionAction:
     href: str
     detail: str = ""
     target_tab: str = ""
+    prefill: Mapping[str, Any] = field(default_factory=dict)
+    discord_handoff: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "label": _clean_text(self.label),
             "href": str(self.href or ""),
             "target_tab": _clean_text(self.target_tab),
             "detail": _clean_text(self.detail),
+        }
+        if self.prefill:
+            data["prefill"] = dict(self.prefill)
+        if self.discord_handoff:
+            data["discord_handoff"] = dict(self.discord_handoff)
+        return data
+
+
+@dataclass(frozen=True)
+class DiscordHandoff:
+    workflow_key: str
+    destination_hint: str
+    destination_label: str
+    post_type: str
+    category: str
+    title: str
+    item_name: str = ""
+    quantity: str = ""
+    price_text: str = ""
+    location: str = ""
+    contact: str = ""
+    link_url: str = ""
+    details: str = ""
+    source: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "workflow_key": _clean_text(self.workflow_key),
+            "destination_hint": _clean_text(self.destination_hint),
+            "destination_label": _clean_text(self.destination_label),
+            "post_type": _clean_text(self.post_type),
+            "category": _clean_text(self.category),
+            "title": _clean_text(self.title),
+            "item_name": _clean_text(self.item_name),
+            "quantity": _clean_text(self.quantity),
+            "price_text": _clean_text(self.price_text),
+            "location": _clean_text(self.location),
+            "contact": _clean_text(self.contact),
+            "link_url": str(self.link_url or ""),
+            "details": str(self.details or "").replace("\x00", " ").strip(),
+            "source": _clean_text(self.source),
         }
 
 
@@ -155,6 +198,7 @@ class Recommendation:
     links: Iterable[Mapping[str, Any]] = field(default_factory=tuple)
     learning_signals: Iterable[Mapping[str, Any]] = field(default_factory=tuple)
     learning_summary: Mapping[str, Any] | None = None
+    discord_handoff: Mapping[str, Any] | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,6 +224,8 @@ class Recommendation:
         }
         if self.learning_summary:
             data["learning_summary"] = dict(self.learning_summary)
+        if self.discord_handoff:
+            data["discord_handoff"] = dict(self.discord_handoff)
         if self.metadata:
             data["metadata"] = dict(self.metadata)
         return data
@@ -189,8 +235,58 @@ def checklist_item(label: str, value: Any, detail: str = "", *, warning: bool = 
     return ManualChecklistItem(label=label, value=value, detail=detail, warning=warning).to_dict()
 
 
-def decision_action(label: str, href: str, detail: str, *, target_tab: str = "") -> dict[str, Any]:
-    return DecisionAction(label=label, href=href, detail=detail, target_tab=target_tab).to_dict()
+def decision_action(
+    label: str,
+    href: str,
+    detail: str,
+    *,
+    target_tab: str = "",
+    prefill: Mapping[str, Any] | None = None,
+    discord_handoff: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return DecisionAction(
+        label=label,
+        href=href,
+        detail=detail,
+        target_tab=target_tab,
+        prefill=dict(prefill or {}),
+        discord_handoff=dict(discord_handoff) if discord_handoff else None,
+    ).to_dict()
+
+
+def discord_handoff(
+    *,
+    workflow_key: str,
+    destination_hint: str,
+    destination_label: str,
+    post_type: str,
+    category: str,
+    title: str,
+    item_name: str = "",
+    quantity: str = "",
+    price_text: str = "",
+    location: str = "",
+    contact: str = "",
+    link_url: str = "",
+    details: str = "",
+    source: str = "",
+) -> dict[str, Any]:
+    return DiscordHandoff(
+        workflow_key=workflow_key,
+        destination_hint=destination_hint,
+        destination_label=destination_label,
+        post_type=post_type,
+        category=category,
+        title=title,
+        item_name=item_name,
+        quantity=quantity,
+        price_text=price_text,
+        location=location,
+        contact=contact,
+        link_url=link_url,
+        details=details,
+        source=source,
+    ).to_dict()
 
 
 def external_link(label: str, url: str) -> dict[str, str]:

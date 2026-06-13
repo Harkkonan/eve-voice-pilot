@@ -12,6 +12,7 @@ from eve_voice_pilot.decision_engine import (
     Recommendation,
     checklist_item as shared_checklist_item,
     decision_action,
+    discord_handoff as shared_discord_handoff,
     external_link as shared_external_link,
 )
 
@@ -46,6 +47,10 @@ ORE_NAME_RE = re.compile(
 KILLMAIL_URL_RE = re.compile(r"https?://(?:www\.)?zkillboard\.com/kill/(?P<kill_id>\d+)/?", re.IGNORECASE)
 DSCAN_DISTANCE_RE = re.compile(r"\b(?:km|m|au)\b", re.IGNORECASE)
 MONEY_RE = re.compile(r"\b(?:isk|price|collateral|reward|broker|tax|fee|total)\b", re.IGNORECASE)
+BOM_WORD_RE = re.compile(
+    r"\b(?:bom|bill of materials|materials required|required materials|build cost|runs?|blueprint|component|reaction)\b",
+    re.IGNORECASE,
+)
 FREEFORM_NOTE_WORDS = frozenset(
     {
         "i",
@@ -216,6 +221,55 @@ def blueprint_item_count(items: Iterable[dict[str, Any]]) -> int:
     return sum(1 for item in items if "blueprint" in str(item.get("name") or "").casefold() or item.get("blueprint_copy"))
 
 
+def bom_signal(lines: Iterable[str], item_summary: Mapping[str, Any], *, goal: str) -> dict[str, Any] | None:
+    clean_lines = list(lines)
+    joined = "\n".join(clean_lines)
+    item_count = int(item_summary.get("item_count") or 0)
+    blueprint_count = blueprint_item_count(item_summary.get("items") or [])
+    if blueprint_count:
+        return {"blueprint_count": blueprint_count, "term_match": bool(BOM_WORD_RE.search(joined))}
+    if goal == "manufacture" and item_count:
+        return {"blueprint_count": 0, "term_match": bool(BOM_WORD_RE.search(joined))}
+    if item_count >= 2 and BOM_WORD_RE.search(joined):
+        return {"blueprint_count": 0, "term_match": True}
+    return None
+
+
+def intake_subtype(
+    *,
+    primary_kind: str,
+    goal: str,
+    fit: Mapping[str, Any] | None,
+    dscan: Mapping[str, Any] | None,
+    wallet: Mapping[str, Any] | None,
+    contract: Mapping[str, Any] | None,
+    killmail: Mapping[str, Any] | None,
+    item_count: int,
+    ore_count: int,
+    blueprint_count: int,
+    bom: Mapping[str, Any] | None,
+) -> tuple[str, str]:
+    if fit:
+        return "fit", "EVE fitting block"
+    if wallet:
+        return "wallet_rows", "Wallet or market transaction rows"
+    if contract:
+        return "contract", "Contract-style paste"
+    if dscan:
+        return "dscan", "D-scan table"
+    if killmail:
+        return "killmail", "Killmail or zKillboard link"
+    if bom or blueprint_count or primary_kind == "manufacturing" or goal == "manufacture":
+        return "bom", "Bill of materials or manufacturing list"
+    if ore_count and (goal == "reprocess" or ore_count >= max(1, item_count // 2)):
+        return "ore", "Ore or reprocessing list"
+    if item_count and goal == "haul":
+        return "cargo", "Cargo or inventory list"
+    if item_count:
+        return "item_list", "Item, cargo, or inventory list"
+    return "unknown", "General EVE text"
+
+
 def classify_intake(text: str, *, goal: str) -> dict[str, Any]:
     lines = nonempty_lines(text)
     items = item_parse_summary(text)
@@ -236,6 +290,7 @@ def classify_intake(text: str, *, goal: str) -> dict[str, Any]:
     ore_count = ore_item_count(items.get("items") or [])
     blueprint_count = blueprint_item_count(items.get("items") or [])
     item_count = int(items.get("item_count") or 0)
+    bom = bom_signal(lines, items, goal=goal)
 
     signals: list[dict[str, Any]] = []
     if fit:
@@ -253,8 +308,8 @@ def classify_intake(text: str, *, goal: str) -> dict[str, Any]:
         signals.append({"kind": "items", "label": "Item, cargo, or BOM list", "strength": item_strength})
     if ore_count:
         signals.append({"kind": "ore", "label": "Ore or reprocessing list", "strength": 84 + min(10, ore_count)})
-    if blueprint_count or goal == "manufacture":
-        signals.append({"kind": "manufacturing", "label": "Blueprint or manufacturing context", "strength": 80 + min(10, blueprint_count)})
+    if bom or blueprint_count or goal == "manufacture":
+        signals.append({"kind": "manufacturing", "label": "Bill of materials or manufacturing context", "strength": 80 + min(10, blueprint_count + item_count)})
 
     if goal in {"sell", "haul"} and item_count:
         signals.append({"kind": "items", "label": "Goal-selected item/cargo review", "strength": 90})
@@ -268,9 +323,24 @@ def classify_intake(text: str, *, goal: str) -> dict[str, Any]:
 
     signals.sort(key=lambda signal: (-int(signal["strength"]), str(signal["kind"])))
     primary = dict(signals[0])
+    subtype, subtype_label = intake_subtype(
+        primary_kind=str(primary["kind"]),
+        goal=goal,
+        fit=fit,
+        dscan=dscan,
+        wallet=wallet,
+        contract=contract,
+        killmail=killmail,
+        item_count=item_count,
+        ore_count=ore_count,
+        blueprint_count=blueprint_count,
+        bom=bom,
+    )
     return {
         "primary_kind": primary["kind"],
         "label": primary["label"],
+        "subtype": subtype,
+        "subtype_label": subtype_label,
         "confidence": min(99, max(35, int(primary["strength"]))),
         "signals": signals,
         "line_count": len(lines),
@@ -282,6 +352,7 @@ def classify_intake(text: str, *, goal: str) -> dict[str, Any]:
         "items": items,
         "ore_count": ore_count,
         "blueprint_count": blueprint_count,
+        "bom": bom,
     }
 
 
@@ -337,8 +408,57 @@ def checklist_item(label: str, value: str, detail: str = "", *, warning: bool = 
     return shared_checklist_item(label, value, detail, warning=warning)
 
 
-def action(label: str, href: str, detail: str, *, target_tab: str = "") -> dict[str, Any]:
-    return decision_action(label, href, detail, target_tab=target_tab)
+def action(
+    label: str,
+    href: str,
+    detail: str,
+    *,
+    target_tab: str = "",
+    prefill: Mapping[str, Any] | None = None,
+    discord_handoff: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return decision_action(
+        label,
+        href,
+        detail,
+        target_tab=target_tab,
+        prefill=prefill,
+        discord_handoff=discord_handoff,
+    )
+
+
+def discord_handoff(
+    *,
+    workflow_key: str,
+    destination_hint: str,
+    destination_label: str,
+    post_type: str,
+    category: str,
+    title: str,
+    item_name: str = "",
+    quantity: str = "",
+    price_text: str = "",
+    location: str = "",
+    contact: str = "",
+    link_url: str = "",
+    details: str = "",
+) -> dict[str, Any]:
+    return shared_discord_handoff(
+        workflow_key=workflow_key,
+        destination_hint=destination_hint,
+        destination_label=destination_label,
+        post_type=post_type,
+        category=category,
+        title=title,
+        item_name=item_name,
+        quantity=quantity,
+        price_text=price_text,
+        location=location,
+        contact=contact,
+        link_url=link_url,
+        details=details,
+        source="intake-router",
+    )
 
 
 def external_link(label: str, url: str) -> dict[str, str]:
@@ -360,6 +480,8 @@ def recommendation(
     risk_level: str = "medium",
     missing_data: Iterable[str] = (),
     learning_summary: dict[str, Any] | None = None,
+    discord_handoff: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return Recommendation(
         key=key,
@@ -375,13 +497,44 @@ def recommendation(
         next_actions=next_actions,
         links=links,
         learning_summary=learning_summary,
+        discord_handoff=dict(discord_handoff) if discord_handoff else None,
+        metadata=dict(metadata or {}),
     ).to_dict()
+
+
+def item_prefill_lines(classification: Mapping[str, Any], *, limit: int = 20) -> str:
+    items = ((classification.get("items") or {}) if isinstance(classification.get("items"), Mapping) else {}).get("items") or []
+    lines: list[str] = []
+    for item in items[:limit]:
+        if not isinstance(item, Mapping):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        quantity = int(item.get("quantity") or 0)
+        lines.append(f"{name} {quantity}" if quantity > 1 else name)
+    return "\n".join(lines)
+
+
+def first_item_name(classification: Mapping[str, Any]) -> str:
+    lines = item_prefill_lines(classification, limit=1).splitlines()
+    if not lines:
+        return ""
+    return re.sub(r"\s+\d[\d,]*$", "", lines[0]).strip()
+
+
+def subtype_metadata(classification: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "paste_subtype": str(classification.get("subtype") or ""),
+        "paste_subtype_label": str(classification.get("subtype_label") or ""),
+    }
 
 
 def fit_recommendation(classification: dict[str, Any], *, goal: str) -> dict[str, Any]:
     fit = classification.get("fit") or {}
     hull = fit.get("hull") or "ship"
     fit_name = fit.get("fit_name") or "fit"
+    appraise_lines = item_prefill_lines(classification)
     title = f"Review {hull} fit and decide buy, build, or share"
     if goal == "buy_ship":
         title = f"Turn {hull} fit into a ship acquisition checklist"
@@ -403,7 +556,13 @@ def fit_recommendation(classification: dict[str, Any], *, goal: str) -> dict[str
         ],
         next_actions=[
             action("Open Shared Fittings", "#fittings", "Save or Discord-post the exact fit block for corp review.", target_tab="fittings"),
-            action("Open Bulk Appraisal", "#appraisal", "Price the hull, modules, rigs, drones, and cargo against public hub orders.", target_tab="appraisal"),
+            action(
+                "Open Bulk Appraisal",
+                "#appraisal",
+                "Price the hull, modules, rigs, drones, and cargo against public hub orders.",
+                target_tab="appraisal",
+                prefill={"bulk_appraisal_text": appraise_lines, "source": "intake-fit"} if appraise_lines else {},
+            ),
         ],
         links=[
             external_link("EVE Workbench fittings", "https://www.eveworkbench.com/fitting"),
@@ -411,6 +570,7 @@ def fit_recommendation(classification: dict[str, Any], *, goal: str) -> dict[str
         ],
         source_keys=("pasted-text", "local-parser", "bulk-parser"),
         confidence="high",
+        metadata=subtype_metadata(classification),
     )
 
 
@@ -418,16 +578,40 @@ def item_recommendation(classification: dict[str, Any], *, goal: str, preferred_
     items = classification.get("items") or {}
     item_count = int(items.get("item_count") or 0)
     unresolved_count = int(items.get("unresolved_count") or 0)
+    subtype = str(classification.get("subtype") or "item_list")
+    subtype_label = str(classification.get("subtype_label") or "Item list")
+    item_lines = item_prefill_lines(classification)
+    item_name = first_item_name(classification)
     title = "Route pasted items into appraisal, hauling, or portfolio planning"
+    if subtype == "cargo":
+        title = "Turn pasted cargo into appraisal and route-planning inputs"
+    elif subtype == "bom":
+        title = "Turn pasted BOM rows into build, buy, or appraisal inputs"
     if goal == "sell":
         title = f"Appraise pasted items before selling near {preferred_hub.title()}"
     if goal == "haul":
         title = "Use pasted cargo as a hauler-route input"
+    portfolio_handoff = discord_handoff(
+        workflow_key="portfolio",
+        destination_hint="portfolio",
+        destination_label="Portfolio",
+        post_type="wtb",
+        category="general",
+        title="Portfolio buy-order check before public market",
+        item_name=item_name,
+        quantity=f"{item_count} parsed item row{'s' if item_count != 1 else ''}",
+        price_text="Manual basis, e.g. 90% Jita before public buy orders",
+        details=(
+            f"Intake classified this as {subtype_label}. Parsed rows are ready for appraisal or portfolio planning. "
+            "Verify quantities, prices, and corp availability before placing public orders."
+        ),
+    )
     return recommendation(
         "item-router",
         title,
-        "The paste contains item-like rows. Start with a bulk appraisal, then choose whether the result belongs in sell, haul, reprocess, manufacturing, or portfolio work.",
+        f"The paste contains {subtype_label.lower()} rows. Start with a bulk appraisal, then choose whether the result belongs in sell, haul, reprocess, manufacturing, or portfolio work.",
         [
+            checklist_item("Paste subtype", subtype_label, "Subtype is a routing hint, not proof that the source text was complete."),
             checklist_item("Parsed rows", str(item_count), "Rows that look like EVE items, cargo, fit contents, or a bill of materials."),
             checklist_item("Unresolved lines", str(unresolved_count), "Clean these before trusting prices or route plans.", warning=unresolved_count > 0),
             checklist_item("Preferred hub", preferred_hub.title(), "Use this as the first public-order estimate, then verify in EVE."),
@@ -440,9 +624,35 @@ def item_recommendation(classification: dict[str, Any], *, goal: str, preferred_
             "Public-order prices can move before the pilot acts.",
         ],
         next_actions=[
-            action("Open Bulk Appraisal", "#appraisal", "Get quick-sell, replace/buy, spread, volume, and confidence warnings.", target_tab="appraisal"),
-            action("Open Hauler Routes", "#hauling", "Use item names as route cargo candidates if moving them may create value.", target_tab="hauling"),
-            action("Open Investment Portfolio", "#acquisition", "Use item names as a focused scan scope for buy-order planning.", target_tab="acquisition"),
+            action(
+                "Open Bulk Appraisal",
+                "#appraisal",
+                "Get quick-sell, replace/buy, spread, volume, and confidence warnings.",
+                target_tab="appraisal",
+                prefill={"bulk_appraisal_text": item_lines, "hub": preferred_hub, "source": "intake-items", "subtype": subtype},
+            ),
+            action(
+                "Open Hauler Routes",
+                "#hauling",
+                "Use item names as route cargo candidates if moving them may create value.",
+                target_tab="hauling",
+                prefill={"pasted_items": item_lines, "source": "intake-items", "subtype": subtype},
+            ),
+            action(
+                "Open Investment Portfolio",
+                "#acquisition",
+                "Use item names as a focused scan scope for buy-order planning.",
+                target_tab="acquisition",
+                prefill={"pasted_items": item_lines, "source": "intake-items", "subtype": subtype},
+                discord_handoff=portfolio_handoff,
+            ),
+            action(
+                "Draft Portfolio Discord ask",
+                "#market",
+                "Fill the manual Discord post composer for a corp-first buy-order ask.",
+                target_tab="market",
+                discord_handoff=portfolio_handoff,
+            ),
         ],
         links=[
             external_link("Janice appraisal", "https://janice.e-351.com/"),
@@ -450,11 +660,14 @@ def item_recommendation(classification: dict[str, Any], *, goal: str, preferred_
         ],
         source_keys=("pasted-text", "local-parser", "bulk-parser"),
         confidence="medium",
+        discord_handoff=portfolio_handoff,
+        metadata=subtype_metadata(classification),
     )
 
 
 def ore_recommendation(classification: dict[str, Any], *, goal: str) -> dict[str, Any]:
     ore_count = int(classification.get("ore_count") or 0)
+    item_lines = item_prefill_lines(classification)
     return recommendation(
         "ore-reprocessing",
         "Compare ore sale value against reprocessing output",
@@ -471,17 +684,31 @@ def ore_recommendation(classification: dict[str, Any], *, goal: str) -> dict[str
             "Structure access, service availability, and tax settings must be verified by the pilot.",
         ],
         next_actions=[
-            action("Open Reprocessing", "#reprocessing", "Calculate mineral output with skills, standings, optional implant reads, and manual facility settings.", target_tab="reprocessing"),
-            action("Open Bulk Appraisal", "#appraisal", "Estimate direct ore sale value before committing to reprocessing.", target_tab="appraisal"),
+            action(
+                "Open Reprocessing",
+                "#reprocessing",
+                "Calculate mineral output with skills, standings, optional implant reads, and manual facility settings.",
+                target_tab="reprocessing",
+                prefill={"ore_batch": item_lines, "source": "intake-ore"},
+            ),
+            action(
+                "Open Bulk Appraisal",
+                "#appraisal",
+                "Estimate direct ore sale value before committing to reprocessing.",
+                target_tab="appraisal",
+                prefill={"bulk_appraisal_text": item_lines, "source": "intake-ore"},
+            ),
         ],
         links=[external_link("EVE University reprocessing", "https://wiki.eveuniversity.org/Reprocessing")],
         source_keys=("pasted-text", "local-parser", "bulk-parser"),
         confidence="medium",
+        metadata=subtype_metadata(classification),
     )
 
 
 def manufacturing_recommendation(classification: dict[str, Any], *, goal: str) -> dict[str, Any]:
     blueprint_count = int(classification.get("blueprint_count") or 0)
+    item_lines = item_prefill_lines(classification)
     return recommendation(
         "manufacturing-plan",
         "Turn the paste into a build-vs-buy manufacturing plan",
@@ -499,13 +726,26 @@ def manufacturing_recommendation(classification: dict[str, Any], *, goal: str) -
         ],
         next_actions=[
             action("Open Industry Library", "#industry", "Review owned blueprints, assets, recipe cache, and buyer candidates.", target_tab="industry"),
-            action("Open Bulk Appraisal", "#appraisal", "Price missing inputs or finished products using public hub orders.", target_tab="appraisal"),
-            action("Open Trade P&L", "#trade-pnl", "After selling, compare actual wallet results against the planned spread.", target_tab="trade-pnl"),
+            action(
+                "Open Bulk Appraisal",
+                "#appraisal",
+                "Price missing inputs or finished products using public hub orders.",
+                target_tab="appraisal",
+                prefill={"bulk_appraisal_text": item_lines, "source": "intake-bom", "subtype": "bom"} if item_lines else {},
+            ),
+            action(
+                "Open Trade P&L",
+                "#trade-pnl",
+                "After selling, compare actual wallet results against the planned spread.",
+                target_tab="trade-pnl",
+                prefill={"window_hours": "720", "lens": "inventory", "consideration_rule": "materials"},
+            ),
         ],
         links=[external_link("EVE University manufacturing", "https://wiki.eveuniversity.org/Manufacturing")],
         source_keys=("pasted-text", "local-parser", "bulk-parser"),
         confidence="medium",
         missing_data=("Exact blueprint type IDs, ME/TE, facility taxes, and live material prices.",),
+        metadata=subtype_metadata(classification),
     )
 
 
@@ -526,12 +766,19 @@ def wallet_recommendation(classification: dict[str, Any], *, goal: str) -> dict[
             "The Trade P&L tab uses read-only wallet ESI when connected; it cannot place or edit orders.",
         ],
         next_actions=[
-            action("Open Trade P&L", "#trade-pnl", "Refresh wallet transactions and compare expected against actual results.", target_tab="trade-pnl"),
+            action(
+                "Open Trade P&L",
+                "#trade-pnl",
+                "Refresh wallet transactions and compare expected against actual results.",
+                target_tab="trade-pnl",
+                prefill={"window_hours": "720", "lens": "inventory", "consideration_rule": "all", "show_matches": True},
+            ),
         ],
         links=[external_link("EVE University trading", "https://wiki.eveuniversity.org/Trading")],
         source_keys=("pasted-text", "local-parser", "local-corp-market-sqlite"),
         confidence="medium",
         risk_level="low",
+        metadata=subtype_metadata(classification),
         learning_summary=LearningSummary(
             source="local-corp-market-sqlite",
             status="available-after-trade-pnl-refresh",
@@ -541,6 +788,22 @@ def wallet_recommendation(classification: dict[str, Any], *, goal: str) -> dict[
 
 
 def contract_recommendation(classification: dict[str, Any]) -> dict[str, Any]:
+    item_lines = item_prefill_lines(classification)
+    contract_handoff = discord_handoff(
+        workflow_key="contract",
+        destination_hint="contracts hauling market",
+        destination_label="Contracts",
+        post_type="contract",
+        category="hauling",
+        title="Contract terms need manual review",
+        item_name=first_item_name(classification) or "Contract contents",
+        quantity="Manual contract terms",
+        price_text="Verify reward, collateral, and item value in EVE",
+        details=(
+            "Intake detected contract-style text. Appraise contents when present, verify issuer, location, collateral, "
+            "reward, expiry, docking access, and route risk in the EVE contract window before accepting or posting."
+        ),
+    )
     return recommendation(
         "contract-review",
         "Review contract economics before accepting or posting",
@@ -557,12 +820,33 @@ def contract_recommendation(classification: dict[str, Any]) -> dict[str, Any]:
             "Public appraisal does not prove docking access or delivery safety.",
         ],
         next_actions=[
-            action("Open Bulk Appraisal", "#appraisal", "Price contract contents or collateral-relevant items.", target_tab="appraisal"),
-            action("Open Hauler Routes", "#hauling", "Check route value and movement risk if this is courier-like work.", target_tab="hauling"),
+            action(
+                "Open Bulk Appraisal",
+                "#appraisal",
+                "Price contract contents or collateral-relevant items.",
+                target_tab="appraisal",
+                prefill={"bulk_appraisal_text": item_lines, "source": "intake-contract"} if item_lines else {},
+            ),
+            action(
+                "Open Hauler Routes",
+                "#hauling",
+                "Check route value and movement risk if this is courier-like work.",
+                target_tab="hauling",
+                prefill={"pasted_items": item_lines, "source": "intake-contract"} if item_lines else {},
+            ),
+            action(
+                "Draft Contract Discord note",
+                "#market",
+                "Fill the manual Discord post composer with a contract-review handoff.",
+                target_tab="market",
+                discord_handoff=contract_handoff,
+            ),
         ],
         links=[external_link("EVE University contracts", "https://wiki.eveuniversity.org/Contracts")],
         risk_level="high",
         missing_data=("Current EVE contract window terms, docking access, route safety, and item resolution.",),
+        discord_handoff=contract_handoff,
+        metadata=subtype_metadata(classification),
     )
 
 
@@ -589,12 +873,19 @@ def dscan_or_killmail_recommendation(classification: dict[str, Any]) -> dict[str
             "Maps and war-room intel are intentionally out of scope for this product direction.",
         ],
         next_actions=[
-            action("Open Hauler Routes", "#hauling", "Apply the risk context to cargo value and route choice.", target_tab="hauling"),
+            action(
+                "Open Hauler Routes",
+                "#hauling",
+                "Apply the risk context to cargo value and route choice.",
+                target_tab="hauling",
+                prefill={"risk_note": "Combat paste detected. Lower cargo exposure or delay if route risk is high.", "source": "intake-risk"},
+            ),
             action("Open Flight Attendant", "#flight", "Keep the context as a manual note while deciding what to do.", target_tab="flight"),
         ],
         links=links,
         source_keys=("pasted-text", "local-parser", "external-links"),
         risk_level="high",
+        metadata=subtype_metadata(classification),
     )
 
 
@@ -620,6 +911,7 @@ def general_recommendation(classification: dict[str, Any], *, goal: str) -> dict
         links=[external_link("EVE University Wiki", "https://wiki.eveuniversity.org/Main_Page")],
         confidence="low",
         risk_level="low",
+        metadata=subtype_metadata(classification),
     )
 
 
@@ -713,6 +1005,8 @@ def build_intake_router_payload(
         character_count=len(text),
         stored=False,
         summary={
+            "subtype": classification.get("subtype") or "",
+            "subtype_label": classification.get("subtype_label") or "",
             "item_count": int((classification.get("items") or {}).get("item_count") or 0),
             "ore_count": int(classification.get("ore_count") or 0),
             "blueprint_count": int(classification.get("blueprint_count") or 0),
@@ -739,6 +1033,8 @@ def build_intake_router_payload(
         "classification": {
             "primary_kind": classification["primary_kind"],
             "label": classification["label"],
+            "subtype": classification.get("subtype") or "",
+            "subtype_label": classification.get("subtype_label") or "",
             "confidence": classification["confidence"],
             "signals": classification["signals"][:8],
         },

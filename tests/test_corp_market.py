@@ -852,6 +852,12 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Raw paste text is analyzed for this request only" in page
     assert "No ESI call, token, cache write, Discord send, or EVE client action happens in this router." in page
     assert "function renderIntakeRouter" in page
+    assert "data-decision-prefill" in page
+    assert "data-discord-handoff" in page
+    assert "function applyDecisionPrefill" in page
+    assert "function applyDiscordHandoff" in page
+    assert "handleDecisionActionClick(event, \"a[data-intake-action-target]\")" in page
+    assert "handleDecisionActionClick(event, \"a[data-core-action-tab]\")" in page
     assert "recordEsiActivity" in page
     assert "Industry Library" in page
     assert "data-scope-tab=\"industry\"" in page

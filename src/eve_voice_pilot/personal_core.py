@@ -9,6 +9,7 @@ from eve_voice_pilot.decision_engine import (
     Recommendation,
     checklist_item as shared_checklist_item,
     decision_action,
+    discord_handoff as shared_discord_handoff,
 )
 
 
@@ -294,8 +295,57 @@ def checklist_item(label: str, value: Any, detail: str = "") -> dict[str, Any]:
     return shared_checklist_item(label, value, detail)
 
 
-def action(label: str, href: str, detail: str, *, target_tab: str = "") -> dict[str, Any]:
-    return decision_action(label, href, detail, target_tab=target_tab)
+def action(
+    label: str,
+    href: str,
+    detail: str,
+    *,
+    target_tab: str = "",
+    prefill: Mapping[str, Any] | None = None,
+    discord_handoff: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return decision_action(
+        label,
+        href,
+        detail,
+        target_tab=target_tab,
+        prefill=prefill,
+        discord_handoff=discord_handoff,
+    )
+
+
+def discord_handoff(
+    *,
+    workflow_key: str,
+    destination_hint: str,
+    destination_label: str,
+    post_type: str,
+    category: str,
+    title: str,
+    item_name: str = "",
+    quantity: str = "",
+    price_text: str = "",
+    location: str = "",
+    contact: str = "",
+    link_url: str = "",
+    details: str = "",
+) -> dict[str, Any]:
+    return shared_discord_handoff(
+        workflow_key=workflow_key,
+        destination_hint=destination_hint,
+        destination_label=destination_label,
+        post_type=post_type,
+        category=category,
+        title=title,
+        item_name=item_name,
+        quantity=quantity,
+        price_text=price_text,
+        location=location,
+        contact=contact,
+        link_url=link_url,
+        details=details,
+        source="personal-core",
+    )
 
 
 def core_recommendation(
@@ -312,6 +362,7 @@ def core_recommendation(
     risk_level: str = "medium",
     missing_data: Iterable[str] = (),
     learning_summary: Mapping[str, Any] | None = None,
+    discord_handoff: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return Recommendation(
         key=key,
@@ -326,6 +377,7 @@ def core_recommendation(
         manual_checklist=checklist,
         next_actions=actions,
         learning_summary=dict(learning_summary) if learning_summary else None,
+        discord_handoff=dict(discord_handoff) if discord_handoff else None,
     ).to_dict()
 
 
@@ -339,6 +391,10 @@ def build_personal_core_recommendations(
     time_budget = str(preferences.get("time_budget") or "any")
     risk = str(preferences.get("risk") or "balanced")
     preferred_hub = str(preferences.get("preferred_hub") or "jita").title()
+    preferred_hub_key = str(preferences.get("preferred_hub") or "jita").lower()
+    industry_home = str(preferences.get("industry_home") or "")
+    refine_home = str(preferences.get("refine_home") or "")
+    mission_home = str(preferences.get("mission_home") or "")
     desired_ship = str(preferences.get("desired_ship") or "")
     corp_needs = str(preferences.get("corp_needs") or "")
     source_rows = list(sources)
@@ -393,8 +449,20 @@ def build_personal_core_recommendations(
                     checklist_item("Industry home", preferences.get("industry_home") or "current or manual", "Use this as the planned build-location assumption."),
                 ],
                 actions=[
-                    action("Open Industry Library", "#industry", "Rank blueprint, asset, recipe, and buyer context.", target_tab="industry"),
-                    action("Open Trade P&L", "#trade-pnl", "After selling output, compare expected against realized wallet result.", target_tab="trade-pnl"),
+                    action(
+                        "Open Industry Library",
+                        "#industry",
+                        "Rank blueprint, asset, recipe, and buyer context.",
+                        target_tab="industry",
+                        prefill={"industry_home": industry_home, "source": "personal-core"},
+                    ),
+                    action(
+                        "Open Trade P&L",
+                        "#trade-pnl",
+                        "After selling output, compare expected against realized wallet result.",
+                        target_tab="trade-pnl",
+                        prefill={"window_hours": "720", "lens": "inventory", "consideration_rule": "materials"},
+                    ),
                 ],
                 assumptions=[
                     "Facility tax, rigs, system cost index, and structure access still need manual verification.",
@@ -407,6 +475,7 @@ def build_personal_core_recommendations(
         )
 
     if goal in {"buy_ship", "explore"} or desired_ship:
+        ship_text = desired_ship or ""
         recs.append(
             core_recommendation(
                 "ship-goal",
@@ -420,9 +489,38 @@ def build_personal_core_recommendations(
                     checklist_item("Risk stance", risk, "Safer plans should favor known hubs, shorter routes, and lower exposure."),
                 ],
                 actions=[
-                    action("Open Intake + Goals", "#intake", "Paste a fit, cargo list, or contract and route it to the right workflow.", target_tab="intake"),
-                    action("Open Bulk Appraisal", "#appraisal", "Price the hull, modules, ammo, and cargo list.", target_tab="appraisal"),
-                    action("Open Hauler Routes", "#hauling", "Plan manual pickup and staging if the shopping list is scattered.", target_tab="hauling"),
+                    action(
+                        "Open Intake + Goals",
+                        "#intake",
+                        "Paste a fit, cargo list, or contract and route it to the right workflow.",
+                        target_tab="intake",
+                        prefill={
+                            "goal": "buy_ship" if goal == "buy_ship" else "explore",
+                            "text": ship_text,
+                            "preferred_hub": preferred_hub_key,
+                            "time_budget": time_budget,
+                        },
+                    ),
+                    action(
+                        "Open Bulk Appraisal",
+                        "#appraisal",
+                        "Price the hull, modules, ammo, and cargo list.",
+                        target_tab="appraisal",
+                        prefill={"bulk_appraisal_text": ship_text, "hub": preferred_hub_key, "source": "personal-core-ship"} if ship_text else {},
+                    ),
+                    action(
+                        "Open Hauler Routes",
+                        "#hauling",
+                        "Plan manual pickup and staging if the shopping list is scattered.",
+                        target_tab="hauling",
+                        prefill={
+                            "pasted_items": ship_text,
+                            "destination": mission_home or preferred_hub,
+                            "source": "personal-core-ship",
+                        }
+                        if ship_text
+                        else {"destination": mission_home or preferred_hub, "source": "personal-core-ship"},
+                    ),
                 ],
                 assumptions=[
                     "The app does not fit the ship in EVE or buy the items.",
@@ -448,9 +546,21 @@ def build_personal_core_recommendations(
                     checklist_item("Time budget", time_budget, "Short sessions should favor low-friction pickup, refining, or selling."),
                 ],
                 actions=[
-                    action("Open Reprocessing", "#reprocessing", "Compare ore input, skills, standings, facility yield, and market output.", target_tab="reprocessing"),
+                    action(
+                        "Open Reprocessing",
+                        "#reprocessing",
+                        "Compare ore input, skills, standings, facility yield, and market output.",
+                        target_tab="reprocessing",
+                        prefill={"refine_home": refine_home, "source": "personal-core-resource"},
+                    ),
                     action("Open Mining Yield", "#mining-yield", "Summarize opt-in mining ledger rows and manual session timing.", target_tab="mining-yield"),
-                    action("Open Bulk Appraisal", "#appraisal", "Compare direct ore sale value before refining.", target_tab="appraisal"),
+                    action(
+                        "Open Bulk Appraisal",
+                        "#appraisal",
+                        "Compare direct ore sale value before refining.",
+                        target_tab="appraisal",
+                        prefill={"hub": preferred_hub_key, "source": "personal-core-resource"},
+                    ),
                 ],
                 assumptions=[
                     "Mining ledger is optional and cached; it is not live module or cycle telemetry.",
@@ -476,8 +586,20 @@ def build_personal_core_recommendations(
                     checklist_item("Fee rows", round(float(wallet.get("fee_rows_total_isk") or 0)), "Taxes and broker fees often explain estimate drift."),
                 ],
                 actions=[
-                    action("Open Trade P&L", "#trade-pnl", "Compare buys, sells, fees, open stock, and saved expectations.", target_tab="trade-pnl"),
-                    action("Open Investment Portfolio", "#acquisition", "Create future plans with expected-vs-realized tracking columns.", target_tab="acquisition"),
+                    action(
+                        "Open Trade P&L",
+                        "#trade-pnl",
+                        "Compare buys, sells, fees, open stock, and saved expectations.",
+                        target_tab="trade-pnl",
+                        prefill={"window_hours": "720", "lens": "inventory", "consideration_rule": "all", "show_matches": True},
+                    ),
+                    action(
+                        "Open Investment Portfolio",
+                        "#acquisition",
+                        "Create future plans with expected-vs-realized tracking columns.",
+                        target_tab="acquisition",
+                        prefill={"destination": preferred_hub, "source": "personal-core-profit"},
+                    ),
                 ],
                 assumptions=[
                     "Only wallet history available through ESI can be matched.",
@@ -510,7 +632,13 @@ def build_personal_core_recommendations(
                 ],
                 actions=[
                     action("Open Trade Asset Ledger", "#asset-ledger", "Find managed containers and copy item names for handoff.", target_tab="asset-ledger"),
-                    action("Open Hauler Routes", "#hauling", "Plan pickup, route, cargo, and sell destination manually.", target_tab="hauling"),
+                    action(
+                        "Open Hauler Routes",
+                        "#hauling",
+                        "Plan pickup, route, cargo, and sell destination manually.",
+                        target_tab="hauling",
+                        prefill={"destination": preferred_hub, "source": "personal-core-assets"},
+                    ),
                 ],
                 assumptions=[
                     "Docking access and structure access are not guaranteed by ESI asset rows.",
@@ -523,6 +651,22 @@ def build_personal_core_recommendations(
         )
 
     if corp_needs:
+        need_handoff = discord_handoff(
+            workflow_key="personal-core-corp-need",
+            destination_hint="portfolio market industry hauling",
+            destination_label="Corp Needs",
+            post_type="wtb",
+            category="general",
+            title="Corp need before public market orders",
+            item_name=corp_needs[:120],
+            price_text="Manual basis, e.g. 10% under Jita before public buy orders",
+            location=preferred_hub,
+            details=(
+                f"Personal Core corp need: {corp_needs}\n"
+                "Ask corp members first, then place public market orders manually if nobody can fill it. "
+                "Verify price basis, quantity, location, and delivery terms before sending."
+            ),
+        )
         recs.append(
             core_recommendation(
                 "corp-need-handoff",
@@ -536,8 +680,21 @@ def build_personal_core_recommendations(
                     checklist_item("Channel", "function-specific", "Portfolio, hauling, market, or industry output should route to the relevant Discord destination."),
                 ],
                 actions=[
-                    action("Open Market Posts", "#market", "Draft a WTB/WTS or coordination message for the relevant Discord route.", target_tab="market"),
-                    action("Open Investment Portfolio", "#acquisition", "Turn the need into manual buy-order candidates if corp cannot fill it.", target_tab="acquisition"),
+                    action(
+                        "Open Market Posts",
+                        "#market",
+                        "Draft a WTB/WTS or coordination message for the relevant Discord route.",
+                        target_tab="market",
+                        discord_handoff=need_handoff,
+                    ),
+                    action(
+                        "Open Investment Portfolio",
+                        "#acquisition",
+                        "Turn the need into manual buy-order candidates if corp cannot fill it.",
+                        target_tab="acquisition",
+                        prefill={"pasted_items": corp_needs, "destination": preferred_hub, "source": "personal-core-corp-need"},
+                        discord_handoff=need_handoff,
+                    ),
                 ],
                 assumptions=[
                     "Discord sends remain explicit manual actions.",
@@ -545,6 +702,7 @@ def build_personal_core_recommendations(
                 ],
                 source_keys=("manual-preferences",),
                 risk_level="low",
+                discord_handoff=need_handoff,
             )
         )
 
@@ -560,7 +718,15 @@ def build_personal_core_recommendations(
                     checklist_item("Best paste", "fit / cargo / wallet / ore / BOM", "Specific clipboard formats produce better manual steps."),
                     checklist_item("Goal", goal, "The selected goal steers the first workflow."),
                 ],
-                actions=[action("Open Intake + Goals", "#intake", "Route the next paste into a checklist.", target_tab="intake")],
+                actions=[
+                    action(
+                        "Open Intake + Goals",
+                        "#intake",
+                        "Route the next paste into a checklist.",
+                        target_tab="intake",
+                        prefill={"goal": goal, "preferred_hub": preferred_hub_key, "time_budget": time_budget},
+                    )
+                ],
                 assumptions=["No ESI data is treated as proof that no opportunity exists."],
                 source_keys=("manual-preferences",),
                 risk_level="low",

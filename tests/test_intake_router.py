@@ -31,6 +31,7 @@ Merlin Blueprint (Copy) 1""",
     assert payload["trust"]["esi_scopes"] == []
     assert payload["trust"]["token_storage"] == "none"
     assert payload["classification"]["primary_kind"] == "fit"
+    assert payload["classification"]["subtype"] == "fit"
     assert payload["parsed_input"]["detected_type"] == "fit"
     assert payload["parsed_input"]["stored"] is False
     assert payload["parsed"]["fit"]["hull"] == "Hawk"
@@ -39,6 +40,11 @@ Merlin Blueprint (Copy) 1""",
     assert {"fit-handoff", "item-router", "ore-reprocessing", "manufacturing-plan"} <= recommendation_keys(payload)
     assert payload["recommendations"][0]["plain_reason"]
     assert payload["recommendations"][0]["data_source_keys"] == payload["recommendations"][0]["source_keys"]
+    assert any(
+        action.get("prefill", {}).get("bulk_appraisal_text")
+        for rec in payload["recommendations"]
+        for action in rec.get("next_actions", [])
+    )
     assert "Raw paste" not in payload["share_text"]
 
 
@@ -51,10 +57,12 @@ def test_intake_router_routes_wallet_rows_to_profit_audit():
     )
 
     assert payload["classification"]["primary_kind"] == "wallet"
+    assert payload["classification"]["subtype"] == "wallet_rows"
     assert "wallet-profit-audit" in recommendation_keys(payload)
     assert payload["recommendations"][0]["key"] == "wallet-profit-audit"
     assert payload["recommendations"][0]["risk_level"] == "low"
     assert payload["recommendations"][0]["learning_summary"]["source"] == "local-corp-market-sqlite"
+    assert payload["recommendations"][0]["next_actions"][0]["prefill"]["lens"] == "inventory"
     rendered = json.dumps(payload)
     assert "Trade P&L" in rendered
     assert "broker + tax" in rendered
@@ -86,9 +94,12 @@ Tritanium 100000""",
     )
 
     assert payload["classification"]["primary_kind"] == "contract"
+    assert payload["classification"]["subtype"] == "contract"
     rec = next(item for item in payload["recommendations"] if item["key"] == "contract-review")
     assert rec["risk_level"] == "high"
     assert rec["missing_data"]
+    assert rec["discord_handoff"]["post_type"] == "contract"
+    assert any(action.get("discord_handoff") for action in rec["next_actions"])
     assert "contracts" in json.dumps(rec).lower()
 
 
@@ -99,6 +110,31 @@ def test_intake_router_unknown_text_keeps_general_triage_shape():
     )
 
     assert payload["classification"]["primary_kind"] == "unknown"
+    assert payload["classification"]["subtype"] == "unknown"
     assert payload["parsed_input"]["detected_type"] == "unknown"
     assert payload["recommendations"][0]["key"] == "general-triage"
     assert payload["recommendations"][0]["risk_level"] == "low"
+
+
+def test_intake_router_distinguishes_bom_and_cargo_subtypes_with_handoffs():
+    bom = build_intake_router_payload(
+        raw_text="""Bill of materials
+Rifter Blueprint (Copy) 1
+Tritanium 2500
+Pyerite 900""",
+        goal="manufacture",
+    )
+    cargo = build_intake_router_payload(
+        raw_text="""Nanite Repair Paste 50
+Republic Fleet EMP S 1000
+Small Shield Extender II 2""",
+        goal="haul",
+    )
+
+    assert bom["classification"]["subtype"] == "bom"
+    assert "manufacturing-plan" in recommendation_keys(bom)
+    assert cargo["classification"]["subtype"] == "cargo"
+    item_rec = next(rec for rec in cargo["recommendations"] if rec["key"] == "item-router")
+    assert item_rec["metadata"]["paste_subtype"] == "cargo"
+    assert item_rec["discord_handoff"]["workflow_key"] == "portfolio"
+    assert any(action.get("prefill", {}).get("pasted_items") for action in item_rec["next_actions"])

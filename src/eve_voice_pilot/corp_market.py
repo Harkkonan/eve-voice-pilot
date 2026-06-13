@@ -26589,6 +26589,155 @@ help</textarea>
       scrollTabIntoView(tabName);
     }
 
+    function decisionDataAttribute(value) {
+      const data = value && typeof value === "object" ? value : {};
+      return escapeHtml(JSON.stringify(data));
+    }
+
+    function parseDecisionDataAttribute(rawValue) {
+      const text = String(rawValue || "").trim();
+      if (!text) return {};
+      try {
+        const parsed = JSON.parse(text);
+        return parsed && typeof parsed === "object" ? parsed : {};
+      } catch (_error) {
+        return {};
+      }
+    }
+
+    function setControlValue(control, value, options = {}) {
+      if (!control || value == null) return false;
+      const text = String(value).trim();
+      if (!text && !options.allowBlank) return false;
+      if (control.tagName === "SELECT") {
+        const hasOption = Array.from(control.options || []).some((option) => option.value === text);
+        if (!hasOption) return false;
+      }
+      control.value = text;
+      control.dispatchEvent(new Event("input", {bubbles: true}));
+      control.dispatchEvent(new Event("change", {bubbles: true}));
+      return true;
+    }
+
+    function setCheckboxValue(control, value) {
+      if (!control) return false;
+      control.checked = Boolean(value);
+      control.dispatchEvent(new Event("change", {bubbles: true}));
+      return true;
+    }
+
+    function setTextareaText(textarea, value) {
+      if (!textarea) return false;
+      const text = String(value || "").trim();
+      if (!text) return false;
+      textarea.value = text;
+      textarea.dispatchEvent(new Event("input", {bubbles: true}));
+      textarea.dispatchEvent(new Event("change", {bubbles: true}));
+      return true;
+    }
+
+    function discordDestinationIdForHandoff(handoff) {
+      const destinations = discordPostDestinationsFromState();
+      if (!destinations.length) return "";
+      const hints = [
+        handoff.workflow_key,
+        handoff.destination_hint,
+        handoff.destination_label,
+        handoff.category,
+        handoff.post_type,
+      ]
+        .flatMap((value) => String(value || "").toLocaleLowerCase().split(/[^a-z0-9]+/))
+        .filter(Boolean);
+      const scored = destinations.map((destination) => {
+        const haystack = `${destination.id || ""} ${destination.label || ""}`.toLocaleLowerCase();
+        const score = hints.reduce((total, hint) => total + (haystack.includes(hint) ? 1 : 0), 0);
+        return {destination, score};
+      }).sort((left, right) => right.score - left.score);
+      return scored[0]?.score > 0 ? scored[0].destination.id : "";
+    }
+
+    function applyDiscordHandoff(handoff) {
+      if (!handoff || typeof handoff !== "object" || !Object.keys(handoff).length) return false;
+      setControlValue(directDiscordPostType, handoff.post_type || "wtb");
+      setControlValue(directDiscordCategory, handoff.category || "general");
+      setControlValue(directDiscordTitle, handoff.title || "");
+      setControlValue(directDiscordItem, handoff.item_name || "");
+      setControlValue(directDiscordQuantity, handoff.quantity || "");
+      setControlValue(directDiscordPrice, handoff.price_text || "");
+      setControlValue(directDiscordLocation, handoff.location || "");
+      setControlValue(directDiscordContact, handoff.contact || "");
+      setControlValue(directDiscordLink, handoff.link_url || "");
+      setTextareaText(directDiscordDetails, handoff.details || "");
+      const destinationId = discordDestinationIdForHandoff(handoff);
+      if (destinationId && directDiscordWebhookSelect) setControlValue(directDiscordWebhookSelect, destinationId);
+      syncDirectDiscordTypeSegments();
+      updateDirectDiscordDestinationHelp();
+      scheduleDirectDiscordPreview();
+      setDirectDiscordMessage(
+        `Filled ${handoff.destination_label || handoff.workflow_key || "workflow"} Discord draft. Review before sending.`,
+        "ok",
+      );
+      return true;
+    }
+
+    function applyDecisionPrefill(targetTab, prefill = {}) {
+      if (!prefill || typeof prefill !== "object") return false;
+      let applied = false;
+      if (targetTab === "intake") {
+        applied = setControlValue(intakeGoal, prefill.goal) || applied;
+        applied = setControlValue(intakeTimeBudget, prefill.time_budget) || applied;
+        applied = setControlValue(intakePreferredHub, prefill.preferred_hub || prefill.hub) || applied;
+        applied = setTextareaText(intakePaste, prefill.text || prefill.paste_text) || applied;
+        if (applied) setIntakeStatus("Prefilled Intake from a decision handoff. Review or add paste text before analyzing.");
+      } else if (targetTab === "appraisal") {
+        applied = setControlValue(bulkAppraisalHub, prefill.hub) || applied;
+        applied = setTextareaText(bulkAppraisalText, prefill.bulk_appraisal_text || prefill.pasted_items) || applied;
+        if (applied && bulkAppraisalStatus) bulkAppraisalStatus.textContent = "Prefilled from decision handoff. Run appraisal when ready.";
+      } else if (targetTab === "hauling") {
+        applied = setTextareaText(haulPastedItems, prefill.pasted_items) || applied;
+        applied = setControlValue(haulDestination, prefill.destination) || applied;
+        if (applied && haulPastedItemsStatus) haulPastedItemsStatus.textContent = "Prefilled from decision handoff. Review route settings before scanning.";
+      } else if (targetTab === "acquisition") {
+        applied = setTextareaText(acqPastedItems, prefill.pasted_items) || applied;
+        applied = setControlValue(acqDestination, prefill.destination) || applied;
+        if (applied && acqPastedItemsStatus) acqPastedItemsStatus.textContent = "Prefilled from decision handoff. Review portfolio settings before scanning.";
+      } else if (targetTab === "reprocessing") {
+        applied = setTextareaText(reprocessBatchInput, prefill.ore_batch) || applied;
+        if (prefill.refine_home && reprocessLocationStatus) {
+          reprocessLocationStatus.textContent = `Refine home preference: ${prefill.refine_home}. Select the matching station or structure before calculating.`;
+          applied = true;
+        }
+        if (applied && reprocessBatchStatus) reprocessBatchStatus.textContent = "Prefilled from decision handoff. Review ore, facility, and tax settings.";
+      } else if (targetTab === "industry") {
+        applied = setControlValue(industryBuildSystem, prefill.industry_home) || applied;
+      } else if (targetTab === "trade-pnl") {
+        applied = setControlValue(tradePnlWindowHours, prefill.window_hours) || applied;
+        applied = setControlValue(tradePnlLens, prefill.lens) || applied;
+        applied = setControlValue(tradePnlConsiderationRule, prefill.consideration_rule) || applied;
+        applied = setControlValue(tradePnlExclude, prefill.exclude, {allowBlank: true}) || applied;
+        if (Object.prototype.hasOwnProperty.call(prefill, "show_matches")) {
+          applied = setCheckboxValue(tradePnlShowMatches, prefill.show_matches) || applied;
+        }
+        if (applied) updateTradePnlAndReset();
+      }
+      return applied;
+    }
+
+    function handleDecisionActionClick(event, selector) {
+      const link = event.target.closest(selector);
+      if (!link) return;
+      const targetTab = resolveTabName(link.dataset.intakeActionTarget || link.dataset.coreActionTab || link.getAttribute("href").replace("#", ""));
+      if (!targetTab) return;
+      event.preventDefault();
+      const prefill = parseDecisionDataAttribute(link.dataset.decisionPrefill);
+      const handoff = parseDecisionDataAttribute(link.dataset.discordHandoff);
+      showTab(targetTab);
+      applyDecisionPrefill(targetTab, prefill);
+      if (targetTab === "market") applyDiscordHandoff(handoff);
+      window.history.replaceState(null, "", `#${targetTab}`);
+      scrollTabIntoView(targetTab);
+    }
+
     function updateFilterButtons() {
       document.querySelectorAll(".filters button").forEach((button) => {
         const isClosed = Boolean(button.dataset.closed);
@@ -27378,7 +27527,7 @@ help</textarea>
       return `
         <div class="intake-action-list">
           ${safeActions.map((item) => `
-            <a href="${escapeHtml(item.href || "#intake")}" data-intake-action-target="${escapeHtml(item.target_tab || "")}">
+            <a href="${escapeHtml(item.href || "#intake")}" data-intake-action-target="${escapeHtml(item.target_tab || "")}" data-decision-prefill="${decisionDataAttribute(item.prefill)}" data-discord-handoff="${decisionDataAttribute(item.discord_handoff)}">
               <strong>${escapeHtml(item.label || "Open workflow")}</strong>
               <small>${escapeHtml(item.detail || "")}</small>
             </a>
@@ -27472,6 +27621,11 @@ help</textarea>
       const settings = writeIntakeSettings(readIntakeSettings());
       if (intakeAnalyze) intakeAnalyze.disabled = true;
       setIntakeStatus("Analyzing pasted EVE text...");
+      intakeLastShareText = "";
+      if (intakeCopyPanel) intakeCopyPanel.hidden = true;
+      if (intakeCopyStatus) intakeCopyStatus.textContent = "";
+      if (intakeSummary) intakeSummary.innerHTML = `<div class="decision-empty">Classifying the current paste...</div>`;
+      if (intakeResults) intakeResults.innerHTML = renderDashboardEmptyState("Building fresh recommendations...");
       try {
         const response = await fetch("/api/flight/intake", {
           method: "POST",
@@ -28842,7 +28996,7 @@ help</textarea>
       const rows = Array.isArray(actions) ? actions : [];
       if (!rows.length) return "";
       return `<div class="intake-action-list">${rows.map((item) => `
-        <a href="${escapeHtml(item.href || "#flight")}" data-core-action-tab="${escapeHtml(item.target_tab || "")}">
+        <a href="${escapeHtml(item.href || "#flight")}" data-core-action-tab="${escapeHtml(item.target_tab || "")}" data-decision-prefill="${decisionDataAttribute(item.prefill)}" data-discord-handoff="${decisionDataAttribute(item.discord_handoff)}">
           <strong>${escapeHtml(item.label || "Open")}</strong>
           <small>${escapeHtml(item.detail || "")}</small>
         </a>
@@ -35488,6 +35642,11 @@ help</textarea>
     if (personalCoreCopyShare) {
       personalCoreCopyShare.addEventListener("click", copyPersonalCoreShareText);
     }
+    if (personalCoreResults) {
+      personalCoreResults.addEventListener("click", (event) => {
+        handleDecisionActionClick(event, "a[data-core-action-tab]");
+      });
+    }
 
     flightBuyerScanButton.addEventListener("click", () => {
       loadFlightBuyers();
@@ -36094,6 +36253,11 @@ help</textarea>
     }
     if (intakeCopyShare) {
       intakeCopyShare.addEventListener("click", copyIntakeShareText);
+    }
+    if (intakeResults) {
+      intakeResults.addEventListener("click", (event) => {
+        handleDecisionActionClick(event, "a[data-intake-action-target]");
+      });
     }
 
     if (bulkAppraisalForm) {
