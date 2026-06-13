@@ -42,6 +42,7 @@ def test_flight_get_route_dispatches_known_paths_only():
 
     assert handler.calls == ["status"]
     assert FLIGHT_GET_ROUTE_METHODS["/api/flight/status"] == "_handle_flight_status"
+    assert FLIGHT_GET_ROUTE_METHODS["/api/flight/market-types"] == "_handle_flight_market_types"
     assert FLIGHT_GET_ROUTE_METHODS["/api/flight/acquisition/compare"] == "_handle_flight_acquisition_compare"
     assert FLIGHT_GET_ROUTE_METHODS["/api/flight/acquisition/compare/progress"] == "_handle_flight_acquisition_compare_progress"
     assert FLIGHT_GET_ROUTE_METHODS["/api/flight/asset-ledger"] == "_handle_flight_asset_ledger"

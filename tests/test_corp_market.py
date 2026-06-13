@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
 import sqlite3
 import sys
 from urllib.parse import parse_qs
@@ -1014,7 +1015,9 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-common-materials\"" in page
     assert "id=\"haul-item-search\"" in page
     assert "id=\"haul-item-search-status\"" in page
-    assert "Search opens matching categories and reveals exact item checkboxes." in page
+    assert "id=\"haul-item-search-results\"" in page
+    assert "Search exact item names, then add matches to the pasted item list below." in page
+    assert "/api/flight/market-types" in page
     assert "id=\"haul-pasted-items\" name=\"market_type_names\"" in page
     assert "id=\"haul-pasted-items-status\"" in page
     assert "id=\"haul-ledger-handoff-summary\"" in page
@@ -1029,13 +1032,17 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "managedAssetsOnlyEmptyMessage" in page
     assert "parseHaulPastedItemNames" in page
     assert "effectiveHaulScanSettings" in page
+    assert "filterMarketGroupIdsToVisibleInputs" in page
     assert "eve-flight-haul-pasted-items-only-v1" in page
     assert "eve-flight-haul-assets-only-v1" in page
-    assert "applyMarketItemSearch" in page
+    assert "setupMarketTypeSearch" in page
     assert "id=\"haul-market-groups\"" in page
     assert "Items to search" in page
     assert "Common materials" in page
     assert "Market categories" in page
+    assert "Broad scans only. Use item search or paste for subgroups and exact items." in page
+    assert 'label class="mini-check"' not in page
+    assert all("data-haul-market-group" not in summary for summary in re.findall(r"<summary>[\s\S]*?</summary>", page))
     assert "id=\"haul-compare-hubs\"" in page
     assert "id=\"haul-compare\" class=\"secondary\" type=\"button\"" in page
     assert "Compare Selected Hubs" in page
@@ -1052,6 +1059,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Blueprints &amp; Reactions" in page
     assert "Ammunition &amp; Charges" in page
     assert "Scanning more item types increases route calculation time." in page
+    assert "id=\"acq-item-search\"" in page
+    assert "id=\"acq-item-search-results\"" in page
     assert "id=\"haul-progress-log\"" in page
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page
@@ -1493,6 +1502,32 @@ def test_route_system_suggestions_rank_prefixes_and_aliases(tmp_path):
 
     alias_payload = corp_market.build_route_system_suggestions_payload("dhi", route_cache=route_cache)
     assert [system["name"] for system in alias_payload["systems"]] == ["Dihra"]
+
+
+def test_market_type_suggestions_rank_exact_item_names(tmp_path):
+    static_data = corp_market.StaticMarketData(
+        path=tmp_path / "sde.zip",
+        groups={
+            11: {"market_group_id": 11, "name": "Ammunition & Charges", "parent_group_id": None},
+            100: {"market_group_id": 100, "name": "Hybrid Charges", "parent_group_id": 11},
+        },
+        children={11: (100,)},
+        types_by_group={
+            100: (
+                {"type_id": 215, "name": "Tungsten Charge S", "market_group_id": 100, "market_group_name": "Hybrid Charges"},
+                {"type_id": 216, "name": "Lead Charge S", "market_group_id": 100, "market_group_name": "Hybrid Charges"},
+                {"type_id": 217, "name": "Compressed Tungsten Ore", "market_group_id": 100, "market_group_name": "Hybrid Charges"},
+            ),
+        },
+    )
+
+    payload = corp_market.build_market_type_suggestions_payload("tung", static_data=static_data, limit=2)
+
+    assert payload["ok"] is True
+    assert payload["available"] is True
+    assert payload["min_query_length"] == corp_market.MIN_MARKET_TYPE_SUGGESTION_CHARS
+    assert [item["name"] for item in payload["suggestions"]] == ["Tungsten Charge S", "Compressed Tungsten Ore"]
+    assert payload["suggestions"][0]["market_group_name"] == "Hybrid Charges"
 
 
 def test_static_asset_resolver_serves_only_tracked_static_files():
@@ -3642,7 +3677,7 @@ def test_market_order_location_guardrail_labels_station_structure_and_unknown():
     assert unknown["location_kind"] == "unknown"
 
 
-def test_market_group_picker_renders_sde_counts_items_and_preview_note(tmp_path):
+def test_market_group_picker_renders_flat_broad_categories_with_counts(tmp_path):
     static_data = corp_market.StaticMarketData(
         path=tmp_path / "sde.zip",
         groups={
@@ -3665,16 +3700,16 @@ def test_market_group_picker_renders_sde_counts_items_and_preview_note(tmp_path)
     html_options = corp_market.render_market_group_picker_options(static_data, item_preview_limit=2)
 
     assert "Trade Goods" in html_options
-    assert "Industrial Goods" in html_options
-    assert "3 items" in html_options
-    assert "Includes 1 nested market group." in html_options
-    assert "Broken Broadcast Node" in html_options
-    assert "Orbital Data Fragment" in html_options
-    assert "data-haul-market-type=\"1\"" in html_options
-    assert "class=\"market-item-check\"" in html_options
-    assert "data-market-extra-item" not in html_options
-    assert "Use the category checkbox to scan the full category." in html_options
-    assert "data-haul-market-group=\"100\"" in html_options
+    assert "1 child group" in html_options
+    assert "0 direct types" in html_options
+    assert "3 scanned items" in html_options
+    assert "Industrial Goods" not in html_options
+    assert "Broken Broadcast Node" not in html_options
+    assert "Orbital Data Fragment" not in html_options
+    assert "data-haul-market-type" not in html_options
+    assert "class=\"market-item-check\"" not in html_options
+    assert "<summary>" not in html_options
+    assert "data-haul-market-group=\"19\"" in html_options
 
 
 def test_acquisition_common_material_limit_keeps_hosted_scan_small(tmp_path):

@@ -228,6 +228,8 @@ DEFAULT_ACQUISITION_COMPARE_SOURCE_HUBS = ("Amarr", "Dodixie", "Rens", "Hek", "D
 MAX_ACQUISITION_COMPARE_SOURCE_HUBS = 6
 MIN_ROUTE_SYSTEM_SUGGESTION_CHARS = 3
 MAX_ROUTE_SYSTEM_SUGGESTIONS = 15
+MIN_MARKET_TYPE_SUGGESTION_CHARS = 2
+MAX_MARKET_TYPE_SUGGESTIONS = 20
 DEFAULT_HAUL_DETOUR_JUMPS = 1
 MAX_HAUL_DETOUR_JUMPS = 5
 DEFAULT_HAUL_CARGO_M3 = 10_000.0
@@ -518,9 +520,9 @@ HAUL_MARKET_GROUP_ROOTS = (
     (3628, "Personalization"),
     (1922, "Pilot's Services"),
     (1320, "Planetary Infrastructure"),
+    (955, "Ship and Module Modifications"),
     (9, "Ship Equipment"),
     (1954, "Ship SKINs"),
-    (955, "Ship and Module Modifications"),
     (4, "Ships"),
     (150, "Skills"),
     (1659, "Special Edition Assets"),
@@ -11380,6 +11382,107 @@ def build_route_system_suggestions_payload(
     }
 
 
+def normalize_market_type_search(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def market_type_suggestion_score(type_info: Mapping[str, Any], normalized_query: str) -> tuple[int, int, str, int] | None:
+    type_name = str(type_info.get("name") or "")
+    normalized_name = normalize_market_type_search(type_name)
+    if not normalized_name:
+        return None
+    name_parts = tuple(
+        normalize_market_type_search(part)
+        for part in re.split(r"[^a-z0-9]+", type_name.lower())
+        if normalize_market_type_search(part)
+    )
+    if normalized_name == normalized_query:
+        match_rank = 0
+    elif normalized_name.startswith(normalized_query):
+        match_rank = 1
+    elif any(part.startswith(normalized_query) for part in name_parts):
+        match_rank = 2
+    elif normalized_query in normalized_name:
+        match_rank = 3
+    else:
+        return None
+    try:
+        type_id = int(type_info.get("type_id") or 0)
+    except (TypeError, ValueError):
+        type_id = 0
+    return (match_rank, len(normalized_name), type_name.casefold(), type_id)
+
+
+def clamp_market_type_suggestion_limit(value: Any) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = MAX_MARKET_TYPE_SUGGESTIONS
+    return max(1, min(MAX_MARKET_TYPE_SUGGESTIONS, limit))
+
+
+def search_market_type_names(
+    query: str,
+    *,
+    static_data: StaticMarketData | None = None,
+    limit: int = MAX_MARKET_TYPE_SUGGESTIONS,
+) -> list[dict[str, Any]]:
+    normalized_query = normalize_market_type_search(query)
+    if len(normalized_query) < MIN_MARKET_TYPE_SUGGESTION_CHARS:
+        return []
+    data = static_data if static_data is not None else load_static_market_data()
+    if data is None:
+        return []
+    ranked: list[tuple[tuple[int, int, str, int], dict[str, Any]]] = []
+    for type_infos in data.types_by_group.values():
+        for type_info in type_infos:
+            score = market_type_suggestion_score(type_info, normalized_query)
+            if score is None:
+                continue
+            try:
+                type_id = int(type_info.get("type_id") or 0)
+                group_id = int(type_info.get("market_group_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if type_id <= 0:
+                continue
+            ranked.append(
+                (
+                    score,
+                    {
+                        "type_id": type_id,
+                        "name": str(type_info.get("name") or f"Type {type_id}"),
+                        "market_group_id": group_id,
+                        "market_group_name": str(
+                            type_info.get("market_group_name")
+                            or data.groups.get(group_id, {}).get("name")
+                            or f"Market Group {group_id}"
+                        ),
+                    },
+                )
+            )
+    clean_limit = clamp_market_type_suggestion_limit(limit)
+    return [item for _score, item in sorted(ranked, key=lambda row: row[0])[:clean_limit]]
+
+
+def build_market_type_suggestions_payload(
+    query: str,
+    *,
+    static_data: StaticMarketData | None = None,
+    limit: int = MAX_MARKET_TYPE_SUGGESTIONS,
+) -> dict[str, Any]:
+    data = static_data if static_data is not None else load_static_market_data()
+    suggestions = search_market_type_names(query, static_data=data, limit=limit) if data is not None else []
+    return {
+        "ok": True,
+        "available": data is not None,
+        "query": str(query or ""),
+        "min_query_length": MIN_MARKET_TYPE_SUGGESTION_CHARS,
+        "limit": clamp_market_type_suggestion_limit(limit),
+        "suggestions": suggestions,
+    }
+
+
 def build_haul_route_plan(
     *,
     config: EveSsoConfig,
@@ -15055,6 +15158,14 @@ def build_http_server(
             )
             self._send_json(build_route_system_suggestions_payload(term, limit=limit))
 
+        def _handle_flight_market_types(self) -> None:
+            query = parse_qs(urlparse(self.path).query)
+            term = first_query_value(query, "q") or first_query_value(query, "query")
+            limit = clamp_market_type_suggestion_limit(
+                first_query_value(query, "limit") or MAX_MARKET_TYPE_SUGGESTIONS
+            )
+            self._send_json(build_market_type_suggestions_payload(term, limit=limit))
+
         def _handle_flight_plex_deals(self) -> None:
             if not self._require_public_read_access():
                 return
@@ -16637,72 +16748,37 @@ def render_market_group_root(
     item_preview_limit: int = MARKET_GROUP_ITEM_PREVIEW_LIMIT,
 ) -> str:
     root_name = market_group_display_name(static_data, root_id, fallback_name)
-    root_items = market_group_item_infos(static_data, (root_id,))
     direct_items = market_group_item_infos(static_data, (root_id,), include_descendants=False)
     child_ids = static_data.children.get(root_id, ())
     if not child_ids:
         child_ids = tuple(
             child_id for child_id, _child_name in HAUL_MARKET_GROUP_CHILDREN.get(root_id, ()) if child_id in static_data.groups
         )
-    sorted_child_ids = tuple(sorted(child_ids, key=lambda child_id: market_group_display_name(static_data, child_id).casefold()))
-    direct_items_html = ""
-    if direct_items:
-        direct_items_html = render_market_group_item_list(
-            direct_items,
-            context_name=root_name,
-            item_preview_limit=item_preview_limit,
-        )
-    children_html = "\n".join(
-        render_market_group_child(
-            static_data,
-            root_id=root_id,
-            child_id=child_id,
-            item_preview_limit=item_preview_limit,
-        )
-        for child_id in sorted_child_ids
-    )
-    if not children_html and not direct_items_html:
-        children_html = '                    <div class="market-subgroup-empty">No published market items found in this category.</div>'
+    root_items = market_group_item_infos(static_data, (root_id,))
+    child_count = len(child_ids)
+    child_label = "child group" if child_count == 1 else "child groups"
+    direct_label = "direct type" if len(direct_items) == 1 else "direct types"
+    scan_label = "scanned item" if len(root_items) == 1 else "scanned items"
     return f"""
-                  <details class="haul-market-group">
-                    <summary>
-                      <span class="market-group-summary-main">
-                        <span class="market-group-title">{html.escape(root_name)}</span>
-                        <span class="market-group-count">{format_market_group_item_count(len(root_items))}</span>
-                      </span>
-                      <label class="mini-check" title="Scan this whole market category">
-                        <input type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
-                        All
-                      </label>
-                    </summary>
-                    <div class="haul-market-children">
-{direct_items_html}
-{children_html}
-                    </div>
-                  </details>"""
+                  <label class="haul-market-group">
+                    <input type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
+                    <span class="market-group-summary-main">
+                      <span class="market-group-title">{html.escape(root_name)}</span>
+                      <span class="market-group-count">{child_count:,} {child_label} · {len(direct_items):,} {direct_label} · {len(root_items):,} {scan_label}</span>
+                    </span>
+                  </label>"""
 
 
 def render_fallback_market_group_options() -> str:
     return "\n".join(
         f"""
-                  <details class="haul-market-group">
-                    <summary>
-                      <span class="market-group-summary-main">
-                        <span class="market-group-title">{html.escape(root_name)}</span>
-                        <span class="market-group-count">SDE cache needed for item counts</span>
-                      </span>
-                      <label class="mini-check" title="Scan this whole market category">
-                        <input type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
-                        All
-                      </label>
-                    </summary>
-                    <div class="haul-market-children">
-{chr(10).join(
-    f'                      <label class="checkline compact"><input type="checkbox" data-haul-market-group="{child_id}" data-haul-market-parent="{root_id}"><span>{html.escape(child_name)}</span></label>'
-    for child_id, child_name in HAUL_MARKET_GROUP_CHILDREN.get(root_id, ())
-)}
-                    </div>
-                  </details>"""
+                  <label class="haul-market-group">
+                    <input type="checkbox" data-haul-market-group="{root_id}" data-haul-market-root="{root_id}">
+                    <span class="market-group-summary-main">
+                      <span class="market-group-title">{html.escape(root_name)}</span>
+                      <span class="market-group-count">SDE cache needed for item counts</span>
+                    </span>
+                  </label>"""
         for root_id, root_name in HAUL_MARKET_GROUP_ROOTS
     )
 
@@ -17448,18 +17524,43 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .haul-filter-head { display: flex; align-items: start; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
     .haul-filter-head strong { color: var(--text); }
+    .market-category-panel {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+      padding: 9px;
+      border: 1px solid rgba(63, 85, 80, .52);
+      border-radius: 7px;
+      background: rgba(5, 9, 11, .28);
+    }
+    .market-category-panel-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .market-category-panel-head strong { color: var(--text); }
     .haul-market-groups {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 8px;
-      margin-top: 8px;
     }
     .haul-market-group {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      min-height: 58px;
+      padding: 8px;
       border: 1px solid rgba(63, 85, 80, .52);
       border-radius: 6px;
       background: rgba(17, 24, 25, .48);
-      overflow: hidden;
+      color: var(--text);
+      cursor: pointer;
     }
+    .haul-market-group:hover,
+    .haul-market-group:focus-within { border-color: rgba(97, 199, 217, .62); background: rgba(17, 34, 37, .58); }
+    .haul-market-group input { margin-top: 3px; flex: 0 0 auto; }
     .haul-market-group summary {
       display: flex;
       align-items: center;
@@ -17554,6 +17655,42 @@ def _render_flight_attendant_dashboard() -> str:
       margin: 8px 0;
     }
     .market-item-search input { min-height: 38px; }
+    .market-type-search-results {
+      display: grid;
+      gap: 6px;
+      margin: 4px 0 8px;
+    }
+    .market-type-result {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 3px 10px;
+      align-items: center;
+      min-height: 42px;
+      padding: 7px 9px;
+      text-align: left;
+      border: 1px solid rgba(63, 85, 80, .52);
+      background: rgba(17, 24, 25, .62);
+      color: var(--text);
+    }
+    .market-type-result:hover,
+    .market-type-result:focus {
+      border-color: rgba(97, 199, 217, .72);
+      background: rgba(18, 48, 53, .72);
+    }
+    .market-type-result span { overflow-wrap: anywhere; }
+    .market-type-result small {
+      grid-column: 1;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.25;
+    }
+    .market-type-result b {
+      grid-column: 2;
+      grid-row: 1 / span 2;
+      color: var(--cyan);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
     .market-item-paste textarea {
       min-height: 82px;
       max-height: 170px;
@@ -22170,12 +22307,13 @@ help</textarea>
                 </label>
                 <label class="market-item-search">Find exact item
                   <input id="haul-item-search" type="search" autocomplete="off" placeholder="Search bombs, ships, blueprints...">
-                  <small class="input-note">Search opens matching categories and reveals exact item checkboxes.</small>
+                  <small class="input-note">Search exact item names, then add matches to the pasted item list below.</small>
                 </label>
                 <div id="haul-item-search-status" class="meta market-search-status">Exact item search is idle.</div>
+                <div id="haul-item-search-results" class="market-type-search-results" aria-live="polite"></div>
                 <label class="market-item-paste">Paste item names
                   <textarea id="haul-pasted-items" name="market_type_names" rows="3" spellcheck="false" placeholder="Tritanium&#10;PLEX&#10;Nanite Repair Paste"></textarea>
-                  <small class="input-note">One item per line. Commas and semicolons also work.</small>
+                  <small class="input-note">One item per line. EVE copied-list formats, commas, and semicolons also work.</small>
                 </label>
                 <div id="haul-pasted-items-status" class="meta market-search-status">No pasted items.</div>
                 <div id="haul-ledger-handoff-summary" class="market-search-status ledger-handoff-summary" hidden></div>
@@ -22193,12 +22331,15 @@ help</textarea>
                     <small>Uses item names currently loaded in the Trade Asset Ledger; refresh the ledger first.</small>
                   </span>
                 </label>
-                <details>
-                  <summary>Market categories</summary>
+                <div class="market-category-panel">
+                  <div class="market-category-panel-head">
+                    <strong>Market categories</strong>
+                    <span class="meta">Broad scans only. Use item search or paste for subgroups and exact items.</span>
+                  </div>
                   <div id="haul-market-groups" class="haul-market-groups">
 @@HAUL_MARKET_GROUP_OPTIONS@@
                   </div>
-                </details>
+                </div>
                 <div id="haul-item-scope-summary" class="meta">Scanning common materials only.</div>
               </div>
               <div id="haul-hub-buttons" class="filters" aria-label="Hub shortcuts">
@@ -22399,9 +22540,15 @@ help</textarea>
                     <small>Default: top @@ACQUISITION_COMMON_MATERIAL_LIMIT@@ industry inputs by recipe use for a faster hosted scan.</small>
                   </span>
                 </label>
+                <label class="market-item-search">Find exact item
+                  <input id="acq-item-search" type="search" autocomplete="off" placeholder="Search ammo, crystals, modules...">
+                  <small class="input-note">Search exact item names, then add matches to the pasted item list below.</small>
+                </label>
+                <div id="acq-item-search-status" class="meta market-search-status">Exact item search is idle.</div>
+                <div id="acq-item-search-results" class="market-type-search-results" aria-live="polite"></div>
                 <label class="market-item-paste">Paste item names
                   <textarea id="acq-pasted-items" name="market_type_names" rows="3" spellcheck="false" placeholder="Epithal&#10;Warp Core Stabilizer I&#10;Type-D Restrained Inertial Stabilizers"></textarea>
-                  <small class="input-note">One item per line. Commas and semicolons also work.</small>
+                  <small class="input-note">One item per line. EVE copied-list formats, commas, and semicolons also work.</small>
                 </label>
                 <div id="acq-pasted-items-status" class="meta market-search-status">No pasted items.</div>
                 <label class="checkline">
@@ -22418,12 +22565,15 @@ help</textarea>
                     <small>Builds candidates only from item names currently loaded in the Trade Asset Ledger.</small>
                   </span>
                 </label>
-                <details>
-                  <summary>Market categories</summary>
+                <div class="market-category-panel">
+                  <div class="market-category-panel-head">
+                    <strong>Market categories</strong>
+                    <span class="meta">Broad scans only. Use item search or paste for subgroups and exact items.</span>
+                  </div>
                   <div id="acq-market-groups" class="haul-market-groups">
 @@HAUL_MARKET_GROUP_OPTIONS@@
                   </div>
-                </details>
+                </div>
                 <div id="acq-item-scope-summary" class="meta">Scanning common materials only.</div>
               </div>
               <button id="acq-scan" class="ghost" type="submit">Build Portfolio</button>
@@ -23504,6 +23654,7 @@ help</textarea>
     const haulCommonMaterials = document.querySelector("#haul-common-materials");
     const haulItemSearch = document.querySelector("#haul-item-search");
     const haulItemSearchStatus = document.querySelector("#haul-item-search-status");
+    const haulItemSearchResults = document.querySelector("#haul-item-search-results");
     const haulPastedItems = document.querySelector("#haul-pasted-items");
     const haulPastedItemsStatus = document.querySelector("#haul-pasted-items-status");
     const haulLedgerHandoffSummary = document.querySelector("#haul-ledger-handoff-summary");
@@ -23550,6 +23701,9 @@ help</textarea>
     const acqMinMargin = document.querySelector("#acq-min-margin");
     const acqMinMarginValue = document.querySelector("#acq-min-margin-value");
     const acqCommonMaterials = document.querySelector("#acq-common-materials");
+    const acqItemSearch = document.querySelector("#acq-item-search");
+    const acqItemSearchStatus = document.querySelector("#acq-item-search-status");
+    const acqItemSearchResults = document.querySelector("#acq-item-search-results");
     const acqPastedItems = document.querySelector("#acq-pasted-items");
     const acqPastedItemsStatus = document.querySelector("#acq-pasted-items-status");
     const acqPastedItemsOnly = document.querySelector("#acq-pasted-items-only");
@@ -25710,49 +25864,89 @@ help</textarea>
       return String(value || "").trim().toLocaleLowerCase();
     }
 
-    function applyMarketItemSearch(container, queryValue, statusEl) {
-      const query = normalizeMarketItemSearch(queryValue);
-      const rows = Array.from(container.querySelectorAll(".market-group-item-list li"));
-      let matchCount = 0;
-      rows.forEach((row) => {
-        const match = !query || normalizeMarketItemSearch(row.textContent).includes(query);
-        const isPreviewExtra = row.hasAttribute("data-market-extra-item");
-        const isRevealed = row.dataset.marketRevealed === "1";
-        if (query) {
-          row.hidden = !match;
-          if (match) {
-            row.dataset.marketSearchRevealed = "1";
-            matchCount += 1;
-          } else {
-            delete row.dataset.marketSearchRevealed;
-          }
-        } else {
-          delete row.dataset.marketSearchRevealed;
-          row.hidden = isPreviewExtra && !isRevealed;
-        }
-      });
-      Array.from(container.querySelectorAll("[data-market-group-items]")).forEach((details) => {
-        const visibleRows = Array.from(details.querySelectorAll(".market-group-item-list li")).filter((row) => !row.hidden);
-        if (query && visibleRows.length) {
-          details.open = true;
-          const subgroup = details.closest("details.market-subgroup");
-          const rootGroup = details.closest("details.haul-market-group");
-          if (subgroup) subgroup.open = true;
-          if (rootGroup) rootGroup.open = true;
-        }
-        const status = details.querySelector("[data-market-showing-status]");
-        if (status && query) {
-          status.textContent = `${formatNumber(visibleRows.length)} search match${visibleRows.length === 1 ? "" : "es"} visible.`;
-        } else if (status) {
-          const totalRows = details.querySelectorAll(".market-group-item-list li").length;
-          status.textContent = `Showing ${formatNumber(visibleRows.length)} of ${formatNumber(totalRows)} item${totalRows === 1 ? "" : "s"}.`;
-        }
-      });
-      if (statusEl) {
-        statusEl.textContent = query
-          ? `${formatNumber(matchCount)} exact item match${matchCount === 1 ? "" : "es"} for "${queryValue}".`
-          : "Exact item search is idle.";
+    function renderMarketTypeSearchResults(resultsEl, suggestions) {
+      if (!resultsEl) return;
+      const rows = Array.isArray(suggestions) ? suggestions : [];
+      if (!rows.length) {
+        resultsEl.innerHTML = "";
+        return;
       }
+      resultsEl.innerHTML = rows.map((item) => `
+        <button class="market-type-result" type="button" data-market-type-name="${escapeHtml(item.name || "")}">
+          <span>${escapeHtml(item.name || `Type ${item.type_id || ""}`)}</span>
+          <small>${escapeHtml(item.market_group_name || "Market item")}</small>
+          <b>Add</b>
+        </button>
+      `).join("");
+    }
+
+    function appendPastedItemName(textarea, itemName) {
+      if (!textarea) return false;
+      const cleanName = String(itemName || "").trim().replace(/\\s+/g, " ");
+      if (!cleanName) return false;
+      const existingKeys = new Set(parseHaulPastedItemNames(textarea.value).map((name) => name.toLocaleLowerCase()));
+      if (existingKeys.has(cleanName.toLocaleLowerCase())) return false;
+      const current = String(textarea.value || "").trim();
+      textarea.value = current ? `${current}\n${cleanName}` : cleanName;
+      textarea.dispatchEvent(new Event("input", {bubbles: true}));
+      textarea.dispatchEvent(new Event("change", {bubbles: true}));
+      return true;
+    }
+
+    function setupMarketTypeSearch(input, statusEl, resultsEl, pasteEl, options = {}) {
+      if (!input || !statusEl || !resultsEl || !pasteEl) return;
+      let timer = null;
+      let requestId = 0;
+      const label = options.label || "item";
+
+      function setIdle() {
+        statusEl.textContent = "Exact item search is idle.";
+        resultsEl.innerHTML = "";
+      }
+
+      function scheduleSearch() {
+        const query = String(input.value || "").trim();
+        if (timer) window.clearTimeout(timer);
+        if (query.length < 2) {
+          setIdle();
+          return;
+        }
+        const thisRequest = ++requestId;
+        statusEl.textContent = `Searching exact ${label} names...`;
+        timer = window.setTimeout(async () => {
+          try {
+            const params = new URLSearchParams({q: query, limit: "12"});
+            const response = await fetch(`/api/flight/market-types?${params}`);
+            const data = await response.json();
+            if (thisRequest !== requestId) return;
+            const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+            renderMarketTypeSearchResults(resultsEl, suggestions);
+            if (!data.available) {
+              statusEl.textContent = "Static market cache is missing; run the cache update before exact item search.";
+            } else if (suggestions.length) {
+              statusEl.textContent = `${formatNumber(suggestions.length)} exact item match${suggestions.length === 1 ? "" : "es"} for "${query}".`;
+            } else {
+              statusEl.textContent = `No exact item matches for "${query}". Try a broader word or paste the item list.`;
+            }
+          } catch (error) {
+            if (thisRequest !== requestId) return;
+            resultsEl.innerHTML = "";
+            statusEl.textContent = error.message || "Exact item search failed.";
+          }
+        }, 180);
+      }
+
+      input.addEventListener("input", scheduleSearch);
+      resultsEl.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-market-type-name]");
+        if (!button) return;
+        const itemName = button.dataset.marketTypeName || "";
+        const added = appendPastedItemName(pasteEl, itemName);
+        statusEl.textContent = added
+          ? `Added ${itemName} to the pasted item list.`
+          : `${itemName} is already in the pasted item list.`;
+        if (typeof options.onAdded === "function") options.onAdded(itemName, added);
+      });
     }
 
     function resolveTabName(tabName) {
@@ -26931,11 +27125,18 @@ help</textarea>
       return parts.length ? parts.join("; ") : "no efficiency floor";
     }
 
+    function filterMarketGroupIdsToVisibleInputs(groupIds, inputs) {
+      const allowed = new Set(inputs.map((input) => Number(input.dataset.haulMarketGroup)));
+      return (groupIds || [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0 && allowed.has(value));
+    }
+
     function readStoredHaulMarketGroupIds() {
       try {
         const parsed = JSON.parse(window.localStorage.getItem(haulMarketGroupIdsKey) || "[]");
         if (!Array.isArray(parsed)) return [];
-        return parsed.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
+        return filterMarketGroupIdsToVisibleInputs(parsed, haulMarketGroupInputs);
       } catch (_error) {
         return [];
       }
@@ -27336,7 +27537,7 @@ help</textarea>
         avoidRecentPodKills: avoidStored == null ? haulAvoidPodKills.checked : avoidStored !== "0",
         includeCommonMaterials: commonStored == null ? haulCommonMaterials.checked : commonStored !== "0",
         marketGroupIds: readStoredHaulMarketGroupIds(),
-        marketTypeIds: readStoredHaulMarketTypeIds(),
+        marketTypeIds: readHaulMarketTypeIdsFromInputs(),
         pastedItemNames,
         pastedItemsOnly: pastedOnlyStored == null ? true : pastedOnlyStored !== "0",
         assetsOnly: assetsOnlyStored == null ? (haulAssetsOnly ? haulAssetsOnly.checked : false) : assetsOnlyStored !== "0",
@@ -27478,7 +27679,7 @@ help</textarea>
       try {
         const parsed = JSON.parse(window.localStorage.getItem(acqMarketGroupIdsKey) || "[]");
         if (!Array.isArray(parsed)) return [];
-        return parsed.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
+        return filterMarketGroupIdsToVisibleInputs(parsed, acqMarketGroupInputs);
       } catch (_error) {
         return [];
       }
@@ -27629,7 +27830,7 @@ help</textarea>
         minMarginPercent: clampHaulMinMargin(Number.isFinite(minMargin) ? minMargin : 10),
         includeCommonMaterials: commonStored == null ? acqCommonMaterials.checked : commonStored !== "0",
         marketGroupIds: readStoredAcqMarketGroupIds(),
-        marketTypeIds: readStoredAcqMarketTypeIds(),
+        marketTypeIds: readAcqMarketTypeIdsFromInputs(),
         pastedItemNames,
         pastedItemsOnly: pastedOnlyStored == null ? true : pastedOnlyStored !== "0",
         assetsOnly: assetsOnlyStored == null ? (acqAssetsOnly ? acqAssetsOnly.checked : false) : assetsOnlyStored !== "0",
@@ -34204,6 +34405,13 @@ help</textarea>
 
     setupSystemAutocomplete(haulOrigin, haulOriginSuggestions);
     setupSystemAutocomplete(haulDestination, haulDestinationSuggestions);
+    setupMarketTypeSearch(haulItemSearch, haulItemSearchStatus, haulItemSearchResults, haulPastedItems, {
+      label: "hauling item",
+      onAdded: () => setHaulLedgerHandoffSummary(null),
+    });
+    setupMarketTypeSearch(acqItemSearch, acqItemSearchStatus, acqItemSearchResults, acqPastedItems, {
+      label: "portfolio item",
+    });
 
     haulOrigin.addEventListener("change", updateHaulScopeAndReset);
     haulDestination.addEventListener("change", updateHaulScopeAndReset);
@@ -34212,9 +34420,6 @@ help</textarea>
     haulMinProfitPerM3.addEventListener("change", updateHaulScopeAndReset);
     haulMinProfitPerExtraJump.addEventListener("change", updateHaulScopeAndReset);
     haulCommonMaterials.addEventListener("change", updateHaulScopeAndReset);
-    haulItemSearch.addEventListener("input", () => {
-      applyMarketItemSearch(haulMarketGroups, haulItemSearch.value, haulItemSearchStatus);
-    });
     if (haulPastedItems) {
       haulPastedItems.addEventListener("input", () => {
         window.localStorage.setItem(haulPastedItemsKey, String(haulPastedItems.value || "").trim());
@@ -34230,13 +34435,12 @@ help</textarea>
       haulAssetsOnly.addEventListener("change", updateHaulScopeAndReset);
     }
     haulMarketGroups.addEventListener("click", (event) => {
-      if (handleMarketGroupShowMore(haulMarketGroups, event)) return;
-      if (event.target.closest("input[data-haul-market-group], input[data-haul-market-type], .mini-check, .market-item-check")) {
+      if (event.target.closest("input[data-haul-market-group]")) {
         event.stopPropagation();
       }
     });
     haulMarketGroups.addEventListener("change", (event) => {
-      if (!event.target.closest("input[data-haul-market-group], input[data-haul-market-type]")) return;
+      if (!event.target.closest("input[data-haul-market-group]")) return;
       updateHaulScopeAndReset();
     });
     haulCompareHubs.addEventListener("change", (event) => {
@@ -34569,13 +34773,12 @@ help</textarea>
       acqAssetsOnly.addEventListener("change", updateAcquisitionScopeAndReset);
     }
     acqMarketGroups.addEventListener("click", (event) => {
-      if (handleMarketGroupShowMore(acqMarketGroups, event)) return;
-      if (event.target.closest("input[data-haul-market-group], input[data-haul-market-type], .mini-check, .market-item-check")) {
+      if (event.target.closest("input[data-haul-market-group]")) {
         event.stopPropagation();
       }
     });
     acqMarketGroups.addEventListener("change", (event) => {
-      if (!event.target.closest("input[data-haul-market-group], input[data-haul-market-type]")) return;
+      if (!event.target.closest("input[data-haul-market-group]")) return;
       updateAcquisitionScopeAndReset();
     });
     if (acqCompareHubs) {
@@ -35060,7 +35263,6 @@ help</textarea>
     if (storedHaulCompareDestinations) applyHaulCompareDestinations(storedHaulCompareDestinations);
     writeHaulCompareDestinations();
     writeHaulSettings(readHaulSettings());
-    applyMarketItemSearch(haulMarketGroups, haulItemSearch.value, haulItemSearchStatus);
     writeAcquisitionSettings(readAcquisitionSettings());
     const storedAcqCompareSourceHubs = readStoredAcqCompareSourceHubs();
     if (storedAcqCompareSourceHubs) applyAcqCompareSourceHubs(storedAcqCompareSourceHubs);
