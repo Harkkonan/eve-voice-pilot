@@ -502,6 +502,62 @@ def test_trade_learning_signals_attach_by_type_without_reordering(tmp_path):
     assert summary["signal_count"] == 1
 
 
+def test_market_store_decision_snapshots_redact_private_fields(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    saved = store.save_decision_snapshot(
+        character_id=123,
+        workflow_key="acquisition",
+        source_key="access_token",
+        title="Buy order plan",
+        goal="buy_order_portfolio",
+        target_item_name="Tritanium",
+        target_type_id=34,
+        expected_outcome={
+            "expected_profit_isk": 123_456.0,
+            "raw_paste": "secret paste text",
+            "nested": {"safe": "ok", "access_token": "secret-token"},
+        },
+        redacted_summary={
+            "source_hub": "Amarr",
+            "destination_name": "Jita",
+            "rows": [{"amount": 10, "webhook_url": "https://discord.test/secret"}],
+        },
+        source_keys=("manual-portfolio-settings", "access_token"),
+        payload={"client_secret": "do-not-store", "safe_payload": "kept"},
+        created_at="2026-06-13T12:00:00Z",
+    )
+    store.record_decision_outcome(
+        snapshot_id=saved["snapshot_id"],
+        character_id=123,
+        status="reviewed",
+        actual_outcome={"actual_profit_isk": 100_000.0, "refresh_token": "secret-refresh"},
+        delta={"profit_delta_isk": -23_456.0, "private_note": "hidden"},
+        notes="Manual review complete with secret-token.",
+        payload={"safe": True, "password": "hidden"},
+        recorded_at="2026-06-14T12:00:00Z",
+    )
+
+    snapshots = store.latest_decision_snapshots(character_id=123, workflow_key="acquisition")
+    snapshot = snapshots[0]
+    encoded = json.dumps(snapshot, sort_keys=True).lower()
+
+    assert saved["saved"] == 1
+    assert snapshot["target_type_id"] == 34
+    assert snapshot["source_key"] == ""
+    assert snapshot["expected_outcome"]["expected_profit_isk"] == 123_456.0
+    assert snapshot["expected_outcome"]["nested"] == {"safe": "ok"}
+    assert snapshot["redacted_summary"]["rows"] == [{"amount": 10}]
+    assert snapshot["source_keys"] == ["manual-portfolio-settings"]
+    assert snapshot["payload"] == {"safe_payload": "kept"}
+    assert snapshot["latest_outcome"]["status"] == "reviewed"
+    assert snapshot["latest_outcome"]["notes"] == "[redacted sensitive note]"
+    assert snapshot["latest_outcome"]["actual_outcome"] == {"actual_profit_isk": 100_000.0}
+    assert snapshot["latest_outcome"]["delta"] == {"profit_delta_isk": -23_456.0}
+    assert "secret" not in encoded
+    assert "token" not in encoded
+    assert "paste text" not in encoded
+
+
 def test_discord_fitting_payload_posts_exact_eve_clipboard_block_to_forum(tmp_path):
     store = MarketStore(tmp_path / "market.sqlite3")
     fitting = store.create_shared_fitting(
@@ -6258,6 +6314,36 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
         "portfolio",
         {"message": "Ranking 1 viable opportunity row(s) into a diversified portfolio.", "opportunity_count": 1, "percent": 98},
     )
+    store = MarketStore(tmp_path / "market.sqlite3")
+    snapshot_payload = build_flight_acquisition_payload(
+        config=corp_market.EveSsoConfig(esi_base_url="https://esi.test/latest"),
+        session=session,
+        destination_name="Jita",
+        budget_isk=1_000_000,
+        pickup_jumps=1,
+        min_margin_percent=10,
+        broker_fee_percent=3,
+        target_days=3,
+        expectation_store=store,
+    )
+    decision_snapshot = snapshot_payload["acquisition"]["decision_snapshot"]
+    snapshots = store.latest_decision_snapshots(character_id=session.character_id, workflow_key="acquisition")
+    snapshot = snapshots[0]
+    encoded_snapshot = json.dumps(snapshot, sort_keys=True)
+
+    assert decision_snapshot["saved"] == 1
+    assert decision_snapshot["source"] == "local-corp-market-sqlite"
+    assert decision_snapshot["snapshot_id"] == snapshot["snapshot_id"]
+    assert snapshot["workflow_key"] == "acquisition"
+    assert snapshot["goal"] == "buy_order_portfolio"
+    assert snapshot["target_item_name"] == "Tritanium"
+    assert snapshot["target_type_id"] == 34
+    assert snapshot["expected_outcome"]["opportunity_count"] == 1
+    assert snapshot["expected_outcome"]["possible_trap_count"] == 1
+    assert "location-esi" in snapshot["source_keys"]
+    assert "manual-portfolio-settings" in snapshot["redacted_summary"]["data_source_keys"]
+    assert "access-token" not in encoded_snapshot
+    assert "raw_paste" not in encoded_snapshot
 
 
 def test_acquisition_item_scan_skips_destination_history_without_source_signal(monkeypatch):

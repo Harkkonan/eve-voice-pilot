@@ -6833,6 +6833,53 @@ def build_flight_acquisition_payload(
         ),
     ]
     acquisition["data_sources"] = data_sources
+    decision_snapshot = {"saved": 0, "snapshot_id": "", "source": "local-corp-market-sqlite"}
+    if expectation_store is not None:
+        portfolio_lines = [item for item in portfolio.get("lines") or [] if isinstance(item, Mapping)]
+        opportunities = [item for item in acquisition.get("opportunities") or [] if isinstance(item, Mapping)]
+        target_item = portfolio_lines[0] if portfolio_lines else (opportunities[0] if opportunities else {})
+        target_type_id = clean_optional_int(target_item.get("type_id")) if isinstance(target_item, Mapping) else None
+        source_keys = [str(source.get("key") or "") for source in data_sources if isinstance(source, Mapping)]
+        comparison_summary = summarize_acquisition_payload_for_comparison(
+            str(origin.name or clean_origin_name or "Current location"),
+            {"route": route_payload, "acquisition": acquisition},
+        )
+        snapshot_result = expectation_store.save_decision_snapshot(
+            character_id=session.character_id,
+            workflow_key="acquisition",
+            source_key="manual-portfolio-settings",
+            title=f"Acquisition portfolio toward {destination.name}",
+            goal="buy_order_portfolio",
+            target_item_name=str(target_item.get("item_name") or "") if isinstance(target_item, Mapping) else "",
+            target_type_id=target_type_id,
+            expected_outcome={
+                "budget_isk": float(budget_isk or 0.0),
+                "target_days": int(target_days or 0),
+                "order_duration_days": int(clean_order_duration_days or 0),
+                "portfolio_available": bool(portfolio.get("available")),
+                "portfolio_line_count": int(portfolio.get("line_count") or len(portfolio_lines)),
+                "opportunity_count": int(acquisition.get("opportunity_count") or len(opportunities)),
+                "invested_isk": float(portfolio.get("invested_isk") or 0.0),
+                "estimated_net_profit": float(portfolio.get("estimated_net_profit") or 0.0),
+                "estimated_margin_percent": portfolio.get("margin_percent"),
+                "possible_trap_count": int(acquisition.get("possible_trap_count") or 0),
+            },
+            redacted_summary={
+                **comparison_summary,
+                "origin_source": origin_source,
+                "history_analysis_mode": acquisition.get("history_analysis_mode"),
+                "history_analysis_label": acquisition.get("history_analysis_label"),
+                "data_source_keys": source_keys,
+            },
+            source_keys=source_keys,
+            created_at=generated_at,
+        )
+        decision_snapshot = {
+            "saved": int(snapshot_result.get("saved") or 0),
+            "snapshot_id": str(snapshot_result.get("snapshot_id") or ""),
+            "source": "local-corp-market-sqlite",
+        }
+    acquisition["decision_snapshot"] = decision_snapshot
     return {
         "ok": True,
         "generated_at": generated_at,

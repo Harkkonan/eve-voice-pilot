@@ -256,6 +256,58 @@ class MarketStore:
                 ON flight_trade_learning_events(character_id, type_id, updated_at DESC)
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS flight_decision_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    character_id INTEGER NOT NULL,
+                    workflow_key TEXT NOT NULL,
+                    source_key TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    goal TEXT NOT NULL DEFAULT '',
+                    target_item_name TEXT NOT NULL DEFAULT '',
+                    target_type_id INTEGER,
+                    expected_outcome_json TEXT NOT NULL DEFAULT '{}',
+                    redacted_summary_json TEXT NOT NULL DEFAULT '{}',
+                    source_keys_json TEXT NOT NULL DEFAULT '[]',
+                    payload_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_flight_decision_snapshots_character_workflow_created
+                ON flight_decision_snapshots(character_id, workflow_key, created_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_flight_decision_snapshots_character_type_created
+                ON flight_decision_snapshots(character_id, target_type_id, created_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS flight_decision_outcomes (
+                    outcome_id TEXT PRIMARY KEY,
+                    snapshot_id TEXT NOT NULL,
+                    character_id INTEGER NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    actual_outcome_json TEXT NOT NULL DEFAULT '{}',
+                    delta_json TEXT NOT NULL DEFAULT '{}',
+                    notes TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_flight_decision_outcomes_character_snapshot_recorded
+                ON flight_decision_outcomes(character_id, snapshot_id, recorded_at DESC)
+                """
+            )
 
     def create_listing(self, payload: dict[str, Any]) -> Any:
         listing_id = self.deps.clean_listing_id(payload.get("id") or uuid.uuid4().hex[:12])
@@ -692,6 +744,207 @@ class MarketStore:
             latest_by_type[type_id] = payload
         return list(latest_by_type.values())
 
+    def save_decision_snapshot(
+        self,
+        *,
+        character_id: int,
+        workflow_key: str,
+        title: str,
+        goal: str = "",
+        source_key: str = "",
+        target_item_name: str = "",
+        target_type_id: int | None = None,
+        expected_outcome: Mapping[str, Any] | None = None,
+        redacted_summary: Mapping[str, Any] | None = None,
+        source_keys: Iterable[Any] = (),
+        payload: Mapping[str, Any] | None = None,
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
+        clean_character_id = int(character_id or 0)
+        if clean_character_id <= 0:
+            return {"saved": 0, "snapshot_id": ""}
+        clean_workflow_key = _clean_decision_text(
+            self.deps,
+            workflow_key or "general",
+            "workflow_key",
+            max_length=80,
+            fallback="general",
+        )
+        clean_title = _clean_decision_text(
+            self.deps,
+            title or clean_workflow_key.replace("-", " ").title(),
+            "title",
+            max_length=180,
+            fallback="Decision snapshot",
+        )
+        clean_source_keys = _clean_decision_source_keys(self.deps, source_keys)
+        clean_source_key = _clean_decision_text(
+            self.deps,
+            source_key or (clean_source_keys[0] if clean_source_keys else ""),
+            "source_key",
+            max_length=80,
+        )
+        if _decision_key_is_sensitive(clean_source_key):
+            clean_source_key = ""
+        clean_target_type_id = self.deps.clean_optional_int(target_type_id)
+        if clean_target_type_id is not None and clean_target_type_id <= 0:
+            clean_target_type_id = None
+        snapshot_id = uuid.uuid4().hex[:12]
+        timestamp = str(created_at or self.deps.now_iso())
+        expected = _safe_decision_json_mapping(expected_outcome)
+        summary = _safe_decision_json_mapping(redacted_summary)
+        extra_payload = _safe_decision_json_mapping(payload)
+        row = (
+            snapshot_id,
+            clean_character_id,
+            clean_workflow_key,
+            clean_source_key,
+            timestamp,
+            clean_title,
+            _clean_decision_text(self.deps, goal, "goal", max_length=180),
+            _clean_decision_text(self.deps, target_item_name, "target_item_name", max_length=180),
+            clean_target_type_id,
+            json.dumps(expected, sort_keys=True),
+            json.dumps(summary, sort_keys=True),
+            json.dumps(clean_source_keys),
+            json.dumps(extra_payload, sort_keys=True),
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO flight_decision_snapshots (
+                    snapshot_id, character_id, workflow_key, source_key, created_at, title, goal,
+                    target_item_name, target_type_id, expected_outcome_json, redacted_summary_json,
+                    source_keys_json, payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                row,
+            )
+        snapshots = self.latest_decision_snapshots(character_id=clean_character_id, limit=5)
+        snapshot = next((item for item in snapshots if item.get("snapshot_id") == snapshot_id), {})
+        return {"saved": 1, "snapshot_id": snapshot_id, "snapshot": snapshot}
+
+    def record_decision_outcome(
+        self,
+        *,
+        snapshot_id: str,
+        character_id: int,
+        status: str,
+        actual_outcome: Mapping[str, Any] | None = None,
+        delta: Mapping[str, Any] | None = None,
+        notes: str = "",
+        payload: Mapping[str, Any] | None = None,
+        recorded_at: str | None = None,
+    ) -> dict[str, Any]:
+        clean_character_id = int(character_id or 0)
+        clean_snapshot_id = _clean_decision_text(
+            self.deps,
+            snapshot_id,
+            "snapshot_id",
+            max_length=80,
+        )
+        if clean_character_id <= 0 or not clean_snapshot_id:
+            return {"saved": 0, "outcome_id": ""}
+        outcome_id = uuid.uuid4().hex[:12]
+        timestamp = str(recorded_at or self.deps.now_iso())
+        row = (
+            outcome_id,
+            clean_snapshot_id,
+            clean_character_id,
+            timestamp,
+            _clean_decision_text(self.deps, status or "recorded", "status", max_length=60, fallback="recorded"),
+            json.dumps(_safe_decision_json_mapping(actual_outcome), sort_keys=True),
+            json.dumps(_safe_decision_json_mapping(delta), sort_keys=True),
+            _clean_decision_note(self.deps, notes),
+            json.dumps(_safe_decision_json_mapping(payload), sort_keys=True),
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO flight_decision_outcomes (
+                    outcome_id, snapshot_id, character_id, recorded_at, status,
+                    actual_outcome_json, delta_json, notes, payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                row,
+            )
+        return {"saved": 1, "outcome_id": outcome_id, "snapshot_id": clean_snapshot_id}
+
+    def latest_decision_snapshots(
+        self,
+        *,
+        character_id: int,
+        workflow_key: str = "",
+        target_type_ids: Iterable[int] = (),
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        clean_character_id = int(character_id or 0)
+        if clean_character_id <= 0:
+            return []
+        clauses = ["character_id = ?"]
+        params: list[Any] = [clean_character_id]
+        clean_workflow_key = _clean_decision_text(
+            self.deps,
+            workflow_key,
+            "workflow_key",
+            max_length=80,
+        )
+        if clean_workflow_key:
+            clauses.append("workflow_key = ?")
+            params.append(clean_workflow_key)
+        clean_type_ids = sorted(
+            {
+                type_id
+                for type_id in (self.deps.clean_optional_int(value) for value in target_type_ids)
+                if type_id is not None and type_id > 0
+            }
+        )
+        if clean_type_ids:
+            placeholders = ",".join("?" for _ in clean_type_ids)
+            clauses.append(f"target_type_id IN ({placeholders})")
+            params.extend(clean_type_ids)
+        try:
+            clean_limit = int(limit)
+        except (TypeError, ValueError):
+            clean_limit = 20
+        clean_limit = max(1, min(clean_limit, 100))
+        params.append(clean_limit)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM flight_decision_snapshots
+                WHERE {" AND ".join(clauses)}
+                ORDER BY created_at DESC, snapshot_id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+            snapshots = [_decision_snapshot_from_row(row) for row in rows]
+            if snapshots:
+                snapshot_ids = [str(snapshot["snapshot_id"]) for snapshot in snapshots]
+                placeholders = ",".join("?" for _ in snapshot_ids)
+                outcome_rows = connection.execute(
+                    f"""
+                    SELECT * FROM flight_decision_outcomes
+                    WHERE character_id = ? AND snapshot_id IN ({placeholders})
+                    ORDER BY recorded_at DESC, outcome_id DESC
+                    """,
+                    (clean_character_id, *snapshot_ids),
+                ).fetchall()
+            else:
+                outcome_rows = []
+        outcomes_by_snapshot: dict[str, list[dict[str, Any]]] = {}
+        for row in outcome_rows:
+            outcome = _decision_outcome_from_row(row)
+            outcomes_by_snapshot.setdefault(str(outcome["snapshot_id"]), []).append(outcome)
+        for snapshot in snapshots:
+            outcomes = outcomes_by_snapshot.get(str(snapshot["snapshot_id"]), [])
+            snapshot["outcomes"] = outcomes
+            snapshot["latest_outcome"] = outcomes[0] if outcomes else None
+        return snapshots
+
     def save_trade_ledger_transactions(self, *, character_id: int, transactions: Iterable[dict[str, Any]]) -> dict[str, Any]:
         clean_character_id = int(character_id or 0)
         if clean_character_id <= 0:
@@ -1071,5 +1324,155 @@ def _trade_learning_signal_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "fee_gap_total_isk": float(row["fee_gap_total_isk"] or 0.0),
         "signal_keys": [str(key) for key in signal_keys if str(key or "").strip()],
         "payload": payload,
+    }
+
+
+_DECISION_SENSITIVE_KEY_FRAGMENTS = (
+    "raw",
+    "paste",
+    "token",
+    "secret",
+    "webhook",
+    "authorization",
+    "access_token",
+    "refresh_token",
+    "client_secret",
+    "password",
+    "private",
+)
+
+
+def _clean_decision_text(
+    deps: MarketStoreDependencies,
+    value: Any,
+    field: str,
+    *,
+    max_length: int,
+    fallback: str = "",
+) -> str:
+    text = " ".join(str(value if value is not None else fallback).replace("\x00", " ").split())
+    if not text and fallback:
+        text = fallback
+    if len(text) > max_length:
+        text = text[:max_length].rstrip()
+    return deps.clean_text(text, field, max_length=max_length)
+
+
+def _decision_key_is_sensitive(key: str) -> bool:
+    normalized = str(key or "").strip().lower().replace("-", "_")
+    return any(fragment in normalized for fragment in _DECISION_SENSITIVE_KEY_FRAGMENTS)
+
+
+def _clean_decision_note(deps: MarketStoreDependencies, value: Any) -> str:
+    note = _clean_decision_text(deps, value, "notes", max_length=deps.max_notes_length)
+    normalized = note.lower().replace("-", "_")
+    if any(fragment in normalized for fragment in _DECISION_SENSITIVE_KEY_FRAGMENTS):
+        return "[redacted sensitive note]"
+    return note
+
+
+def _clean_decision_source_keys(deps: MarketStoreDependencies, source_keys: Iterable[Any]) -> list[str]:
+    clean_keys: list[str] = []
+    seen: set[str] = set()
+    for value in source_keys or ():
+        key = _clean_decision_text(deps, value, "source_key", max_length=80)
+        if not key or _decision_key_is_sensitive(key) or key in seen:
+            continue
+        clean_keys.append(key)
+        seen.add(key)
+        if len(clean_keys) >= 40:
+            break
+    return clean_keys
+
+
+def _safe_decision_json_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    safe = _safe_decision_json_value(value)
+    return safe if isinstance(safe, dict) else {}
+
+
+def _safe_decision_json_value(value: Any, *, depth: int = 0) -> Any:
+    if depth > 5:
+        return "[truncated]"
+    if isinstance(value, Mapping):
+        clean: dict[str, Any] = {}
+        for raw_key, raw_value in list(value.items())[:80]:
+            key = " ".join(str(raw_key or "").replace("\x00", " ").split())[:120].strip()
+            if not key or _decision_key_is_sensitive(key):
+                continue
+            clean[key] = _safe_decision_json_value(raw_value, depth=depth + 1)
+        return clean
+    if isinstance(value, (list, tuple, set)):
+        return [_safe_decision_json_value(item, depth=depth + 1) for item in list(value)[:100]]
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+        return _safe_decision_json_string(text)
+    if isinstance(value, str):
+        return _safe_decision_json_string(value)
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    return _safe_decision_json_string(str(value))
+
+
+def _safe_decision_json_string(value: str) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    if len(text) > 600:
+        return text[:600].rstrip()
+    return text
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _json_list(value: Any) -> list[Any]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except json.JSONDecodeError:
+        parsed = []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _decision_snapshot_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    source_keys = [str(key) for key in _json_list(row["source_keys_json"]) if str(key or "").strip()]
+    return {
+        "snapshot_id": str(row["snapshot_id"] or ""),
+        "character_id": int(row["character_id"] or 0),
+        "workflow_key": str(row["workflow_key"] or ""),
+        "source_key": str(row["source_key"] or ""),
+        "created_at": str(row["created_at"] or ""),
+        "title": str(row["title"] or ""),
+        "goal": str(row["goal"] or ""),
+        "target_item_name": str(row["target_item_name"] or ""),
+        "target_type_id": row["target_type_id"] if row["target_type_id"] is None else int(row["target_type_id"]),
+        "expected_outcome": _json_dict(row["expected_outcome_json"]),
+        "redacted_summary": _json_dict(row["redacted_summary_json"]),
+        "source_keys": source_keys,
+        "payload": _json_dict(row["payload_json"]),
+    }
+
+
+def _decision_outcome_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "outcome_id": str(row["outcome_id"] or ""),
+        "snapshot_id": str(row["snapshot_id"] or ""),
+        "character_id": int(row["character_id"] or 0),
+        "recorded_at": str(row["recorded_at"] or ""),
+        "status": str(row["status"] or ""),
+        "actual_outcome": _json_dict(row["actual_outcome_json"]),
+        "delta": _json_dict(row["delta_json"]),
+        "notes": str(row["notes"] or ""),
+        "payload": _json_dict(row["payload_json"]),
     }
 
