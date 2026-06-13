@@ -44,6 +44,21 @@ from eve_voice_pilot.corp_intel import (
 )
 
 
+def test_main_reports_board_retirement(capsys):
+    assert corp_intel.main(["serve"]) == 1
+    captured = capsys.readouterr()
+    assert "Corp Intel Board has been retired" in captured.err
+    assert captured.out == ""
+
+
+def test_run_server_and_agent_report_board_retirement(capsys):
+    assert corp_intel.run_server(object()) == 1
+    assert corp_intel.run_agent(object()) == 1
+    captured = capsys.readouterr()
+    assert captured.err.count("Corp Intel Board has been retired") == 2
+    assert captured.out == ""
+
+
 def make_unsigned_jwt(payload: dict) -> str:
     def encode(part: dict) -> str:
         raw = json.dumps(part, separators=(",", ":")).encode("utf-8")

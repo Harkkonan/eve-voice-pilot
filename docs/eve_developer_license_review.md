@@ -1,6 +1,6 @@
 # EVE Developer License Review
 
-Last verified: 2026-06-12
+Last verified: 2026-06-13
 
 Authoritative source:
 
@@ -16,25 +16,25 @@ This file is a project review aid, not legal advice and not a substitute for the
 ## Review Cadence
 
 - Review before creating or changing an EVE developer application.
-- Review before sharing the board outside a small trusted test group.
+- Review before restoring any shared chat-log board or sharing a hosted surface outside a small trusted test group.
 - Review before adding new ESI scopes, storing tokens, using CCP marks/assets, or changing privacy behavior.
 - Review at least quarterly while the project is actively used.
 
 ## Current Project Posture
 
-The corp intel board and hosted Flight Attendant/Corp Market surfaces are designed to stay on the conservative side of CCP's third-party-tool rules:
+The active hosted Flight Attendant/Corp Market surfaces and local tools are designed to stay on the conservative side of CCP's third-party-tool rules:
 
 - It is read-only with respect to the EVE client.
 - It does not send keys, click, read the EVE screen, read packets, scrape cache files, inspect process memory, or automate gameplay.
-- It reads opted-in local chat logs and sends only matching intel events by default.
+- The Corp Intel Board shared dashboard and remote upload agent are retired; no active project surface collects or serves shared chat-log intel events from that board.
 - The EVE Intel Pet overlay is local-only and informational: it reads the user's own EVE chat logs, shows matching lines to that user, and does not share them by default.
 - Optional Intel Pet Discord voice notes are explicit user-authored note sends only, use a dedicated local ignored webhook settings file, disable Discord mentions, and do not automatically forward chat alerts.
-- The Intel Pet alert history is in-memory only for the current pet run and is not written to disk or shared with Discord, ESI, or the corp intel board.
+- The Intel Pet alert history is in-memory only for the current pet run and is not written to disk or shared with Discord, ESI, or a shared corp intel board.
 - Optional Intel Pet location cheer uses only the read-only `esi-location.read_location.v1` scope after explicit EVE SSO consent, keeps the access token in memory only while the pet is running, and shows local animation only.
 - Optional Intel Pet voice command sending is local-only, off by default, requires explicit user opt-in, uses exact matches from the existing EVE Voice Pilot command profile, and keeps the active EVE-window guard on by default.
 - It uses EVE SSO to prove character ownership and public ESI to check corporation/alliance membership.
 - It signature-verifies SSO access tokens and discards EVE access/refresh tokens after login.
-- It stores local operational records only: verified pilot identity, token hashes, watchlist settings, and sanitized intel events.
+- It stores local operational records only where a reviewed active feature needs them; retired Board watchlists, pilot registries, ingest tokens, and event databases must stay local/ignored and must not be republished.
 - The hosted Flight Attendant remains advisory only: it can read opted-in ESI data and public market orders, but the pilot performs all in-game hauling, buying, selling, contracts, and mail manually.
 - Public Flight Attendant hosting should use HTTPS, EVE SSO, and a configured corporation/alliance allowlist.
 - It should remain non-commercial unless a future review confirms the exact monetization method is allowed.
@@ -68,10 +68,9 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 ## Current Safe Defaults
 
 - Prefer empty SSO scopes for identity-only login.
-- Prefer `--require-sso-dashboard` for shared boards.
-- Prefer `--require-verified-ingest` plus per-pilot agent tokens over a shared ingest token.
+- Do not restore a shared corp intel board without fresh owner approval plus privacy and EVE policy review.
 - Keep channel allowlists narrow.
-- Keep the board private to the corporation unless a broader review is done.
+- Keep any future chat-log sharing private to the corporation unless a broader review is done.
 - Keep alert overlays informational and local-only unless there is a separate consent and policy review.
 - Keep Discord note sharing opt-in, deliberate, and separate from automatic chat alert forwarding.
 - Do not add automatic overlay-driven client input, screen-reading gameplay decisions, bot-like behavior, input broadcasting, stored rapid keystroke patterns, or automated reactions.
@@ -112,3 +111,4 @@ If the project uses EVE, CCP, or related logos/images/marks in the UI or docs, c
 - 2026-06-11: Re-opened the official EVE Developer License Agreement, developer license docs, EVE third-party policy page, ESI overview/cache guidance, and live ESI Swagger spec before adding optional Mining Yield. The feature adds only the opt-in `esi-industry.read_character_mining.v1` scope, summarizes cached daily character mining-ledger rows, keeps tokens in server memory only, persists no mining ledger rows, labels ore/sec and m3/sec as manual session averages rather than live telemetry, and does not read inventory deltas, screen state, cache files, packets, memory, or control the EVE client.
 - 2026-06-11: Re-opened the official EVE Developer License Agreement, ESI best-practices cache guidance, and EVE third-party policy page before adding a server-memory-only 600-second Mining Yield ledger cache. The cache avoids re-requesting the mining ledger before ESI's cache window, stores no access token beyond the existing session, clears the signed-in pilot's cached rows on logout, writes no mining ledger rows to disk or the local database, and keeps the feature read-only with no screen, cache-file, packet, memory, or client-control behavior.
 - 2026-06-12: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page during a pre-publication Corp Market/Flight Attendant site review. The reviewed local build remains non-commercial, read-only/advisory for ESI features, explicit about scopes, manual for all in-game buying, selling, hauling, contracts, and fitting actions, and does not read EVE client memory, cache files, packets, screen gameplay state, or control the EVE client.
+- 2026-06-13: Re-opened the official EVE Developer License Agreement, developer license docs, and EVE third-party policy page before retiring Corp Intel Board. The dashboard, shared server, and remote upload agent entrypoints now stop with a retirement notice; shared helper code may remain only for EVE Intel Pet and Flight Attendant compatibility.

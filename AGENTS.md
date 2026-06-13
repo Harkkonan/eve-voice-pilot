@@ -3,7 +3,7 @@
 This repo is a Windows-first Python project for EVE Online helpers:
 
 - `EVE Voice Pilot`: a cautious voice-command app that maps one spoken command to one key or key chord.
-- `Corp Intel Board`: an opt-in, read-only chat-log intel dashboard.
+- `EVE Intel Pet`: a local-only informational chat-log/game-log overlay.
 - `Corp Market Concierge` / `Flight Attendant`: Discord-friendly corp coordination and read-only ESI planning helpers.
 - `Trade Agent`: EVE Workbench and ESI-backed route/trade recommendations.
 
@@ -100,6 +100,6 @@ Run `git diff --check` before committing documentation or code changes.
 
 - `src/eve_voice_pilot/app.py`, `commands.py`, `input_sender.py`, `local_transcription.py`, `transcription.py`, and `speech_responses.py` are the core voice app surface.
 - `profiles/eve_voice_standard.json`, `data/eve_voice_keybind_standard.csv`, and `docs/eve_voice_keybind_standard.md` should stay in sync when changing default voice commands or recommended EVE keybinds.
-- `src/eve_voice_pilot/corp_intel.py` should remain read-only against the EVE client and opt-in for pilots.
+- The Corp Intel Board is retired. Do not add new board/server/agent paths or public docs without a fresh owner-approved privacy and EVE policy review. `src/eve_voice_pilot/corp_intel.py` may still contain shared helpers used by EVE Intel Pet and Flight Attendant; keep those changes scoped.
 - `src/eve_voice_pilot/corp_market.py` contains the corp market concierge and Flight Attendant helpers; keep Discord/ESI flows explicit, manual where gameplay handoff is involved, and careful with tokens.
-- The old `docs/chatlog-knowledge/` static site, generator, and tests were retired on 2026-06-05 because they were derived from local EVE chat logs. Preserve old copies only in ignored `local_archives/`; do not reintroduce chat-log-derived public artifacts without fresh privacy/policy review and owner approval.
+- The old `docs/chatlog-knowledge/` static site, generator, tests, and later Corp Intel Board were retired because they were derived from local EVE chat logs. Preserve old copies only in ignored `local_archives/`; do not reintroduce chat-log-derived public artifacts without fresh privacy/policy review and owner approval.

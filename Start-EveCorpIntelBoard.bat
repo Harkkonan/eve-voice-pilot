@@ -1,5 +1,8 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run_corp_intel_board.ps1" serve --watch-local --open-browser --channels "Corp,Corporation,Fleet,Alliance,Local,*Intel*"
+echo Corp Intel Board has been retired.
+echo This launcher no longer starts a dashboard or upload agent.
+echo See docs\retired_features.md for the retirement note.
 pause
+exit /b 1

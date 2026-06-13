@@ -47,6 +47,11 @@ DEFAULT_EVENT_RETENTION_DAYS = 7
 MAX_JSON_BODY_BYTES = 256 * 1024
 EXPECTED_EVE_SSO_AUDIENCE = "EVE Online"
 EVE_SSO_CLOCK_SKEW_LEEWAY_SECONDS = 120
+CORP_INTEL_BOARD_RETIRED_MESSAGE = (
+    "Corp Intel Board has been retired. The shared corp_intel module remains "
+    "for EVE Intel Pet and Flight Attendant compatibility, but the dashboard "
+    "and remote upload agent entrypoint is disabled. See docs/retired_features.md."
+)
 ACCEPTED_EVE_SSO_ISSUERS = {
     "login.eveonline.com",
     "https://login.eveonline.com",
@@ -1943,6 +1948,9 @@ def start_local_watcher_thread(
 
 
 def run_agent(args: argparse.Namespace) -> int:
+    _ = args
+    return report_corp_intel_board_retired()
+
     channel_filter = channel_filter_from_args(args)
     watchlist_store = WatchlistStore()
     upload_token = args.agent_token or args.token
@@ -2003,6 +2011,9 @@ def run_agent(args: argparse.Namespace) -> int:
 
 
 def run_server(args: argparse.Namespace) -> int:
+    _ = args
+    return report_corp_intel_board_retired()
+
     channel_filter = channel_filter_from_args(args)
     watchlist_store = WatchlistStore(args.watchlist_path)
     system_names = load_system_names(refresh=args.refresh_systems)
@@ -2925,13 +2936,13 @@ def add_common_watch_args(parser: argparse.ArgumentParser) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    try:
-        return args.func(args) or 0
-    except CorpIntelError as exc:
-        print(f"Corp intel error: {exc}", file=sys.stderr)
-        return 1
+    _ = argv
+    return report_corp_intel_board_retired()
+
+
+def report_corp_intel_board_retired() -> int:
+    print(CORP_INTEL_BOARD_RETIRED_MESSAGE, file=sys.stderr)
+    return 1
 
 
 DASHBOARD_HTML = inject_plex_button_effect(r"""<!doctype html>

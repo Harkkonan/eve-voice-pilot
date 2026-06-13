@@ -96,35 +96,11 @@ The matching app profile is `profiles/eve_voice_standard.json`. It remaps medium
 
 ## Corp Intel Board
 
-The corp intel board is a read-only dashboard for EVE chat-log intel. It watches selected chat channels for hostile reports, enemy sightings, system names, and calls for aid, then shows them at `http://127.0.0.1:8765/`.
+Retired. The shared corp-hosted chat-log dashboard and remote upload agent are no longer active project surfaces. `Start-EveCorpIntelBoard.bat`, `scripts\run_corp_intel_board.ps1`, and `python -m eve_voice_pilot.corp_intel` now stop with a retirement notice instead of starting a server or agent.
 
-Double-click `Start-EveCorpIntelBoard.bat` for the local board. It watches `Corp`, `Corporation`, `Fleet`, `Alliance`, `Local`, and `*Intel*` channel names by default, and starts at the end of existing logs so only new chat is processed.
+The shared chat-log parsing and SSO helper code remains only for compatibility with EVE Intel Pet and Flight Attendant. Do not start a new Corp Intel Board deployment without a fresh privacy and EVE policy review.
 
-Run the shared server on a trusted host:
-
-```powershell
-.\scripts\run_corp_intel_board.ps1 serve --host 0.0.0.0 --port 8765 --require-sso-dashboard --sso-client-id "client-id" --sso-client-secret "client-secret" --sso-callback-url "http://HOST-LAN-IP:8765/auth/callback" --allowed-corporation-ids "123456789" --ingest-token "change-this-token"
-```
-
-Non-loopback serving refuses to start unless the dashboard requires allowlisted EVE SSO and uploads require either an ingest token or verified SSO agent tokens.
-
-Run an opt-in corp member agent:
-
-```powershell
-.\scripts\run_corp_intel_board.ps1 agent --server "http://HOST-LAN-IP:8765" --token "change-this-token" --pilot "Pilot Name" --channels "Corp,Fleet,Alliance,Local,*Intel*"
-```
-
-The agent sends only matching intel events by default, not every chat line. Keep channel allowlists narrow. More detail is in `docs/corp_intel_board.md`.
-
-The dashboard also has editable watchlists for hostile pilots, hostile corporations, help callouts, and extra keywords. The live watchlist is stored in ignored local data at `profiles/corp_intel_watchlist.json`; remote agents refresh it from the shared server every 60 seconds.
-
-Recent intel events persist locally in ignored SQLite data at `profiles/corp_intel_events.sqlite3`, with seven-day retention by default.
-
-Optional EVE SSO login verifies dashboard users by character and public ESI corporation/alliance membership. The returned SSO access token is signature-checked against EVE's JWKS before the character identity is trusted. Pilot records persist locally in ignored SQLite data at `profiles/corp_intel_pilots.sqlite3`; access and refresh tokens are not stored.
-
-For a shared corp-hosted board, add `--require-sso-dashboard` plus `--allowed-corporation-ids` or `--allowed-alliance-ids` so the dashboard and JSON APIs require an allowlisted EVE SSO session.
-
-After SSO login, trusted members can create per-pilot agent upload tokens from the dashboard and run the local agent with `--agent-token`. The server stores only token hashes, uses the token for authenticated watchlist refreshes, and stamps matching uploads with the verified EVE character identity.
+See `docs/retired_features.md` for the retirement note.
 
 ### EVE Intel Pet
 
