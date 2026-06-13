@@ -37,6 +37,7 @@ from eve_voice_pilot.corp_market import (
     build_discord_fitting_webhook_payload,
     build_discord_webhook_payload,
     build_flight_planetary_payload,
+    build_flight_personal_core_payload,
     build_flight_reprocessing_locations_payload,
     build_flight_reprocessing_payload,
     build_flight_buyers_payload,
@@ -829,12 +830,19 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/asset-ledger" in page
     assert "/api/flight/mining-yield" in page
     assert "/api/flight/intake" in page
+    assert "/api/flight/personal-core" in page
     assert "/api/flight/appraisal" in page
     assert "/api/flight/trade-pnl" in page
     assert "/api/flight/planetary" in page
     assert "/flight/login" in page
     assert "id=\"flight-system-name\"" in page
     assert "id=\"flight-login-link\"" in page
+    assert "id=\"personal-core-form\"" in flight_section
+    assert "id=\"personal-core-results\" class=\"decision-output\"" in flight_section
+    assert "Personal Core" in flight_section
+    assert "Goal, preferences, authorized ESI summaries, source posture, and manual next steps." in flight_section
+    assert "function renderPersonalCore" in page
+    assert "source-aware Personal Core recommendation board" in page
     assert "data-tab-target=\"industry\"" in page
     assert "data-tab-target=\"intake\"" in page
     assert "id=\"tab-intake\"" in page
@@ -1647,6 +1655,82 @@ def test_flight_status_rejects_non_allowlisted_session_before_esi_fetch():
     assert payload["membership"]["allowed"] is False
     assert payload["error"] == "This EVE character is not in the configured character/corp/alliance allowlist."
     assert payload["location"] is None
+
+
+def test_flight_personal_core_payload_uses_available_scopes_and_summarizes(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Core Pilot",
+        corporation_id=1001,
+        corporation_name="Core Corp",
+        alliance_id=None,
+        alliance_name="",
+        scopes=(
+            corp_market.FLIGHT_LOCATION_SCOPE,
+            corp_market.FLIGHT_ASSETS_SCOPE,
+            corp_market.FLIGHT_BLUEPRINTS_SCOPE,
+            corp_market.FLIGHT_SKILLS_SCOPE,
+            corp_market.FLIGHT_STANDINGS_SCOPE,
+            corp_market.FLIGHT_WALLET_SCOPE,
+        ),
+        access_token="access-token",
+        connected_at="2026-06-13T00:00:00Z",
+        expires_at=9999999999,
+    )
+    config = corp_market.EveSsoConfig(
+        client_id="client-id",
+        client_secret="client-secret",
+        callback_url="https://market.test/flight/callback",
+    )
+
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_location",
+        lambda _config, _session: {"solar_system_name": "Dihra", "updated_at": "2026-06-13T00:00:00Z"},
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_assets",
+        lambda _config, _session: [{"type_id": 34, "quantity": 100, "location_id": 60008494}],
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_blueprints",
+        lambda _config, _session: [{"type_id": 123, "quantity": -1}],
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_skills",
+        lambda _config, _session: {"total_sp": 50_000, "skills": [{"skill_id": 3380, "trained_skill_level": 3}]},
+    )
+    monkeypatch.setattr(corp_market, "fetch_flight_standings", lambda _config, _session: [{"standing": 2.4}])
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_wallet_transactions",
+        lambda _config, _session, **_kwargs: [{"is_buy": False, "unit_price": 10, "quantity": 2}],
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_wallet_journal",
+        lambda _config, _session, **_kwargs: [{"ref_type": "brokers_fee", "amount": -1.5}],
+    )
+
+    payload = build_flight_personal_core_payload(
+        config=config,
+        session=session,
+        preferences={"goal": "what_now", "desired_ship": "Hawk", "corp_needs": "Need rockets"},
+    )
+
+    assert payload["ok"] is True
+    assert payload["character"]["character_name"] == "Core Pilot"
+    assert payload["context"]["location"]["solar_system_name"] == "Dihra"
+    assert payload["context"]["assets"]["stack_count"] == 1
+    assert payload["context"]["wallet"]["fee_rows_total_isk"] == 1.5
+    assert {source["status"] for source in payload["sources"]} == {"ready"}
+    assert {"ship-goal", "corp-need-handoff"}.issubset(
+        {recommendation["key"] for recommendation in payload["recommendations"]}
+    )
+    assert "access-token" not in str(payload)
 
 
 def test_flight_esi_session_store_keeps_access_token_in_memory():

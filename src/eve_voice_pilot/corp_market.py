@@ -73,6 +73,14 @@ from eve_voice_pilot.intake_router import (
     INTAKE_TIME_BUDGETS,
     build_intake_router_payload,
 )
+from eve_voice_pilot.personal_core import (
+    PERSONAL_CORE_GOALS,
+    PERSONAL_CORE_HUBS,
+    PERSONAL_CORE_RISK_MODES,
+    PERSONAL_CORE_TIME_BUDGETS,
+    build_personal_core_payload,
+    clean_personal_core_preferences,
+)
 from eve_voice_pilot.planetary_industry import (
     PlanetaryChainNode,
     PlanetaryChainPlan,
@@ -413,8 +421,15 @@ FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
     },
     "flight": {
         "label": "Flight Attendant",
-        "summary": "Uses live location for the current-system briefing and keeps the app-wide ESI scope explanation, safety charter, and transparency recorder visible. Blueprint and profitability tools now live in Industry Library.",
-        "scopes": (FLIGHT_LOCATION_SCOPE,),
+        "summary": "Uses read-only location, assets, blueprints, skills, standings, and wallet summaries for the Personal Core decision checklist. The tab still performs no gameplay action and returns source status instead of raw ESI responses.",
+        "scopes": (
+            FLIGHT_LOCATION_SCOPE,
+            FLIGHT_ASSETS_SCOPE,
+            FLIGHT_BLUEPRINTS_SCOPE,
+            FLIGHT_SKILLS_SCOPE,
+            FLIGHT_STANDINGS_SCOPE,
+            FLIGHT_WALLET_SCOPE,
+        ),
     },
     "industry": {
         "label": "Industry Library",
@@ -14132,6 +14147,87 @@ def build_flight_status_payload(
     return payload
 
 
+def build_flight_personal_core_payload(
+    *,
+    config: EveSsoConfig,
+    session: FlightEsiSession,
+    preferences: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    granted_scopes = set(session.scopes)
+    fetch_errors: dict[str, str] = {}
+    location: dict[str, Any] | None = None
+    assets: list[dict[str, Any]] | None = None
+    blueprints: list[dict[str, Any]] | None = None
+    skills: dict[str, Any] | None = None
+    standings: list[dict[str, Any]] | None = None
+    wallet_transactions: list[dict[str, Any]] | None = None
+    wallet_journal: list[dict[str, Any]] | None = None
+
+    def read_source(key: str, scope: str, reader: Callable[[], Any]) -> Any:
+        if scope not in granted_scopes:
+            return None
+        try:
+            return reader()
+        except (CorpIntelError, CorpMarketError, ValueError) as exc:
+            fetch_errors[key] = str(exc)
+            return None
+
+    location = read_source(
+        "location",
+        FLIGHT_LOCATION_SCOPE,
+        lambda: fetch_flight_location(config, session),
+    )
+    assets = read_source(
+        "assets",
+        FLIGHT_ASSETS_SCOPE,
+        lambda: [item for item in fetch_flight_assets(config, session) if isinstance(item, dict)],
+    )
+    blueprints = read_source(
+        "blueprints",
+        FLIGHT_BLUEPRINTS_SCOPE,
+        lambda: [item for item in fetch_flight_blueprints(config, session) if isinstance(item, dict)],
+    )
+    skills = read_source(
+        "skills",
+        FLIGHT_SKILLS_SCOPE,
+        lambda: fetch_flight_skills(config, session),
+    )
+    standings = read_source(
+        "standings",
+        FLIGHT_STANDINGS_SCOPE,
+        lambda: fetch_flight_standings(config, session),
+    )
+    if FLIGHT_WALLET_SCOPE in granted_scopes:
+        try:
+            wallet_transactions = fetch_flight_wallet_transactions(
+                config,
+                session,
+                max_pages=1,
+                max_transactions=250,
+            )
+        except (CorpMarketError, ValueError) as exc:
+            fetch_errors["wallet"] = str(exc)
+        try:
+            wallet_journal = fetch_flight_wallet_journal(config, session, max_pages=1)
+        except (CorpMarketError, ValueError) as exc:
+            existing_error = fetch_errors.get("wallet")
+            fetch_errors["wallet"] = f"{existing_error}; {exc}" if existing_error else str(exc)
+
+    return build_personal_core_payload(
+        preferences=preferences,
+        character=session.to_public_dict(),
+        location=location if isinstance(location, Mapping) else None,
+        assets=assets,
+        blueprints=blueprints,
+        skills=skills if isinstance(skills, Mapping) else None,
+        standings=standings,
+        wallet_transactions=wallet_transactions,
+        wallet_journal=wallet_journal,
+        granted_scopes=session.scopes,
+        fetch_errors=fetch_errors,
+    )
+
+
 def build_static_cache_diagnostics() -> dict[str, Any]:
     recipe_cache = load_industry_recipe_cache()
     route_cache = load_route_graph_cache()
@@ -15181,6 +15277,34 @@ def build_http_server(
                 first_query_value(query, "limit") or MAX_MARKET_TYPE_SUGGESTIONS
             )
             self._send_json(build_market_type_suggestions_payload(term, limit=limit))
+
+        def _handle_flight_personal_core(self) -> None:
+            session = self._require_flight_session("building your personal core")
+            if session is None:
+                return
+            query = parse_qs(urlparse(self.path).query)
+            preferences = {
+                "goal": first_query_value(query, "goal") or "what_now",
+                "time_budget": first_query_value(query, "time_budget") or "any",
+                "risk": first_query_value(query, "risk") or "balanced",
+                "preferred_hub": first_query_value(query, "preferred_hub") or first_query_value(query, "hub") or "jita",
+                "industry_home": first_query_value(query, "industry_home"),
+                "refine_home": first_query_value(query, "refine_home"),
+                "mission_home": first_query_value(query, "mission_home") or first_query_value(query, "quest_system"),
+                "desired_ship": first_query_value(query, "desired_ship") or first_query_value(query, "ship"),
+                "isk_target": first_query_value(query, "isk_target"),
+                "corp_needs": first_query_value(query, "corp_needs"),
+            }
+            try:
+                payload = build_flight_personal_core_payload(
+                    config=sso_config,
+                    session=session,
+                    preferences=preferences,
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
 
         def _handle_flight_plex_deals(self) -> None:
             if not self._require_public_read_access():
@@ -16985,6 +17109,55 @@ def _render_flight_attendant_dashboard() -> str:
         )
         if value in INTAKE_HUBS
     )
+    personal_goal_labels = {
+        "what_now": "What should I do now?",
+        "manufacture": "Manufacture",
+        "gather": "Gather resources",
+        "reprocess": "Reprocess/refine",
+        "haul": "Haul or stage",
+        "buy_ship": "Get a specific ship",
+        "sell": "Sell or appraise",
+        "audit_profit": "Audit profit",
+        "explore": "Exploration prep",
+        "learn": "Explain and teach",
+    }
+    personal_goal_options = "\n".join(
+        f'                    <option value="{html.escape(goal)}"{ " selected" if goal == "what_now" else ""}>{html.escape(personal_goal_labels.get(goal, goal.replace("_", " ").title()))}</option>'
+        for goal in sorted(PERSONAL_CORE_GOALS, key=lambda value: (value != "what_now", personal_goal_labels.get(value, value)))
+    )
+    personal_time_options = "\n".join(
+        f'                    <option value="{html.escape(value)}"{ " selected" if value == "any" else ""}>{html.escape(label)}</option>'
+        for value, label in (
+            ("any", "Any session length"),
+            ("short", "Short: under 30 minutes"),
+            ("medium", "Medium: 30-90 minutes"),
+            ("long", "Long: 90+ minutes"),
+        )
+        if value in PERSONAL_CORE_TIME_BUDGETS
+    )
+    personal_risk_options = "\n".join(
+        f'                    <option value="{html.escape(value)}"{ " selected" if value == "balanced" else ""}>{html.escape(label)}</option>'
+        for value, label in (
+            ("balanced", "Balanced"),
+            ("safer", "Prefer safer"),
+            ("highsec", "High-sec only"),
+            ("lowsec", "Low-sec aware"),
+            ("wormhole", "Wormhole aware"),
+            ("aggressive", "Aggressive"),
+        )
+        if value in PERSONAL_CORE_RISK_MODES
+    )
+    personal_hub_options = "\n".join(
+        f'                    <option value="{html.escape(value)}"{ " selected" if value == "jita" else ""}>{html.escape(label)}</option>'
+        for value, label in (
+            ("jita", "Jita"),
+            ("amarr", "Amarr"),
+            ("dodixie", "Dodixie"),
+            ("hek", "Hek"),
+            ("rens", "Rens"),
+        )
+        if value in PERSONAL_CORE_HUBS
+    )
     haul_market_group_options = render_market_group_picker_options(
         input_id_prefix="haul-market-group",
         input_name="market_group_ids",
@@ -18297,6 +18470,37 @@ def _render_flight_attendant_dashboard() -> str:
     }
     .intake-workspace .profit-panel { min-height: 380px; }
     .intake-input-panel textarea { min-height: 260px; font-family: Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.35; }
+    .personal-core-panel {
+      border: 1px solid rgba(97, 199, 217, .22);
+      border-radius: 7px;
+      background: rgba(10, 17, 20, .48);
+      padding: 12px;
+      margin: 12px 0 14px;
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+    .personal-core-form textarea { min-height: 74px; }
+    .personal-core-form input,
+    .personal-core-form select,
+    .personal-core-form textarea { min-width: 0; }
+    .personal-core-source-ready span { color: var(--green); }
+    .personal-core-source-missing_scope span { color: var(--amber); }
+    .personal-core-source-error span { color: var(--red); }
+    .personal-core-rec-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .personal-core-rec-head strong { overflow-wrap: anywhere; }
+    .personal-core-context-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
     .intake-trust-list { display: grid; gap: 8px; margin-bottom: 12px; }
     .intake-source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
     .intake-source-card {
@@ -22201,7 +22405,7 @@ help</textarea>
               <div class="workflow-step">
                 <span>Data source</span>
                 <strong>Read-only ESI</strong>
-                <small>Location scope only on this tab; industry work moved to Industry Library.</small>
+                <small>Core scopes power Personal Core summaries; specialist tools keep deeper work in their tabs.</small>
               </div>
               <div class="workflow-step">
                 <span>Freshness</span>
@@ -22240,6 +22444,79 @@ help</textarea>
               </div>
             </details>
 @@TAB_SCOPE_FLIGHT@@
+            <section class="personal-core-panel" aria-labelledby="personal-core-title">
+              <div class="panel-header">
+                <div>
+                  <h2 id="personal-core-title">Personal Core</h2>
+                  <div class="meta">Goal, preferences, authorized ESI summaries, source posture, and manual next steps.</div>
+                </div>
+                <span class="pill reserved">What Now</span>
+              </div>
+              <form id="personal-core-form" class="note-form personal-core-form">
+                <div class="row">
+                  <label>Goal
+                    <select id="personal-core-goal">
+@@PERSONAL_CORE_GOAL_OPTIONS@@
+                    </select>
+                  </label>
+                  <label>Time
+                    <select id="personal-core-time-budget">
+@@PERSONAL_CORE_TIME_OPTIONS@@
+                    </select>
+                  </label>
+                  <label>Risk
+                    <select id="personal-core-risk">
+@@PERSONAL_CORE_RISK_OPTIONS@@
+                    </select>
+                  </label>
+                  <label>Market hub
+                    <select id="personal-core-hub">
+@@PERSONAL_CORE_HUB_OPTIONS@@
+                    </select>
+                  </label>
+                </div>
+                <div class="row">
+                  <label>Industry home
+                    <input id="personal-core-industry-home" autocomplete="off" placeholder="Current, Amarr, corp structure">
+                  </label>
+                  <label>Refine home
+                    <input id="personal-core-refine-home" autocomplete="off" placeholder="Current, station, structure">
+                  </label>
+                  <label>Mission home
+                    <input id="personal-core-mission-home" autocomplete="off" placeholder="Agent area or staging system">
+                  </label>
+                </div>
+                <div class="row">
+                  <label>Desired ship or item
+                    <input id="personal-core-desired-ship" autocomplete="off" placeholder="Hawk, Epithal, doctrine hull">
+                  </label>
+                  <label>ISK target
+                    <input id="personal-core-isk-target" type="text" inputmode="decimal" autocomplete="off" placeholder="50m, 1b, or blank">
+                  </label>
+                </div>
+                <label>Corp need
+                  <textarea id="personal-core-corp-needs" rows="3" maxlength="240" placeholder="Optional: minerals for a doctrine, buyback request, hauling need, production target"></textarea>
+                </label>
+                <div class="discord-alert-toolbar">
+                  <button id="personal-core-refresh" type="submit">Refresh Personal Core</button>
+                  <button id="personal-core-clear" class="secondary" type="button">Clear Preferences</button>
+                  <span id="personal-core-status" class="meta" aria-live="polite">Connect ESI, set a goal, then refresh.</span>
+                </div>
+              </form>
+              <div id="personal-core-trust" class="intake-trust-list">
+                <div class="decision-empty">Source posture will appear after refresh.</div>
+              </div>
+              <div id="personal-core-summary" class="profit-summary">No personal core refresh has run yet.</div>
+              <div id="personal-core-results" class="decision-output"></div>
+              <div id="personal-core-copy-panel" class="quickbar-copy-panel" hidden>
+                <div>
+                  <strong>Manual Share Line</strong>
+                  <div class="meta">Copies the recommendation summary only; raw ESI responses and access tokens are never included.</div>
+                  <div id="personal-core-copy-status" class="meta quickbar-copy-status" aria-live="polite"></div>
+                </div>
+                <button id="personal-core-copy-share" class="secondary" type="button">Copy Summary</button>
+              </div>
+            </section>
             <div class="briefing">
               <div class="system-board">
                 <div class="meta">Current system briefing</div>
@@ -22247,7 +22524,7 @@ help</textarea>
                 <div id="flight-location-line" class="constellation-line">Checking Flight Attendant ESI status...</div>
                 <div class="offer-grid">
                   <div class="readout"><span class="meta">Pilot</span><b id="flight-pilot-name">Not connected</b></div>
-                  <div class="readout"><span class="meta">Scope</span><b id="flight-scope-name">Location</b></div>
+                  <div class="readout"><span class="meta">Scope</span><b id="flight-scope-name">Core</b></div>
                   <div class="readout"><span class="meta">Token</span><b id="flight-token-status">Not active</b></div>
                 </div>
                 <div class="flight-actions">
@@ -23861,6 +24138,25 @@ help</textarea>
     const flightLoginLink = document.querySelector("#flight-login-link");
     const flightLogoutLink = document.querySelector("#flight-logout-link");
     const flightRefreshButton = document.querySelector("#flight-refresh");
+    const personalCoreForm = document.querySelector("#personal-core-form");
+    const personalCoreGoal = document.querySelector("#personal-core-goal");
+    const personalCoreTimeBudget = document.querySelector("#personal-core-time-budget");
+    const personalCoreRisk = document.querySelector("#personal-core-risk");
+    const personalCoreHub = document.querySelector("#personal-core-hub");
+    const personalCoreIndustryHome = document.querySelector("#personal-core-industry-home");
+    const personalCoreRefineHome = document.querySelector("#personal-core-refine-home");
+    const personalCoreMissionHome = document.querySelector("#personal-core-mission-home");
+    const personalCoreDesiredShip = document.querySelector("#personal-core-desired-ship");
+    const personalCoreIskTarget = document.querySelector("#personal-core-isk-target");
+    const personalCoreCorpNeeds = document.querySelector("#personal-core-corp-needs");
+    const personalCoreStatus = document.querySelector("#personal-core-status");
+    const personalCoreTrust = document.querySelector("#personal-core-trust");
+    const personalCoreSummary = document.querySelector("#personal-core-summary");
+    const personalCoreResults = document.querySelector("#personal-core-results");
+    const personalCoreClear = document.querySelector("#personal-core-clear");
+    const personalCoreCopyPanel = document.querySelector("#personal-core-copy-panel");
+    const personalCoreCopyShare = document.querySelector("#personal-core-copy-share");
+    const personalCoreCopyStatus = document.querySelector("#personal-core-copy-status");
     const flightBlueprintSummary = document.querySelector("#flight-blueprint-summary");
     const flightBlueprintTop = document.querySelector("#flight-blueprint-top");
     const flightAssetSummary = document.querySelector("#flight-asset-summary");
@@ -24091,6 +24387,16 @@ help</textarea>
     const flightBuildabilityTop = document.querySelector("#flight-buildability-top");
     const flightIndustryNote = document.querySelector("#flight-industry-note");
     const notesKey = "eve-flight-attendant-notes-v1";
+    const personalCoreGoalKey = "eve-flight-personal-core-goal-v1";
+    const personalCoreTimeKey = "eve-flight-personal-core-time-v1";
+    const personalCoreRiskKey = "eve-flight-personal-core-risk-v1";
+    const personalCoreHubKey = "eve-flight-personal-core-hub-v1";
+    const personalCoreIndustryHomeKey = "eve-flight-personal-core-industry-home-v1";
+    const personalCoreRefineHomeKey = "eve-flight-personal-core-refine-home-v1";
+    const personalCoreMissionHomeKey = "eve-flight-personal-core-mission-home-v1";
+    const personalCoreDesiredShipKey = "eve-flight-personal-core-desired-ship-v1";
+    const personalCoreIskTargetKey = "eve-flight-personal-core-isk-target-v1";
+    const personalCoreCorpNeedsKey = "eve-flight-personal-core-corp-needs-v1";
     const jumpsKey = "eve-flight-attendant-max-jumps-v1";
     const industryBuildSystemKey = "eve-flight-industry-build-system-v1";
     const haulOriginKey = "eve-flight-haul-origin-v1";
@@ -24246,6 +24552,7 @@ help</textarea>
     let assetLedgerPreviewCount = 0;
     let assetLedgerHandoffRows = [];
     let miningYieldTimerInterval = null;
+    let personalCoreShareText = "";
     let intakeLastShareText = "";
     let bulkAppraisalLastExportText = "";
     let planetaryShoppingQuickbarItems = [];
@@ -28342,6 +28649,277 @@ help</textarea>
       return String(settings.originName || "").trim() || "current ESI system";
     }
 
+    function personalCoreSetStatus(message, state = "waiting") {
+      if (!personalCoreStatus) return;
+      personalCoreStatus.textContent = message || "";
+      personalCoreStatus.className = `meta quickbar-copy-status ${state === "error" ? "error" : ""}`.trim();
+    }
+
+    function resetPersonalCore(message) {
+      personalCoreShareText = "";
+      personalCoreSetStatus(message || "Personal Core is waiting for ESI and preferences.", "waiting");
+      if (personalCoreTrust) personalCoreTrust.innerHTML = '<div class="decision-empty">Source posture will appear after refresh.</div>';
+      if (personalCoreSummary) personalCoreSummary.textContent = message || "No personal core refresh has run yet.";
+      if (personalCoreResults) personalCoreResults.innerHTML = "";
+      if (personalCoreCopyPanel) personalCoreCopyPanel.hidden = true;
+    }
+
+    function readPersonalCoreSettings() {
+      return {
+        goal: window.localStorage.getItem(personalCoreGoalKey) || personalCoreGoal?.value || "what_now",
+        timeBudget: window.localStorage.getItem(personalCoreTimeKey) || personalCoreTimeBudget?.value || "any",
+        risk: window.localStorage.getItem(personalCoreRiskKey) || personalCoreRisk?.value || "balanced",
+        preferredHub: window.localStorage.getItem(personalCoreHubKey) || personalCoreHub?.value || "jita",
+        industryHome: window.localStorage.getItem(personalCoreIndustryHomeKey) || personalCoreIndustryHome?.value || "",
+        refineHome: window.localStorage.getItem(personalCoreRefineHomeKey) || personalCoreRefineHome?.value || "",
+        missionHome: window.localStorage.getItem(personalCoreMissionHomeKey) || personalCoreMissionHome?.value || "",
+        desiredShip: window.localStorage.getItem(personalCoreDesiredShipKey) || personalCoreDesiredShip?.value || "",
+        iskTarget: window.localStorage.getItem(personalCoreIskTargetKey) || personalCoreIskTarget?.value || "",
+        corpNeeds: window.localStorage.getItem(personalCoreCorpNeedsKey) || personalCoreCorpNeeds?.value || "",
+      };
+    }
+
+    function writePersonalCoreSettings(settings = {}) {
+      const clean = {
+        goal: String(settings.goal || "what_now"),
+        timeBudget: String(settings.timeBudget || "any"),
+        risk: String(settings.risk || "balanced"),
+        preferredHub: String(settings.preferredHub || "jita"),
+        industryHome: String(settings.industryHome || "").trim(),
+        refineHome: String(settings.refineHome || "").trim(),
+        missionHome: String(settings.missionHome || "").trim(),
+        desiredShip: String(settings.desiredShip || "").trim(),
+        iskTarget: String(settings.iskTarget || "").trim(),
+        corpNeeds: String(settings.corpNeeds || "").trim(),
+      };
+      if (personalCoreGoal) personalCoreGoal.value = clean.goal;
+      if (personalCoreTimeBudget) personalCoreTimeBudget.value = clean.timeBudget;
+      if (personalCoreRisk) personalCoreRisk.value = clean.risk;
+      if (personalCoreHub) personalCoreHub.value = clean.preferredHub;
+      if (personalCoreIndustryHome) personalCoreIndustryHome.value = clean.industryHome;
+      if (personalCoreRefineHome) personalCoreRefineHome.value = clean.refineHome;
+      if (personalCoreMissionHome) personalCoreMissionHome.value = clean.missionHome;
+      if (personalCoreDesiredShip) personalCoreDesiredShip.value = clean.desiredShip;
+      if (personalCoreIskTarget) personalCoreIskTarget.value = clean.iskTarget;
+      if (personalCoreCorpNeeds) personalCoreCorpNeeds.value = clean.corpNeeds;
+      window.localStorage.setItem(personalCoreGoalKey, clean.goal);
+      window.localStorage.setItem(personalCoreTimeKey, clean.timeBudget);
+      window.localStorage.setItem(personalCoreRiskKey, clean.risk);
+      window.localStorage.setItem(personalCoreHubKey, clean.preferredHub);
+      window.localStorage.setItem(personalCoreIndustryHomeKey, clean.industryHome);
+      window.localStorage.setItem(personalCoreRefineHomeKey, clean.refineHome);
+      window.localStorage.setItem(personalCoreMissionHomeKey, clean.missionHome);
+      window.localStorage.setItem(personalCoreDesiredShipKey, clean.desiredShip);
+      window.localStorage.setItem(personalCoreIskTargetKey, clean.iskTarget);
+      window.localStorage.setItem(personalCoreCorpNeedsKey, clean.corpNeeds);
+      return clean;
+    }
+
+    function clearPersonalCoreSettings() {
+      [
+        personalCoreGoalKey,
+        personalCoreTimeKey,
+        personalCoreRiskKey,
+        personalCoreHubKey,
+        personalCoreIndustryHomeKey,
+        personalCoreRefineHomeKey,
+        personalCoreMissionHomeKey,
+        personalCoreDesiredShipKey,
+        personalCoreIskTargetKey,
+        personalCoreCorpNeedsKey,
+      ].forEach((key) => window.localStorage.removeItem(key));
+      writePersonalCoreSettings({
+        goal: "what_now",
+        timeBudget: "any",
+        risk: "balanced",
+        preferredHub: "jita",
+      });
+      personalCoreShareText = "";
+      if (personalCoreTrust) personalCoreTrust.innerHTML = '<div class="decision-empty">Source posture will appear after refresh.</div>';
+      if (personalCoreSummary) personalCoreSummary.textContent = "Preferences cleared. Refresh when ready.";
+      if (personalCoreResults) personalCoreResults.innerHTML = "";
+      if (personalCoreCopyPanel) personalCoreCopyPanel.hidden = true;
+      personalCoreSetStatus("Preferences cleared.", "waiting");
+    }
+
+    function personalCoreQuery(settings) {
+      const params = new URLSearchParams();
+      params.set("goal", settings.goal || "what_now");
+      params.set("time_budget", settings.timeBudget || "any");
+      params.set("risk", settings.risk || "balanced");
+      params.set("preferred_hub", settings.preferredHub || "jita");
+      if (settings.industryHome) params.set("industry_home", settings.industryHome);
+      if (settings.refineHome) params.set("refine_home", settings.refineHome);
+      if (settings.missionHome) params.set("mission_home", settings.missionHome);
+      if (settings.desiredShip) params.set("desired_ship", settings.desiredShip);
+      if (settings.iskTarget) params.set("isk_target", settings.iskTarget);
+      if (settings.corpNeeds) params.set("corp_needs", settings.corpNeeds);
+      return params.toString();
+    }
+
+    function renderPersonalCoreSources(sources) {
+      const rows = Array.isArray(sources) ? sources : [];
+      if (!rows.length) return '<div class="decision-empty">No source status returned.</div>';
+      return `<div class="intake-source-grid">${rows.map((source) => {
+        const status = source.status || "unknown";
+        const statusLabel = status === "ready"
+          ? "Ready"
+          : status === "missing_scope"
+            ? "Missing scope"
+            : status === "error"
+              ? "Error"
+              : "No data";
+        return `
+          <div class="intake-source-card personal-core-source-${escapeHtml(status)}">
+            <strong>${escapeHtml(source.label || source.key || "Source")}</strong>
+            <span>${escapeHtml(statusLabel)}</span>
+            <small>${escapeHtml(source.detail || "")}</small>
+            <small>${escapeHtml(source.scope || "No ESI scope")}</small>
+            ${source.freshness ? `<small>Fresh: ${escapeHtml(source.freshness)}</small>` : ""}
+          </div>
+        `;
+      }).join("")}</div>`;
+    }
+
+    function renderPersonalCoreContext(context) {
+      const data = context || {};
+      const location = data.location || {};
+      const assets = data.assets || {};
+      const blueprints = data.blueprints || {};
+      const skills = data.skills || {};
+      const standings = data.standings || {};
+      const wallet = data.wallet || {};
+      return `
+        <div class="personal-core-context-grid">
+          <div class="decision-metric"><span>Location</span><b>${escapeHtml(location.solar_system_name || "Unknown")}</b><small>${escapeHtml(location.updated_at || "No live location in this result.")}</small></div>
+          <div class="decision-metric"><span>Assets</span><b>${formatNumber(assets.stack_count || 0)} stacks</b><small>${formatNumber(assets.unique_type_count || 0)} item types across ${formatNumber(assets.location_count || 0)} locations.</small></div>
+          <div class="decision-metric"><span>Blueprints</span><b>${formatNumber(blueprints.total || 0)}</b><small>${formatNumber(blueprints.originals || 0)} originals, ${formatNumber(blueprints.copies || 0)} copies.</small></div>
+          <div class="decision-metric"><span>Skills</span><b>${formatNumber(skills.trained_skill_count || 0)}</b><small>${formatNumber(skills.total_sp || 0)} total SP in ESI payload.</small></div>
+          <div class="decision-metric"><span>Standings</span><b>${formatNumber(standings.reprocessing_candidate_count || 0)} refine leads</b><small>${formatNumber(standings.positive_count || 0)} positive, ${formatNumber(standings.negative_count || 0)} negative standings.</small></div>
+          <div class="decision-metric"><span>Wallet</span><b>${formatNumber(wallet.transaction_count || 0)} tx</b><small>${formatNumber(wallet.sell_count || 0)} sells, ${formatNumber(wallet.buy_count || 0)} buys, ${formatIsk(wallet.fee_rows_total_isk || 0)} fee rows.</small></div>
+        </div>
+      `;
+    }
+
+    function renderPersonalCoreChecklist(items) {
+      const rows = Array.isArray(items) ? items : [];
+      if (!rows.length) return "";
+      return renderDashboardChecklist(rows, {emptyMessage: "No checklist rows returned."});
+    }
+
+    function renderPersonalCoreActions(actions) {
+      const rows = Array.isArray(actions) ? actions : [];
+      if (!rows.length) return "";
+      return `<div class="intake-action-list">${rows.map((item) => `
+        <a href="${escapeHtml(item.href || "#flight")}" data-core-action-tab="${escapeHtml(item.target_tab || "")}">
+          <strong>${escapeHtml(item.label || "Open")}</strong>
+          <small>${escapeHtml(item.detail || "")}</small>
+        </a>
+      `).join("")}</div>`;
+    }
+
+    function renderPersonalCoreAssumptions(assumptions) {
+      const rows = Array.isArray(assumptions) ? assumptions.filter(Boolean) : [];
+      if (!rows.length) return "";
+      return `<div class="intake-assumption-list">${rows.map((text) => `<div>${escapeHtml(text)}</div>`).join("")}</div>`;
+    }
+
+    function renderPersonalCoreRecommendations(recommendations) {
+      const rows = Array.isArray(recommendations) ? recommendations : [];
+      if (!rows.length) return renderDashboardEmptyState("No recommendations returned.");
+      return rows.map((rec) => `
+        <article class="decision-row">
+          <div class="personal-core-rec-head">
+            <strong>${escapeHtml(rec.title || "Recommendation")}</strong>
+            <span class="pill decision-source">${escapeHtml(rec.confidence || "estimate")} · ${formatNumber(rec.priority || 0)}</span>
+          </div>
+          <div class="decision-lede">${escapeHtml(rec.summary || "")}</div>
+          ${renderPersonalCoreChecklist(rec.manual_checklist || [])}
+          ${renderPersonalCoreActions(rec.next_actions || [])}
+          ${renderPersonalCoreAssumptions(rec.assumptions || [])}
+        </article>
+      `).join("");
+    }
+
+    function renderPersonalCore(data) {
+      const preferences = data.preferences || {};
+      const sources = Array.isArray(data.sources) ? data.sources : [];
+      const readyCount = sources.filter((source) => source.status === "ready").length;
+      const missingCount = sources.filter((source) => source.status === "missing_scope").length;
+      const errorCount = sources.filter((source) => source.status === "error").length;
+      personalCoreShareText = String(data.share_text || "");
+      if (personalCoreTrust) personalCoreTrust.innerHTML = renderPersonalCoreSources(sources);
+      if (personalCoreSummary) {
+        personalCoreSummary.innerHTML = `
+          <strong>${escapeHtml(data.beginner_translation || "Personal Core refreshed.")}</strong>
+          ${renderPersonalCoreContext(data.context || {})}
+        `;
+      }
+      if (personalCoreResults) personalCoreResults.innerHTML = renderPersonalCoreRecommendations(data.recommendations || []);
+      if (personalCoreCopyPanel) personalCoreCopyPanel.hidden = !personalCoreShareText;
+      const recCount = Array.isArray(data.recommendations) ? data.recommendations.length : 0;
+      personalCoreSetStatus(
+        `Core refreshed for ${escapeHtml(preferences.goal || "what_now")}: ${formatNumber(recCount)} recommendations, ${formatNumber(readyCount)} sources ready, ${formatNumber(missingCount)} missing, ${formatNumber(errorCount)} errors.`,
+        errorCount ? "error" : "ready",
+      );
+      recordEsiActivity({
+        scopes: Array.isArray((data.trust || {}).esi_scopes) ? data.trust.esi_scopes : flightActivityScopes("location", "assets", "blueprints", "skills", "standings", "wallet"),
+        label: "Personal Core refreshed",
+        description: `Built a source-aware recommendation board for ${preferences.goal || "what_now"}.`,
+        reason: "The Personal Core combines read-only character summaries with local preferences to choose the next manual workflow.",
+        status: readyCount ? "success" : "empty",
+      });
+    }
+
+    async function loadPersonalCore() {
+      if (!personalCoreForm) return;
+      const settings = writePersonalCoreSettings({
+        goal: personalCoreGoal?.value || "what_now",
+        timeBudget: personalCoreTimeBudget?.value || "any",
+        risk: personalCoreRisk?.value || "balanced",
+        preferredHub: personalCoreHub?.value || "jita",
+        industryHome: personalCoreIndustryHome?.value || "",
+        refineHome: personalCoreRefineHome?.value || "",
+        missionHome: personalCoreMissionHome?.value || "",
+        desiredShip: personalCoreDesiredShip?.value || "",
+        iskTarget: personalCoreIskTarget?.value || "",
+        corpNeeds: personalCoreCorpNeeds?.value || "",
+      });
+      try {
+        personalCoreSetStatus("Refreshing personal core from authorized ESI summaries...", "waiting");
+        if (personalCoreResults) personalCoreResults.innerHTML = renderDashboardEmptyState("Reading source summaries and building recommendations.");
+        const response = await fetch(`/api/flight/personal-core?${personalCoreQuery(settings)}`);
+        const data = await readJsonApiResponse(response, "Could not refresh Personal Core");
+        renderPersonalCore(data);
+      } catch (error) {
+        personalCoreSetStatus(error.message || "Could not refresh Personal Core.", "error");
+        if (personalCoreResults) {
+          personalCoreResults.innerHTML = renderDashboardErrorState(error.message || "Could not refresh Personal Core.", {
+            detail: "Connect ESI, check scope access, or use Intake + Goals while source context is unavailable.",
+          });
+        }
+        recordEsiActivityError({
+          scopes: flightActivityScopes("location", "assets", "blueprints", "skills", "standings", "wallet"),
+          label: "Personal Core failed",
+          description: "The app could not build the source-aware Personal Core recommendation board.",
+          reason: "The Personal Core needs an authorized ESI session for character summaries.",
+        });
+      }
+    }
+
+    async function copyPersonalCoreShareText() {
+      if (!personalCoreShareText) {
+        if (personalCoreCopyStatus) personalCoreCopyStatus.textContent = "No recommendation summary to copy yet.";
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(personalCoreShareText);
+        if (personalCoreCopyStatus) personalCoreCopyStatus.textContent = "Personal Core summary copied.";
+      } catch (_error) {
+        if (personalCoreCopyStatus) personalCoreCopyStatus.textContent = "Clipboard copy failed.";
+      }
+    }
+
     function readAcquisitionSettings() {
       const originName = String(window.localStorage.getItem(acqOriginKey) || acqOrigin.value || "").trim();
       const destination = String(window.localStorage.getItem(acqDestinationKey) || acqDestination.value || "Jita").trim() || "Jita";
@@ -28466,6 +29044,7 @@ help</textarea>
         resetReprocessing("Ore reprocessing calculator is offline.");
         clearReprocessingLocations("Ore reprocessing calculator is offline.", true);
         resetFlightIndustry("Flight Attendant ESI status is offline.");
+        resetPersonalCore("Personal Core is offline until Flight Attendant status refreshes.");
         setOpsStatusCard(
           opsEsiState,
           opsEsiDetail,
@@ -28548,7 +29127,7 @@ help</textarea>
       flightLoginLink.href = data.login_url || "/flight/login";
       flightLogoutLink.href = data.logout_url || "/flight/logout";
       flightLogoutLink.hidden = !data.connected;
-      flightScopeName.textContent = requiredScopes.length > 1 ? `${requiredScopes.length} scopes` : "Location only";
+      flightScopeName.textContent = requiredScopes.length > 1 ? `${requiredScopes.length} scopes` : "Core";
       renderReprocessingOptInStatus(data);
       renderMiningOptInStatus(data);
       if (!data.sso_configured) {
@@ -28567,6 +29146,7 @@ help</textarea>
         resetReprocessing("Configure EVE SSO before calculating ore reprocessing.");
         clearReprocessingLocations("Configure EVE SSO before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Configure EVE SSO before scanning industry data.");
+        resetPersonalCore("Configure EVE SSO before building your Personal Core.");
         setOpsStatusCard(
           opsEsiState,
           opsEsiDetail,
@@ -28599,6 +29179,7 @@ help</textarea>
         resetReprocessing("Connect ESI to calculate ore reprocessing.");
         clearReprocessingLocations("Connect ESI to rank reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Connect ESI to scan owned blueprints and materials.");
+        resetPersonalCore("Connect ESI to build your Personal Core.");
         setOpsStatusCard(
           opsEsiState,
           opsEsiDetail,
@@ -28633,6 +29214,7 @@ help</textarea>
         resetReprocessing("Use an allowlisted EVE character before calculating ore reprocessing.");
         clearReprocessingLocations("Use an allowlisted EVE character before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Use an allowlisted EVE character before scanning industry data.");
+        resetPersonalCore("Use an allowlisted EVE character before building your Personal Core.");
         setOpsStatusCard(
           opsEsiState,
           opsEsiDetail,
@@ -28663,6 +29245,7 @@ help</textarea>
         resetReprocessing("Resolve the ESI error before calculating ore reprocessing.");
         clearReprocessingLocations("Resolve the ESI error before ranking reprocessing stations over 1.5 standing.", true);
         resetFlightIndustry("Resolve the ESI error before scanning industry data.");
+        resetPersonalCore("Resolve the ESI error before building your Personal Core.");
         setOpsStatusCard(
           opsEsiState,
           opsEsiDetail,
@@ -28720,6 +29303,7 @@ help</textarea>
       resetMiningYield(`Ready to summarize ${formatNumber(miningSettings.days)} ledger day${miningSettings.days === 1 ? "" : "s"} with a ${formatNumber(miningSettings.sessionHours)} hour manual session average.`);
       const reprocessSettings = readReprocessingSettings();
       resetReprocessing(`Ready to calculate ${formatNumber(reprocessSettings.quantity)} ore units.`);
+      resetPersonalCore("Ready to refresh Personal Core from authorized ESI summaries.");
       recordEsiActivity({
         scopes: flightActivityScopes("location"),
         label: "Location checked",
@@ -34831,6 +35415,46 @@ help</textarea>
       loadFlightDiagnostics();
     });
 
+    if (personalCoreForm) {
+      personalCoreForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        loadPersonalCore();
+      });
+      [
+        personalCoreGoal,
+        personalCoreTimeBudget,
+        personalCoreRisk,
+        personalCoreHub,
+        personalCoreIndustryHome,
+        personalCoreRefineHome,
+        personalCoreMissionHome,
+        personalCoreDesiredShip,
+        personalCoreIskTarget,
+        personalCoreCorpNeeds,
+      ].filter(Boolean).forEach((control) => {
+        control.addEventListener("change", () => {
+          writePersonalCoreSettings({
+            goal: personalCoreGoal?.value || "what_now",
+            timeBudget: personalCoreTimeBudget?.value || "any",
+            risk: personalCoreRisk?.value || "balanced",
+            preferredHub: personalCoreHub?.value || "jita",
+            industryHome: personalCoreIndustryHome?.value || "",
+            refineHome: personalCoreRefineHome?.value || "",
+            missionHome: personalCoreMissionHome?.value || "",
+            desiredShip: personalCoreDesiredShip?.value || "",
+            iskTarget: personalCoreIskTarget?.value || "",
+            corpNeeds: personalCoreCorpNeeds?.value || "",
+          });
+        });
+      });
+    }
+    if (personalCoreClear) {
+      personalCoreClear.addEventListener("click", clearPersonalCoreSettings);
+    }
+    if (personalCoreCopyShare) {
+      personalCoreCopyShare.addEventListener("click", copyPersonalCoreShareText);
+    }
+
     flightBuyerScanButton.addEventListener("click", () => {
       loadFlightBuyers();
     });
@@ -35857,6 +36481,10 @@ help</textarea>
       intakePreferredHub.value = window.localStorage.getItem(intakePreferredHubKey) || intakePreferredHub.value || "jita";
     }
     resetIntake(false);
+    if (personalCoreForm) {
+      writePersonalCoreSettings(readPersonalCoreSettings());
+      resetPersonalCore("Connect ESI, set a goal, then refresh.");
+    }
     if (bulkAppraisalHub) {
       bulkAppraisalHub.value = window.localStorage.getItem(bulkAppraisalHubKey) || bulkAppraisalHub.value || "jita";
     }
@@ -35899,6 +36527,10 @@ help</textarea>
         "@@INTAKE_GOAL_OPTIONS@@": intake_goal_options,
         "@@INTAKE_TIME_OPTIONS@@": intake_time_options,
         "@@INTAKE_HUB_OPTIONS@@": intake_hub_options,
+        "@@PERSONAL_CORE_GOAL_OPTIONS@@": personal_goal_options,
+        "@@PERSONAL_CORE_TIME_OPTIONS@@": personal_time_options,
+        "@@PERSONAL_CORE_RISK_OPTIONS@@": personal_risk_options,
+        "@@PERSONAL_CORE_HUB_OPTIONS@@": personal_hub_options,
         "@@HAUL_MARKET_GROUP_OPTIONS@@": haul_market_group_options,
         "@@ACQ_MARKET_GROUP_OPTIONS@@": acquisition_market_group_options,
         "@@ACQUISITION_COMMON_MATERIAL_LIMIT@@": f"{MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES:,}",

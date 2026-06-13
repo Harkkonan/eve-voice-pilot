@@ -47,6 +47,7 @@ The first version is a safe briefing surface:
 - It stores captain's notes in the browser only.
 - It can use read-only ESI location to show the connected pilot's current system.
 - It keeps the ESI Flight Recorder, scope explanation, Captain's Notes, and Safety Charter on the Flight Attendant tab.
+- It includes a `Personal Core` panel on the Flight Attendant tab for the first "what should I do now?" slice. The pilot can set goal, time, risk, preferred hub, industry/refining/mission homes, desired ship or item, ISK target, and a corp-need note. The refresh combines those preferences with read-only ESI summaries for location, assets, blueprints, skills, standings, and wallet activity, then returns source posture, context metrics, assumptions, and manual next-step checklists.
 - It includes a separate `Industry Library` tab for owned blueprints, owned materials, recipe cache status, nearby systems, buyer scans, profitability ranking, ME/TE, required skills, max production limit, base job time, and TE-adjusted timing assumptions.
 - The `Industry Library` tab compares owned blueprint type IDs with the local static recipe cache and can scan public ESI buy orders for products made by owned blueprints.
 - It includes a `Hauler Routes` tab that compares cheap public material sell orders on or near a selected route with higher public buy orders in the destination system, then lets the pilot rank and filter results by total profit, ISK per m3, ISK per extra jump, or margin.
@@ -88,6 +89,8 @@ esi-skills.read_skills.v1
 esi-characters.read_standings.v1
 esi-wallet.read_character_wallet.v1
 ```
+
+The `Personal Core` panel uses the normal Flight Attendant scopes above, but it attempts each source independently and labels missing scopes as unknown context instead of treating them as zero assets, zero standings, or zero wallet activity. It does not persist the personal-core response, raw ESI responses, wallet transaction IDs, authorization headers, access tokens, or refresh tokens. Browser local storage is used only for the pilot's preference fields so the next refresh starts with the same goal and home-system assumptions. Output is advisory and points to existing manual workflows such as Intake + Goals, Industry Library, Hauler Routes, Trade Asset Ledger, Market Posts, Reprocessing, Mining Yield, and Trade P&L.
 
 Optional reprocessing opt-in scopes:
 

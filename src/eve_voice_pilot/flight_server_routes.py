@@ -16,6 +16,7 @@ FLIGHT_GET_ROUTE_METHODS: dict[str, str] = {
     "/api/flight/plex-hub-comparison": "_handle_flight_plex_hub_comparison",
     "/api/flight/systems": "_handle_flight_systems",
     "/api/flight/market-types": "_handle_flight_market_types",
+    "/api/flight/personal-core": "_handle_flight_personal_core",
     "/api/flight/industry": "_handle_flight_industry",
     "/api/flight/buyers": "_handle_flight_buyers",
     "/api/flight/buyers/progress": "_handle_flight_buyers_progress",
