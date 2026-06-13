@@ -3,6 +3,9 @@ ARG PYTHON_VERSION=3.12
 
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
+ARG APP_UID=100
+ARG APP_GID=101
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src \
@@ -17,8 +20,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN addgroup --system evevoice \
-    && adduser --system --ingroup evevoice --home /nonexistent --no-create-home evevoice \
+RUN addgroup --system --gid "${APP_GID}" evevoice \
+    && adduser --system --uid "${APP_UID}" --ingroup evevoice --home /nonexistent --no-create-home evevoice \
     && mkdir -p /data/profiles /data/cache /app/scripts /app/deploy/scripts \
     && ln -s /data/profiles /app/profiles \
     && ln -s /data/cache /app/cache \

@@ -74,6 +74,22 @@ scoped to the web service.
    printf '%s' 'optional-discord-webhook-or-empty' > deploy/docker/secrets/corp_market_discord_webhook_url.txt
    ```
 
+   On Linux hosts, make those secret files readable by the non-root container
+   user and not world-readable:
+
+   ```sh
+   sudo chown 100:101 deploy/docker/secrets/corp_market_sso_client_secret.txt \
+     deploy/docker/secrets/corp_market_admin_token.txt \
+     deploy/docker/secrets/corp_market_discord_webhook_url.txt
+   sudo chmod 0400 deploy/docker/secrets/corp_market_sso_client_secret.txt \
+     deploy/docker/secrets/corp_market_admin_token.txt \
+     deploy/docker/secrets/corp_market_discord_webhook_url.txt
+   ```
+
+   The Corp Market image runs as UID `100` / GID `101` by default. Docker
+   Compose mounts these secret files from the host, so restrictive root-owned
+   files can prevent the container from reading them.
+
 3. Build the static EVE SDE cache into the Docker cache volume before inviting
    testers:
 

@@ -36,6 +36,10 @@ def test_dockerfile_scopes_runtime_to_corp_market_web_service():
     assert "CORP_MARKET_HOST=0.0.0.0" in dockerfile
     assert "CORP_MARKET_MARKET_DB_PATH=/data/profiles/corp_market.sqlite3" in dockerfile
     assert "ln -s /data/cache /app/cache" in dockerfile
+    assert "ARG APP_UID=100" in dockerfile
+    assert "ARG APP_GID=101" in dockerfile
+    assert 'addgroup --system --gid "${APP_GID}" evevoice' in dockerfile
+    assert 'adduser --system --uid "${APP_UID}"' in dockerfile
     assert "USER evevoice" in dockerfile
     assert "HEALTHCHECK" in dockerfile
     assert "run-corp-market-service.sh" in dockerfile
@@ -93,3 +97,13 @@ def test_service_wrapper_supports_file_backed_secrets():
     assert "CORP_MARKET_ADMIN_TOKEN" in wrapper
     assert "CORP_MARKET_DISCORD_WEBHOOK_URL" in wrapper
     assert "EVE_SSO_CLIENT_SECRET" in wrapper
+
+
+def test_deploy_docs_cover_linux_secret_file_permissions():
+    deploy_readme = read_text("deploy/README.md")
+    secrets_readme = read_text("deploy/docker/secrets/README.md")
+
+    for text in (deploy_readme, secrets_readme):
+        assert "sudo chown 100:101" in text
+        assert "sudo chmod 0400" in text
+        assert "UID `100` / GID `101`" in text
