@@ -97,6 +97,26 @@ def test_flight_access_helpers_report_character_allowlist():
     assert status["character_allowlist_count"] == 1
 
 
+def test_flight_access_helpers_allow_any_authenticated_without_trusting_writes():
+    config = EveSsoConfig(
+        client_id="client",
+        client_secret="secret",
+        callback_url="https://flight.example.test/flight/callback",
+        allowed_corporation_ids=(98811080,),
+        allow_any_authenticated=True,
+        trusted_members_can_edit=True,
+    )
+    denied_session = SimpleNamespace(membership_ok=False)
+
+    status = flight_membership_status(config, denied_session)
+
+    assert flight_session_has_member_access(config, denied_session) is True
+    assert flight_member_access_error(config, denied_session) == ""
+    assert status["allowed"] is True
+    assert status["allow_any_authenticated"] is True
+    assert "Any signed-in EVE character" in status["message"]
+
+
 def test_public_hosting_helpers_keep_https_sso_and_cookie_rules():
     unsafe_config = EveSsoConfig(callback_url="http://127.0.0.1:8770/flight/callback")
 
@@ -116,6 +136,34 @@ def test_public_hosting_helpers_keep_https_sso_and_cookie_rules():
         auth_header="",
         token_header="",
     )
+
+    open_sso_config = EveSsoConfig(
+        client_id="client",
+        client_secret="secret",
+        callback_url="https://flight.example.test/flight/callback",
+        allow_any_authenticated=True,
+    )
+    assert (
+        public_hosting_config_errors(
+            public_base_url="https://flight.example.test",
+            sso_config=open_sso_config,
+            public_hosting_mode=True,
+        )
+        == []
+    )
+
+    trusted_without_allowlist = EveSsoConfig(
+        client_id="client",
+        client_secret="secret",
+        callback_url="https://flight.example.test/flight/callback",
+        allow_any_authenticated=True,
+        trusted_members_can_edit=True,
+    )
+    assert "requires a character" in public_hosting_config_errors(
+        public_base_url="https://flight.example.test",
+        sso_config=trusted_without_allowlist,
+        public_hosting_mode=True,
+    )[0]
 
 
 def test_admin_token_and_same_origin_helpers_cover_public_writes():

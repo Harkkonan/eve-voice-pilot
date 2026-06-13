@@ -1963,6 +1963,49 @@ def test_flight_status_rejects_non_allowlisted_session_before_esi_fetch():
     assert payload["location"] is None
 
 
+def test_flight_status_allows_any_authenticated_session(monkeypatch):
+    session = FlightEsiSession(
+        character_id=123456789,
+        character_name="Guest Pilot",
+        corporation_id=9999,
+        corporation_name="Other Corp",
+        alliance_id=None,
+        alliance_name="",
+        scopes=("esi-location.read_location.v1",),
+        access_token="access-token",
+        connected_at="2026-06-05T00:00:00Z",
+        expires_at=9999999999,
+        membership_ok=False,
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "fetch_flight_location",
+        lambda _config, _session: {"solar_system_id": 30000142, "solar_system_name": "Jita"},
+    )
+
+    payload = build_flight_status_payload(
+        config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://market.test/flight/callback",
+            allowed_corporation_ids=(1001,),
+            allow_any_authenticated=True,
+        ),
+        session=session,
+        callback_url="https://market.test/flight/callback",
+        public_base_url="https://market.test",
+        public_hosting_mode=True,
+        secure_cookies=True,
+    )
+
+    assert payload["connected"] is True
+    assert payload["membership"]["required"] is True
+    assert payload["membership"]["allowed"] is True
+    assert payload["membership"]["allow_any_authenticated"] is True
+    assert payload["error"] == ""
+    assert payload["location"]["solar_system_name"] == "Jita"
+
+
 def test_flight_personal_core_payload_uses_available_scopes_and_summarizes(monkeypatch):
     session = FlightEsiSession(
         character_id=123456789,
@@ -2911,6 +2954,36 @@ def test_public_hosting_config_requires_https_sso_and_member_allowlist():
             public_hosting_mode=True,
         )
         == []
+    )
+
+    open_sso_config = corp_market.EveSsoConfig(
+        client_id="client-id",
+        client_secret="client-secret",
+        callback_url="https://market.test/flight/callback",
+        allow_any_authenticated=True,
+    )
+    assert (
+        corp_market.public_hosting_config_errors(
+            public_base_url="https://market.test",
+            sso_config=open_sso_config,
+            public_hosting_mode=True,
+        )
+        == []
+    )
+
+    trusted_without_allowlist = corp_market.EveSsoConfig(
+        client_id="client-id",
+        client_secret="client-secret",
+        callback_url="https://market.test/flight/callback",
+        allow_any_authenticated=True,
+        trusted_members_can_edit=True,
+    )
+    assert "trusted-members-can-write-market requires" in "; ".join(
+        corp_market.public_hosting_config_errors(
+            public_base_url="https://market.test",
+            sso_config=trusted_without_allowlist,
+            public_hosting_mode=True,
+        )
     )
 
 
@@ -5163,6 +5236,69 @@ def test_flight_hosting_diagnostics_reports_operator_readiness(monkeypatch):
     paths = {row["key"]: row for row in payload["local_paths"]["paths"]}
     assert paths["market_database"]["relative_path"] == "profiles/corp_market.sqlite3"
     assert paths["discord_posts"]["ignored_by_git"] is True
+
+
+def test_build_flight_hosting_diagnostics_accepts_any_authenticated_access(monkeypatch):
+    def cache_row(key, label):
+        return {
+            "key": key,
+            "label": label,
+            "file_name": f"{key}.json",
+            "path": f"cache/{key}.json",
+            "available": True,
+            "status": "ready",
+            "detail": "Ready.",
+            "error": "",
+            "build_number": 1,
+            "release_date": "",
+            "generated_at": "",
+            "counts": {},
+            "unlocks": [],
+        }
+
+    monkeypatch.setattr(
+        corp_market,
+        "build_static_cache_diagnostics",
+        lambda: {
+            "ok": True,
+            "missing_count": 0,
+            "cache_count": 4,
+            "refresh_command": r"python .\scripts\update_industry_recipe_cache.py",
+            "same_host_note": "",
+            "ignored_note": "",
+            "caches": [
+                cache_row("industry_recipes", "Blueprint recipe cache"),
+                cache_row("route_graph", "Route graph cache"),
+                cache_row("reprocessing", "Ore reprocessing cache"),
+                cache_row("planetary_industry", "Planetary industry cache"),
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        corp_market,
+        "load_discord_fitting_post_settings",
+        lambda path=corp_market.DEFAULT_DISCORD_FITTING_POST_SETTINGS_PATH: (
+            corp_market.default_discord_fitting_post_settings()
+        ),
+    )
+
+    payload = build_flight_hosting_diagnostics(
+        public_base_url="https://flight.example.test",
+        sso_config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://flight.example.test/flight/callback",
+            allow_any_authenticated=True,
+        ),
+        public_hosting_mode=True,
+        secure_cookies=True,
+    )
+
+    checks = {check["key"]: check for check in payload["checks"]}
+    assert checks["allowlist_active"]["ok"] is True
+    assert "Any authenticated EVE character" in checks["allowlist_active"]["detail"]
+    assert payload["sso"]["membership_restricted"] is False
+    assert payload["sso"]["allow_any_authenticated"] is True
 
 
 def test_build_flight_planetary_payload_displays_customs_transfer_cost(monkeypatch, tmp_path):

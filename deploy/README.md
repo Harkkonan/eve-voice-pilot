@@ -63,8 +63,11 @@ Docker Compose is the preferred VM deployment path, and this checkout keeps it
 scoped to the web service.
 
 1. Copy `deploy/docker/.env.example` to `.env` in the repository root and fill
-   in the public host, public URL, callback URL, SSO client ID, and at least one
-   allowed character, corporation, or alliance ID.
+   in the public host, public URL, callback URL, and SSO client ID. Then choose
+   a public access policy: configure at least one allowed character,
+   corporation, or alliance ID, set `CORP_MARKET_ALLOW_ANY_AUTHENTICATED=1`
+   to allow any valid EVE SSO character to use read/planning features, or use
+   both when reads are public but trusted writer roles still need an allowlist.
 2. Create secret files on the Docker host:
 
    ```sh

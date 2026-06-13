@@ -15073,9 +15073,13 @@ def build_flight_hosting_diagnostics(
         },
         {
             "key": "allowlist_active",
-            "name": "Member allowlist",
-            "ok": (not public_hosting_mode) or sso_config.membership_restricted,
-            "detail": "Use allowed corporation or alliance ids before sharing a public link.",
+            "name": "Flight access policy",
+            "ok": (not public_hosting_mode) or sso_config.membership_restricted or sso_config.allow_any_authenticated,
+            "detail": (
+                "Any authenticated EVE character can sign in."
+                if sso_config.allow_any_authenticated
+                else "Use allowed character, corporation, or alliance ids before sharing a restricted public link."
+            ),
         },
         {
             "key": "secure_cookies",
@@ -15148,6 +15152,7 @@ def build_flight_hosting_diagnostics(
             "callback_url_https": is_https_url(sso_config.callback_url),
             "scopes": list(sso_config.scopes or DEFAULT_FLIGHT_ESI_SCOPES),
             "membership_restricted": sso_config.membership_restricted,
+            "allow_any_authenticated": bool(sso_config.allow_any_authenticated),
             "character_allowlist_count": len(sso_config.allowed_character_ids),
             "corporation_allowlist_count": len(sso_config.allowed_corporation_ids),
             "alliance_allowlist_count": len(sso_config.allowed_alliance_ids),
@@ -16628,7 +16633,7 @@ def build_http_server(
                 return True
             if flight_session_has_member_access(sso_config, self._flight_session()):
                 return True
-            self.send_error(403, "Public hosting mode requires an allowlisted EVE SSO session.")
+            self.send_error(403, "Public hosting mode requires an allowed EVE SSO session.")
             return False
 
         def _handle_offer_api(self, path: str) -> None:
@@ -16894,10 +16899,11 @@ def build_http_server(
             auth = self.headers.get("Authorization", "")
             token = self.headers.get("X-Admin-Token", "") or self.headers.get("X-Market-Token", "")
             admin_authenticated = self._request_has_admin_token()
+            session = self._flight_session()
             trusted_member = (
                 sso_config.trusted_members_can_edit
                 and sso_config.membership_restricted
-                and flight_session_has_member_access(sso_config, self._flight_session())
+                and bool(session and session.membership_ok)
             )
             if (
                 public_hosting_mode
@@ -37868,6 +37874,7 @@ def run_server(args: argparse.Namespace) -> int:
         allowed_character_ids=parse_int_csv(args.allowed_character_ids),
         allowed_corporation_ids=parse_int_csv(args.allowed_corporation_ids),
         allowed_alliance_ids=parse_int_csv(args.allowed_alliance_ids),
+        allow_any_authenticated=args.allow_any_authenticated,
         trusted_members_can_edit=args.trusted_members_can_write_market,
         esi_base_url=args.esi_base_url,
     )
@@ -37906,7 +37913,16 @@ def run_server(args: argparse.Namespace) -> int:
         print(f"Flight Attendant ESI enabled. Callback URL: {sso_config.callback_url}")
         print(f"Flight Attendant ESI scopes: {', '.join(sso_config.scopes)}")
         print("Flight Attendant access tokens are kept in server memory only.")
-        if sso_config.membership_restricted:
+        if sso_config.allow_any_authenticated:
+            print("Flight Attendant access policy: any EVE-authenticated character can sign in.")
+            if sso_config.membership_restricted:
+                print(
+                    "Flight Attendant trusted-member allowlist: "
+                    f"characters={list(sso_config.allowed_character_ids)}, "
+                    f"corps={list(sso_config.allowed_corporation_ids)}, "
+                    f"alliances={list(sso_config.allowed_alliance_ids)}"
+                )
+        elif sso_config.membership_restricted:
             print(
                 "Flight Attendant member allowlist: "
                 f"characters={list(sso_config.allowed_character_ids)}, "
@@ -37933,7 +37949,7 @@ def run_server(args: argparse.Namespace) -> int:
     if args.trusted_members_can_write_market:
         print("Trusted allowlisted SSO members can create and update market listings.")
     if args.public_hosting_mode:
-        print("Public hosting mode is enabled: HTTPS, EVE SSO, and a corp/alliance allowlist are required.")
+        print("Public hosting mode is enabled: HTTPS, EVE SSO, and an explicit access policy are required.")
     if args.ui_performance_monitor:
         print("UI performance monitor is enabled at /api/ui-performance. Activate browser reporting with ?ui_perf=1.")
     if args.open_browser:
@@ -38061,6 +38077,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--allowed-alliance-ids",
         default=env_text("CORP_MARKET_ALLOWED_ALLIANCE_IDS"),
         help="Comma-separated alliance ids allowed to use the hosted Flight Attendant.",
+    )
+    serve.add_argument(
+        "--allow-any-authenticated",
+        action="store_true",
+        default=env_bool("CORP_MARKET_ALLOW_ANY_AUTHENTICATED"),
+        help="Allow any valid EVE SSO character to use hosted Flight Attendant read/planning features.",
     )
     serve.add_argument(
         "--trusted-members-can-write-market",

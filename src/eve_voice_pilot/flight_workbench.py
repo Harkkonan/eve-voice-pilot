@@ -97,6 +97,7 @@ class WorkbenchConfig:
     vm_allowed_character_ids: tuple[int, ...] = ()
     vm_allowed_corporation_ids: tuple[int, ...] = ()
     vm_allowed_alliance_ids: tuple[int, ...] = ()
+    vm_allow_any_authenticated: bool = False
     vm_public_hosting_mode: bool = False
     vm_trusted_members_can_write_market: bool = False
     command_timeout_seconds: float = 25.0
@@ -138,6 +139,7 @@ class WorkbenchConfig:
             "vm_allowed_character_ids": list(self.vm_allowed_character_ids),
             "vm_allowed_corporation_ids": list(self.vm_allowed_corporation_ids),
             "vm_allowed_alliance_ids": list(self.vm_allowed_alliance_ids),
+            "vm_allow_any_authenticated": self.vm_allow_any_authenticated,
             "vm_public_hosting_mode": self.vm_public_hosting_mode,
             "vm_trusted_members_can_write_market": self.vm_trusted_members_can_write_market,
         }
@@ -285,6 +287,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> WorkbenchConfig:
         vm_allowed_character_ids=clean_int_list(data.get("vm_allowed_character_ids")),
         vm_allowed_corporation_ids=clean_int_list(data.get("vm_allowed_corporation_ids")),
         vm_allowed_alliance_ids=clean_int_list(data.get("vm_allowed_alliance_ids")),
+        vm_allow_any_authenticated=clean_bool(data.get("vm_allow_any_authenticated"), False),
         vm_public_hosting_mode=clean_bool(data.get("vm_public_hosting_mode"), False),
         vm_trusted_members_can_write_market=clean_bool(data.get("vm_trusted_members_can_write_market"), False),
         command_timeout_seconds=clean_float(data.get("command_timeout_seconds"), 25.0),
@@ -318,6 +321,7 @@ def update_vm_public_config(path: Path, payload: dict[str, Any]) -> WorkbenchCon
             "vm_allowed_character_ids": list(clean_int_list(payload.get("vm_allowed_character_ids"))),
             "vm_allowed_corporation_ids": list(clean_int_list(payload.get("vm_allowed_corporation_ids"))),
             "vm_allowed_alliance_ids": list(clean_int_list(payload.get("vm_allowed_alliance_ids"))),
+            "vm_allow_any_authenticated": clean_bool(payload.get("vm_allow_any_authenticated"), False),
             "vm_public_hosting_mode": clean_bool(payload.get("vm_public_hosting_mode"), False),
             "vm_trusted_members_can_write_market": clean_bool(
                 payload.get("vm_trusted_members_can_write_market"),
@@ -359,6 +363,7 @@ def load_config_from_data(path: Path, data: dict[str, Any]) -> WorkbenchConfig:
         vm_allowed_character_ids=clean_int_list(data.get("vm_allowed_character_ids")),
         vm_allowed_corporation_ids=clean_int_list(data.get("vm_allowed_corporation_ids")),
         vm_allowed_alliance_ids=clean_int_list(data.get("vm_allowed_alliance_ids")),
+        vm_allow_any_authenticated=clean_bool(data.get("vm_allow_any_authenticated"), False),
         vm_public_hosting_mode=clean_bool(data.get("vm_public_hosting_mode"), False),
         vm_trusted_members_can_write_market=clean_bool(data.get("vm_trusted_members_can_write_market"), False),
         command_timeout_seconds=clean_float(data.get("command_timeout_seconds"), 25.0),
@@ -1043,8 +1048,18 @@ def validate_vm_public_config(config: WorkbenchConfig) -> None:
         config.vm_allowed_character_ids
         or config.vm_allowed_corporation_ids
         or config.vm_allowed_alliance_ids
+        or config.vm_allow_any_authenticated
     ):
-        raise WorkbenchError("Public hosting needs at least one allowed character, corporation, or alliance ID.")
+        raise WorkbenchError(
+            "Public hosting needs at least one allowed character, corporation, or alliance ID, "
+            "or allow-any-authenticated mode."
+        )
+    if config.vm_trusted_members_can_write_market and not (
+        config.vm_allowed_character_ids
+        or config.vm_allowed_corporation_ids
+        or config.vm_allowed_alliance_ids
+    ):
+        raise WorkbenchError("Trusted member market writes need a character, corporation, or alliance allowlist.")
 
 
 def public_env_from_config(config: WorkbenchConfig) -> dict[str, str]:
@@ -1056,6 +1071,7 @@ def public_env_from_config(config: WorkbenchConfig) -> dict[str, str]:
             "CORP_MARKET_ALLOWED_CHARACTER_IDS": "",
             "CORP_MARKET_ALLOWED_CORPORATION_IDS": "",
             "CORP_MARKET_ALLOWED_ALLIANCE_IDS": "",
+            "CORP_MARKET_ALLOW_ANY_AUTHENTICATED": "0",
             "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET": "0",
         }
     validate_vm_public_config(config)
@@ -1066,6 +1082,7 @@ def public_env_from_config(config: WorkbenchConfig) -> dict[str, str]:
         "CORP_MARKET_ALLOWED_CHARACTER_IDS": int_list_text(config.vm_allowed_character_ids),
         "CORP_MARKET_ALLOWED_CORPORATION_IDS": int_list_text(config.vm_allowed_corporation_ids),
         "CORP_MARKET_ALLOWED_ALLIANCE_IDS": int_list_text(config.vm_allowed_alliance_ids),
+        "CORP_MARKET_ALLOW_ANY_AUTHENTICATED": "1" if config.vm_allow_any_authenticated else "0",
         "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET": "1"
         if config.vm_trusted_members_can_write_market
         else "0",
@@ -1162,6 +1179,7 @@ ordered = [
     "CORP_MARKET_ALLOWED_CHARACTER_IDS",
     "CORP_MARKET_ALLOWED_CORPORATION_IDS",
     "CORP_MARKET_ALLOWED_ALLIANCE_IDS",
+    "CORP_MARKET_ALLOW_ANY_AUTHENTICATED",
     "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET",
 ]
 lines = [line for line in comments if line.strip().startswith("#")]
@@ -1179,6 +1197,7 @@ print("Callback URL:", updates.get("CORP_MARKET_SSO_CALLBACK_URL", ""))
 print("Allowed character IDs:", updates.get("CORP_MARKET_ALLOWED_CHARACTER_IDS", ""))
 print("Allowed corporation IDs:", updates.get("CORP_MARKET_ALLOWED_CORPORATION_IDS", ""))
 print("Allowed alliance IDs:", updates.get("CORP_MARKET_ALLOWED_ALLIANCE_IDS", ""))
+print("Allow any authenticated:", updates.get("CORP_MARKET_ALLOW_ANY_AUTHENTICATED", "0"))
 """
     return (
         "set -e; "
@@ -1191,7 +1210,7 @@ print("Allowed alliance IDs:", updates.get("CORP_MARKET_ALLOWED_ALLIANCE_IDS", "
         'echo "Health:"; '
         "curl -fsS http://127.0.0.1:8770/api/health; "
         "echo; "
-        'echo "Flight diagnostics require an allowlisted SSO browser session in public-hosting mode."'
+        'echo "Flight diagnostics require an allowed SSO browser session in public-hosting mode."'
     )
 
 
@@ -1380,6 +1399,7 @@ if diagnostics is not None:
     callback_match = bool(hosting.get("callback_matches_public_base"))
     sso_ready = bool(sso.get("configured"))
     restricted = bool(sso.get("membership_restricted"))
+    allow_any = bool(sso.get("allow_any_authenticated"))
     print(f"Server mode: {{hosting.get('server_mode_label') or 'unknown'}}")
     print(f"Public base URL: {{hosting.get('public_base_url') or 'missing'}}")
     print(f"Expected callback: {{hosting.get('expected_callback_url') or 'missing'}}")
@@ -1388,6 +1408,7 @@ if diagnostics is not None:
     print(f"Callback matches public base: {{yes_no(callback_match)}}")
     print(f"SSO configured: {{yes_no(sso_ready)}}")
     print(f"Member allowlist configured: {{yes_no(restricted)}}")
+    print(f"Any authenticated EVE character allowed: {{yes_no(allow_any)}}")
     if not public_mode:
         issues.append("Public hosting mode is not enabled.")
     if not public_https:
@@ -1396,8 +1417,8 @@ if diagnostics is not None:
         issues.append("SSO callback does not match the public base URL.")
     if not sso_ready:
         issues.append("SSO client ID/secret are not configured.")
-    if not restricted:
-        issues.append("Corp/alliance member allowlist is not configured.")
+    if not (restricted or allow_any):
+        issues.append("No public Flight Attendant access policy is configured.")
 else:
     public_base = flight_env.get("CORP_MARKET_PUBLIC_BASE_URL", "")
     callback_url = flight_env.get("CORP_MARKET_SSO_CALLBACK_URL", "")
@@ -1414,6 +1435,7 @@ else:
         or flight_env.get("CORP_MARKET_ALLOWED_CORPORATION_IDS")
         or flight_env.get("CORP_MARKET_ALLOWED_ALLIANCE_IDS")
     )
+    allow_any = truthy(flight_env.get("CORP_MARKET_ALLOW_ANY_AUTHENTICATED"))
     print("Server mode: inferred from /home/ubuntu/.eve-flight-env")
     print(f"Public base URL: {{public_base or 'missing'}}")
     print(f"Expected callback: {{expected_callback or 'missing'}}")
@@ -1422,6 +1444,7 @@ else:
     print(f"Callback matches public base: {{yes_no(callback_match)}}")
     print(f"SSO configured: {{yes_no(sso_ready)}}")
     print(f"Member allowlist configured: {{yes_no(restricted)}}")
+    print(f"Any authenticated EVE character allowed: {{yes_no(allow_any)}}")
     if not public_mode:
         issues.append("Public hosting mode is not enabled.")
     if not public_https:
@@ -1430,8 +1453,8 @@ else:
         issues.append("SSO callback does not match the public base URL.")
     if not sso_ready:
         issues.append("SSO client ID/secret are not configured.")
-    if not restricted:
-        issues.append("Corp/alliance member allowlist is not configured.")
+    if not (restricted or allow_any):
+        issues.append("No public Flight Attendant access policy is configured.")
 
 caddy_path = shutil.which("caddy")
 if caddy_path:
@@ -2062,6 +2085,10 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
                 <input id="vm-allowed-alliance-ids" name="vm_allowed_alliance_ids" type="text" autocomplete="off">
               </label>
               <label class="check-row">
+                <input id="vm-allow-any-authenticated" name="vm_allow_any_authenticated" type="checkbox">
+                Allow any EVE SSO character
+              </label>
+              <label class="check-row">
                 <input id="vm-public-hosting-mode" name="vm_public_hosting_mode" type="checkbox">
                 Public hosting mode
               </label>
@@ -2195,6 +2222,7 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
       setInputValue("#vm-allowed-character-ids", idListText(config.vm_allowed_character_ids));
       setInputValue("#vm-allowed-corporation-ids", idListText(config.vm_allowed_corporation_ids));
       setInputValue("#vm-allowed-alliance-ids", idListText(config.vm_allowed_alliance_ids));
+      setChecked("#vm-allow-any-authenticated", config.vm_allow_any_authenticated);
       setChecked("#vm-public-hosting-mode", config.vm_public_hosting_mode);
       setChecked("#vm-trusted-members-can-write-market", config.vm_trusted_members_can_write_market);
 
@@ -2251,6 +2279,7 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
         vm_allowed_character_ids: document.querySelector("#vm-allowed-character-ids").value,
         vm_allowed_corporation_ids: document.querySelector("#vm-allowed-corporation-ids").value,
         vm_allowed_alliance_ids: document.querySelector("#vm-allowed-alliance-ids").value,
+        vm_allow_any_authenticated: document.querySelector("#vm-allow-any-authenticated").checked,
         vm_public_hosting_mode: document.querySelector("#vm-public-hosting-mode").checked,
         vm_trusted_members_can_write_market: document.querySelector("#vm-trusted-members-can-write-market").checked
       }};

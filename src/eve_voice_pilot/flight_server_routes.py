@@ -71,12 +71,16 @@ def dispatch_flight_post_route(handler: object, path: str) -> bool:
 def flight_session_has_member_access(config: EveSsoConfig, session: FlightSessionLike | None) -> bool:
     if session is None:
         return False
+    if config.allow_any_authenticated:
+        return True
     if not config.membership_restricted:
         return True
     return bool(session.membership_ok)
 
 
 def verified_pilot_has_member_access(config: EveSsoConfig, pilot: VerifiedPilot) -> bool:
+    if config.allow_any_authenticated:
+        return True
     if not config.membership_restricted:
         return True
     return bool(pilot.membership_ok)
@@ -85,7 +89,9 @@ def verified_pilot_has_member_access(config: EveSsoConfig, pilot: VerifiedPilot)
 def flight_membership_status(config: EveSsoConfig, session: FlightSessionLike | None) -> dict[str, Any]:
     required = config.membership_restricted
     allowed = flight_session_has_member_access(config, session) if session else None
-    if not required:
+    if config.allow_any_authenticated:
+        message = "Any signed-in EVE character can use this Flight Attendant."
+    elif not required:
         message = "No character, corp, or alliance allowlist is configured."
     elif session is None:
         message = "Sign in with an allowlisted EVE character or a member of an allowlisted corporation/alliance."
@@ -99,6 +105,7 @@ def flight_membership_status(config: EveSsoConfig, session: FlightSessionLike | 
         "character_allowlist_count": len(config.allowed_character_ids),
         "corporation_allowlist_count": len(config.allowed_corporation_ids),
         "alliance_allowlist_count": len(config.allowed_alliance_ids),
+        "allow_any_authenticated": bool(config.allow_any_authenticated),
         "trusted_members_can_write_market": bool(config.trusted_members_can_edit),
         "message": message,
     }
@@ -107,7 +114,7 @@ def flight_membership_status(config: EveSsoConfig, session: FlightSessionLike | 
 def flight_member_access_error(config: EveSsoConfig, session: FlightSessionLike | None) -> str:
     if session is None:
         return "Connect ESI before using Flight Attendant."
-    if config.membership_restricted and not session.membership_ok:
+    if config.membership_restricted and not config.allow_any_authenticated and not session.membership_ok:
         return "This EVE character is not in the configured character/corp/alliance allowlist."
     return ""
 
@@ -136,11 +143,13 @@ def public_hosting_config_errors(*, public_base_url: str, sso_config: EveSsoConf
         errors.append("EVE SSO client id, client secret, and callback URL are required")
     elif not is_https_url(sso_config.callback_url):
         errors.append("--sso-callback-url must be an https URL in public hosting mode")
-    if not sso_config.membership_restricted:
+    if not (sso_config.membership_restricted or sso_config.allow_any_authenticated):
         errors.append(
             "configure --allowed-character-ids, --allowed-corporation-ids, or --allowed-alliance-ids "
-            "for member-only access"
+            "for member-only access, or --allow-any-authenticated for any EVE SSO character"
         )
+    if sso_config.trusted_members_can_edit and not sso_config.membership_restricted:
+        errors.append("--trusted-members-can-write-market requires a character, corporation, or alliance allowlist")
     return errors
 
 

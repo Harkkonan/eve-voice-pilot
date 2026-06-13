@@ -72,6 +72,7 @@ def test_update_vm_public_config_saves_allowlists(tmp_path):
             "vm_allowed_character_ids": "2124413713, 123456789",
             "vm_allowed_corporation_ids": "1000045",
             "vm_allowed_alliance_ids": "",
+            "vm_allow_any_authenticated": False,
             "vm_public_hosting_mode": True,
             "vm_trusted_members_can_write_market": False,
         },
@@ -80,16 +81,45 @@ def test_update_vm_public_config_saves_allowlists(tmp_path):
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert config.vm_allowed_character_ids == (2124413713, 123456789)
     assert saved["vm_allowed_corporation_ids"] == [1000045]
+    assert saved["vm_allow_any_authenticated"] is False
 
 
-def test_public_env_from_config_requires_allowlist():
+def test_public_env_from_config_requires_access_policy():
     config = flight_workbench.WorkbenchConfig(
         vm_public_base_url="https://flight.example.test",
         vm_sso_callback_url="https://flight.example.test/flight/callback",
         vm_public_hosting_mode=True,
     )
 
-    with pytest.raises(flight_workbench.WorkbenchError, match="at least one allowed"):
+    with pytest.raises(flight_workbench.WorkbenchError, match="access policy|allow-any-authenticated"):
+        flight_workbench.public_env_from_config(config)
+
+
+def test_public_env_from_config_allows_any_authenticated():
+    config = flight_workbench.WorkbenchConfig(
+        vm_public_base_url="https://flight.example.test",
+        vm_sso_callback_url="https://flight.example.test/flight/callback",
+        vm_allow_any_authenticated=True,
+        vm_public_hosting_mode=True,
+    )
+
+    env = flight_workbench.public_env_from_config(config)
+
+    assert env["CORP_MARKET_PUBLIC_HOSTING_MODE"] == "1"
+    assert env["CORP_MARKET_ALLOW_ANY_AUTHENTICATED"] == "1"
+    assert env["CORP_MARKET_ALLOWED_CHARACTER_IDS"] == ""
+
+
+def test_public_env_from_config_requires_allowlist_for_trusted_member_writes():
+    config = flight_workbench.WorkbenchConfig(
+        vm_public_base_url="https://flight.example.test",
+        vm_sso_callback_url="https://flight.example.test/flight/callback",
+        vm_allow_any_authenticated=True,
+        vm_public_hosting_mode=True,
+        vm_trusted_members_can_write_market=True,
+    )
+
+    with pytest.raises(flight_workbench.WorkbenchError, match="Trusted member"):
         flight_workbench.public_env_from_config(config)
 
 
@@ -105,6 +135,7 @@ def test_public_env_from_config_includes_character_allowlist():
 
     assert env["CORP_MARKET_PUBLIC_HOSTING_MODE"] == "1"
     assert env["CORP_MARKET_ALLOWED_CHARACTER_IDS"] == "2124413713"
+    assert env["CORP_MARKET_ALLOW_ANY_AUTHENTICATED"] == "0"
     assert env["CORP_MARKET_SSO_CALLBACK_URL"] == "https://flight.example.test/flight/callback"
 
 
@@ -125,6 +156,7 @@ def test_public_env_from_config_clears_public_mode_when_disabled():
     assert env["CORP_MARKET_SSO_CALLBACK_URL"] == ""
     assert env["CORP_MARKET_ALLOWED_CHARACTER_IDS"] == ""
     assert env["CORP_MARKET_ALLOWED_CORPORATION_IDS"] == ""
+    assert env["CORP_MARKET_ALLOW_ANY_AUTHENTICATED"] == "0"
     assert env["CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET"] == "0"
 
 
@@ -507,6 +539,7 @@ def test_build_vm_public_env_command_writes_public_allowlist(tmp_path):
 
     assert "CORP_MARKET_ALLOWED_CHARACTER_IDS" in command
     assert "2124413713" in command
+    assert "CORP_MARKET_ALLOW_ANY_AUTHENTICATED" in command
     assert "CORP_MARKET_PUBLIC_HOSTING_MODE" in command
     assert "systemctl restart eve-flight.service" in command
     assert "http://127.0.0.1:8770/api/health" in command
@@ -640,6 +673,7 @@ def test_vm_public_readiness_uses_fixed_remote_python_check(tmp_path, monkeypatc
     assert "api/flight/diagnostics" in observed["remote_command"]
     assert "public_hosting_mode" in observed["remote_command"]
     assert "membership_restricted" in observed["remote_command"]
+    assert "allow_any_authenticated" in observed["remote_command"]
     assert "caddy.service" in observed["remote_command"]
     assert observed["timeout_seconds"] >= 35.0
 
@@ -752,6 +786,8 @@ def test_render_dashboard_includes_initial_action_metadata():
     assert "Git Status" in html
     assert "Local Test Flow" in html
     assert "Deploy Flow" in html
+    assert "Allow any EVE SSO character" in html
+    assert "vm_allow_any_authenticated" in html
     assert "operator-token" in html
 
 

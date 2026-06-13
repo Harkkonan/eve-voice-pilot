@@ -228,6 +228,7 @@ class EveSsoConfig:
     allowed_character_ids: tuple[int, ...] = ()
     allowed_corporation_ids: tuple[int, ...] = ()
     allowed_alliance_ids: tuple[int, ...] = ()
+    allow_any_authenticated: bool = False
     trusted_members_can_edit: bool = False
     well_known_url: str = DEFAULT_EVE_SSO_WELL_KNOWN_URL
     esi_base_url: str = DEFAULT_ESI_BASE_URL
@@ -247,6 +248,7 @@ class EveSsoConfig:
             "allowed_character_ids": list(self.allowed_character_ids),
             "allowed_corporation_ids": list(self.allowed_corporation_ids),
             "allowed_alliance_ids": list(self.allowed_alliance_ids),
+            "allow_any_authenticated": self.allow_any_authenticated,
             "membership_restricted": self.membership_restricted,
             "trusted_members_can_edit": self.trusted_members_can_edit,
         }

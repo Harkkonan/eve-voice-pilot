@@ -147,7 +147,7 @@ Do not commit SSO secrets. Keep them in your local shell, Windows environment, o
 
 ### Public Flight Attendant Hosting
 
-For a corp-clickable Flight Attendant link, use HTTPS, EVE SSO, and a character, corporation, or alliance allowlist. Re-open the live CCP/EVE policy pages before sharing the link beyond a small trusted test group.
+For a corp-clickable Flight Attendant link, use HTTPS, EVE SSO, and a character, corporation, or alliance allowlist. For a broader public beta, set `CORP_MARKET_ALLOW_ANY_AUTHENTICATED=1` so any valid EVE SSO character can use read/planning features while admin and shared-write actions stay locked down. Re-open the live CCP/EVE policy pages before sharing the link beyond a small trusted test group.
 
 Register the hosted callback URL in the EVE Developers portal:
 
@@ -167,7 +167,14 @@ $env:CORP_MARKET_ALLOWED_CORPORATION_IDS = "123456789"
 .\scripts\run_corp_market.ps1 serve --public-hosting-mode
 ```
 
-Public hosting mode refuses to start unless the public base URL and callback URL use HTTPS, EVE SSO is configured, and at least one allowed character, corporation, or alliance id is present. Flight Attendant access tokens remain in server memory only; no refresh token or token file is stored by this version.
+For a wider public test, leave the allowlists empty and explicitly enable any-authenticated access:
+
+```powershell
+$env:CORP_MARKET_ALLOW_ANY_AUTHENTICATED = "1"
+.\scripts\run_corp_market.ps1 serve --public-hosting-mode
+```
+
+Public hosting mode refuses to start unless the public base URL and callback URL use HTTPS, EVE SSO is configured, and an explicit access policy is present. The access policy can be a character/corporation/alliance allowlist or `CORP_MARKET_ALLOW_ANY_AUTHENTICATED=1`. Flight Attendant access tokens remain in server memory only; no refresh token or token file is stored by this version.
 
 Keep the operator diagnostics endpoint available for deployment checks after startup:
 
@@ -179,7 +186,7 @@ The member-facing dashboard no longer includes a dedicated QA cockpit or embedde
 
 The Industry Library tab also shows a **Static Cache Preflight** panel. If the diagnostics endpoint or preflight panel reports a missing cache, run the cache refresh on the same host that serves the website, then restart or refresh the page.
 
-Remote market listing writes are locked down in public hosting mode. Add an admin token for operator-only writes, or add `--trusted-members-can-write-market` if allowlisted EVE SSO members should be able to create, reserve, and update market listings from the shared site:
+Remote market listing writes are locked down in public hosting mode. Add an admin token for operator-only writes, or add `--trusted-members-can-write-market` if allowlisted EVE SSO members should be able to create, reserve, and update market listings from the shared site. Any-authenticated access by itself does not make public users trusted writers:
 
 ```powershell
 $env:CORP_MARKET_ADMIN_TOKEN = "change-this-token"

@@ -88,5 +88,8 @@ add_optional_arg --discord-forum-tag-map "$(value_from_env_or_file CORP_MARKET_D
 if [[ "${CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET:-0}" == "1" ]]; then
   args+=(--trusted-members-can-write-market)
 fi
+if [[ "${CORP_MARKET_ALLOW_ANY_AUTHENTICATED:-0}" == "1" ]]; then
+  args+=(--allow-any-authenticated)
+fi
 
 exec "$PYTHON" "${args[@]}"

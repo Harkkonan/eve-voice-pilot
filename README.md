@@ -188,7 +188,7 @@ For a shared LAN test, set the public link base that Discord members should open
 .\scripts\run_corp_market.ps1 serve --host 0.0.0.0 --public-base-url "http://HOST-LAN-IP:8770" --discord-webhook-url "https://discord.com/api/webhooks/..."
 ```
 
-For an Internet-accessible Flight Attendant link, use `--public-hosting-mode` with an HTTPS public base URL, EVE SSO credentials, and `--allowed-character-ids`, `--allowed-corporation-ids`, or `--allowed-alliance-ids`. This keeps hosted Flight Attendant and market/fitting read APIs member-only and tightens remote market writes.
+For an Internet-accessible Flight Attendant link, use `--public-hosting-mode` with an HTTPS public base URL and EVE SSO credentials. Add `--allowed-character-ids`, `--allowed-corporation-ids`, or `--allowed-alliance-ids` for member-only access, or use `--allow-any-authenticated` for a public beta where any valid EVE SSO character can use read/planning features. Remote market writes remain locked down unless you configure the admin token or trusted allowlisted member writes.
 
 Listings are stored in ignored local SQLite data at `profiles/corp_market.sqlite3`. More detail is in `docs/corp_market_concierge.md`.
 
