@@ -966,8 +966,10 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"tab-intake\"" in page
     assert "id=\"intake-form\"" in page
     assert "id=\"intake-results\" class=\"decision-output\"" in page
-    assert "Paste an EVE artifact, choose the goal, and get a manual next-step checklist." in page
-    assert "Raw paste text is analyzed for this request only" in page
+    assert "Describe what you want to do, or paste a fit" in page
+    assert "Describe a goal or paste EVE text" in page
+    assert "Analyze Request" in page
+    assert "Natural-language requests are interpreted locally with rules, not an LLM." in page
     assert "No ESI call, token, cache write, Discord send, or EVE client action happens in this router." in page
     assert "function renderIntakeRouter" in page
     assert "data-decision-prefill" in page

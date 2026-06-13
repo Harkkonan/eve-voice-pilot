@@ -338,6 +338,7 @@ The output is deliberately labeled as cached ledger math:
 
 - `ore/day` divides the selected ledger total by the selected calendar-day window.
 - `ore/sec` and `m3/sec` divide the selected ledger total by the manual session-hours field.
+- Per-ore rows repeat the same average-rate math for each mined type, and `Copy CSV` / `Download CSV` export date, ore type, units, m3, ore/day, session units/sec, and session m3/sec for spreadsheet review.
 - `m3` totals use local static type volume when available and are marked partial when volume is unknown.
 
 The tab includes a manual browser timer for pilots who do not want to calculate session hours. Start and stop it yourself; when stopped, it writes elapsed hours into the manual session-hours field. Timer state stays in browser local storage and does not read live game state, inventory changes, laser cycles, or the EVE client.

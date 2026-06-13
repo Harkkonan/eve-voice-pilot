@@ -57,6 +57,11 @@ def check_controls(page: Any) -> None:
         """
         nodes => nodes
           .filter(node => {
+            const style = window.getComputedStyle(node);
+            const visible = style.visibility !== "hidden"
+              && style.display !== "none"
+              && node.getClientRects().length > 0;
+            if (!visible) return false;
             const id = node.id || "";
             const hasLabel = id && document.querySelector(`label[for="${CSS.escape(id)}"]`);
             const text = (node.innerText || node.value || "").trim();
@@ -75,6 +80,31 @@ def check_controls(page: Any) -> None:
         fail("keyboard Tab did not move focus to an interactive element")
 
 
+def check_mining_yield_tab(page: Any) -> None:
+    button = page.locator('[data-tab-target="mining-yield"]')
+    if button.count() != 1:
+        fail("Mining Yield tab is missing from the rendered dashboard")
+    button.click()
+    panel = page.locator("#tab-mining-yield")
+    panel.wait_for(state="visible", timeout=5000)
+    panel_text = panel.inner_text()
+    for expected in (
+        "Mining Yield",
+        "Manual session hours",
+        "Refresh Mining Ledger",
+        "Opt In To Mining Ledger",
+        "Mining Ledger Output",
+        "Copy CSV",
+        "Download CSV",
+    ):
+        if expected not in panel_text:
+            fail(f"Mining Yield tab missing visible text: {expected}")
+    if not page.locator("#mining-yield-refresh").is_visible():
+        fail("Mining Yield refresh button is not visible")
+    if not page.locator("#mining-yield-copy-csv").is_visible():
+        fail("Mining Yield CSV copy button is not visible")
+
+
 def run(url: str) -> None:
     sync_playwright = load_playwright()
     console_errors: list[str] = []
@@ -87,6 +117,7 @@ def run(url: str) -> None:
             status = response.status if response is not None else "no response"
             fail(f"{url} returned {status}")
         check_headers(response, url)
+        check_mining_yield_tab(page)
         check_controls(page)
         check_viewport(page, width=1440, height=1000)
         check_viewport(page, width=390, height=844)

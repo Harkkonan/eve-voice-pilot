@@ -109,11 +109,49 @@ def test_intake_router_unknown_text_keeps_general_triage_shape():
         goal="learn",
     )
 
-    assert payload["classification"]["primary_kind"] == "unknown"
-    assert payload["classification"]["subtype"] == "unknown"
-    assert payload["parsed_input"]["detected_type"] == "unknown"
-    assert payload["recommendations"][0]["key"] == "general-triage"
+    assert payload["classification"]["primary_kind"] == "natural_language"
+    assert payload["classification"]["subtype"] == "natural_language"
+    assert payload["parsed_input"]["detected_type"] == "natural_language"
+    assert payload["parsed"]["natural_language"]["intent"] == "learn"
+    assert payload["language_understanding"]["mode"] == "local-rules"
+    assert payload["language_understanding"]["llm_used"] is False
+    assert payload["recommendations"][0]["key"] == "natural-language-plan"
     assert payload["recommendations"][0]["risk_level"] == "low"
+
+
+def test_intake_router_understands_natural_language_what_now_goal():
+    payload = build_intake_router_payload(
+        raw_text="I have 30 minutes in Amarr and want to make ISK. What should I do now?",
+        goal="what_now",
+        preferred_hub="amarr",
+    )
+
+    assert payload["classification"]["primary_kind"] == "natural_language"
+    assert payload["classification"]["subtype"] == "natural_language"
+    assert payload["parsed"]["natural_language"]["intent"] == "what_now"
+    assert payload["parsed"]["natural_language"]["time_budget"] == "short"
+    assert payload["parsed"]["natural_language"]["hub"] == "amarr"
+    assert payload["parsed"]["item_count"] == 0
+    assert payload["language_understanding"]["llm_used"] is False
+    assert "local-intent-router" in {source["key"] for source in payload["data_sources"]}
+    assert {"natural-language-plan", "current-goals"} <= recommendation_keys(payload)
+    assert payload["recommendations"][0]["key"] == "natural-language-plan"
+    rendered = json.dumps(payload)
+    assert "Portfolio or Hauler" in rendered
+    assert "local rule-based intent parsing" in rendered
+
+
+def test_intake_router_routes_natural_language_hauling_to_hauler():
+    payload = build_intake_router_payload(
+        raw_text="I want to haul items from Amarr to Jita safely without spending too much time.",
+        goal="auto",
+    )
+
+    assert payload["classification"]["primary_kind"] == "natural_language"
+    assert payload["parsed"]["natural_language"]["intent"] == "haul"
+    rec = payload["recommendations"][0]
+    assert rec["key"] == "natural-language-plan"
+    assert any(action.get("target_tab") == "hauling" for action in rec["next_actions"])
 
 
 def test_intake_router_distinguishes_bom_and_cargo_subtypes_with_handoffs():

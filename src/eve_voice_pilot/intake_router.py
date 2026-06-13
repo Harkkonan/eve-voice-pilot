@@ -34,7 +34,7 @@ INTAKE_GOALS = frozenset(
     }
 )
 INTAKE_TIME_BUDGETS = frozenset({"any", "short", "medium", "long"})
-INTAKE_HUBS = frozenset({"jita", "amarr", "dodixie", "hek", "rens"})
+INTAKE_HUBS = frozenset({"jita", "amarr", "dodixie", "hek", "rens", "dihra"})
 ORE_NAME_RE = re.compile(
     r"\b("
     r"veldspar|scordite|pyroxeres|plagioclase|omber|kernite|jaspet|hemorphite|hedbergite|gneiss|dark ochre|"
@@ -50,6 +50,44 @@ MONEY_RE = re.compile(r"\b(?:isk|price|collateral|reward|broker|tax|fee|total)\b
 BOM_WORD_RE = re.compile(
     r"\b(?:bom|bill of materials|materials required|required materials|build cost|runs?|blueprint|component|reaction)\b",
     re.IGNORECASE,
+)
+NATURAL_LANGUAGE_MARKER_RE = re.compile(
+    r"\b(?:"
+    r"i\s+(?:want|need|have|am|would like)|"
+    r"what\s+should\s+i\s+do|what\s+can\s+i\s+do|what\s+do\s+i\s+do|"
+    r"help\s+me|recommend|recommendation|goal|plan|next\s+step|right\s+now|now|today|tonight|"
+    r"make\s+isk|make\s+money|profit|earn\s+isk"
+    r")\b",
+    re.IGNORECASE,
+)
+NATURAL_LANGUAGE_ACTIVITY_PATTERNS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("haul", "Hauling or route profit", ("haul", "move", "transport", "route", "freight", "ship items", "stage")),
+    ("sell", "Sell or liquidate items", ("sell", "liquidate", "cash out", "appraise", "price check")),
+    ("buy_ship", "Buy or fit a ship", ("buy a ship", "buy ship", "fit ship", "fitting", "doctrine", "ship")),
+    ("manufacture", "Manufacturing or build planning", ("manufacture", "build", "industry", "blueprint", "bom", "reaction")),
+    ("gather", "Gather or mine resources", ("mine", "mining", "gather", "resource", "ore", "gas")),
+    ("reprocess", "Reprocess or refine ore", ("reprocess", "refine", "compress", "mineral")),
+    ("audit_profit", "Review profit or completed trades", ("audit", "profit and loss", "p&l", "wallet", "actual", "spreadsheet")),
+    ("learn", "Learn or explain a workflow", ("learn", "teach", "explain", "understand", "why")),
+)
+NATURAL_LANGUAGE_GOAL_WORDS = frozenset(
+    {
+        "want",
+        "need",
+        "should",
+        "could",
+        "help",
+        "recommend",
+        "plan",
+        "goal",
+        "isk",
+        "profit",
+        "today",
+        "tonight",
+        "now",
+        "quick",
+        "safe",
+    }
 )
 FREEFORM_NOTE_WORDS = frozenset(
     {
@@ -213,6 +251,107 @@ def looks_like_freeform_note(lines: Iterable[str], item_summary: Mapping[str, An
     return sum(1 for word in words if word in FREEFORM_NOTE_WORDS) >= 4
 
 
+def looks_like_natural_language_only(lines: Iterable[str], item_summary: Mapping[str, Any], natural_language: Mapping[str, Any] | None) -> bool:
+    if not natural_language:
+        return False
+    clean_lines = list(lines)
+    item_count = int(item_summary.get("item_count") or 0)
+    if not clean_lines or item_count <= 0 or item_count > 2:
+        return False
+    joined = " ".join(clean_lines)
+    if "\t" in joined or re.search(r"\sx[\d,]+\b", joined, re.IGNORECASE):
+        return False
+    for item in item_summary.get("items") or []:
+        name = str(item.get("name") or "")
+        words = re.findall(r"[a-z']+", name.casefold())
+        source_formats = {str(value) for value in item.get("source_formats") or []}
+        if "single_line" in source_formats and (len(words) >= 7 or "?" in name):
+            return True
+    return False
+
+
+def detect_time_budget_from_text(text: str) -> str:
+    folded = text.casefold()
+    if re.search(r"\b(?:5|10|15|20|30|45)\s*(?:m|min|mins|minutes)\b", folded):
+        return "short"
+    if re.search(r"\b(?:1|2)\s*(?:h|hr|hrs|hour|hours)\b", folded):
+        return "medium"
+    if re.search(r"\b(?:today|tonight|this evening|few hours|afternoon)\b", folded):
+        return "medium"
+    if re.search(r"\b(?:weekend|tomorrow|this week|long session|all day)\b", folded):
+        return "long"
+    if re.search(r"\b(?:quick|quickly|fast|right now|now)\b", folded):
+        return "short"
+    return "any"
+
+
+def detect_hub_from_text(text: str) -> str:
+    folded = text.casefold()
+    for hub in sorted(INTAKE_HUBS):
+        if re.search(rf"\b{re.escape(hub)}\b", folded):
+            return hub
+    return ""
+
+
+def natural_language_intent_signal(
+    text: str,
+    lines: Iterable[str],
+    item_summary: Mapping[str, Any],
+    *,
+    goal: str,
+) -> dict[str, Any] | None:
+    clean_lines = list(lines)
+    joined = " ".join(clean_lines)
+    words = re.findall(r"[a-z']+", joined.casefold())
+    item_count = int(item_summary.get("item_count") or 0)
+    marker = bool(NATURAL_LANGUAGE_MARKER_RE.search(joined))
+    questionish = "?" in joined or any(word in {"what", "how", "should", "could"} for word in words[:8])
+    goal_word_count = sum(1 for word in words if word in NATURAL_LANGUAGE_GOAL_WORDS)
+    sentence_like = len(words) >= 5 and (marker or questionish or goal_word_count >= 2)
+    if not sentence_like:
+        return None
+    if len(clean_lines) > 12 and item_count > 8 and not marker:
+        return None
+
+    folded = joined.casefold()
+    activities = []
+    for intent, label, patterns in NATURAL_LANGUAGE_ACTIVITY_PATTERNS:
+        matches = [pattern for pattern in patterns if pattern in folded]
+        if matches:
+            activities.append({"intent": intent, "label": label, "matches": matches[:4]})
+
+    inferred_goal = ""
+    if goal not in {"auto", "what_now"}:
+        inferred_goal = goal
+    elif activities:
+        inferred_goal = activities[0]["intent"]
+    elif re.search(r"\b(?:make\s+isk|make\s+money|profit|earn\s+isk|what\s+should\s+i\s+do)\b", folded):
+        inferred_goal = "what_now"
+    else:
+        inferred_goal = "learn" if "learn" in folded or "explain" in folded else "what_now"
+
+    confidence = 64
+    if marker:
+        confidence += 12
+    if activities:
+        confidence += min(16, len(activities) * 5)
+    if item_count:
+        confidence += 4
+    if questionish:
+        confidence += 4
+
+    return {
+        "intent": inferred_goal,
+        "label": goal_label(inferred_goal) if inferred_goal in INTAKE_GOALS else "Goal planning",
+        "time_budget": detect_time_budget_from_text(joined),
+        "hub": detect_hub_from_text(joined),
+        "activity_hints": activities[:5],
+        "goal_word_count": goal_word_count,
+        "question": questionish,
+        "confidence": min(94, confidence),
+    }
+
+
 def ore_item_count(items: Iterable[dict[str, Any]]) -> int:
     return sum(1 for item in items if ORE_NAME_RE.search(str(item.get("name") or "")))
 
@@ -259,6 +398,8 @@ def intake_subtype(
         return "dscan", "D-scan table"
     if killmail:
         return "killmail", "Killmail or zKillboard link"
+    if primary_kind == "natural_language":
+        return "natural_language", "Natural-language goal or question"
     if bom or blueprint_count or primary_kind == "manufacturing" or goal == "manufacture":
         return "bom", "Bill of materials or manufacturing list"
     if ore_count and (goal == "reprocess" or ore_count >= max(1, item_count // 2)):
@@ -274,6 +415,16 @@ def classify_intake(text: str, *, goal: str) -> dict[str, Any]:
     lines = nonempty_lines(text)
     items = item_parse_summary(text)
     if looks_like_freeform_note(lines, items):
+        items = {
+            "items": [],
+            "item_count": 0,
+            "unresolved_lines": [],
+            "unresolved_count": 0,
+            "ignored_line_count": int(items.get("ignored_line_count") or 0),
+            "raw_line_count": int(items.get("raw_line_count") or len(lines)),
+        }
+    natural_language = natural_language_intent_signal(text, lines, items, goal=goal)
+    if looks_like_natural_language_only(lines, items, natural_language):
         items = {
             "items": [],
             "item_count": 0,
@@ -310,6 +461,14 @@ def classify_intake(text: str, *, goal: str) -> dict[str, Any]:
         signals.append({"kind": "ore", "label": "Ore or reprocessing list", "strength": 84 + min(10, ore_count)})
     if bom or blueprint_count or goal == "manufacture":
         signals.append({"kind": "manufacturing", "label": "Bill of materials or manufacturing context", "strength": 80 + min(10, blueprint_count + item_count)})
+    if natural_language:
+        signals.append(
+            {
+                "kind": "natural_language",
+                "label": "Natural-language goal or question",
+                "strength": int(natural_language.get("confidence") or 76),
+            }
+        )
 
     if goal in {"sell", "haul"} and item_count:
         signals.append({"kind": "items", "label": "Goal-selected item/cargo review", "strength": 90})
@@ -349,6 +508,7 @@ def classify_intake(text: str, *, goal: str) -> dict[str, Any]:
         "wallet": wallet,
         "contract": contract,
         "killmail": killmail,
+        "natural_language": natural_language,
         "items": items,
         "ore_count": ore_count,
         "blueprint_count": blueprint_count,
@@ -360,12 +520,12 @@ def data_sources_for_classification(classification: dict[str, Any]) -> list[dict
     sources = [
         DataSourceBadge(
             key="pasted-text",
-            label="Pasted text",
+            label="Request text",
             status="ready",
             posture="local request",
-            freshness="current paste",
+            freshness="current request",
             persistence="not stored",
-            detail="The browser sends this paste to the local server only for this analysis.",
+            detail="The browser sends this request text to the local server only for this analysis.",
         ).to_dict(),
         DataSourceBadge(
             key="local-parser",
@@ -384,9 +544,21 @@ def data_sources_for_classification(classification: dict[str, Any]) -> list[dict
                 label="Bulk item parser",
                 status="ready",
                 posture="local static-compatible parser",
-                freshness="current paste",
+                freshness="current request",
                 persistence="not stored",
                 detail="Item-like rows are normalized so they can be handed to Bulk Appraisal, Hauler Routes, or Portfolio.",
+            ).to_dict()
+        )
+    if classification.get("natural_language"):
+        sources.append(
+            DataSourceBadge(
+                key="local-intent-router",
+                label="Natural-language intent router",
+                status="ready",
+                posture="local rules, no LLM",
+                freshness="current request",
+                persistence="not stored",
+                detail="Short goal statements are interpreted locally into manual workflow suggestions. No LLM or external AI service is used.",
             ).to_dict()
         )
     if classification.get("primary_kind") in {"dscan", "killmail"}:
@@ -889,6 +1061,143 @@ def dscan_or_killmail_recommendation(classification: dict[str, Any]) -> dict[str
     )
 
 
+def natural_language_goal_recommendation(
+    classification: dict[str, Any],
+    *,
+    goal: str,
+    preferred_hub: str,
+    time_budget: str,
+) -> dict[str, Any]:
+    intent = classification.get("natural_language") or {}
+    inferred_goal = str(intent.get("intent") or goal or "what_now")
+    detected_time = str(intent.get("time_budget") or "")
+    detected_hub = str(intent.get("hub") or "")
+    effective_time = detected_time if detected_time != "any" else time_budget
+    effective_hub = detected_hub or preferred_hub
+    activity_hints = intent.get("activity_hints") or []
+    first_activity = activity_hints[0] if activity_hints else {}
+    activity_label = str(first_activity.get("label") or goal_label(inferred_goal))
+    activity_sentence = activity_label.strip()
+    activity_separator = " " if activity_sentence.endswith(("?", "!")) else ". "
+
+    action_map: dict[str, list[dict[str, Any]]] = {
+        "haul": [
+            action("Open Hauler Routes", "#hauling", "Scan route opportunities and keep cargo value inside your risk limit.", target_tab="hauling"),
+            action("Open Asset Ledger", "#asset-ledger", "Refresh managed containers so Hauler can use known stock instead of broad scans.", target_tab="asset-ledger"),
+        ],
+        "sell": [
+            action("Open Bulk Appraisal", "#appraisal", "Price the items first, then decide quick-sell, haul, or corp-first sale.", target_tab="appraisal"),
+            action("Open Trade P&L", "#trade-pnl", "After selling, compare actual wallet results against expected value.", target_tab="trade-pnl"),
+        ],
+        "buy_ship": [
+            action("Open Shared Fittings", "#fittings", "Paste or choose the fit before buying hull/modules.", target_tab="fittings"),
+            action("Open Bulk Appraisal", "#appraisal", "Price the hull, modules, rigs, drones, and cargo.", target_tab="appraisal"),
+        ],
+        "manufacture": [
+            action("Open Industry Library", "#industry", "Check owned blueprints, materials, and buyer candidates.", target_tab="industry"),
+            action("Open Bulk Appraisal", "#appraisal", "Price missing inputs or finished goods before starting jobs.", target_tab="appraisal"),
+        ],
+        "gather": [
+            action("Open Mining Yield", "#mining-yield", "Refresh mining output if the goal is resource gathering.", target_tab="mining-yield"),
+            action("Open Reprocessing", "#reprocessing", "Compare ore sale value against mineral output.", target_tab="reprocessing"),
+        ],
+        "reprocess": [
+            action("Open Reprocessing", "#reprocessing", "Calculate yield with skills, standings, facility, and Jita value.", target_tab="reprocessing"),
+            action("Open Bulk Appraisal", "#appraisal", "Compare direct ore sale value before refining.", target_tab="appraisal"),
+        ],
+        "audit_profit": [
+            action("Open Trade P&L", "#trade-pnl", "Refresh wallet rows and compare expected-vs-actual results.", target_tab="trade-pnl"),
+            action("Open Investment Portfolio", "#acquisition", "Review whether current buy-order assumptions need adjustment.", target_tab="acquisition"),
+        ],
+        "learn": [
+            action("Open Flight Attendant", "#flight", "Use the ESI status and source explanations as the learning anchor.", target_tab="flight"),
+            action("Open Intake", "#intake", "Paste a concrete artifact next: fit, cargo, wallet rows, ore, BOM, or contract.", target_tab="intake"),
+        ],
+        "what_now": [
+            action("Open Flight Attendant", "#flight", "Check current ESI status and source readiness first.", target_tab="flight"),
+            action("Open Asset Ledger", "#asset-ledger", "Refresh managed stock so recommendations can use owned assets.", target_tab="asset-ledger"),
+            action("Open Investment Portfolio", "#acquisition", "Run a focused small scan when you want market work.", target_tab="acquisition"),
+        ],
+    }
+    actions = action_map.get(inferred_goal, action_map["what_now"])
+    return recommendation(
+        "natural-language-plan",
+        "Turn your request into a concrete next workflow",
+        (
+            f"I read this as: {activity_sentence}{activity_separator}Start with the linked workflow, then paste a concrete EVE artifact "
+            "if you want price, route, fit, or profit math."
+        ),
+        [
+            checklist_item("Interpreted goal", goal_label(inferred_goal), "Local rules inferred this from your sentence and selected goal."),
+            checklist_item("Time budget", effective_time.replace("_", " "), "Short plans favor quick checks; longer plans can use deeper scans."),
+            checklist_item("Preferred hub", effective_hub.title(), "Used as the first market follow-up hint when a tab needs a hub."),
+            checklist_item("Needs concrete data", "yes", "Natural language can choose a workflow, but prices and quantities need EVE text or ESI.", warning=True),
+        ],
+        priority=98 if goal == "what_now" or inferred_goal == "what_now" else 88,
+        assumptions=[
+            "This is local rule-based intent parsing, not an LLM response.",
+            "No AI service, ESI endpoint, Discord webhook, or EVE client action is used for this interpretation.",
+            "The next workflow still needs real EVE data before trusting a money or route recommendation.",
+        ],
+        next_actions=actions,
+        source_keys=("pasted-text", "local-parser", "local-intent-router"),
+        confidence="medium",
+        risk_level="low",
+        missing_data=("Current location, assets, quantities, item names, market prices, wallet rows, or fit text depending on the workflow.",),
+        metadata={
+            **subtype_metadata(classification),
+            "inferred_goal": inferred_goal,
+            "time_budget": effective_time,
+            "preferred_hub": effective_hub,
+        },
+    )
+
+
+def current_goals_recommendation(
+    classification: dict[str, Any],
+    *,
+    goal: str,
+    preferred_hub: str,
+    time_budget: str,
+) -> dict[str, Any]:
+    intent = classification.get("natural_language") or {}
+    detected_time = str(intent.get("time_budget") or "")
+    effective_time = detected_time if detected_time != "any" else time_budget
+    short_mode = effective_time == "short"
+    portfolio_hint = "Run a focused buy-order scan toward Jita." if preferred_hub == "jita" else f"Run a focused buy-order scan near {preferred_hub.title()} or toward Jita."
+    return recommendation(
+        "current-goals",
+        "Pick one practical goal for this session",
+        "For an open-ended what-now request, use a small decision ladder: refresh context, choose one money/cleanup/learning goal, then run one specialist tab.",
+        [
+            checklist_item("Fast ISK path", "Portfolio or Hauler", "Use pasted items or managed assets only for the first pass." if short_mode else "Start with a focused scan before trying broad categories."),
+            checklist_item("Cleanup path", "Asset Ledger", "Refresh managed containers and decide what should be sold, hauled, reprocessed, or held."),
+            checklist_item("Proof path", "Trade P&L", "If you already placed orders, compare actual wallet results before making more orders."),
+            checklist_item("Learning path", "one workflow", "Pick one tab, read its assumptions, and test with a small amount of ISK."),
+        ],
+        priority=86 if goal in {"auto", "what_now"} else 64,
+        assumptions=[
+            "The app cannot know the best current action without current assets, location, orders, wallet, and risk preference.",
+            "A narrow first pass is usually better than a broad scan when you are deciding what to do now.",
+        ],
+        next_actions=[
+            action("Refresh Asset Ledger", "#asset-ledger", "Use managed containers as the source of truth for owned trade stock.", target_tab="asset-ledger"),
+            action("Open Investment Portfolio", "#acquisition", portfolio_hint, target_tab="acquisition"),
+            action("Open Hauler Routes", "#hauling", "Check whether moving known stock or pasted items is worth it.", target_tab="hauling"),
+            action("Open Trade P&L", "#trade-pnl", "Review actual results before scaling a strategy.", target_tab="trade-pnl"),
+        ],
+        source_keys=("pasted-text", "local-parser", "local-intent-router"),
+        confidence="medium",
+        risk_level="low",
+        metadata={
+            **subtype_metadata(classification),
+            "goal_style": "session-goal-ladder",
+            "time_budget": effective_time,
+            "preferred_hub": preferred_hub,
+        },
+    )
+
+
 def general_recommendation(classification: dict[str, Any], *, goal: str) -> dict[str, Any]:
     return recommendation(
         "general-triage",
@@ -920,9 +1229,28 @@ def build_recommendations(
     *,
     goal: str,
     preferred_hub: str,
+    time_budget: str,
 ) -> list[dict[str, Any]]:
     primary = classification.get("primary_kind")
     recs: list[dict[str, Any]] = []
+    if classification.get("natural_language"):
+        recs.append(
+            natural_language_goal_recommendation(
+                classification,
+                goal=goal,
+                preferred_hub=preferred_hub,
+                time_budget=time_budget,
+            )
+        )
+        if goal in {"auto", "what_now"} or str((classification.get("natural_language") or {}).get("intent") or "") == "what_now":
+            recs.append(
+                current_goals_recommendation(
+                    classification,
+                    goal=goal,
+                    preferred_hub=preferred_hub,
+                    time_budget=time_budget,
+                )
+            )
     if classification.get("fit"):
         recs.append(fit_recommendation(classification, goal=goal))
     if int((classification.get("items") or {}).get("item_count") or 0):
@@ -989,7 +1317,7 @@ def build_intake_router_payload(
 ) -> dict[str, Any]:
     text = clean_intake_text(raw_text)
     if not text:
-        raise ValueError("Paste EVE text before running intake analysis.")
+        raise ValueError("Describe what you want to do or paste EVE text before running intake analysis.")
     clean_goal = clean_intake_goal(goal)
     clean_budget = clean_time_budget(time_budget)
     clean_hub = clean_preferred_hub(preferred_hub)
@@ -1010,10 +1338,18 @@ def build_intake_router_payload(
             "item_count": int((classification.get("items") or {}).get("item_count") or 0),
             "ore_count": int(classification.get("ore_count") or 0),
             "blueprint_count": int(classification.get("blueprint_count") or 0),
+            "natural_language_intent": str((classification.get("natural_language") or {}).get("intent") or ""),
+            "natural_language_time_budget": str((classification.get("natural_language") or {}).get("time_budget") or ""),
+            "natural_language_hub": str((classification.get("natural_language") or {}).get("hub") or ""),
         },
     ).to_dict()
     data_sources = data_sources_for_classification(classification)
-    recommendations = build_recommendations(classification, goal=clean_goal, preferred_hub=clean_hub)
+    recommendations = build_recommendations(
+        classification,
+        goal=clean_goal,
+        preferred_hub=clean_hub,
+        time_budget=clean_budget,
+    )
     payload: dict[str, Any] = {
         "ok": True,
         "generated_at": now_iso(),
@@ -1037,8 +1373,10 @@ def build_intake_router_payload(
             "subtype_label": classification.get("subtype_label") or "",
             "confidence": classification["confidence"],
             "signals": classification["signals"][:8],
+            "natural_language": classification.get("natural_language"),
         },
         "parsed": {
+            "natural_language": classification.get("natural_language"),
             "fit": classification.get("fit"),
             "items": (classification.get("items") or {}).get("items") or [],
             "item_count": int((classification.get("items") or {}).get("item_count") or 0),
@@ -1051,29 +1389,38 @@ def build_intake_router_payload(
             "contract": classification.get("contract"),
             "killmail": classification.get("killmail"),
         },
+        "language_understanding": {
+            "mode": "local-rules",
+            "llm_used": False,
+            "llm_provider": "",
+            "llm_cache": "not used",
+            "upgrade_path": "Optional later: server-side LLM adapter that receives only redacted intent summaries after explicit configuration.",
+        },
         "data_sources": data_sources,
         "trust": {
             "esi_scopes": [],
             "token_storage": "none",
             "server_persistence": "none",
             "cache_freshness": [
-                {"label": "Pasted text", "state": "current request"},
+                {"label": "Request text", "state": "current request"},
                 {"label": "Static market cache", "state": "used by follow-up appraisal, not by this classifier"},
                 {"label": "ESI", "state": "not contacted by this classifier"},
             ],
-            "redaction": "Raw pasted text is not echoed back in this payload.",
+            "redaction": "Raw request text is not echoed back in this payload.",
         },
         "recommendations": recommendations,
         "beginner_translation": (
             "Start with the top recommendation, read the assumptions, then run only the follow-up workflow that matches your goal. "
+            "If this was a natural-language request, the first recommendation is a workflow choice; concrete pricing still needs EVE text or ESI. "
             "The app is giving you a checklist, not taking action in EVE."
         ),
         "warnings": [
             "This router does not control the EVE client, place orders, accept contracts, or upload D-scan/local text to third-party sites.",
             "Verify current prices, routes, ship fit, structure access, and contract terms in EVE before acting.",
+            "No LLM or external AI service is used by this router.",
         ],
         "notes": [
-            "Raw paste text is analyzed for this request only and is not stored by the server.",
+            "Request text is analyzed for this request only and is not stored by the server.",
             "No character ESI scope or token is required for intake analysis.",
         ],
     }

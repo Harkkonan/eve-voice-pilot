@@ -420,7 +420,7 @@ FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
     },
     "intake": {
         "label": "Intake + Goals",
-        "summary": "No character ESI scope is used by this tab. It classifies pasted EVE text locally, explains the likely workflow, and hands the pilot to manual follow-up tools.",
+        "summary": "No character ESI scope is used by this tab. It classifies described goals or pasted EVE text locally, explains the likely workflow, and hands the pilot to manual follow-up tools.",
         "scopes": (),
     },
     "flight": {
@@ -22377,8 +22377,8 @@ def _render_flight_attendant_dashboard() -> str:
       </div>
       <div class="ops-launcher-card primary">
         <strong>Intake + Goals</strong>
-        <div class="meta">Paste an EVE artifact, choose the goal, and get a manual next-step checklist.</div>
-        <div class="ops-launcher-stat"><span>Input</span><b>Paste router</b></div>
+        <div class="meta">Describe a goal or paste an EVE artifact, then get a manual next-step checklist.</div>
+        <div class="ops-launcher-stat"><span>Input</span><b>Goal router</b></div>
         <div class="ops-launcher-actions">
           <a class="button-link ghost-link" href="#intake">Open Intake</a>
         </div>
@@ -22831,7 +22831,7 @@ help</textarea>
             <div class="panel-header">
               <div>
                 <h2>Intake + Goals</h2>
-                <div class="meta">Paste a fit, cargo, contract, wallet rows, ore list, BOM, D-scan, or killmail and get the next manual workflow.</div>
+                <div class="meta">Describe what you want to do, or paste a fit, cargo, contract, wallet rows, ore list, BOM, D-scan, or killmail and get the next manual workflow.</div>
               </div>
               <span class="pill reserved">Local Router</span>
             </div>
@@ -22857,12 +22857,12 @@ help</textarea>
                   <small class="input-note">First hub to suggest for appraisal or market follow-up.</small>
                 </label>
               </div>
-              <label>Paste EVE text
-                <textarea id="intake-paste" name="text" rows="14" spellcheck="false" placeholder="[Hawk, Example fit]&#10;Ballistic Control System II&#10;Scourge Rage Rocket x4772&#10;&#10;Tritanium&#9;100000&#10;Merlin Blueprint (Copy)&#9;1&#10;&#10;or paste wallet rows, contract text, D-scan, ore lists, killmail links, or cargo."></textarea>
-                <small class="input-note">Raw paste text is analyzed for this request only, is not echoed back, and is not stored by the app.</small>
+              <label>Describe a goal or paste EVE text
+                <textarea id="intake-paste" name="text" rows="14" spellcheck="false" autocomplete="off" placeholder="I have 30 minutes in Amarr and want to make ISK. What should I do now?&#10;I want to sell minerals near Jita safely.&#10;I want to learn whether these items should be hauled, sold, or reprocessed.&#10;&#10;[Hawk, Example fit]&#10;Ballistic Control System II&#10;Scourge Rage Rocket x4772&#10;&#10;Tritanium&#9;100000&#10;Merlin Blueprint (Copy)&#9;1&#10;&#10;or paste wallet rows, contract text, D-scan, ore lists, killmail links, or cargo."></textarea>
+                <small class="input-note">Natural-language requests are interpreted locally with rules, not an LLM. Request text is analyzed for this request only, is not echoed back, and is not stored by the app.</small>
               </label>
               <div class="bulk-appraisal-actions">
-                <button id="intake-analyze" class="ghost" type="submit" data-no-plex>Analyze Paste</button>
+                <button id="intake-analyze" class="ghost" type="submit" data-no-plex>Analyze Request</button>
                 <button id="intake-clear" class="secondary" type="button" data-no-plex>Clear</button>
                 <span id="intake-status" class="meta quickbar-copy-status" aria-live="polite">No intake analysis has run yet.</span>
               </div>
@@ -22879,7 +22879,7 @@ help</textarea>
             </div>
             <div id="intake-trust" class="intake-trust-list">
               <div class="state-callout is-empty">
-                <strong>Waiting for paste</strong>
+                <strong>Waiting for request</strong>
                 <span>No ESI call, token, cache write, Discord send, or EVE client action happens in this router.</span>
               </div>
             </div>
@@ -22903,7 +22903,7 @@ help</textarea>
             <details class="output-details" open>
               <summary>Intake Analysis</summary>
               <div class="output-details-body">
-                <div id="intake-summary" class="profit-summary">Paste EVE text and choose a goal to build a manual plan.</div>
+                <div id="intake-summary" class="profit-summary">Describe a goal or paste EVE text to build a manual plan.</div>
                 <div id="intake-copy-panel" class="quickbar-copy-panel" hidden>
                   <div>
                     <strong>Share Text</strong>
@@ -27339,7 +27339,7 @@ help</textarea>
         applied = setControlValue(intakeTimeBudget, prefill.time_budget) || applied;
         applied = setControlValue(intakePreferredHub, prefill.preferred_hub || prefill.hub) || applied;
         applied = setTextareaText(intakePaste, prefill.text || prefill.paste_text) || applied;
-        if (applied) setIntakeStatus("Prefilled Intake from a decision handoff. Review or add paste text before analyzing.");
+        if (applied) setIntakeStatus("Prefilled Intake from a decision handoff. Review or add context before analyzing.");
       } else if (targetTab === "appraisal") {
         applied = setControlValue(bulkAppraisalHub, prefill.hub) || applied;
         applied = setTextareaText(bulkAppraisalText, prefill.bulk_appraisal_text || prefill.pasted_items) || applied;
@@ -28069,11 +28069,11 @@ help</textarea>
 
     function resetIntake(clearText = false) {
       intakeLastShareText = "";
-      if (intakeSummary) intakeSummary.textContent = "Paste EVE text and choose a goal to build a manual plan.";
+      if (intakeSummary) intakeSummary.textContent = "Describe a goal or paste EVE text to build a manual plan.";
       if (intakeTrust) {
         intakeTrust.innerHTML = renderDashboardStateMessage(
           "No ESI call, token, cache write, Discord send, or EVE client action happens in this router.",
-          {state: "empty", label: "Waiting for paste"},
+          {state: "empty", label: "Waiting for request"},
         );
       }
       if (intakeResults) intakeResults.innerHTML = "";
@@ -28273,7 +28273,7 @@ help</textarea>
           ${renderDashboardChecklist([
             {label: "ESI scopes", value: (data?.trust?.esi_scopes || []).length ? (data.trust.esi_scopes || []).join(", ") : "none", detail: "This classifier does not need character ESI access."},
             {label: "Token storage", value: data?.trust?.token_storage || "none", detail: "No access or refresh token is used by this request."},
-            {label: "Server persistence", value: data?.trust?.server_persistence || "none", detail: data?.trust?.redaction || "Raw paste is not echoed back."},
+            {label: "Server persistence", value: data?.trust?.server_persistence || "none", detail: data?.trust?.redaction || "Raw request text is not echoed back."},
           ])}
         `;
       }
@@ -28294,16 +28294,16 @@ help</textarea>
       if (!intakePaste) return;
       const text = String(intakePaste.value || "").trim();
       if (!text) {
-        setIntakeStatus("Paste EVE text before running intake analysis.", true);
+        setIntakeStatus("Describe what you want to do or paste EVE text before running intake analysis.", true);
         return;
       }
       const settings = writeIntakeSettings(readIntakeSettings());
       if (intakeAnalyze) intakeAnalyze.disabled = true;
-      setIntakeStatus("Analyzing pasted EVE text...");
+      setIntakeStatus("Analyzing request...");
       intakeLastShareText = "";
       if (intakeCopyPanel) intakeCopyPanel.hidden = true;
       if (intakeCopyStatus) intakeCopyStatus.textContent = "";
-      if (intakeSummary) intakeSummary.innerHTML = `<div class="decision-empty">Classifying the current paste...</div>`;
+      if (intakeSummary) intakeSummary.innerHTML = `<div class="decision-empty">Classifying the current request...</div>`;
       if (intakeResults) intakeResults.innerHTML = renderDashboardEmptyState("Building fresh recommendations...");
       try {
         const response = await fetch("/api/flight/intake", {
@@ -28316,12 +28316,12 @@ help</textarea>
             preferred_hub: settings.preferredHub,
           }),
         });
-        const data = await readJsonApiResponse(response, "Could not analyze pasted EVE text");
+        const data = await readJsonApiResponse(response, "Could not analyze intake request");
         renderIntakeRouter(data);
         recordEsiActivity({
-          label: "Paste intake analyzed",
+          label: "Intake request analyzed",
           scopes: [],
-          description: `Classified pasted text as ${data?.classification?.label || "EVE text"}.`,
+          description: `Classified request as ${data?.classification?.label || "EVE text"}.`,
           reason: "The router builds a manual next-step checklist before specialist tools run.",
         });
       } catch (error) {
@@ -36934,7 +36934,7 @@ help</textarea>
     if (intakePaste) {
       intakePaste.addEventListener("input", () => {
         if (intakePaste.value.trim()) {
-          setIntakeStatus("Paste ready for local intake analysis.");
+          setIntakeStatus("Request ready for local intake analysis.");
         } else {
           resetIntake(false);
         }
