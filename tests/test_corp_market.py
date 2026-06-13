@@ -1410,6 +1410,9 @@ def test_dashboard_uses_shared_empty_error_and_checklist_helpers():
     assert "function renderDashboardChecklistItem" in page
     assert "function renderDashboardChecklist" in page
     assert "function renderDashboardStateMessage" in page
+    assert "function renderDecisionSourceCards" in page
+    assert "return renderDecisionSourceCards(sources" in page
+    assert "return renderDecisionSourceCards(rows" in page
     assert "function setDashboardState" in page
     assert "state-callout" in page
     assert 'renderDashboardEmptyState("No completed rows found.")' in page
@@ -2495,6 +2498,9 @@ def test_build_flight_trade_pnl_payload_dedupes_repeated_learning_refreshes(monk
     assert payload["trade_pnl"]["learning"]["signal_count"] == 0
     assert payload["trade_pnl"]["learning"]["evidence_item_count"] == 1
     assert payload["trade_pnl"]["learning"]["saved"] == 0
+    assert payload["trade_pnl"]["learning"]["source"] == "local-corp-market-sqlite"
+    assert payload["trade_pnl"]["learning"]["status"] == "evidence-only"
+    assert "evidence exists" in payload["trade_pnl"]["learning"]["detail"]
     assert "transaction_id" not in json.dumps(signal)
     assert payload["trade_pnl"]["items"][0]["plan_reconciliation"]["average_sell_unit_price"] == pytest.approx(900_000)
     assert payload["trade_pnl"]["items"][0]["plan_reconciliation"]["expected_gross_sell_unit_price"] == pytest.approx(1_200_000)

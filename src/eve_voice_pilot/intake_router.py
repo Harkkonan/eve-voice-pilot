@@ -2,9 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from eve_voice_pilot.corp_market_bulk_appraisal import FIT_HEADER_RE, parse_bulk_appraisal_text
+from eve_voice_pilot.decision_engine import (
+    DataSourceBadge,
+    LearningSummary,
+    ParsedInput,
+    Recommendation,
+    checklist_item as shared_checklist_item,
+    decision_action,
+    external_link as shared_external_link,
+)
 
 
 MAX_INTAKE_TEXT_LENGTH = 120_000
@@ -37,6 +46,28 @@ ORE_NAME_RE = re.compile(
 KILLMAIL_URL_RE = re.compile(r"https?://(?:www\.)?zkillboard\.com/kill/(?P<kill_id>\d+)/?", re.IGNORECASE)
 DSCAN_DISTANCE_RE = re.compile(r"\b(?:km|m|au)\b", re.IGNORECASE)
 MONEY_RE = re.compile(r"\b(?:isk|price|collateral|reward|broker|tax|fee|total)\b", re.IGNORECASE)
+FREEFORM_NOTE_WORDS = frozenset(
+    {
+        "i",
+        "you",
+        "we",
+        "want",
+        "need",
+        "know",
+        "what",
+        "why",
+        "how",
+        "do",
+        "does",
+        "not",
+        "tonight",
+        "later",
+        "something",
+        "useful",
+        "paste",
+        "yet",
+    }
+)
 
 
 def now_iso() -> str:
@@ -162,6 +193,21 @@ def item_parse_summary(text: str) -> dict[str, Any]:
     }
 
 
+def looks_like_freeform_note(lines: Iterable[str], item_summary: Mapping[str, Any]) -> bool:
+    clean_lines = list(lines)
+    if not clean_lines or len(clean_lines) > 3:
+        return False
+    if int(item_summary.get("item_count") or 0) > 3:
+        return False
+    joined = " ".join(clean_lines)
+    if "\t" in joined or re.search(r"\d", joined) or MONEY_RE.search(joined) or ORE_NAME_RE.search(joined):
+        return False
+    words = re.findall(r"[a-z']+", joined.casefold())
+    if len(words) < 7:
+        return False
+    return sum(1 for word in words if word in FREEFORM_NOTE_WORDS) >= 4
+
+
 def ore_item_count(items: Iterable[dict[str, Any]]) -> int:
     return sum(1 for item in items if ORE_NAME_RE.search(str(item.get("name") or "")))
 
@@ -173,6 +219,15 @@ def blueprint_item_count(items: Iterable[dict[str, Any]]) -> int:
 def classify_intake(text: str, *, goal: str) -> dict[str, Any]:
     lines = nonempty_lines(text)
     items = item_parse_summary(text)
+    if looks_like_freeform_note(lines, items):
+        items = {
+            "items": [],
+            "item_count": 0,
+            "unresolved_lines": [],
+            "unresolved_count": 0,
+            "ignored_line_count": int(items.get("ignored_line_count") or 0),
+            "raw_line_count": int(items.get("raw_line_count") or len(lines)),
+        }
     fit = fit_summary(lines)
     dscan = dscan_signal(lines)
     wallet = wallet_signal(lines)
@@ -232,58 +287,62 @@ def classify_intake(text: str, *, goal: str) -> dict[str, Any]:
 
 def data_sources_for_classification(classification: dict[str, Any]) -> list[dict[str, Any]]:
     sources = [
-        {
-            "key": "pasted-text",
-            "label": "Pasted text",
-            "posture": "local request",
-            "freshness": "current paste",
-            "persistence": "not stored",
-            "detail": "The browser sends this paste to the local server only for this analysis.",
-        },
-        {
-            "key": "local-parser",
-            "label": "Local parser",
-            "posture": "standard library",
-            "freshness": "current code",
-            "persistence": "not stored",
-            "detail": "The router classifies text and builds manual next steps without contacting EVE.",
-        },
+        DataSourceBadge(
+            key="pasted-text",
+            label="Pasted text",
+            status="ready",
+            posture="local request",
+            freshness="current paste",
+            persistence="not stored",
+            detail="The browser sends this paste to the local server only for this analysis.",
+        ).to_dict(),
+        DataSourceBadge(
+            key="local-parser",
+            label="Local parser",
+            status="ready",
+            posture="standard library",
+            freshness="current code",
+            persistence="not stored",
+            detail="The router classifies text and builds manual next steps without contacting EVE.",
+        ).to_dict(),
     ]
     if int((classification.get("items") or {}).get("item_count") or 0):
         sources.append(
-            {
-                "key": "bulk-parser",
-                "label": "Bulk item parser",
-                "posture": "local static-compatible parser",
-                "freshness": "current paste",
-                "persistence": "not stored",
-                "detail": "Item-like rows are normalized so they can be handed to Bulk Appraisal, Hauler Routes, or Portfolio.",
-            }
+            DataSourceBadge(
+                key="bulk-parser",
+                label="Bulk item parser",
+                status="ready",
+                posture="local static-compatible parser",
+                freshness="current paste",
+                persistence="not stored",
+                detail="Item-like rows are normalized so they can be handed to Bulk Appraisal, Hauler Routes, or Portfolio.",
+            ).to_dict()
         )
     if classification.get("primary_kind") in {"dscan", "killmail"}:
         sources.append(
-            {
-                "key": "external-links",
-                "label": "External reference links",
-                "posture": "manual browser handoff",
-                "freshness": "pilot verifies",
-                "persistence": "not stored",
-                "detail": "The router points to community tools but does not upload your paste automatically.",
-            }
+            DataSourceBadge(
+                key="external-links",
+                label="External reference links",
+                status="manual",
+                posture="manual browser handoff",
+                freshness="pilot verifies",
+                persistence="not stored",
+                detail="The router points to community tools but does not upload your paste automatically.",
+            ).to_dict()
         )
     return sources
 
 
 def checklist_item(label: str, value: str, detail: str = "", *, warning: bool = False) -> dict[str, Any]:
-    return {"label": label, "value": value, "detail": detail, "warning": warning}
+    return shared_checklist_item(label, value, detail, warning=warning)
 
 
 def action(label: str, href: str, detail: str, *, target_tab: str = "") -> dict[str, Any]:
-    return {"label": label, "href": href, "target_tab": target_tab, "detail": detail}
+    return decision_action(label, href, detail, target_tab=target_tab)
 
 
 def external_link(label: str, url: str) -> dict[str, str]:
-    return {"label": label, "url": url}
+    return shared_external_link(label, url)
 
 
 def recommendation(
@@ -297,18 +356,26 @@ def recommendation(
     next_actions: Iterable[dict[str, Any]],
     links: Iterable[dict[str, str]] = (),
     source_keys: Iterable[str] = ("pasted-text", "local-parser"),
+    confidence: str = "",
+    risk_level: str = "medium",
+    missing_data: Iterable[str] = (),
+    learning_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
-        "key": key,
-        "title": title,
-        "priority": priority,
-        "explanation": explanation,
-        "assumptions": list(assumptions),
-        "source_keys": list(source_keys),
-        "manual_checklist": checklist,
-        "next_actions": list(next_actions),
-        "links": list(links),
-    }
+    return Recommendation(
+        key=key,
+        title=title,
+        plain_reason=explanation,
+        priority=priority,
+        confidence=confidence,
+        risk_level=risk_level,
+        assumptions=assumptions,
+        missing_data=missing_data,
+        source_keys=source_keys,
+        manual_checklist=checklist,
+        next_actions=next_actions,
+        links=links,
+        learning_summary=learning_summary,
+    ).to_dict()
 
 
 def fit_recommendation(classification: dict[str, Any], *, goal: str) -> dict[str, Any]:
@@ -343,6 +410,7 @@ def fit_recommendation(classification: dict[str, Any], *, goal: str) -> dict[str
             external_link("EVE University fitting guide", "https://wiki.eveuniversity.org/Fitting_ships"),
         ],
         source_keys=("pasted-text", "local-parser", "bulk-parser"),
+        confidence="high",
     )
 
 
@@ -381,6 +449,7 @@ def item_recommendation(classification: dict[str, Any], *, goal: str, preferred_
             external_link("EVE Tycoon market", "https://evetycoon.com/market"),
         ],
         source_keys=("pasted-text", "local-parser", "bulk-parser"),
+        confidence="medium",
     )
 
 
@@ -407,6 +476,7 @@ def ore_recommendation(classification: dict[str, Any], *, goal: str) -> dict[str
         ],
         links=[external_link("EVE University reprocessing", "https://wiki.eveuniversity.org/Reprocessing")],
         source_keys=("pasted-text", "local-parser", "bulk-parser"),
+        confidence="medium",
     )
 
 
@@ -434,6 +504,8 @@ def manufacturing_recommendation(classification: dict[str, Any], *, goal: str) -
         ],
         links=[external_link("EVE University manufacturing", "https://wiki.eveuniversity.org/Manufacturing")],
         source_keys=("pasted-text", "local-parser", "bulk-parser"),
+        confidence="medium",
+        missing_data=("Exact blueprint type IDs, ME/TE, facility taxes, and live material prices.",),
     )
 
 
@@ -457,6 +529,14 @@ def wallet_recommendation(classification: dict[str, Any], *, goal: str) -> dict[
             action("Open Trade P&L", "#trade-pnl", "Refresh wallet transactions and compare expected against actual results.", target_tab="trade-pnl"),
         ],
         links=[external_link("EVE University trading", "https://wiki.eveuniversity.org/Trading")],
+        source_keys=("pasted-text", "local-parser", "local-corp-market-sqlite"),
+        confidence="medium",
+        risk_level="low",
+        learning_summary=LearningSummary(
+            source="local-corp-market-sqlite",
+            status="available-after-trade-pnl-refresh",
+            detail="Trade P&L can store expected-vs-actual evidence and show why estimates drifted.",
+        ).to_dict(),
     )
 
 
@@ -481,6 +561,8 @@ def contract_recommendation(classification: dict[str, Any]) -> dict[str, Any]:
             action("Open Hauler Routes", "#hauling", "Check route value and movement risk if this is courier-like work.", target_tab="hauling"),
         ],
         links=[external_link("EVE University contracts", "https://wiki.eveuniversity.org/Contracts")],
+        risk_level="high",
+        missing_data=("Current EVE contract window terms, docking access, route safety, and item resolution.",),
     )
 
 
@@ -512,6 +594,7 @@ def dscan_or_killmail_recommendation(classification: dict[str, Any]) -> dict[str
         ],
         links=links,
         source_keys=("pasted-text", "local-parser", "external-links"),
+        risk_level="high",
     )
 
 
@@ -535,6 +618,8 @@ def general_recommendation(classification: dict[str, Any], *, goal: str) -> dict
             action("Open Bulk Appraisal", "#appraisal", "Use this if the text can be converted into item lines.", target_tab="appraisal"),
         ],
         links=[external_link("EVE University Wiki", "https://wiki.eveuniversity.org/Main_Page")],
+        confidence="low",
+        risk_level="low",
     )
 
 
@@ -617,6 +702,22 @@ def build_intake_router_payload(
     clean_budget = clean_time_budget(time_budget)
     clean_hub = clean_preferred_hub(preferred_hub)
     classification = classify_intake(text, goal=clean_goal)
+    parsed_input = ParsedInput(
+        primary_kind=classification["primary_kind"],
+        label=classification["label"],
+        confidence=classification["confidence"],
+        signals=classification["signals"][:8],
+        line_count=classification["line_count"],
+        raw_line_count=len(text.split("\n")),
+        nonempty_line_count=classification["line_count"],
+        character_count=len(text),
+        stored=False,
+        summary={
+            "item_count": int((classification.get("items") or {}).get("item_count") or 0),
+            "ore_count": int(classification.get("ore_count") or 0),
+            "blueprint_count": int(classification.get("blueprint_count") or 0),
+        },
+    ).to_dict()
     data_sources = data_sources_for_classification(classification)
     recommendations = build_recommendations(classification, goal=clean_goal, preferred_hub=clean_hub)
     payload: dict[str, Any] = {
@@ -629,11 +730,12 @@ def build_intake_router_payload(
         "time_budget": clean_budget,
         "preferred_hub": clean_hub,
         "input": {
-            "raw_line_count": len(text.split("\n")),
-            "nonempty_line_count": classification["line_count"],
-            "character_count": len(text),
-            "stored": False,
+            "raw_line_count": parsed_input["raw_line_count"],
+            "nonempty_line_count": parsed_input["nonempty_line_count"],
+            "character_count": parsed_input["character_count"],
+            "stored": parsed_input["stored"],
         },
+        "parsed_input": parsed_input,
         "classification": {
             "primary_kind": classification["primary_kind"],
             "label": classification["label"],

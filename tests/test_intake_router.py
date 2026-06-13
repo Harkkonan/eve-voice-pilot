@@ -31,10 +31,14 @@ Merlin Blueprint (Copy) 1""",
     assert payload["trust"]["esi_scopes"] == []
     assert payload["trust"]["token_storage"] == "none"
     assert payload["classification"]["primary_kind"] == "fit"
+    assert payload["parsed_input"]["detected_type"] == "fit"
+    assert payload["parsed_input"]["stored"] is False
     assert payload["parsed"]["fit"]["hull"] == "Hawk"
     assert payload["parsed"]["item_count"] >= 4
     assert payload["parsed"]["ore_count"] == 1
     assert {"fit-handoff", "item-router", "ore-reprocessing", "manufacturing-plan"} <= recommendation_keys(payload)
+    assert payload["recommendations"][0]["plain_reason"]
+    assert payload["recommendations"][0]["data_source_keys"] == payload["recommendations"][0]["source_keys"]
     assert "Raw paste" not in payload["share_text"]
 
 
@@ -49,6 +53,8 @@ def test_intake_router_routes_wallet_rows_to_profit_audit():
     assert payload["classification"]["primary_kind"] == "wallet"
     assert "wallet-profit-audit" in recommendation_keys(payload)
     assert payload["recommendations"][0]["key"] == "wallet-profit-audit"
+    assert payload["recommendations"][0]["risk_level"] == "low"
+    assert payload["recommendations"][0]["learning_summary"]["source"] == "local-corp-market-sqlite"
     rendered = json.dumps(payload)
     assert "Trade P&L" in rendered
     assert "broker + tax" in rendered
@@ -66,3 +72,33 @@ def test_intake_router_keeps_combat_context_lightweight():
     assert "does not create shared intel feeds" in rendered
     assert "DSCAN-ICU" in rendered
     assert "not upload D-scan/local text" in rendered
+
+
+def test_intake_router_routes_contracts_with_manual_risk_checklist():
+    payload = build_intake_router_payload(
+        raw_text="""Contract: Item Exchange
+Issuer: Example Pilot
+Collateral: 125,000,000 ISK
+Reward: 8,000,000 ISK
+Expires: 2026-06-20
+Tritanium 100000""",
+        goal="what_now",
+    )
+
+    assert payload["classification"]["primary_kind"] == "contract"
+    rec = next(item for item in payload["recommendations"] if item["key"] == "contract-review")
+    assert rec["risk_level"] == "high"
+    assert rec["missing_data"]
+    assert "contracts" in json.dumps(rec).lower()
+
+
+def test_intake_router_unknown_text_keeps_general_triage_shape():
+    payload = build_intake_router_payload(
+        raw_text="I want to do something useful tonight but I do not know what to paste yet.",
+        goal="learn",
+    )
+
+    assert payload["classification"]["primary_kind"] == "unknown"
+    assert payload["parsed_input"]["detected_type"] == "unknown"
+    assert payload["recommendations"][0]["key"] == "general-triage"
+    assert payload["recommendations"][0]["risk_level"] == "low"

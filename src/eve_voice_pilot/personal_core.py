@@ -3,6 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+from eve_voice_pilot.decision_engine import (
+    DataSourceBadge,
+    LearningSummary,
+    Recommendation,
+    checklist_item as shared_checklist_item,
+    decision_action,
+)
+
 
 PERSONAL_CORE_GOALS = frozenset(
     {
@@ -270,22 +278,24 @@ def source_card(
     else:
         status = "empty"
         detail = "ESI returned no usable rows for this signal."
-    return {
-        "key": key,
-        "label": label,
-        "scope": scope,
-        "status": status,
-        "freshness": generated_at if status == "ready" else "",
-        "detail": detail,
-    }
+    return DataSourceBadge(
+        key=key,
+        label=label,
+        status=status,
+        posture="read-only ESI" if scope.startswith("esi-") else "manual setting",
+        freshness=generated_at if status == "ready" else "",
+        persistence="summaries only",
+        scope=scope,
+        detail=detail,
+    ).to_dict()
 
 
 def checklist_item(label: str, value: Any, detail: str = "") -> dict[str, Any]:
-    return {"label": label, "value": str(value), "detail": detail}
+    return shared_checklist_item(label, value, detail)
 
 
 def action(label: str, href: str, detail: str, *, target_tab: str = "") -> dict[str, Any]:
-    return {"label": label, "href": href, "detail": detail, "target_tab": target_tab}
+    return decision_action(label, href, detail, target_tab=target_tab)
 
 
 def core_recommendation(
@@ -298,17 +308,25 @@ def core_recommendation(
     checklist: Iterable[Mapping[str, Any]],
     actions: Iterable[Mapping[str, Any]],
     assumptions: Iterable[str],
+    source_keys: Iterable[str] = (),
+    risk_level: str = "medium",
+    missing_data: Iterable[str] = (),
+    learning_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
-        "key": key,
-        "title": title,
-        "summary": summary,
-        "priority": max(0, min(int(priority), 100)),
-        "confidence": confidence,
-        "manual_checklist": [dict(item) for item in checklist],
-        "next_actions": [dict(item) for item in actions],
-        "assumptions": [str(item) for item in assumptions if str(item or "").strip()],
-    }
+    return Recommendation(
+        key=key,
+        title=title,
+        plain_reason=summary,
+        priority=priority,
+        confidence=confidence,
+        risk_level=risk_level,
+        assumptions=assumptions,
+        missing_data=missing_data,
+        source_keys=source_keys,
+        manual_checklist=checklist,
+        next_actions=actions,
+        learning_summary=dict(learning_summary) if learning_summary else None,
+    ).to_dict()
 
 
 def build_personal_core_recommendations(
@@ -354,6 +372,9 @@ def build_personal_core_recommendations(
                     "Missing scopes are treated as unknown, not as zero assets, zero wallet activity, or no standings.",
                     "No recommendation places orders, moves assets, or controls the EVE client.",
                 ],
+                source_keys=[str(row.get("key") or "") for row in [*missing, *errored]],
+                risk_level="medium",
+                missing_data=[str(row.get("label") or row.get("key") or "source") for row in missing],
             )
         )
 
@@ -379,6 +400,9 @@ def build_personal_core_recommendations(
                     "Facility tax, rigs, system cost index, and structure access still need manual verification.",
                     f"Market hub preference is {preferred_hub}; verify prices before committing materials.",
                 ],
+                source_keys=("blueprints", "assets", "skills", "manual-preferences"),
+                risk_level="medium",
+                missing_data=("Facility tax, rigs, system cost index, structure access, and live buyer demand.",),
             )
         )
 
@@ -404,6 +428,9 @@ def build_personal_core_recommendations(
                     "The app does not fit the ship in EVE or buy the items.",
                     "Skill readiness is advisory until exact fit parsing and skill-plan matching are added.",
                 ],
+                source_keys=("manual-preferences", "skills", "wallet", "location"),
+                risk_level="medium",
+                missing_data=("Exact fit requirements and current sell orders.",),
             )
         )
 
@@ -429,6 +456,9 @@ def build_personal_core_recommendations(
                     "Mining ledger is optional and cached; it is not live module or cycle telemetry.",
                     "Structure rigs and private taxes still need manual confirmation.",
                 ],
+                source_keys=("skills", "standings", "location", "manual-preferences"),
+                risk_level="medium",
+                missing_data=("Facility yield, structure taxes, current ore and mineral prices.",),
             )
         )
 
@@ -453,6 +483,15 @@ def build_personal_core_recommendations(
                     "Only wallet history available through ESI can be matched.",
                     "Open inventory value is an estimate until sold.",
                 ],
+                source_keys=("wallet", "local-corp-market-sqlite", "manual-preferences"),
+                risk_level="low",
+                learning_summary=LearningSummary(
+                    source="local-corp-market-sqlite",
+                    status="available-after-trade-pnl-refresh",
+                    detail="Trade P&L stores expected-vs-actual evidence from saved portfolio plans, wallet matches, fees, and open stock.",
+                    signal_count=0,
+                    evidence_item_count=0,
+                ).to_dict(),
             )
         )
 
@@ -477,6 +516,9 @@ def build_personal_core_recommendations(
                     "Docking access and structure access are not guaranteed by ESI asset rows.",
                     "The app does not move, contract, or repackage assets.",
                 ],
+                source_keys=("assets", "location", "manual-preferences"),
+                risk_level="medium",
+                missing_data=("Docking access, current route safety, cargo volume, and collateral tolerance.",),
             )
         )
 
@@ -501,6 +543,8 @@ def build_personal_core_recommendations(
                     "Discord sends remain explicit manual actions.",
                     "The app does not create in-game contracts or market orders.",
                 ],
+                source_keys=("manual-preferences",),
+                risk_level="low",
             )
         )
 
@@ -518,6 +562,9 @@ def build_personal_core_recommendations(
                 ],
                 actions=[action("Open Intake + Goals", "#intake", "Route the next paste into a checklist.", target_tab="intake")],
                 assumptions=["No ESI data is treated as proof that no opportunity exists."],
+                source_keys=("manual-preferences",),
+                risk_level="low",
+                missing_data=("Concrete EVE artifact such as a fit, cargo list, wallet rows, ore list, contract, or BOM.",),
             )
         )
     recs.sort(key=lambda item: int(item.get("priority") or 0), reverse=True)
@@ -585,6 +632,18 @@ def build_personal_core_payload(
         )
         for key, scope in PERSONAL_CORE_SCOPE_BY_SOURCE.items()
     ]
+    sources.append(
+        DataSourceBadge(
+            key="manual-preferences",
+            label="Local preferences",
+            status="ready",
+            posture="manual setting",
+            freshness=generated,
+            persistence="browser localStorage only",
+            scope="manual",
+            detail="Goal, risk, hub, homes, desired ship, ISK target, and corp-needs text are user-entered settings.",
+        ).to_dict()
+    )
     recommendations = build_personal_core_recommendations(
         preferences=clean_preferences,
         context=context,

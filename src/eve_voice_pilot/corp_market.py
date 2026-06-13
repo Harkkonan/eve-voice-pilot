@@ -47,6 +47,7 @@ from eve_voice_pilot.corp_intel import (
     get_json,
     verify_sso_character,
 )
+from eve_voice_pilot.decision_engine import LearningSummary
 from eve_voice_pilot.flight_server_routes import (
     FLIGHT_SESSION_COOKIE_NAME,
     admin_token_write_access_allowed,
@@ -3596,13 +3597,24 @@ def trade_learning_summary(signals: Iterable[Mapping[str, Any]], *, saved: int =
     for signal in active:
         for key in signal.get("signal_keys") or []:
             counts[str(key)] = counts.get(str(key), 0) + 1
-    return {
-        "saved": int(saved or 0),
-        "source": "local-corp-market-sqlite",
-        "signal_count": len(active),
-        "evidence_item_count": len(signal_rows),
-        "signal_counts": dict(sorted(counts.items())),
-    }
+    if active:
+        status = "active"
+        detail = "Local Trade P&L evidence has repeated signals that should affect future estimates."
+    elif signal_rows:
+        status = "evidence-only"
+        detail = "Local Trade P&L evidence exists, but no advisory signal has repeated enough to be active."
+    else:
+        status = "empty"
+        detail = "No local Trade P&L learning evidence matched this scan."
+    return LearningSummary(
+        source="local-corp-market-sqlite",
+        status=status,
+        detail=detail,
+        saved=int(saved or 0),
+        signal_count=len(active),
+        evidence_item_count=len(signal_rows),
+        signal_counts=dict(sorted(counts.items())),
+    ).to_dict()
 
 
 def trade_learning_signals_by_type(signals: Iterable[Mapping[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -27259,19 +27271,33 @@ help</textarea>
       if (clearText && intakePaste) intakePaste.value = "";
     }
 
-    function renderIntakeSourceCards(sources) {
+    function decisionSourceStatusLabel(source) {
+      const status = source?.status || "";
+      if (status === "ready") return "Ready";
+      if (status === "missing_scope") return "Missing scope";
+      if (status === "error") return "Error";
+      if (status === "manual") return "Manual";
+      if (status === "empty") return "No data";
+      return source?.posture || "Source";
+    }
+
+    function renderDecisionSourceCards(sources, options = {}) {
       const safeSources = Array.isArray(sources) ? sources : [];
       if (!safeSources.length) {
-        return renderDashboardStateMessage("No source metadata was returned.", {state: "empty", label: "No sources"});
+        return renderDashboardStateMessage(options.emptyMessage || "No source metadata was returned.", {state: "empty", label: "No sources"});
       }
       return `<div class="intake-source-grid">${safeSources.map((source) => `
-        <div class="intake-source-card">
-          <span>${escapeHtml(source.posture || "source")}</span>
+        <div class="intake-source-card ${source.status ? `personal-core-source-${escapeHtml(source.status)}` : ""}">
+          <span>${escapeHtml(decisionSourceStatusLabel(source))}</span>
           <strong>${escapeHtml(source.label || source.key || "Source")}</strong>
           <small>${escapeHtml(source.detail || "")}</small>
-          <small>Freshness: ${escapeHtml(source.freshness || "unknown")} | Persistence: ${escapeHtml(source.persistence || "unknown")}</small>
+          <small>${source.scope ? `${escapeHtml(source.scope)} | ` : ""}Freshness: ${escapeHtml(source.freshness || "unknown")} | Persistence: ${escapeHtml(source.persistence || "unknown")}</small>
         </div>
       `).join("")}</div>`;
+    }
+
+    function renderIntakeSourceCards(sources) {
+      return renderDecisionSourceCards(sources, {emptyMessage: "No source metadata was returned."});
     }
 
     function renderIntakeSourceBadges(sourceKeys) {
@@ -27324,6 +27350,28 @@ help</textarea>
       `;
     }
 
+    function renderDecisionMissingData(missingData) {
+      const rows = Array.isArray(missingData) ? missingData.filter(Boolean) : [];
+      if (!rows.length) return "";
+      return `
+        <details class="output-details">
+          <summary>Missing data</summary>
+          <div class="output-details-body intake-assumption-list">
+            ${rows.map((item) => `<div>${escapeHtml(item)}</div>`).join("")}
+          </div>
+        </details>
+      `;
+    }
+
+    function renderDecisionLearningSummary(summary) {
+      if (!summary || typeof summary !== "object") return "";
+      const status = summary.status || "learning";
+      const detail = summary.detail || "";
+      const signalCount = Number(summary.signal_count || 0);
+      const evidenceCount = Number(summary.evidence_item_count || 0);
+      return `<div class="meta">Learning: ${escapeHtml(status)} from ${escapeHtml(summary.source || "local data")} (${formatNumber(signalCount)} active, ${formatNumber(evidenceCount)} evidence). ${escapeHtml(detail)}</div>`;
+    }
+
     function renderIntakeActions(actions) {
       const safeActions = Array.isArray(actions) ? actions : [];
       if (!safeActions.length) return "";
@@ -27365,12 +27413,14 @@ help</textarea>
             <article class="decision-row">
               <div class="decision-head">
                 <strong>${escapeHtml(rec.title || "Recommendation")}</strong>
-                <span class="pill sell">P${formatNumber(rec.priority || 0)}</span>
+                <span class="pill sell">P${formatNumber(rec.priority || 0)} · ${escapeHtml(rec.risk_level || "risk")}</span>
               </div>
-              <div class="fitting-meta-row">${renderIntakeSourceBadges(rec.source_keys)}</div>
-              <div class="decision-lede">${escapeHtml(rec.explanation || "")}</div>
+              <div class="fitting-meta-row">${renderIntakeSourceBadges(rec.data_source_keys || rec.source_keys)}</div>
+              <div class="decision-lede">${escapeHtml(rec.plain_reason || rec.explanation || "")}</div>
               ${renderDashboardChecklist(rec.manual_checklist || [])}
               ${renderIntakeAssumptions(rec.assumptions || [])}
+              ${renderDecisionMissingData(rec.missing_data || [])}
+              ${renderDecisionLearningSummary(rec.learning_summary)}
               ${renderIntakeActions(rec.next_actions || [])}
               ${renderIntakeLinks(rec.links || [])}
             </article>
@@ -28759,26 +28809,7 @@ help</textarea>
 
     function renderPersonalCoreSources(sources) {
       const rows = Array.isArray(sources) ? sources : [];
-      if (!rows.length) return '<div class="decision-empty">No source status returned.</div>';
-      return `<div class="intake-source-grid">${rows.map((source) => {
-        const status = source.status || "unknown";
-        const statusLabel = status === "ready"
-          ? "Ready"
-          : status === "missing_scope"
-            ? "Missing scope"
-            : status === "error"
-              ? "Error"
-              : "No data";
-        return `
-          <div class="intake-source-card personal-core-source-${escapeHtml(status)}">
-            <strong>${escapeHtml(source.label || source.key || "Source")}</strong>
-            <span>${escapeHtml(statusLabel)}</span>
-            <small>${escapeHtml(source.detail || "")}</small>
-            <small>${escapeHtml(source.scope || "No ESI scope")}</small>
-            ${source.freshness ? `<small>Fresh: ${escapeHtml(source.freshness)}</small>` : ""}
-          </div>
-        `;
-      }).join("")}</div>`;
+      return renderDecisionSourceCards(rows, {emptyMessage: "No source status returned."});
     }
 
     function renderPersonalCoreContext(context) {
@@ -28831,12 +28862,15 @@ help</textarea>
         <article class="decision-row">
           <div class="personal-core-rec-head">
             <strong>${escapeHtml(rec.title || "Recommendation")}</strong>
-            <span class="pill decision-source">${escapeHtml(rec.confidence || "estimate")} · ${formatNumber(rec.priority || 0)}</span>
+            <span class="pill decision-source">${escapeHtml(rec.confidence || "estimate")} · ${escapeHtml(rec.risk_level || "risk")} · ${formatNumber(rec.priority || 0)}</span>
           </div>
-          <div class="decision-lede">${escapeHtml(rec.summary || "")}</div>
+          <div class="fitting-meta-row">${renderIntakeSourceBadges(rec.data_source_keys || rec.source_keys)}</div>
+          <div class="decision-lede">${escapeHtml(rec.plain_reason || rec.summary || "")}</div>
           ${renderPersonalCoreChecklist(rec.manual_checklist || [])}
           ${renderPersonalCoreActions(rec.next_actions || [])}
           ${renderPersonalCoreAssumptions(rec.assumptions || [])}
+          ${renderDecisionMissingData(rec.missing_data || [])}
+          ${renderDecisionLearningSummary(rec.learning_summary)}
         </article>
       `).join("");
     }

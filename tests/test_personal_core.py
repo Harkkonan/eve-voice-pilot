@@ -56,9 +56,14 @@ def test_personal_core_recommends_industry_and_profit_audit_from_context():
     assert payload["context"]["assets"]["stack_count"] == 2
     assert payload["context"]["wallet"]["fee_rows_total_isk"] == 5.0
     assert {source["status"] for source in payload["sources"]} == {"ready"}
+    assert {source["key"] for source in payload["sources"]} >= {"wallet", "manual-preferences"}
     keys = [rec["key"] for rec in payload["recommendations"]]
     assert "industry-core" in keys
     assert "profit-audit" in keys
+    profit = next(rec for rec in payload["recommendations"] if rec["key"] == "profit-audit")
+    assert profit["plain_reason"] == profit["summary"]
+    assert profit["data_source_keys"] == profit["source_keys"]
+    assert profit["learning_summary"]["source"] == "local-corp-market-sqlite"
     assert "access-token" not in str(payload)
 
 
@@ -73,8 +78,10 @@ def test_personal_core_missing_scopes_are_unknown_context_not_zeroes():
     sources = {source["key"]: source for source in payload["sources"]}
     assert sources["location"]["status"] == "ready"
     assert sources["assets"]["status"] == "missing_scope"
+    assert sources["manual-preferences"]["status"] == "ready"
     assert payload["context"]["assets"] is None
     assert payload["recommendations"][0]["key"] == "source-readiness"
+    assert payload["recommendations"][0]["missing_data"]
     assert "unknown" in payload["recommendations"][0]["assumptions"][0].lower()
 
 
