@@ -984,7 +984,7 @@ class UiPerformanceMonitor:
             return None
         if number != number or abs(number) == float("inf"):
             return None
-        return round(number, 3)
+        return round(number, 2)
 
     @classmethod
     def _clean_int(cls, value: Any) -> int | None:
@@ -2681,9 +2681,9 @@ def build_flight_mining_yield_payload(
                 "known_volume_quantity": known_volume_quantity,
                 "unknown_volume_quantity": volume_unknown_quantity,
                 "quantity_per_day": round(total_quantity / clean_days, 2),
-                "volume_m3_per_day": round(total_volume_m3 / clean_days, 4) if total_volume_m3 > 0 else None,
-                "quantity_per_second": round(total_quantity / session_seconds, 6) if session_seconds > 0 else None,
-                "volume_m3_per_second": round(total_volume_m3 / session_seconds, 6) if total_volume_m3 > 0 and session_seconds > 0 else None,
+                "volume_m3_per_day": round(total_volume_m3 / clean_days, 2) if total_volume_m3 > 0 else None,
+                "quantity_per_second": round(total_quantity / session_seconds, 2) if session_seconds > 0 else None,
+                "volume_m3_per_second": round(total_volume_m3 / session_seconds, 2) if total_volume_m3 > 0 and session_seconds > 0 else None,
             },
             "items": visible_items,
             "daily": daily,
@@ -2937,12 +2937,12 @@ def analyze_trade_pnl_transactions(
         summary["consideration_rule"] = clean_consideration_rule
         expected_profit = summary["matched_sell_revenue_isk"] - summary["matched_buy_cost_isk"]
         actual_profit = expected_profit + summary["allocated_fee_isk"]
-        summary["expected_profit_isk"] = round(expected_profit, 4)
-        summary["actual_profit_isk"] = round(actual_profit, 4)
-        summary["fee_gap_isk"] = round(summary["allocated_fee_isk"], 4)
+        summary["expected_profit_isk"] = round(expected_profit, 2)
+        summary["actual_profit_isk"] = round(actual_profit, 2)
+        summary["fee_gap_isk"] = round(summary["allocated_fee_isk"], 2)
         summary["net_cashflow_isk"] = round(
             summary["sell_total_isk"] - summary["buy_total_isk"] + summary["allocated_fee_isk"],
-            4,
+            2,
         )
         trade_pnl_apply_market_valuation(
             summary,
@@ -3024,31 +3024,31 @@ def analyze_trade_pnl_transactions(
         "items_truncated": len(items) > max(1, int(item_limit)),
         "items": [trade_pnl_public_item(item) for item in limited_items],
         "totals": {
-            "buy_total_isk": round(totals["buy_total_isk"], 4),
-            "sell_total_isk": round(totals["sell_total_isk"], 4),
+            "buy_total_isk": round(totals["buy_total_isk"], 2),
+            "sell_total_isk": round(totals["sell_total_isk"], 2),
             "matched_quantity": int(totals["matched_quantity"]),
             "historical_matched_quantity": int(totals["historical_matched_quantity"]),
-            "matched_buy_cost_isk": round(totals["matched_buy_cost_isk"], 4),
-            "historical_matched_buy_cost_isk": round(totals["historical_matched_buy_cost_isk"], 4),
-            "matched_sell_revenue_isk": round(totals["matched_sell_revenue_isk"], 4),
-            "expected_profit_isk": round(totals["expected_profit_isk"], 4),
-            "allocated_fee_isk": round(allocated_fee_total, 4),
-            "unallocated_fee_isk": round(unallocated_fee_total, 4),
-            "market_fee_isk": round(market_fee_total, 4),
-            "actual_profit_isk": round(visible_actual_profit, 4),
-            "wallet_fee_adjusted_profit_isk": round(wallet_fee_adjusted_profit, 4),
-            "inventory_result_isk": round(totals["inventory_result_isk"], 4),
-            "net_cashflow_isk": round(totals["net_cashflow_isk"] + unallocated_fee_total, 4),
-            "open_inventory_cost_isk": round(totals["open_inventory_cost_isk"], 4),
+            "matched_buy_cost_isk": round(totals["matched_buy_cost_isk"], 2),
+            "historical_matched_buy_cost_isk": round(totals["historical_matched_buy_cost_isk"], 2),
+            "matched_sell_revenue_isk": round(totals["matched_sell_revenue_isk"], 2),
+            "expected_profit_isk": round(totals["expected_profit_isk"], 2),
+            "allocated_fee_isk": round(allocated_fee_total, 2),
+            "unallocated_fee_isk": round(unallocated_fee_total, 2),
+            "market_fee_isk": round(market_fee_total, 2),
+            "actual_profit_isk": round(visible_actual_profit, 2),
+            "wallet_fee_adjusted_profit_isk": round(wallet_fee_adjusted_profit, 2),
+            "inventory_result_isk": round(totals["inventory_result_isk"], 2),
+            "net_cashflow_isk": round(totals["net_cashflow_isk"] + unallocated_fee_total, 2),
+            "open_inventory_cost_isk": round(totals["open_inventory_cost_isk"], 2),
             "open_inventory_market_value_isk": open_inventory_market_value_total,
             "open_inventory_unrealized_isk": open_inventory_unrealized_total,
             "open_quantity": int(totals["open_quantity"]),
-            "unmatched_sell_revenue_isk": round(totals["unmatched_sell_revenue_isk"], 4),
+            "unmatched_sell_revenue_isk": round(totals["unmatched_sell_revenue_isk"], 2),
             "unmatched_sell_quantity": int(totals["unmatched_sell_quantity"]),
-            "market_transaction_journal_total_isk": round(market_transaction_journal_total, 4),
-            "considered_result_isk": round(considered["considered_result_isk"], 4),
-            "excluded_actual_profit_isk": round(considered["excluded_actual_profit_isk"], 4),
-            "excluded_cashflow_isk": round(considered["excluded_cashflow_isk"], 4),
+            "market_transaction_journal_total_isk": round(market_transaction_journal_total, 2),
+            "considered_result_isk": round(considered["considered_result_isk"], 2),
+            "excluded_actual_profit_isk": round(considered["excluded_actual_profit_isk"], 2),
+            "excluded_cashflow_isk": round(considered["excluded_cashflow_isk"], 2),
             "excluded_item_count": int(considered["excluded_item_count"]),
             "considered_item_count": int(considered["considered_item_count"]),
             "loss_item_count": int(considered["loss_item_count"]),
@@ -3265,7 +3265,7 @@ def trade_pnl_apply_acquisition_expectation(item: dict[str, Any], expectation: d
         "planned_units": planned_units,
         "matched_units": matched_quantity,
         "open_units": open_quantity,
-        "fill_percent": (matched_quantity / planned_units * 100.0) if planned_units and planned_units > 0 else None,
+        "fill_percent": round_optional_float(matched_quantity / planned_units * 100.0) if planned_units and planned_units > 0 else None,
         "expected_unit_profit_isk": expected_unit_profit,
         "expected_profit_for_matched_isk": expected_profit_for_matched,
         "actual_profit_isk": actual_profit,
@@ -3437,7 +3437,7 @@ def trade_pnl_public_item(item: dict[str, Any]) -> dict[str, Any]:
         "net_cashflow_isk",
         "fee_gap_isk",
     ):
-        public_item[key] = round(float(public_item.get(key) or 0.0), 4)
+        public_item[key] = round(float(public_item.get(key) or 0.0), 2)
     for key in (
         "open_inventory_market_value_isk",
         "open_inventory_unrealized_isk",
@@ -3493,12 +3493,12 @@ def trade_pnl_public_match(match: dict[str, Any]) -> dict[str, Any]:
         "expected_profit_isk",
         "actual_profit_isk",
     ):
-        public_match[key] = round(float(public_match.get(key) or 0.0), 4)
+        public_match[key] = round(float(public_match.get(key) or 0.0), 2)
     public_match["quantity"] = int(public_match.get("quantity") or 0)
     return public_match
 
 
-def round_optional_float(value: Any, digits: int = 4) -> float | None:
+def round_optional_float(value: Any, digits: int = 2) -> float | None:
     if value is None:
         return None
     try:
@@ -7770,16 +7770,16 @@ def scan_route_hauling_opportunities(
                 "cargo_capacity_m3": clean_cargo_capacity_m3,
                 "budget_limited": bool(depth_match["budget_limited"]),
                 "purchase_budget_isk": clean_purchase_budget_isk,
-                "budget_remaining_isk": depth_match["budget_remaining_isk"],
+                "budget_remaining_isk": round_optional_float(depth_match["budget_remaining_isk"]),
                 "average_pickup_price": depth_match["average_pickup_price"],
                 "average_destination_price": depth_match["average_destination_price"],
                 "average_net_destination_price": depth_match["average_net_destination_price"],
                 "gross_spread_per_unit": depth_match["gross_spread_per_unit"],
                 "net_profit_per_unit": depth_match["net_profit_per_unit"],
-                "net_profit": total_net_profit,
-                "net_profit_per_m3": net_profit_per_m3,
-                "net_profit_per_extra_jump": net_profit_per_extra_jump,
-                "matched_volume_m3": matched_volume_m3,
+                "net_profit": round_optional_float(total_net_profit),
+                "net_profit_per_m3": round_optional_float(net_profit_per_m3),
+                "net_profit_per_extra_jump": round_optional_float(net_profit_per_extra_jump),
+                "matched_volume_m3": round_optional_float(matched_volume_m3),
                 "pickup_cost": depth_match["pickup_cost"],
                 "gross_destination_revenue": depth_match["gross_destination_revenue"],
                 "net_destination_revenue": depth_match["net_destination_revenue"],
@@ -8161,17 +8161,17 @@ def build_haul_load_plan(
                 "type_id": opportunity.get("type_id"),
                 "item_name": opportunity.get("item_name"),
                 "units": line_units,
-                "unit_volume_m3": unit_volume_m3,
-                "volume_m3": line_volume_m3,
-                "pickup_cost": line_pickup_cost,
-                "gross_destination_revenue": line_gross_destination_revenue,
-                "net_destination_revenue": line_net_destination_revenue,
-                "sales_tax_total": line_sales_tax_total,
-                "net_profit": line_net_profit,
-                "average_pickup_price": line_pickup_cost / line_units,
-                "average_destination_price": line_gross_destination_revenue / line_units,
-                "net_profit_per_unit": line_net_profit / line_units,
-                "net_profit_per_m3": line_net_profit / line_volume_m3 if line_volume_m3 > 0 else None,
+                "unit_volume_m3": round_optional_float(unit_volume_m3),
+                "volume_m3": round_optional_float(line_volume_m3),
+                "pickup_cost": round_optional_float(line_pickup_cost),
+                "gross_destination_revenue": round_optional_float(line_gross_destination_revenue),
+                "net_destination_revenue": round_optional_float(line_net_destination_revenue),
+                "sales_tax_total": round_optional_float(line_sales_tax_total),
+                "net_profit": round_optional_float(line_net_profit),
+                "average_pickup_price": round_optional_float(line_pickup_cost / line_units),
+                "average_destination_price": round_optional_float(line_gross_destination_revenue / line_units),
+                "net_profit_per_unit": round_optional_float(line_net_profit / line_units),
+                "net_profit_per_m3": round_optional_float(line_net_profit / line_volume_m3) if line_volume_m3 > 0 else None,
                 "pickup_system_count": len(line_system_ids),
                 "risk_level": opportunity.get("risk_level"),
                 "extra_route_jumps": opportunity.get("extra_route_jumps"),
@@ -8181,13 +8181,24 @@ def build_haul_load_plan(
     stops = []
     for stop in stop_map.values():
         stop_items = [
-            item
+            {
+                **item,
+                "pickup_cost": round_optional_float(item.get("pickup_cost")) or 0.0,
+                "volume_m3": round_optional_float(item.get("volume_m3")) or 0.0,
+            }
             for item in sorted(
                 stop["items"].values(),
                 key=lambda item: (str(item.get("item_name") or ""), int(item.get("type_id") or 0)),
             )
         ]
-        stops.append({**{key: value for key, value in stop.items() if key != "items"}, "items": stop_items})
+        stops.append(
+            {
+                **{key: value for key, value in stop.items() if key != "items"},
+                "pickup_cost": round_optional_float(stop.get("pickup_cost")) or 0.0,
+                "volume_m3": round_optional_float(stop.get("volume_m3")) or 0.0,
+                "items": stop_items,
+            }
+        )
     stops.sort(key=lambda item: (int(item.get("jumps") if item.get("jumps") is not None else 999), str(item["system_name"])))
 
     used_cargo_m3 = clean_cargo_capacity_m3 - remaining_cargo_m3
@@ -8202,18 +8213,18 @@ def build_haul_load_plan(
         "stop_count": len(stops),
         "item_count": len({line.get("type_id") for line in lines}),
         "units": total_units,
-        "cargo_capacity_m3": clean_cargo_capacity_m3,
-        "used_cargo_m3": used_cargo_m3,
-        "cargo_remaining_m3": remaining_cargo_m3,
-        "cargo_percent": (used_cargo_m3 / clean_cargo_capacity_m3 * 100.0) if clean_cargo_capacity_m3 > 0 else 0.0,
-        "purchase_budget_isk": clean_purchase_budget_isk,
-        "pickup_cost": used_budget_isk,
-        "budget_remaining_isk": remaining_budget_isk,
-        "gross_destination_revenue": sum(float(line["gross_destination_revenue"]) for line in lines),
-        "net_destination_revenue": sum(float(line["net_destination_revenue"]) for line in lines),
-        "sales_tax_total": sum(float(line["sales_tax_total"]) for line in lines),
-        "net_profit": total_net_profit,
-        "net_profit_per_m3": total_net_profit / used_cargo_m3 if used_cargo_m3 > 0 else None,
+        "cargo_capacity_m3": round_optional_float(clean_cargo_capacity_m3),
+        "used_cargo_m3": round_optional_float(used_cargo_m3),
+        "cargo_remaining_m3": round_optional_float(remaining_cargo_m3),
+        "cargo_percent": round_optional_float((used_cargo_m3 / clean_cargo_capacity_m3 * 100.0) if clean_cargo_capacity_m3 > 0 else 0.0),
+        "purchase_budget_isk": round_optional_float(clean_purchase_budget_isk),
+        "pickup_cost": round_optional_float(used_budget_isk),
+        "budget_remaining_isk": round_optional_float(remaining_budget_isk),
+        "gross_destination_revenue": round_optional_float(sum(float(line["gross_destination_revenue"]) for line in lines)),
+        "net_destination_revenue": round_optional_float(sum(float(line["net_destination_revenue"]) for line in lines)),
+        "sales_tax_total": round_optional_float(sum(float(line["sales_tax_total"]) for line in lines)),
+        "net_profit": round_optional_float(total_net_profit),
+        "net_profit_per_m3": round_optional_float(total_net_profit / used_cargo_m3) if used_cargo_m3 > 0 else None,
         "lines": lines,
         "stops": stops,
         "skipped_possible_trap_count": skipped_possible_trap_count,
@@ -8227,10 +8238,11 @@ def expected_realized_report_number(value: Any) -> float | int | str:
     number = clean_optional_float(value)
     if number is None:
         return ""
-    rounded = round(number)
-    if abs(number - rounded) < 1e-9:
-        return int(rounded)
-    return number
+    rounded = round(number, 2)
+    whole = round(rounded)
+    if abs(rounded - whole) < 1e-9:
+        return int(whole)
+    return rounded
 
 
 def build_expected_realized_report_row(
@@ -8246,6 +8258,8 @@ def build_expected_realized_report_row(
     buy_hub: str = "",
     realized_return_per_item: Any = None,
     expected_total_cost: Any = None,
+    expected_total_return: Any = None,
+    expected_total_profit: Any = None,
     planned_order_duration: str = "",
     buy_order_price_to_enter: Any = None,
     estimated_broker_fee_percent: Any = None,
@@ -8274,6 +8288,8 @@ def build_expected_realized_report_row(
     expected_return_number = clean_optional_float(expected_return_per_item)
     realized_return_number = clean_optional_float(realized_return_per_item)
     expected_total_cost_override = clean_optional_float(expected_total_cost)
+    expected_total_return_override = clean_optional_float(expected_total_return)
+    expected_total_profit_override = clean_optional_float(expected_total_profit)
 
     expected_total_cost = (
         expected_total_cost_override
@@ -8285,9 +8301,13 @@ def build_expected_realized_report_row(
         )
     )
     expected_total_return = (
-        quantity_number * expected_return_number
-        if quantity_number is not None and expected_return_number is not None
-        else None
+        expected_total_return_override
+        if expected_total_return_override is not None
+        else (
+            quantity_number * expected_return_number
+            if quantity_number is not None and expected_return_number is not None
+            else None
+        )
     )
     realized_total_return = (
         quantity_number * realized_return_number
@@ -8295,9 +8315,13 @@ def build_expected_realized_report_row(
         else None
     )
     expected_total_profit = (
-        expected_total_return - expected_total_cost
-        if expected_total_return is not None and expected_total_cost is not None
-        else None
+        expected_total_profit_override
+        if expected_total_profit_override is not None
+        else (
+            expected_total_return - expected_total_cost
+            if expected_total_return is not None and expected_total_cost is not None
+            else None
+        )
     )
     expected_profit_per_item = (
         expected_total_profit / quantity_number
@@ -8426,10 +8450,11 @@ def report_quantity_text(value: Any) -> str:
     number = clean_optional_float(value)
     if number is None:
         return ""
-    rounded = round(number)
-    if abs(number - rounded) < 1e-9:
-        return f"{int(rounded):,}"
-    return f"{number:,.4f}".rstrip("0").rstrip(".")
+    rounded = round(number, 2)
+    whole = round(rounded)
+    if abs(rounded - whole) < 1e-9:
+        return f"{int(whole):,}"
+    return f"{rounded:,.2f}".rstrip("0").rstrip(".")
 
 
 def destination_sell_target_details(
@@ -8660,6 +8685,9 @@ def build_haul_expected_realized_report_rows(
                 quantity=units,
                 price_per_item=price_per_item,
                 expected_return_per_item=expected_return_per_item,
+                expected_total_cost=pickup_cost,
+                expected_total_return=net_destination_revenue,
+                expected_total_profit=opportunity.get("net_profit"),
                 **sell_target,
                 status=status,
                 reason_for_entry=(
@@ -8728,6 +8756,9 @@ def build_haul_expected_realized_report_rows(
             quantity=units,
             price_per_item=price_per_item,
             expected_return_per_item=expected_return_per_item,
+            expected_total_cost=pickup_cost,
+            expected_total_return=net_destination_revenue,
+            expected_total_profit=line.get("net_profit"),
             **sell_target,
             reason_for_entry=(
                 f"Manual hauling load plan: buy at pickup sell orders, haul from {origin_name} "
@@ -8785,9 +8816,10 @@ def build_acquisition_expected_realized_report_rows(
             if broker_fee_percent is not None:
                 broker_fee_rate = broker_fee_percent / 100.0
         estimated_broker_fee = clean_optional_float(line.get("estimated_broker_fee"))
+        broker_fee_percent_value = round_optional_float(broker_fee_rate * 100.0) if broker_fee_rate is not None else None
         broker_fee_note = (
-            f"{broker_fee_rate * 100.0:g}% estimated broker fee"
-            if broker_fee_rate is not None
+            f"{broker_fee_percent_value:g}% estimated broker fee"
+            if broker_fee_percent_value is not None
             else "estimated broker fee"
         )
         risk_level = str(line.get("risk_level") or "clear")
@@ -8830,7 +8862,7 @@ def build_acquisition_expected_realized_report_rows(
                 planned_order_duration=order_duration_label,
                 price_per_item=price_per_item,
                 buy_order_price_to_enter=price_per_item,
-                estimated_broker_fee_percent=broker_fee_rate * 100.0 if broker_fee_rate is not None else None,
+                estimated_broker_fee_percent=broker_fee_percent_value,
                 estimated_broker_fee_isk=estimated_broker_fee,
                 expected_return_per_item=expected_return_per_item,
                 **sell_target,
@@ -9339,7 +9371,7 @@ def acquisition_portfolio_line(
         "net_profit": scaled_value("net_profit"),
         "net_profit_per_unit": opportunity.get("net_profit_per_unit"),
         "margin_percent": opportunity.get("margin_percent"),
-        "portfolio_weight_percent": (estimated_isk_committed / total_budget_isk * 100.0) if total_budget_isk > 0 else 0.0,
+        "portfolio_weight_percent": round_optional_float(estimated_isk_committed / total_budget_isk * 100.0) if total_budget_isk > 0 else 0.0,
         "best_source_buy": opportunity.get("best_source_buy"),
         "best_source_sell": opportunity.get("best_source_sell"),
         "best_destination_buy": opportunity.get("best_destination_buy"),
@@ -9656,7 +9688,7 @@ def build_acquisition_investment_portfolio(
                 "invested_isk": category_invested,
                 "estimated_net_profit": category_profit,
                 "used_jumps": category_jumps,
-                "weight_percent": (category_invested / invested_isk * 100.0) if invested_isk > 0 else 0.0,
+                "weight_percent": round_optional_float(category_invested / invested_isk * 100.0) if invested_isk > 0 else 0.0,
             }
         )
     category_allocations.sort(key=lambda item: (-float(item["invested_isk"]), str(item["category"])))
@@ -9858,14 +9890,14 @@ def acquisition_competition_pressure(
             "label": "No visible source buy competition",
             "detail": "No reachable competing source buy order was visible in the scanned pickup area.",
             "highest_source_buy": None,
-            "safe_bid_ceiling": safe_bid,
-            "suggested_bid": suggested,
-            "bid_headroom": suggested_headroom,
+            "safe_bid_ceiling": round_optional_float(safe_bid),
+            "suggested_bid": round_optional_float(suggested),
+            "bid_headroom": round_optional_float(suggested_headroom),
             "bid_headroom_percent": None,
-            "suggested_bid_headroom": suggested_headroom,
+            "suggested_bid_headroom": round_optional_float(suggested_headroom),
         }
     bid_headroom = safe_bid - highest_source_buy
-    bid_headroom_percent = (bid_headroom / safe_bid * 100.0) if safe_bid > 0 else None
+    bid_headroom_percent = round_optional_float(bid_headroom / safe_bid * 100.0) if safe_bid > 0 else None
     if bid_headroom <= 0:
         level = "no-headroom"
         label = "No bid headroom"
@@ -9886,12 +9918,12 @@ def acquisition_competition_pressure(
         "level": level,
         "label": label,
         "detail": detail,
-        "highest_source_buy": highest_source_buy,
-        "safe_bid_ceiling": safe_bid,
-        "suggested_bid": suggested,
-        "bid_headroom": bid_headroom,
+        "highest_source_buy": round_optional_float(highest_source_buy),
+        "safe_bid_ceiling": round_optional_float(safe_bid),
+        "suggested_bid": round_optional_float(suggested),
+        "bid_headroom": round_optional_float(bid_headroom),
         "bid_headroom_percent": bid_headroom_percent,
-        "suggested_bid_headroom": suggested_headroom,
+        "suggested_bid_headroom": round_optional_float(suggested_headroom),
     }
 
 
@@ -9910,7 +9942,7 @@ def acquisition_buyer_concentration(
     supporting_volume = sum(max(0, clean_optional_int(order.get("volume_remain")) or 0) for order in supporting_orders)
     largest_order_units = max([max(0, clean_optional_int(order.get("volume_remain")) or 0) for order in supporting_orders] or [0])
     units_from_largest = min(clean_units, largest_order_units)
-    largest_order_share_percent = (units_from_largest / clean_units * 100.0) if clean_units > 0 else 0.0
+    largest_order_share_percent = round_optional_float(units_from_largest / clean_units * 100.0) if clean_units > 0 else 0.0
     if not supporting_orders:
         level = "unsupported"
         label = "No supporting buyer depth"
@@ -9935,7 +9967,7 @@ def acquisition_buyer_concentration(
         "supporting_volume": supporting_volume,
         "largest_order_units": largest_order_units,
         "largest_order_share_percent": largest_order_share_percent,
-        "min_profitable_destination_price": float(min_profitable_destination_price or 0.0),
+        "min_profitable_destination_price": round_optional_float(min_profitable_destination_price) or 0.0,
     }
 
 
@@ -10521,7 +10553,7 @@ def liquidation_value_from_orders(orders: Iterable[dict[str, Any]], *, quantity:
         remaining -= filled
         used_orders += 1
     return {
-        "value": round(value, 4),
+        "value": round(value, 2),
         "priced_quantity": priced_quantity,
         "required_quantity": required_quantity,
         "complete": required_quantity == 0 or priced_quantity >= required_quantity,
@@ -10589,10 +10621,10 @@ def plex_order_depth_quote(orders: Iterable[dict[str, Any]], *, quantity: int) -
         "priced_quantity": priced_quantity,
         "remaining_quantity": max(0, remaining),
         "complete": priced_quantity >= required_quantity,
-        "total_isk": round(total_isk, 4),
-        "average_unit_price": round(average_unit_price, 4) if average_unit_price is not None else None,
-        "first_unit_price": used_prices[0] if used_prices else None,
-        "last_unit_price": used_prices[-1] if used_prices else None,
+        "total_isk": round(total_isk, 2),
+        "average_unit_price": round(average_unit_price, 2) if average_unit_price is not None else None,
+        "first_unit_price": round(used_prices[0], 2) if used_prices else None,
+        "last_unit_price": round(used_prices[-1], 2) if used_prices else None,
         "order_count": used_orders,
         "visible_units": visible_units,
         "location_count": len(used_location_ids),
@@ -10649,10 +10681,10 @@ def plex_fuzzwork_aggregate_quote(
         "priced_quantity": priced_quantity,
         "remaining_quantity": max(0, required_quantity - priced_quantity),
         "complete": priced_quantity >= required_quantity,
-        "total_isk": round(total_isk, 4),
-        "average_unit_price": round(unit_price, 4) if unit_price is not None and unit_price > 0 else None,
-        "first_unit_price": round(unit_price, 4) if unit_price is not None and unit_price > 0 else None,
-        "last_unit_price": round(unit_price, 4) if unit_price is not None and unit_price > 0 else None,
+        "total_isk": round(total_isk, 2),
+        "average_unit_price": round(unit_price, 2) if unit_price is not None and unit_price > 0 else None,
+        "first_unit_price": round(unit_price, 2) if unit_price is not None and unit_price > 0 else None,
+        "last_unit_price": round(unit_price, 2) if unit_price is not None and unit_price > 0 else None,
         "order_count": order_count,
         "visible_units": max(0, visible_units),
         "location_count": 1 if location_id is not None else 0,
@@ -10816,7 +10848,7 @@ def build_plex_deal_payload(
     best_sell_price = clean_optional_float((best_sell or {}).get("average_unit_price"))
     best_buy_price = clean_optional_float((best_buy or {}).get("average_unit_price"))
     spread = best_buy_price - best_sell_price if best_buy_price is not None and best_sell_price is not None else None
-    spread_percent = (spread / best_sell_price * 100.0) if spread is not None and best_sell_price and best_sell_price > 0 else None
+    spread_percent = round_optional_float(spread / best_sell_price * 100.0) if spread is not None and best_sell_price and best_sell_price > 0 else None
     return {
         "ok": True,
         "generated_at": now_iso(),
@@ -11064,6 +11096,21 @@ def public_haul_order_depth_match(match: dict[str, Any]) -> dict[str, Any]:
     return public_match
 
 
+def round_public_haul_order_depth_match(match: dict[str, Any]) -> dict[str, Any]:
+    public_match = public_haul_order_depth_match(match)
+    for key in ("pickup_price", "destination_price", "net_destination_price", "net_profit"):
+        rounded = round_optional_float(public_match.get(key))
+        if rounded is not None:
+            public_match[key] = rounded
+    for order_key in ("pickup_order", "destination_order"):
+        order = public_match.get(order_key)
+        if isinstance(order, dict):
+            rounded_price = round_optional_float(order.get("price"))
+            if rounded_price is not None:
+                order["price"] = rounded_price
+    return public_match
+
+
 def match_haul_order_depth(
     *,
     sell_orders: list[dict[str, Any]],
@@ -11172,12 +11219,13 @@ def match_haul_order_depth(
     if matched_units <= 0 or pickup_cost <= 0:
         return None
 
-    public_matches = [public_haul_order_depth_match(match) for match in matches]
+    raw_public_matches = [public_haul_order_depth_match(match) for match in matches]
+    display_public_matches = [round_public_haul_order_depth_match(match) for match in matches]
     pickup_systems: dict[int, dict[str, Any]] = {}
     pickup_system_order_ids: dict[int, set[int]] = {}
     pickup_order_ids: set[int] = set()
     destination_order_ids: set[int] = set()
-    for match in public_matches:
+    for match in raw_public_matches:
         pickup_order = match["pickup_order"]
         destination_order = match["destination_order"]
         pickup_order_id = int(pickup_order.get("order_id") or 0)
@@ -11202,19 +11250,19 @@ def match_haul_order_depth(
     net_profit = net_destination_revenue - pickup_cost
     return {
         "units": matched_units,
-        "pickup_order": public_matches[0]["pickup_order"],
-        "destination_order": public_matches[0]["destination_order"],
-        "average_pickup_price": pickup_cost / matched_units,
-        "average_destination_price": gross_destination_revenue / matched_units,
-        "average_net_destination_price": net_destination_revenue / matched_units,
-        "gross_spread_per_unit": (gross_destination_revenue - pickup_cost) / matched_units,
-        "net_profit_per_unit": net_profit / matched_units,
-        "net_profit": net_profit,
-        "pickup_cost": pickup_cost,
-        "gross_destination_revenue": gross_destination_revenue,
-        "net_destination_revenue": net_destination_revenue,
-        "sales_tax_total": gross_destination_revenue - net_destination_revenue,
-        "budget_remaining_isk": remaining_budget_isk,
+        "pickup_order": display_public_matches[0]["pickup_order"],
+        "destination_order": display_public_matches[0]["destination_order"],
+        "average_pickup_price": round_optional_float(pickup_cost / matched_units),
+        "average_destination_price": round_optional_float(gross_destination_revenue / matched_units),
+        "average_net_destination_price": round_optional_float(net_destination_revenue / matched_units),
+        "gross_spread_per_unit": round_optional_float((gross_destination_revenue - pickup_cost) / matched_units),
+        "net_profit_per_unit": round_optional_float(net_profit / matched_units),
+        "net_profit": round_optional_float(net_profit),
+        "pickup_cost": round_optional_float(pickup_cost),
+        "gross_destination_revenue": round_optional_float(gross_destination_revenue),
+        "net_destination_revenue": round_optional_float(net_destination_revenue),
+        "sales_tax_total": round_optional_float(gross_destination_revenue - net_destination_revenue),
+        "budget_remaining_isk": round_optional_float(remaining_budget_isk),
         "matched_sell_order_count": len(pickup_order_ids),
         "matched_buy_order_count": len(destination_order_ids),
         "matched_order_pair_count": len(matches),
@@ -11223,9 +11271,9 @@ def match_haul_order_depth(
             pickup_systems.values(),
             key=lambda item: (-int(item["units"]), str(item["system_name"]), int(item["system_id"])),
         ),
-        "order_depth": public_matches[:12],
-        "load_plan_depth": public_matches,
-        "order_depth_truncated": len(public_matches) > 12,
+        "order_depth": display_public_matches[:12],
+        "load_plan_depth": raw_public_matches,
+        "order_depth_truncated": len(raw_public_matches) > 12,
         "cargo_limited": cargo_units is not None and matched_units >= cargo_units,
         "budget_limited": budget_limited,
     }
@@ -11327,7 +11375,7 @@ def profitability_decision(
 def profit_margin_percent(profit: float | None, revenue: float | None) -> float | None:
     if profit is None or revenue is None or revenue <= 0:
         return None
-    return round((float(profit) / float(revenue)) * 100.0, 4)
+    return round((float(profit) / float(revenue)) * 100.0, 2)
 
 
 def adjusted_job_time_seconds(base_seconds: int, time_efficiency: int, runs: int = 1) -> int:
@@ -11343,7 +11391,7 @@ def adjusted_job_time_seconds(base_seconds: int, time_efficiency: int, runs: int
 def isk_per_hour(profit: float | None, job_time_seconds: int) -> float | None:
     if profit is None or job_time_seconds <= 0:
         return None
-    return round((float(profit) / float(job_time_seconds)) * 3600.0, 4)
+    return round((float(profit) / float(job_time_seconds)) * 3600.0, 2)
 
 
 def owned_blueprint_product_targets(
@@ -12674,8 +12722,8 @@ class StageTimer:
         stage = {
             "key": key,
             "label": label,
-            "seconds": round(max(0.0, now - self.stage_started_at), 3),
-            "elapsed_seconds": round(max(0.0, now - self.started_at), 3),
+            "seconds": round(max(0.0, now - self.stage_started_at), 2),
+            "elapsed_seconds": round(max(0.0, now - self.started_at), 2),
         }
         clean_metrics = {name: value for name, value in metrics.items() if value is not None}
         if clean_metrics:
@@ -12685,7 +12733,7 @@ class StageTimer:
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
-            "total_seconds": round(max(0.0, time.monotonic() - self.started_at), 3),
+            "total_seconds": round(max(0.0, time.monotonic() - self.started_at), 2),
             "stages": list(self.stages),
         }
 
@@ -12826,7 +12874,7 @@ def build_sales_tax_profile(skills_payload: dict[str, Any]) -> dict[str, Any]:
         "accounting_skill_type_id": ACCOUNTING_SKILL_TYPE_ID,
         "accounting_level": accounting_level,
         "rate": rate,
-        "rate_percent": rate * 100.0,
+        "rate_percent": round_optional_float(rate * 100.0),
         "broker_fee_rate": 0.0,
         "broker_fee_note": "Immediate sales to existing buy orders do not create a broker fee.",
         "source": FLIGHT_SKILLS_SCOPE,
@@ -12866,7 +12914,7 @@ def build_reprocessing_after_tax_valuation(
         "source": "Jita buy-order value after ESI Accounting sales tax",
         "note": "Subtracts sales tax from immediate Jita buy-order proceeds. Broker fee is 0% for immediate sales to existing buy orders.",
         "sales_tax_rate": sales_tax_rate,
-        "sales_tax_percent": sales_tax_rate * 100.0,
+        "sales_tax_percent": round_optional_float(sales_tax_rate * 100.0),
         "accounting_level": sales_tax.get("accounting_level", 0),
         "accounting_skill_type_id": sales_tax.get("accounting_skill_type_id", ACCOUNTING_SKILL_TYPE_ID),
         "broker_fee_rate": sales_tax.get("broker_fee_rate", 0.0),
@@ -12874,12 +12922,12 @@ def build_reprocessing_after_tax_valuation(
             "broker_fee_note",
             "Immediate sales to existing buy orders do not create a broker fee.",
         ),
-        "processed_material_value": processed_value,
-        "processed_partial_material_value": processed_partial_value,
-        "ore_value": ore_value,
-        "ore_partial_value": ore_partial_value,
-        "value_delta": value_delta,
-        "partial_value_delta": partial_value_delta,
+        "processed_material_value": round_optional_float(processed_value),
+        "processed_partial_material_value": round_optional_float(processed_partial_value),
+        "ore_value": round_optional_float(ore_value),
+        "ore_partial_value": round_optional_float(ore_partial_value),
+        "value_delta": round_optional_float(value_delta),
+        "partial_value_delta": round_optional_float(partial_value_delta),
     }
 
 
@@ -13264,20 +13312,20 @@ def first_market_order_price(orders: Iterable[dict[str, Any]]) -> float | None:
 def planetary_tax_profile_to_dict(tax_profile: PlanetaryTaxProfile) -> dict[str, Any]:
     return {
         "owner_export_tax_rate": tax_profile.owner_export_tax_rate,
-        "owner_export_tax_percent": tax_profile.owner_export_tax_rate * 100.0,
+        "owner_export_tax_percent": round_optional_float(tax_profile.owner_export_tax_rate * 100.0),
         "npc_export_tax_rate": tax_profile.npc_export_tax_rate,
-        "npc_export_tax_percent": tax_profile.npc_export_tax_rate * 100.0,
+        "npc_export_tax_percent": round_optional_float(tax_profile.npc_export_tax_rate * 100.0),
         "effective_npc_export_tax_rate": tax_profile.effective_npc_export_tax_rate,
-        "effective_npc_export_tax_percent": tax_profile.effective_npc_export_tax_rate * 100.0,
+        "effective_npc_export_tax_percent": round_optional_float(tax_profile.effective_npc_export_tax_rate * 100.0),
         "effective_export_tax_rate": tax_profile.effective_export_tax_rate,
-        "effective_export_tax_percent": tax_profile.effective_export_tax_rate * 100.0,
+        "effective_export_tax_percent": round_optional_float(tax_profile.effective_export_tax_rate * 100.0),
         "effective_import_tax_rate": tax_profile.effective_import_tax_rate,
-        "effective_import_tax_percent": tax_profile.effective_import_tax_rate * 100.0,
+        "effective_import_tax_percent": round_optional_float(tax_profile.effective_import_tax_rate * 100.0),
         "customs_code_expertise_level": tax_profile.customs_code_expertise_level,
         "sales_tax_rate": tax_profile.sales_tax_rate,
-        "sales_tax_percent": tax_profile.sales_tax_rate * 100.0,
+        "sales_tax_percent": round_optional_float(tax_profile.sales_tax_rate * 100.0),
         "broker_fee_rate": tax_profile.broker_fee_rate,
-        "broker_fee_percent": tax_profile.broker_fee_rate * 100.0,
+        "broker_fee_percent": round_optional_float(tax_profile.broker_fee_rate * 100.0),
     }
 
 
@@ -13300,10 +13348,10 @@ def planetary_item_to_dict(item: Any) -> dict[str, Any]:
         "name": item.name,
         "tier": item.tier,
         "quantity": item.quantity,
-        "volume_m3": item.volume_m3,
-        "total_volume_m3": item.total_volume_m3,
-        "export_tax_base_per_unit": item.export_tax_base_per_unit,
-        "import_tax_base_per_unit": item.import_tax_base_per_unit,
+        "volume_m3": round_optional_float(item.volume_m3),
+        "total_volume_m3": round_optional_float(item.total_volume_m3),
+        "export_tax_base_per_unit": round_optional_float(item.export_tax_base_per_unit),
+        "import_tax_base_per_unit": round_optional_float(item.import_tax_base_per_unit),
     }
 
 
@@ -13314,18 +13362,18 @@ def planetary_plan_item_to_dict(item: Any) -> dict[str, Any]:
         "tier": item.tier,
         "quantity": item.quantity,
         "market_side": item.market_side,
-        "unit_price": item.unit_price,
-        "market_value": item.market_value,
+        "unit_price": round_optional_float(item.unit_price),
+        "market_value": round_optional_float(item.market_value),
         "price_complete": item.price_complete,
-        "volume_m3": item.volume_m3,
-        "total_volume_m3": item.total_volume_m3,
-        "export_tax_base_per_unit": item.export_tax_base_per_unit,
-        "import_tax_base_per_unit": item.import_tax_base_per_unit,
-        "import_customs_cost": item.import_customs_cost,
-        "export_customs_cost": item.export_customs_cost,
-        "customs_transfer_cost": item.customs_transfer_cost,
-        "sales_tax": item.sales_tax,
-        "broker_fee": item.broker_fee,
+        "volume_m3": round_optional_float(item.volume_m3),
+        "total_volume_m3": round_optional_float(item.total_volume_m3),
+        "export_tax_base_per_unit": round_optional_float(item.export_tax_base_per_unit),
+        "import_tax_base_per_unit": round_optional_float(item.import_tax_base_per_unit),
+        "import_customs_cost": round_optional_float(item.import_customs_cost),
+        "export_customs_cost": round_optional_float(item.export_customs_cost),
+        "customs_transfer_cost": round_optional_float(item.customs_transfer_cost),
+        "sales_tax": round_optional_float(item.sales_tax),
+        "broker_fee": round_optional_float(item.broker_fee),
     }
 
 
@@ -13337,8 +13385,8 @@ def planetary_customs_breakdown_to_dict(opportunity: Any) -> list[dict[str, Any]
                 **planetary_plan_item_to_dict(item),
                 "role": "Import input",
                 "customs_direction": "import",
-                "customs_tax_base_per_unit": item.import_tax_base_per_unit,
-                "customs_cost": item.import_customs_cost,
+                "customs_tax_base_per_unit": round_optional_float(item.import_tax_base_per_unit),
+                "customs_cost": round_optional_float(item.import_customs_cost),
             }
         )
     for item in getattr(opportunity, "sell_targets", ()) or ():
@@ -13347,8 +13395,8 @@ def planetary_customs_breakdown_to_dict(opportunity: Any) -> list[dict[str, Any]
                 **planetary_plan_item_to_dict(item),
                 "role": "Export output",
                 "customs_direction": "export",
-                "customs_tax_base_per_unit": item.export_tax_base_per_unit,
-                "customs_cost": item.export_customs_cost,
+                "customs_tax_base_per_unit": round_optional_float(item.export_tax_base_per_unit),
+                "customs_cost": round_optional_float(item.export_customs_cost),
             }
         )
     return rows
@@ -13362,18 +13410,18 @@ def planetary_opportunity_to_dict(opportunity: Any) -> dict[str, Any]:
         "output_name": opportunity.output_name,
         "output_tier": opportunity.output_tier,
         "cycle_time_seconds": opportunity.cycle_time_seconds,
-        "input_value": opportunity.input_value,
-        "output_value": opportunity.output_value,
-        "import_customs_cost": opportunity.import_customs_cost,
-        "export_customs_cost": opportunity.export_customs_cost,
-        "customs_transfer_cost": opportunity.customs_transfer_cost,
-        "sales_tax": opportunity.sales_tax,
-        "broker_fee": opportunity.broker_fee,
-        "net_profit": opportunity.net_profit,
-        "profit_per_hour": opportunity.profit_per_hour,
-        "profit_per_day": opportunity.profit_per_day,
+        "input_value": round_optional_float(opportunity.input_value),
+        "output_value": round_optional_float(opportunity.output_value),
+        "import_customs_cost": round_optional_float(opportunity.import_customs_cost),
+        "export_customs_cost": round_optional_float(opportunity.export_customs_cost),
+        "customs_transfer_cost": round_optional_float(opportunity.customs_transfer_cost),
+        "sales_tax": round_optional_float(opportunity.sales_tax),
+        "broker_fee": round_optional_float(opportunity.broker_fee),
+        "net_profit": round_optional_float(opportunity.net_profit),
+        "profit_per_hour": round_optional_float(opportunity.profit_per_hour),
+        "profit_per_day": round_optional_float(opportunity.profit_per_day),
         "break_even_export_tax_rate": break_even_rate,
-        "break_even_export_tax_percent": break_even_rate * 100.0 if break_even_rate is not None else None,
+        "break_even_export_tax_percent": round_optional_float(break_even_rate * 100.0) if break_even_rate is not None else None,
         "price_complete": opportunity.price_complete,
         "missing_price_type_ids": list(opportunity.missing_price_type_ids),
         "profitable": opportunity.profitable,
@@ -13398,10 +13446,10 @@ def planetary_chain_raw_input_to_dict(item: PlanetaryChainRawInput) -> dict[str,
         "name": item.name,
         "tier": item.tier,
         "quantity": item.quantity,
-        "buy_unit_price": item.buy_unit_price,
-        "buy_market_value": item.buy_market_value,
-        "buy_import_customs_cost": item.buy_import_customs_cost,
-        "buy_total_cost": item.buy_total_cost,
+        "buy_unit_price": round_optional_float(item.buy_unit_price),
+        "buy_market_value": round_optional_float(item.buy_market_value),
+        "buy_import_customs_cost": round_optional_float(item.buy_import_customs_cost),
+        "buy_total_cost": round_optional_float(item.buy_total_cost),
         "price_complete": item.price_complete,
         "planet_types": list(item.planet_types),
         "planet_type_counts": [planetary_planet_type_count_to_dict(row) for row in item.planet_type_counts],
@@ -13420,22 +13468,22 @@ def planetary_chain_node_to_dict(node: PlanetaryChainNode) -> dict[str, Any]:
         "schematic_name": node.schematic_name,
         "cycle_time_seconds": node.cycle_time_seconds,
         "cycle_count": node.cycle_count,
-        "buy_unit_price": node.buy_unit_price,
-        "buy_market_value": node.buy_market_value,
-        "buy_import_customs_cost": node.buy_import_customs_cost,
-        "buy_total_cost": node.buy_total_cost,
-        "sell_unit_price": node.sell_unit_price,
-        "sell_market_value": node.sell_market_value,
-        "sell_export_customs_cost": node.sell_export_customs_cost,
-        "sales_tax": node.sales_tax,
-        "broker_fee": node.broker_fee,
-        "sell_net_value": node.sell_net_value,
-        "immediate_input_market_cost": node.immediate_input_market_cost,
-        "immediate_input_customs_cost": node.immediate_input_customs_cost,
-        "produce_from_bought_inputs_cost": node.produce_from_bought_inputs_cost,
-        "produce_from_bought_inputs_profit": node.produce_from_bought_inputs_profit,
-        "off_planet_transfer_customs_cost": node.off_planet_transfer_customs_cost,
-        "same_planet_transfer_savings": node.same_planet_transfer_savings,
+        "buy_unit_price": round_optional_float(node.buy_unit_price),
+        "buy_market_value": round_optional_float(node.buy_market_value),
+        "buy_import_customs_cost": round_optional_float(node.buy_import_customs_cost),
+        "buy_total_cost": round_optional_float(node.buy_total_cost),
+        "sell_unit_price": round_optional_float(node.sell_unit_price),
+        "sell_market_value": round_optional_float(node.sell_market_value),
+        "sell_export_customs_cost": round_optional_float(node.sell_export_customs_cost),
+        "sales_tax": round_optional_float(node.sales_tax),
+        "broker_fee": round_optional_float(node.broker_fee),
+        "sell_net_value": round_optional_float(node.sell_net_value),
+        "immediate_input_market_cost": round_optional_float(node.immediate_input_market_cost),
+        "immediate_input_customs_cost": round_optional_float(node.immediate_input_customs_cost),
+        "produce_from_bought_inputs_cost": round_optional_float(node.produce_from_bought_inputs_cost),
+        "produce_from_bought_inputs_profit": round_optional_float(node.produce_from_bought_inputs_profit),
+        "off_planet_transfer_customs_cost": round_optional_float(node.off_planet_transfer_customs_cost),
+        "same_planet_transfer_savings": round_optional_float(node.same_planet_transfer_savings),
         "same_planet_options": list(node.same_planet_options),
         "planet_types": list(node.planet_types),
         "planet_type_counts": [planetary_planet_type_count_to_dict(row) for row in node.planet_type_counts],
@@ -13457,20 +13505,20 @@ def planetary_chain_plan_to_dict(plan: PlanetaryChainPlan) -> dict[str, Any]:
             "target_name": plan.target.name,
             "target_tier": plan.target.tier,
             "target_quantity": plan.target.quantity,
-            "buy_direct_cost": node.buy_total_cost,
-            "buy_direct_market_value": node.buy_market_value,
-            "buy_direct_import_customs_cost": node.buy_import_customs_cost,
-            "sell_net_value": node.sell_net_value,
-            "sell_market_value": node.sell_market_value,
-            "sell_export_customs_cost": node.sell_export_customs_cost,
-            "sales_tax": node.sales_tax,
-            "broker_fee": node.broker_fee,
-            "produce_from_bought_inputs_cost": node.produce_from_bought_inputs_cost,
-            "produce_from_bought_inputs_profit": node.produce_from_bought_inputs_profit,
-            "immediate_input_market_cost": node.immediate_input_market_cost,
-            "immediate_input_customs_cost": node.immediate_input_customs_cost,
-            "off_planet_transfer_customs_cost": node.off_planet_transfer_customs_cost,
-            "same_planet_transfer_savings": plan.same_planet_transfer_savings,
+            "buy_direct_cost": round_optional_float(node.buy_total_cost),
+            "buy_direct_market_value": round_optional_float(node.buy_market_value),
+            "buy_direct_import_customs_cost": round_optional_float(node.buy_import_customs_cost),
+            "sell_net_value": round_optional_float(node.sell_net_value),
+            "sell_market_value": round_optional_float(node.sell_market_value),
+            "sell_export_customs_cost": round_optional_float(node.sell_export_customs_cost),
+            "sales_tax": round_optional_float(node.sales_tax),
+            "broker_fee": round_optional_float(node.broker_fee),
+            "produce_from_bought_inputs_cost": round_optional_float(node.produce_from_bought_inputs_cost),
+            "produce_from_bought_inputs_profit": round_optional_float(node.produce_from_bought_inputs_profit),
+            "immediate_input_market_cost": round_optional_float(node.immediate_input_market_cost),
+            "immediate_input_customs_cost": round_optional_float(node.immediate_input_customs_cost),
+            "off_planet_transfer_customs_cost": round_optional_float(node.off_planet_transfer_customs_cost),
+            "same_planet_transfer_savings": round_optional_float(plan.same_planet_transfer_savings),
             "same_planet_options": list(plan.same_planet_options),
             "missing_price_type_ids": list(plan.missing_price_type_ids),
         },
@@ -13650,11 +13698,11 @@ def build_flight_reprocessing_payload(
         "yield": {
             "raw_yield_rate": raw_yield_rate,
             "gross_yield_rate": gross_yield_rate,
-            "gross_yield_percent": gross_yield_rate * 100.0,
+            "gross_yield_percent": round_optional_float(gross_yield_rate * 100.0),
             "station_tax_rate": tax_rate,
-            "station_tax_percent": tax_rate * 100.0,
+            "station_tax_percent": round_optional_float(tax_rate * 100.0),
             "net_yield_rate": net_yield_rate,
-            "net_yield_percent": net_yield_rate * 100.0,
+            "net_yield_percent": round_optional_float(net_yield_rate * 100.0),
             "capped": raw_yield_rate > gross_yield_rate,
             "breakdown": yield_rates["breakdown"],
         },
@@ -13788,7 +13836,7 @@ def build_reprocessing_station_options(
                     station=station,
                     solar_system_name=solar_system_name,
                     net_yield_percent=rates["net_yield_percent"],
-                    station_tax_percent=station_tax_rate * 100.0,
+                    station_tax_percent=round_optional_float(station_tax_rate * 100.0) or 0.0,
                     standing=standing_value,
                 ),
                 "owner_id": station.owner_id,
@@ -13797,10 +13845,10 @@ def build_reprocessing_station_options(
                 "solar_system_id": station.solar_system_id,
                 "solar_system_name": solar_system_name,
                 "station_type_id": station.type_id,
-                "facility_yield_percent": base_yield_percent,
-                "base_station_tax_percent": base_station_tax_rate * 100.0,
-                "station_tax_percent": station_tax_rate * 100.0,
-                "processing_fee_percent": station_tax_rate * 100.0,
+                "facility_yield_percent": round_optional_float(base_yield_percent),
+                "base_station_tax_percent": round_optional_float(base_station_tax_rate * 100.0),
+                "station_tax_percent": round_optional_float(station_tax_rate * 100.0),
+                "processing_fee_percent": round_optional_float(station_tax_rate * 100.0),
                 "standing": standing_value,
                 "standing_source": standing_source,
                 "standing_row": standing_profile,
@@ -14028,33 +14076,33 @@ def build_reprocessing_jita_valuation(
         "eve_estimate": {
             "source": "ESI /markets/prices average_price with adjusted_price fallback",
             "note": "This is a cluster market estimate, not a Jita buy-order liquidation value.",
-            "processed_material_value": processed_estimate_value,
-            "processed_partial_material_value": processed_estimate_partial_value_payload,
+            "processed_material_value": round_optional_float(processed_estimate_value),
+            "processed_partial_material_value": round_optional_float(processed_estimate_partial_value_payload),
             "processed_complete": processed_estimate_complete,
             "processed_material_types": processed_estimate_priced_types,
             "processed_required_material_types": processed_estimate_required_types,
-            "ore_value": ore_estimate["value"],
-            "ore_unit_price": ore_estimate["unit_price"],
+            "ore_value": round_optional_float(ore_estimate["value"]),
+            "ore_unit_price": round_optional_float(ore_estimate["unit_price"]),
             "ore_price_source": ore_estimate["price_source"],
             "ore_complete": ore_estimate["value"] is not None,
-            "value_delta": eve_estimate_value_delta,
-            "partial_value_delta": eve_estimate_partial_value_delta,
+            "value_delta": round_optional_float(eve_estimate_value_delta),
+            "partial_value_delta": round_optional_float(eve_estimate_partial_value_delta),
             "error": market_price_error,
         },
-        "processed_material_value": processed_value,
-        "processed_partial_material_value": processed_partial_value_payload,
+        "processed_material_value": round_optional_float(processed_value),
+        "processed_partial_material_value": round_optional_float(processed_partial_value_payload),
         "processed_complete": processed_complete,
         "processed_material_types": processed_full_material_types,
         "processed_partial_material_types": processed_partial_material_types,
         "processed_required_material_types": required_material_types,
-        "ore_value": ore_value,
-        "ore_partial_value": ore_partial_value,
+        "ore_value": round_optional_float(ore_value),
+        "ore_partial_value": round_optional_float(ore_partial_value),
         "ore_complete": ore_complete,
-        "ore_buy_price": float(ore_orders[0]["price"]) if ore_orders else None,
+        "ore_buy_price": round_optional_float(ore_orders[0]["price"]) if ore_orders else None,
         "ore_priced_quantity": ore_liquidation["priced_quantity"],
         "ore_required_quantity": ore_liquidation["required_quantity"],
-        "value_delta": value_delta,
-        "partial_value_delta": partial_value_delta,
+        "value_delta": round_optional_float(value_delta),
+        "partial_value_delta": round_optional_float(partial_value_delta),
         "errors": errors[:8],
         "notes": notes,
         "market_cache": market_order_cache_status(),
@@ -14077,9 +14125,9 @@ def eve_market_price_estimate(
     return {
         "type_id": int(type_id),
         "quantity": clean_quantity,
-        "unit_price": unit_price,
+        "unit_price": round_optional_float(unit_price),
         "price_source": price_source,
-        "value": unit_price * clean_quantity if unit_price is not None else None,
+        "value": round_optional_float(unit_price * clean_quantity) if unit_price is not None else None,
     }
 
 
@@ -14117,11 +14165,11 @@ def build_reprocessing_yield_rates(
     return {
         "raw_yield_rate": raw_yield_rate,
         "gross_yield_rate": gross_yield_rate,
-        "gross_yield_percent": gross_yield_rate * 100.0,
+        "gross_yield_percent": round_optional_float(gross_yield_rate * 100.0),
         "station_tax_rate": station_tax_rate,
-        "station_tax_percent": station_tax_rate * 100.0,
+        "station_tax_percent": round_optional_float(station_tax_rate * 100.0),
         "net_yield_rate": net_yield_rate,
-        "net_yield_percent": net_yield_rate * 100.0,
+        "net_yield_percent": round_optional_float(net_yield_rate * 100.0),
         "capped": raw_yield_rate > gross_yield_rate,
         "breakdown": {
             "facility_yield_percent": facility_yield_percent,
@@ -14137,10 +14185,10 @@ def build_reprocessing_yield_rates(
             "implant_multiplier": implant_multiplier,
             "structure_bonus_percent": structure_bonus_percent,
             "structure_multiplier": structure_multiplier,
-            "raw_yield_percent": raw_yield_rate * 100.0,
-            "gross_yield_percent": gross_yield_rate * 100.0,
-            "processing_fee_percent": station_tax_rate * 100.0,
-            "net_yield_percent": net_yield_rate * 100.0,
+            "raw_yield_percent": round_optional_float(raw_yield_rate * 100.0),
+            "gross_yield_percent": round_optional_float(gross_yield_rate * 100.0),
+            "processing_fee_percent": round_optional_float(station_tax_rate * 100.0),
+            "net_yield_percent": round_optional_float(net_yield_rate * 100.0),
         },
     }
 
@@ -14307,7 +14355,7 @@ def build_reprocessing_location_profile(
         notes.append("Station tax was supplied as a manual override.")
     elif location_kind == "npc-station":
         tax_rate = npc_reprocessing_station_tax_rate(base_station_tax_rate, standing_value)
-        tax_percent = tax_rate * 100.0
+        tax_percent = round_optional_float(tax_rate * 100.0) or 0.0
         tax_source = "esi-standings-and-sde-station-take"
         if standing_value is None and base_station_tax_rate > 0:
             notes.append(
@@ -14322,11 +14370,11 @@ def build_reprocessing_location_profile(
         "location_id": station_id or structure_id,
         "location_name": location_name,
         "source": source,
-        "facility_yield_percent": base_yield_percent,
-        "station_tax_percent": tax_percent,
+        "facility_yield_percent": round_optional_float(base_yield_percent),
+        "station_tax_percent": round_optional_float(tax_percent),
         "station_tax_source": tax_source,
-        "base_station_tax_percent": base_station_tax_rate * 100.0,
-        "adjusted_station_tax_percent": tax_percent,
+        "base_station_tax_percent": round_optional_float(base_station_tax_rate * 100.0),
+        "adjusted_station_tax_percent": round_optional_float(tax_percent),
         "owner_id": owner_id,
         "owner_name": owner_name,
         "standing": standing_value,
@@ -27905,12 +27953,12 @@ help</textarea>
     }
 
     function formatNumber(value) {
-      return Number(value || 0).toLocaleString();
+      return Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2});
     }
 
     function formatOptionalNumber(value) {
       if (value == null) return "unknown";
-      return Number(value || 0).toLocaleString();
+      return Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2});
     }
 
     function formatIsk(value) {
@@ -27936,14 +27984,14 @@ help</textarea>
 
     function formatPercent(value) {
       if (value == null) return "unknown";
-      return `${Number(value || 0).toFixed(1)}%`;
+      return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2})}%`;
     }
 
     function formatSignedPercent(value) {
       if (value == null) return "unknown";
       const number = Number(value || 0);
       const sign = number > 0 ? "+" : "";
-      return `${sign}${number.toFixed(1)}%`;
+      return `${sign}${number.toLocaleString(undefined, {maximumFractionDigits: 2})}%`;
     }
 
     function formatSignedIskPerM3(value) {
@@ -33084,7 +33132,7 @@ help</textarea>
       window.localStorage.setItem(miningYieldTimerElapsedMsKey, String(state.elapsedMs));
       window.localStorage.removeItem(miningYieldTimerStartedAtKey);
       const elapsedLabel = formatMiningYieldTimerElapsed(state.elapsedMs);
-      const sessionHours = Number(miningYieldTimerHours(state.elapsedMs).toFixed(4));
+      const sessionHours = Number(miningYieldTimerHours(state.elapsedMs).toFixed(2));
       writeMiningYieldSettings({
         ...readMiningYieldSettings(),
         sessionHours,
@@ -33108,7 +33156,7 @@ help</textarea>
 
     function formatMiningRate(value, suffix) {
       if (value == null) return "unknown";
-      return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 4})} ${suffix}`;
+      return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2})} ${suffix}`;
     }
 
     function miningCacheSummary(cache) {
@@ -35044,7 +35092,7 @@ help</textarea>
     function formatMultiplier(value) {
       const number = Number(value);
       if (!Number.isFinite(number)) return "x?";
-      return `x${number.toFixed(4)}`;
+      return `x${number.toLocaleString(undefined, {maximumFractionDigits: 2})}`;
     }
 
     function renderReprocessingYieldBreakdown(yieldData) {

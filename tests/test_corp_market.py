@@ -1591,6 +1591,20 @@ def test_dashboard_has_basic_accessibility_smoke_contract():
     assert unnamed_buttons == []
 
 
+def test_dashboard_user_facing_math_caps_precision_at_two_decimals():
+    source = Path(corp_market.__file__).read_text(encoding="utf-8")
+    high_precision_patterns = (
+        r"round\([^\n]+,\s*([3-9]|[1-9][0-9])\)",
+        r"toFixed\(([3-9]|[1-9][0-9])\)",
+        r"maximumFractionDigits:\s*([3-9]|[1-9][0-9])",
+        r"minimumFractionDigits:\s*([3-9]|[1-9][0-9])",
+        r":,.([3-9]|[1-9][0-9])f",
+    )
+
+    for pattern in high_precision_patterns:
+        assert re.search(pattern, source) is None
+
+
 def test_dashboard_uses_shared_empty_error_and_checklist_helpers():
     page = render_dashboard()
 
@@ -3061,9 +3075,9 @@ def test_build_flight_mining_yield_payload_uses_daily_ledger_and_manual_session_
     assert totals["quantity"] == 2000
     assert totals["volume_m3"] == 20.0
     assert totals["quantity_per_day"] == pytest.approx(285.71)
-    assert totals["volume_m3_per_day"] == pytest.approx(2.8571)
-    assert totals["quantity_per_second"] == pytest.approx(0.277778)
-    assert totals["volume_m3_per_second"] == pytest.approx(0.002778)
+    assert totals["volume_m3_per_day"] == pytest.approx(2.86)
+    assert totals["quantity_per_second"] == pytest.approx(0.28)
+    assert totals["volume_m3_per_second"] == pytest.approx(0.0)
     assert mining["items"][0]["type_name"] == "Tritanium"
     assert mining["items"][0]["quantity"] == 1500
     assert mining["daily"][0]["date"] == today.isoformat()
@@ -3471,8 +3485,8 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
     assert row["Item Name"] == "Tritanium"
     assert row["Quantity"] == 1000
     assert row["Price Per Item"] == pytest.approx(2.2)
-    assert row["Expected Return Per Item"] == pytest.approx(7.4884375)
-    assert row["Expected Profit Per Item"] == pytest.approx(5.2884375)
+    assert row["Expected Return Per Item"] == pytest.approx(7.49)
+    assert row["Expected Profit Per Item"] == pytest.approx(5.29)
     assert row["Destination Sell Hub"] == "Jita"
     assert row["Destination Sell Target Price"] == pytest.approx(7.75)
     assert row["Destination Sell Target Units"] == 1000
@@ -3480,9 +3494,9 @@ def test_haul_report_rows_map_visible_opportunities_to_expected_cost_basis():
     assert "2 destination buy orders matched" in row["Destination Sell Target Details"]
     assert "5,000 visible units" in row["Destination Sell Target Details"]
     assert row["Expected Total Cost"] == pytest.approx(2200.0)
-    assert row["Expected Sales Tax ISK"] == pytest.approx(261.5625)
+    assert row["Expected Sales Tax ISK"] == pytest.approx(261.56)
     assert row["Expected Route Jumps"] == 4
-    assert row["Expected Total Profit"] == pytest.approx(5288.4375)
+    assert row["Expected Total Profit"] == pytest.approx(5288.44)
     assert row["Realized Return Per Item"] == ""
     assert row["Actual Route Jumps"] == ""
     assert "Buy Tritanium from the public sell orders shown in EVE for Middle; Side Pickup" in row["Buy Directions"]
@@ -3565,7 +3579,7 @@ def test_acquisition_report_rows_use_committed_cost_basis():
     assert row["Expected Total Cost"] == pytest.approx(592_250.0)
     assert row["Estimated Total ISK Needed"] == pytest.approx(592_250.0)
     assert row["Expected Total Profit"] == pytest.approx(157_750.0)
-    assert row["Expected Profit Per Item"] == pytest.approx(3.155)
+    assert row["Expected Profit Per Item"] == pytest.approx(3.15)
     assert row["Realized Total Profit"] == ""
     assert "Place a manual 90-day buy order" in row["Buy Directions"]
     assert "in Amarr" in row["Buy Directions"]
@@ -5400,8 +5414,8 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     assert payload["facility"]["standing_row"]["from_id"] == 1000002
     assert payload["facility"]["standing_row"]["from_type"] == "npc_corp"
     assert payload["facility"]["standing_row"]["standing"] == pytest.approx(4.0)
-    assert payload["yield"]["gross_yield_percent"] == pytest.approx(68.45904)
-    assert payload["yield"]["net_yield_percent"] == pytest.approx(67.0898592)
+    assert payload["yield"]["gross_yield_percent"] == pytest.approx(68.46)
+    assert payload["yield"]["net_yield_percent"] == pytest.approx(67.09)
     assert payload["yield"]["breakdown"]["facility_yield_percent"] == pytest.approx(50.0)
     assert payload["yield"]["breakdown"]["reprocessing_multiplier"] == pytest.approx(1.15)
     assert payload["yield"]["breakdown"]["reprocessing_efficiency_multiplier"] == pytest.approx(1.08)
@@ -5430,10 +5444,10 @@ def test_build_flight_reprocessing_payload_uses_esi_skills_standing_and_implant(
     assert payload["sales_tax"]["accounting_level"] == 5
     assert payload["sales_tax"]["rate"] == pytest.approx(0.03375)
     assert valuation["sales_tax"]["accounting_level"] == 5
-    assert valuation["after_tax"]["sales_tax_percent"] == pytest.approx(3.375)
-    assert valuation["after_tax"]["processed_material_value"] == pytest.approx(15554.6925)
+    assert valuation["after_tax"]["sales_tax_percent"] == pytest.approx(3.37)
+    assert valuation["after_tax"]["processed_material_value"] == pytest.approx(15554.69)
     assert valuation["after_tax"]["ore_value"] == pytest.approx(11595.0)
-    assert valuation["after_tax"]["value_delta"] == pytest.approx(3959.6925)
+    assert valuation["after_tax"]["value_delta"] == pytest.approx(3959.69)
     assert valuation["processed_complete"] is True
     assert valuation["ore_complete"] is True
     assert valuation["eve_estimate"]["source"] == "ESI /markets/prices average_price with adjusted_price fallback"
@@ -6210,12 +6224,12 @@ def test_build_flight_profitability_payload_ranks_owned_blueprint_products(monke
     assert product["replacement_profit"] == 5950.0
     assert product["replacement_margin_percent"] == 59.5
     assert product["taxed_replacement_profit"] == pytest.approx(5612.5)
-    assert product["taxed_replacement_margin_percent"] == pytest.approx(56.125)
+    assert product["taxed_replacement_margin_percent"] == pytest.approx(56.12)
     assert product["missing_replacement_cost"] == 1750.0
     assert product["cash_profit"] == 8250.0
     assert product["cash_margin_percent"] == 82.5
     assert product["taxed_cash_profit"] == pytest.approx(7912.5)
-    assert product["taxed_cash_margin_percent"] == pytest.approx(79.125)
+    assert product["taxed_cash_margin_percent"] == pytest.approx(79.12)
     assert product["can_build_one_run"] is False
     assert product["missing_material_types"] == 1
     assert product["missing_materials"][0]["name"] == "Pyerite"
@@ -6951,8 +6965,8 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert load_plan["cargo_percent"] == pytest.approx(100.0)
     assert load_plan["pickup_cost"] == pytest.approx(2200.0)
     assert load_plan["budget_remaining_isk"] == pytest.approx(249_997_800.0)
-    assert load_plan["net_profit"] == pytest.approx(5288.4375)
-    assert load_plan["net_profit_per_m3"] == pytest.approx(528.84375)
+    assert load_plan["net_profit"] == pytest.approx(5288.44)
+    assert load_plan["net_profit_per_m3"] == pytest.approx(528.84)
     assert load_plan["lines"][0]["item_name"] == "Tritanium"
     assert load_plan["lines"][0]["units"] == 1000
     assert load_plan["stops"][0]["system_name"] == "Middle"
@@ -6964,7 +6978,7 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert report_rows[0]["Category"] == "Haul"
     assert report_rows[0]["Order Type"] == "Trade"
     assert report_rows[0]["Location to Post Order"] == "Middle; Side Pickup"
-    assert report_rows[0]["Expected Total Profit"] == pytest.approx(5288.4375)
+    assert report_rows[0]["Expected Total Profit"] == pytest.approx(5288.44)
     assert report_rows[0]["Realized Total Profit"] == ""
     opportunity = hauling["opportunities"][0]
     assert "load_plan_depth" not in opportunity
@@ -7000,15 +7014,15 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert opportunity["average_pickup_price"] == pytest.approx(2.2)
     assert opportunity["average_destination_price"] == pytest.approx(7.75)
     assert opportunity["gross_spread_per_unit"] == pytest.approx(5.55)
-    assert opportunity["net_profit_per_unit"] == pytest.approx(5.2884375)
-    assert opportunity["net_profit"] == pytest.approx(5288.4375)
+    assert opportunity["net_profit_per_unit"] == pytest.approx(5.29)
+    assert opportunity["net_profit"] == pytest.approx(5288.44)
     assert opportunity["matched_volume_m3"] == pytest.approx(10.0)
-    assert opportunity["net_profit_per_m3"] == pytest.approx(528.84375)
-    assert opportunity["net_profit_per_extra_jump"] == pytest.approx(2644.21875)
+    assert opportunity["net_profit_per_m3"] == pytest.approx(528.84)
+    assert opportunity["net_profit_per_extra_jump"] == pytest.approx(2644.22)
     assert opportunity["pickup_cost"] == pytest.approx(2200.0)
     assert opportunity["gross_destination_revenue"] == pytest.approx(7750.0)
-    assert opportunity["sales_tax_total"] == pytest.approx(261.5625)
-    assert opportunity["net_destination_revenue"] == pytest.approx(7488.4375)
+    assert opportunity["sales_tax_total"] == pytest.approx(261.56)
+    assert opportunity["net_destination_revenue"] == pytest.approx(7488.44)
     event_names = [event for event, _payload in progress_events]
     assert "scan_start" in event_names
     assert "route_step" in event_names
@@ -7037,7 +7051,7 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert budget_load_plan["used_cargo_m3"] == pytest.approx(7.6)
     assert budget_load_plan["pickup_cost"] == pytest.approx(1600.0)
     assert budget_load_plan["budget_remaining_isk"] == pytest.approx(0.0)
-    assert budget_load_plan["net_profit"] == pytest.approx(4149.1875)
+    assert budget_load_plan["net_profit"] == pytest.approx(4149.19)
     assert budget_opportunity["units"] == 760
     assert budget_opportunity["cargo_limited"] is False
     assert budget_opportunity["budget_limited"] is True
@@ -7045,12 +7059,12 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     assert budget_opportunity["budget_remaining_isk"] == pytest.approx(0.0)
     assert budget_opportunity["pickup_cost"] == pytest.approx(1600.0)
     assert budget_opportunity["gross_destination_revenue"] == pytest.approx(5950.0)
-    assert budget_opportunity["sales_tax_total"] == pytest.approx(200.8125)
-    assert budget_opportunity["net_destination_revenue"] == pytest.approx(5749.1875)
-    assert budget_opportunity["net_profit"] == pytest.approx(4149.1875)
+    assert budget_opportunity["sales_tax_total"] == pytest.approx(200.81)
+    assert budget_opportunity["net_destination_revenue"] == pytest.approx(5749.19)
+    assert budget_opportunity["net_profit"] == pytest.approx(4149.19)
     assert budget_opportunity["matched_volume_m3"] == pytest.approx(7.6)
-    assert budget_opportunity["net_profit_per_m3"] == pytest.approx(545.9457236842105)
-    assert budget_opportunity["net_profit_per_extra_jump"] == pytest.approx(2074.59375)
+    assert budget_opportunity["net_profit_per_m3"] == pytest.approx(545.95)
+    assert budget_opportunity["net_profit_per_extra_jump"] == pytest.approx(2074.59)
     assert budget_opportunity["order_depth"][2]["units"] == 160
 
     efficiency_filtered = build_flight_hauling_payload(
