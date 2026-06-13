@@ -558,6 +558,68 @@ def test_market_store_decision_snapshots_redact_private_fields(tmp_path):
     assert "paste text" not in encoded
 
 
+def test_market_store_uses_wal_busy_timeout_and_foreign_keys(tmp_path):
+    db_path = tmp_path / "market.sqlite3"
+    store = MarketStore(db_path)
+
+    with store._connect() as connection:
+        assert int(connection.execute("PRAGMA busy_timeout").fetchone()[0]) >= 5000
+        assert int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) == 1
+        assert str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower() in {"wal", "memory"}
+
+
+def test_market_store_decision_history_export_prune_and_clear(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    old = store.save_decision_snapshot(
+        character_id=123,
+        workflow_key="acquisition",
+        title="Old plan",
+        payload={"message": "Bearer secret.token.value"},
+        created_at="2000-01-01T00:00:00Z",
+    )
+    first_new = store.save_decision_snapshot(
+        character_id=123,
+        workflow_key="acquisition",
+        title="First new plan",
+        payload={"message": "safe"},
+        created_at="2999-01-01T00:00:00Z",
+    )
+    second_new = store.save_decision_snapshot(
+        character_id=123,
+        workflow_key="acquisition",
+        title="Second new plan",
+        payload={"message": "safe"},
+        created_at="2999-01-02T00:00:00Z",
+    )
+    store.record_decision_outcome(
+        snapshot_id=old["snapshot_id"],
+        character_id=123,
+        status="reviewed",
+        actual_outcome={"transaction_id": 98765, "safe": "kept"},
+        recorded_at="2000-01-02T00:00:00Z",
+    )
+
+    exported = store.export_decision_history(character_id=123, workflow_key="acquisition")
+    encoded = json.dumps(exported, sort_keys=True).lower()
+
+    assert exported["snapshot_count"] == 3
+    assert "secret.token.value" not in encoded
+    assert "transaction_id" not in encoded
+    assert "98765" not in encoded
+
+    pruned = store.prune_decision_history(retention_days=30, max_snapshots_per_character=1)
+    remaining = store.latest_decision_snapshots(character_id=123, workflow_key="acquisition")
+
+    assert pruned["deleted_snapshots"] == 2
+    assert {snapshot["snapshot_id"] for snapshot in remaining} == {second_new["snapshot_id"]}
+    assert first_new["snapshot_id"] not in {snapshot["snapshot_id"] for snapshot in remaining}
+
+    cleared = store.clear_decision_history(character_id=123, workflow_key="acquisition")
+
+    assert cleared["deleted_snapshots"] == 1
+    assert store.latest_decision_snapshots(character_id=123, workflow_key="acquisition") == []
+
+
 def test_discord_fitting_payload_posts_exact_eve_clipboard_block_to_forum(tmp_path):
     store = MarketStore(tmp_path / "market.sqlite3")
     fitting = store.create_shared_fitting(
@@ -1457,10 +1519,35 @@ class DashboardFormFieldParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.fields: list[tuple[tuple[int, int], str, dict[str, str | None]]] = []
+        self.labels_for: set[str] = set()
+        self.buttons: list[tuple[tuple[int, int], dict[str, str | None], str]] = []
+        self._label_depth = 0
+        self._button_stack: list[tuple[tuple[int, int], dict[str, str | None], list[str]]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = dict(attrs)
+        if tag == "label":
+            self._label_depth += 1
+            label_for = attrs_dict.get("for")
+            if label_for:
+                self.labels_for.add(label_for)
         if tag in {"input", "select", "textarea"}:
-            self.fields.append((self.getpos(), tag, dict(attrs)))
+            if self._label_depth:
+                attrs_dict["_inside_label"] = "1"
+            self.fields.append((self.getpos(), tag, attrs_dict))
+        if tag == "button":
+            self._button_stack.append((self.getpos(), attrs_dict, []))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "label" and self._label_depth:
+            self._label_depth -= 1
+        if tag == "button" and self._button_stack:
+            position, attrs, text_parts = self._button_stack.pop()
+            self.buttons.append((position, attrs, " ".join(" ".join(text_parts).split())))
+
+    def handle_data(self, data: str) -> None:
+        if self._button_stack:
+            self._button_stack[-1][2].append(data)
 
 
 def test_dashboard_form_fields_have_browser_friendly_identifiers():
@@ -1474,6 +1561,34 @@ def test_dashboard_form_fields_have_browser_friendly_identifiers():
     ]
 
     assert missing == []
+
+
+def test_dashboard_has_basic_accessibility_smoke_contract():
+    page = render_dashboard()
+    parser = DashboardFormFieldParser()
+    parser.feed(page)
+
+    unnamed_fields = [
+        (position, tag, attrs.get("id") or attrs.get("name"))
+        for position, tag, attrs in parser.fields
+        if attrs.get("type") != "hidden"
+        and not attrs.get("aria-label")
+        and not attrs.get("title")
+        and not attrs.get("_inside_label")
+        and (not attrs.get("id") or attrs.get("id") not in parser.labels_for)
+    ]
+    unnamed_buttons = [
+        (position, attrs.get("id") or attrs.get("data-tab") or attrs.get("data-workflow-discord-handoff"))
+        for position, attrs, text in parser.buttons
+        if not text and not attrs.get("aria-label") and not attrs.get("title")
+    ]
+
+    assert '<html lang="en">' in page
+    assert 'name="viewport"' in page
+    assert 'aria-live="polite"' in page
+    assert 'role="listbox"' in page
+    assert unnamed_fields == []
+    assert unnamed_buttons == []
 
 
 def test_dashboard_uses_shared_empty_error_and_checklist_helpers():
@@ -7156,6 +7271,73 @@ def test_fetch_market_prices_uses_public_estimate_endpoint_and_cache(monkeypatch
     assert second[1230]["adjusted_price"] == pytest.approx(10.0)
     assert None not in second
     corp_market.clear_market_price_cache()
+
+
+def test_esi_json_request_retries_short_retry_after(monkeypatch):
+    calls = []
+    sleeps = []
+
+    class FakeResponse:
+        headers = {"X-Ratelimit-Remaining": "99"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"ok": True}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        calls.append(request.full_url)
+        if len(calls) == 1:
+            raise corp_market.HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {"Retry-After": "1", "X-Ratelimit-Remaining": "0"},
+                corp_market.io.BytesIO(b"slow down"),
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(corp_market, "urlopen", fake_urlopen)
+    monkeypatch.setattr(corp_market.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    request = corp_market.Request("https://esi.test/latest/status/?datasource=tranquility", method="GET")
+    result = corp_market.read_json_http_request(request, timeout_seconds=5.0, label="ESI status")
+
+    assert result.payload == {"ok": True}
+    assert calls == [
+        "https://esi.test/latest/status/?datasource=tranquility",
+        "https://esi.test/latest/status/?datasource=tranquility",
+    ]
+    assert sleeps == [1.0]
+
+
+def test_esi_json_request_reports_long_retry_after_without_retrying(monkeypatch):
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(request.full_url)
+        raise corp_market.HTTPError(
+            request.full_url,
+            429,
+            "Too Many Requests",
+            {"Retry-After": "60", "X-Ratelimit-Remaining": "0", "X-Ratelimit-Limit": "150/15m"},
+            corp_market.io.BytesIO(b"rate limited"),
+        )
+
+    monkeypatch.setattr(corp_market, "urlopen", fake_urlopen)
+
+    request = corp_market.Request("https://esi.test/latest/status/?datasource=tranquility", method="GET")
+    with pytest.raises(CorpMarketError) as exc:
+        corp_market.read_json_http_request(request, timeout_seconds=5.0, label="ESI status")
+
+    assert len(calls) == 1
+    message = str(exc.value)
+    assert "Retry-After=60" in message
+    assert "X-Ratelimit-Remaining=0" in message
 
 
 def test_fetch_market_orders_reuses_local_cache(monkeypatch):

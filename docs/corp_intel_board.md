@@ -8,4 +8,6 @@ No new local, LAN, or public Corp Intel Board deployment should be started from 
 
 The `src/eve_voice_pilot/corp_intel.py` module may still exist because EVE Intel Pet and Flight Attendant import shared helper types and parsing utilities from it. Those compatibility imports do not make the Board an active feature.
 
+Future cleanup should split those shared helpers into a neutral module before deleting dormant Board server code. Do that only with focused Intel Pet and Flight Attendant regression tests, and do not change Intel Pet local-only behavior as part of the cleanup.
+
 See `docs/retired_features.md` for the retirement record.

@@ -1,11 +1,57 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any, Iterable, Mapping
 
 
 def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").replace("\x00", " ").split())
+
+
+_HANDOFF_SENSITIVE_FRAGMENTS = (
+    "access_token",
+    "refresh_token",
+    "authorization",
+    "bearer",
+    "webhook",
+    "client_secret",
+    "secret",
+    "password",
+    "api_key",
+)
+
+_HANDOFF_SENSITIVE_PATTERNS = (
+    re.compile(r"https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/[^\s<>'\"]+", re.IGNORECASE),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
+)
+
+
+def _clean_handoff_text(value: Any, *, allow_redacted: bool = True) -> str:
+    text = _clean_text(value)
+    matched_sensitive_pattern = False
+    for pattern in _HANDOFF_SENSITIVE_PATTERNS:
+        if pattern.search(text):
+            matched_sensitive_pattern = True
+        text = pattern.sub("[redacted sensitive value]", text)
+    if matched_sensitive_pattern and not allow_redacted:
+        return ""
+    normalized = text.lower().replace("-", "_")
+    if any(fragment in normalized for fragment in _HANDOFF_SENSITIVE_FRAGMENTS):
+        return "[redacted sensitive value]" if allow_redacted else ""
+    return text
+
+
+def _clean_handoff_multiline(value: Any) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    for pattern in _HANDOFF_SENSITIVE_PATTERNS:
+        if pattern.search(text):
+            return "[redacted sensitive value]"
+        text = pattern.sub("[redacted sensitive value]", text)
+    normalized = text.lower().replace("-", "_")
+    if any(fragment in normalized for fragment in _HANDOFF_SENSITIVE_FRAGMENTS):
+        return "[redacted sensitive value]"
+    return text
 
 
 def _mapping_list(values: Iterable[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
@@ -78,20 +124,20 @@ class DiscordHandoff:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "workflow_key": _clean_text(self.workflow_key),
-            "destination_hint": _clean_text(self.destination_hint),
-            "destination_label": _clean_text(self.destination_label),
-            "post_type": _clean_text(self.post_type),
-            "category": _clean_text(self.category),
-            "title": _clean_text(self.title),
-            "item_name": _clean_text(self.item_name),
-            "quantity": _clean_text(self.quantity),
-            "price_text": _clean_text(self.price_text),
-            "location": _clean_text(self.location),
-            "contact": _clean_text(self.contact),
-            "link_url": str(self.link_url or ""),
-            "details": str(self.details or "").replace("\x00", " ").strip(),
-            "source": _clean_text(self.source),
+            "workflow_key": _clean_handoff_text(self.workflow_key),
+            "destination_hint": _clean_handoff_text(self.destination_hint, allow_redacted=False),
+            "destination_label": _clean_handoff_text(self.destination_label, allow_redacted=False),
+            "post_type": _clean_handoff_text(self.post_type),
+            "category": _clean_handoff_text(self.category),
+            "title": _clean_handoff_text(self.title),
+            "item_name": _clean_handoff_text(self.item_name),
+            "quantity": _clean_handoff_text(self.quantity),
+            "price_text": _clean_handoff_text(self.price_text),
+            "location": _clean_handoff_text(self.location),
+            "contact": _clean_handoff_text(self.contact),
+            "link_url": _clean_handoff_text(self.link_url, allow_redacted=False),
+            "details": _clean_handoff_multiline(self.details),
+            "source": _clean_handoff_text(self.source),
         }
 
 

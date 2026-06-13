@@ -1,0 +1,27 @@
+[Unit]
+Description=EVE Corp Market / Flight Attendant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=evevoice
+Group=evevoice
+WorkingDirectory=/opt/eve-voice-pilot
+Environment=PYTHONPATH=/opt/eve-voice-pilot/src
+EnvironmentFile=/etc/eve-voice-pilot/corp-market.env
+RuntimeDirectory=eve-voice-pilot
+StateDirectory=eve-voice-pilot
+CacheDirectory=eve-voice-pilot
+ExecStart=/usr/bin/env bash /opt/eve-voice-pilot/deploy/scripts/run-corp-market-service.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/eve-voice-pilot /var/cache/eve-voice-pilot
+
+[Install]
+WantedBy=multi-user.target

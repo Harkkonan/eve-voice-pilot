@@ -74,11 +74,13 @@ def _post_json(server, path, payload, *, session_id="", extra_headers=None):
     return response.status, data, body
 
 
-def _get(server, path, *, session_id=""):
+def _get(server, path, *, session_id="", extra_headers=None):
     host, port = server.server_address
     headers = {}
     if session_id:
         headers["Cookie"] = f"{corp_market.FLIGHT_SESSION_COOKIE_NAME}={session_id}"
+    if extra_headers:
+        headers.update(extra_headers)
     connection = http.client.HTTPConnection(host, port, timeout=5)
     try:
         connection.request("GET", path, headers=headers)
@@ -331,6 +333,7 @@ def test_corp_market_dashboard_sends_nonce_csp(tmp_path):
     assert "onerror=" not in body
     assert headers["X-Frame-Options"] == "DENY"
     assert headers["Referrer-Policy"] == "no-referrer"
+    assert headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
 
 
 def test_corp_market_serves_lore_favicon(tmp_path):
@@ -479,6 +482,77 @@ def test_public_diagnostics_require_member_read_access(tmp_path):
 
     assert blocked_status == 403, blocked_body
     assert allowed_status == 200, allowed_body
+
+
+def test_public_member_cannot_export_decision_history_without_admin_token(tmp_path):
+    server, thread, session_id = _start_public_discord_post_server(
+        tmp_path,
+        trusted_members_can_edit=True,
+    )
+    try:
+        status, body = _get(server, "/api/flight/decision-history/export", session_id=session_id)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert status == 403, body
+    assert "market admin token" in body
+
+
+def test_public_admin_can_export_and_clear_decision_history(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    saved = store.save_decision_snapshot(
+        character_id=12345,
+        workflow_key="acquisition",
+        title="Buy order plan",
+        created_at="2026-06-13T12:00:00Z",
+    )
+    session_store = corp_market.FlightEsiSessionStore()
+    server = corp_market.build_http_server(
+        "127.0.0.1",
+        0,
+        store,
+        public_base_url="https://market.example.test",
+        public_hosting_mode=True,
+        sso_config=corp_market.EveSsoConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            callback_url="https://market.example.test/flight/callback",
+            allowed_corporation_ids=(98811080,),
+        ),
+        flight_session_store=session_store,
+        admin_token="admin-secret",
+        discord_alert_settings_path=tmp_path / "corp_discord_alert_settings.json",
+        discord_post_settings_path=tmp_path / "corp_discord_post_settings.json",
+        discord_fitting_post_settings_path=tmp_path / "corp_fitting_discord_post_settings.json",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        export_status, export_body = _get(
+            server,
+            "/api/flight/decision-history/export?character_id=12345",
+            extra_headers={"X-Admin-Token": "admin-secret"},
+        )
+        clear_status, clear_data, clear_body = _post_json(
+            server,
+            "/api/flight/decision-history/clear",
+            {"character_id": 12345},
+            extra_headers={"X-Admin-Token": "admin-secret"},
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    exported = json.loads(export_body)
+    assert export_status == 200, export_body
+    assert exported["snapshot_count"] == 1
+    assert exported["snapshots"][0]["snapshot_id"] == saved["snapshot_id"]
+    assert clear_status == 200, clear_body
+    assert clear_data["deleted_snapshots"] == 1
+    assert store.latest_decision_snapshots(character_id=12345) == []
 
 
 def test_public_trusted_member_cannot_override_direct_post_webhook(tmp_path):

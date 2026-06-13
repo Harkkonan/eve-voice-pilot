@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any
 import uuid
@@ -53,9 +54,19 @@ class MarketStore:
         self._init_database()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=30.0)
         connection.row_factory = sqlite3.Row
+        self._configure_connection(connection)
         return connection
+
+    def _configure_connection(self, connection: sqlite3.Connection) -> None:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.DatabaseError:
+            pass
+        connection.execute("PRAGMA synchronous = NORMAL")
 
     def _init_database(self) -> None:
         with self._connect() as connection:
@@ -945,6 +956,209 @@ class MarketStore:
             snapshot["latest_outcome"] = outcomes[0] if outcomes else None
         return snapshots
 
+    def export_decision_history(
+        self,
+        *,
+        character_id: int | None = None,
+        workflow_key: str = "",
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        clean_character_id = self.deps.clean_optional_int(character_id)
+        if clean_character_id is not None and clean_character_id > 0:
+            clauses.append("character_id = ?")
+            params.append(clean_character_id)
+        clean_workflow_key = _clean_decision_text(
+            self.deps,
+            workflow_key,
+            "workflow_key",
+            max_length=80,
+        )
+        if clean_workflow_key:
+            clauses.append("workflow_key = ?")
+            params.append(clean_workflow_key)
+        try:
+            clean_limit = int(limit)
+        except (TypeError, ValueError):
+            clean_limit = 500
+        clean_limit = max(1, min(clean_limit, 2000))
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM flight_decision_snapshots
+                {where_sql}
+                ORDER BY created_at DESC, snapshot_id DESC
+                LIMIT ?
+                """,
+                (*params, clean_limit),
+            ).fetchall()
+            snapshots = [_decision_snapshot_from_row(row) for row in rows]
+            outcome_rows: list[sqlite3.Row] = []
+            if snapshots:
+                snapshot_ids = [str(snapshot["snapshot_id"]) for snapshot in snapshots]
+                for chunk in _chunks(snapshot_ids, 300):
+                    placeholders = ",".join("?" for _ in chunk)
+                    outcome_rows.extend(
+                        connection.execute(
+                            f"""
+                            SELECT * FROM flight_decision_outcomes
+                            WHERE snapshot_id IN ({placeholders})
+                            ORDER BY recorded_at DESC, outcome_id DESC
+                            """,
+                            tuple(chunk),
+                        ).fetchall()
+                    )
+        outcomes_by_snapshot: dict[str, list[dict[str, Any]]] = {}
+        for row in outcome_rows:
+            outcome = _decision_outcome_from_row(row)
+            outcomes_by_snapshot.setdefault(str(outcome["snapshot_id"]), []).append(outcome)
+        for snapshot in snapshots:
+            outcomes = outcomes_by_snapshot.get(str(snapshot["snapshot_id"]), [])
+            snapshot["outcomes"] = outcomes
+            snapshot["latest_outcome"] = outcomes[0] if outcomes else None
+        return {
+            "ok": True,
+            "generated_at": self.deps.now_iso(),
+            "snapshot_count": len(snapshots),
+            "filters": {
+                "character_id": clean_character_id if clean_character_id and clean_character_id > 0 else None,
+                "workflow_key": clean_workflow_key,
+                "limit": clean_limit,
+            },
+            "retention": {
+                "storage": "ignored local SQLite",
+                "clearable": True,
+                "prunable": True,
+            },
+            "snapshots": snapshots,
+        }
+
+    def prune_decision_history(
+        self,
+        *,
+        retention_days: int = 90,
+        max_snapshots_per_character: int = 500,
+    ) -> dict[str, Any]:
+        try:
+            clean_retention_days = int(retention_days)
+        except (TypeError, ValueError):
+            clean_retention_days = 90
+        clean_retention_days = max(1, min(clean_retention_days, 3650))
+        try:
+            clean_max_per_character = int(max_snapshots_per_character)
+        except (TypeError, ValueError):
+            clean_max_per_character = 500
+        clean_max_per_character = max(1, min(clean_max_per_character, 10000))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=clean_retention_days)).replace(microsecond=0)
+        cutoff_text = cutoff.isoformat().replace("+00:00", "Z")
+        with self._connect() as connection:
+            old_ids = {
+                str(row["snapshot_id"])
+                for row in connection.execute(
+                    "SELECT snapshot_id FROM flight_decision_snapshots WHERE created_at < ?",
+                    (cutoff_text,),
+                ).fetchall()
+            }
+            overflow_ids: set[str] = set()
+            counts_by_character: dict[int, int] = {}
+            rows = connection.execute(
+                """
+                SELECT snapshot_id, character_id FROM flight_decision_snapshots
+                ORDER BY character_id ASC, created_at DESC, snapshot_id DESC
+                """
+            ).fetchall()
+            for row in rows:
+                character_id = int(row["character_id"])
+                counts_by_character[character_id] = counts_by_character.get(character_id, 0) + 1
+                if counts_by_character[character_id] > clean_max_per_character:
+                    overflow_ids.add(str(row["snapshot_id"]))
+            deleted = self._delete_decision_snapshots(connection, old_ids | overflow_ids)
+            orphaned_outcomes = connection.execute(
+                """
+                DELETE FROM flight_decision_outcomes
+                WHERE snapshot_id NOT IN (SELECT snapshot_id FROM flight_decision_snapshots)
+                """
+            ).rowcount
+        return {
+            "ok": True,
+            "retention_days": clean_retention_days,
+            "max_snapshots_per_character": clean_max_per_character,
+            "cutoff": cutoff_text,
+            "deleted_snapshots": deleted["deleted_snapshots"],
+            "deleted_outcomes": deleted["deleted_outcomes"] + max(0, int(orphaned_outcomes or 0)),
+        }
+
+    def clear_decision_history(
+        self,
+        *,
+        character_id: int | None = None,
+        workflow_key: str = "",
+    ) -> dict[str, Any]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        clean_character_id = self.deps.clean_optional_int(character_id)
+        if clean_character_id is not None and clean_character_id > 0:
+            clauses.append("character_id = ?")
+            params.append(clean_character_id)
+        clean_workflow_key = _clean_decision_text(
+            self.deps,
+            workflow_key,
+            "workflow_key",
+            max_length=80,
+        )
+        if clean_workflow_key:
+            clauses.append("workflow_key = ?")
+            params.append(clean_workflow_key)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            snapshot_ids = [
+                str(row["snapshot_id"])
+                for row in connection.execute(
+                    f"SELECT snapshot_id FROM flight_decision_snapshots {where_sql}",
+                    tuple(params),
+                ).fetchall()
+            ]
+            deleted = self._delete_decision_snapshots(connection, snapshot_ids)
+        return {
+            "ok": True,
+            "deleted_snapshots": deleted["deleted_snapshots"],
+            "deleted_outcomes": deleted["deleted_outcomes"],
+            "filters": {
+                "character_id": clean_character_id if clean_character_id and clean_character_id > 0 else None,
+                "workflow_key": clean_workflow_key,
+            },
+        }
+
+    def _delete_decision_snapshots(self, connection: sqlite3.Connection, snapshot_ids: Iterable[str]) -> dict[str, int]:
+        clean_ids = [str(snapshot_id) for snapshot_id in dict.fromkeys(snapshot_ids) if str(snapshot_id or "").strip()]
+        deleted_outcomes = 0
+        deleted_snapshots = 0
+        for chunk in _chunks(clean_ids, 300):
+            placeholders = ",".join("?" for _ in chunk)
+            deleted_outcomes += max(
+                0,
+                int(
+                    connection.execute(
+                        f"DELETE FROM flight_decision_outcomes WHERE snapshot_id IN ({placeholders})",
+                        tuple(chunk),
+                    ).rowcount
+                    or 0
+                ),
+            )
+            deleted_snapshots += max(
+                0,
+                int(
+                    connection.execute(
+                        f"DELETE FROM flight_decision_snapshots WHERE snapshot_id IN ({placeholders})",
+                        tuple(chunk),
+                    ).rowcount
+                    or 0
+                ),
+            )
+        return {"deleted_snapshots": deleted_snapshots, "deleted_outcomes": deleted_outcomes}
+
     def save_trade_ledger_transactions(self, *, character_id: int, transactions: Iterable[dict[str, Any]]) -> dict[str, Any]:
         clean_character_id = int(character_id or 0)
         if clean_character_id <= 0:
@@ -1327,9 +1541,25 @@ def _trade_learning_signal_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _chunks(values: Iterable[Any], size: int) -> Iterable[list[Any]]:
+    chunk: list[Any] = []
+    clean_size = max(1, int(size or 1))
+    for value in values:
+        chunk.append(value)
+        if len(chunk) >= clean_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
 _DECISION_SENSITIVE_KEY_FRAGMENTS = (
     "raw",
     "paste",
+    "auth",
+    "bearer",
+    "cookie",
+    "session",
     "token",
     "secret",
     "webhook",
@@ -1339,6 +1569,14 @@ _DECISION_SENSITIVE_KEY_FRAGMENTS = (
     "client_secret",
     "password",
     "private",
+    "api_key",
+    "transaction_id",
+    "structure_id",
+)
+
+_DECISION_SENSITIVE_VALUE_PATTERNS = (
+    re.compile(r"https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/[^\s<>'\"]+", re.IGNORECASE),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
 )
 
 
@@ -1423,6 +1661,11 @@ def _safe_decision_json_value(value: Any, *, depth: int = 0) -> Any:
 
 def _safe_decision_json_string(value: str) -> str:
     text = str(value or "").replace("\x00", " ").strip()
+    for pattern in _DECISION_SENSITIVE_VALUE_PATTERNS:
+        text = pattern.sub("[redacted sensitive value]", text)
+    normalized = text.lower().replace("-", "_")
+    if any(fragment in normalized for fragment in _DECISION_SENSITIVE_KEY_FRAGMENTS):
+        return "[redacted sensitive value]"
     if len(text) > 600:
         return text[:600].rstrip()
     return text

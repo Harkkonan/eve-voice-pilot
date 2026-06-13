@@ -111,6 +111,16 @@ The normal Flight Attendant login does not request the optional mining scope. A 
 
 The wallet scope is used by `Trade P&L` for recent market transactions and related market fee rows. The server still keeps the access token in memory only, and the tab does not place, edit, cancel, or update any market orders. Trade P&L consideration rules change only the local considered income summary; ignored rows remain visible with their actual profit or loss. The materials rule uses the local SDE market group lineage for `Materials` when available, with a mineral fallback for common inputs such as Pyerite. Open-stock market valuation uses public Fuzzwork aggregates and is labeled as an estimate, not realized wallet income. Planner expectation snapshots, seen wallet transaction rows, and learning-signal aggregates are local rows in the ignored `profiles/corp_market.sqlite3` database; they do not create orders and do not leave the server process except as displayed P&L comparison output. Learning-signal rows store derived counts and averages only, not raw wallet transaction IDs, raw market order IDs, tokens, copied CSV rows, or raw wallet payloads.
 
+Decision snapshots and outcomes are operator-maintained local history. The store redacts token, webhook, authorization, raw paste, transaction-id, and private structure fields before saving decision payloads. Public hosting exposes maintenance endpoints only to the market admin token:
+
+- `GET /api/flight/decision-history/export`
+- `POST /api/flight/decision-history/prune`
+- `POST /api/flight/decision-history/clear`
+
+Use these endpoints before sharing a VM snapshot, rotating operators, or trimming old learning history. The database connection uses WAL mode, a busy timeout, and foreign-key enforcement for hosted durability.
+
+ESI reads use a shared request wrapper for Corp Market / Flight Attendant routes. It sends the app user agent and compatibility date, retries only bounded short `Retry-After` cases, reports ESI rate-limit/error-limit headers in failures, and preserves endpoint cache behavior such as market-history `Expires` handling.
+
 The `Bulk Appraisal` tab does not need an EVE SSO scope. It uses the local SDE market cache and public ESI market orders for selected public hubs. Corp or alliance structure-market pricing is a later review item because it would require a clear scope, access, and token-storage design.
 
 The `Intake + Goals` tab does not need an EVE SSO scope. It classifies the current paste with local parser code, does not echo the raw paste back in the JSON payload, and does not persist the raw paste on the server or in browser local storage. Its output is advisory: source posture, detected input type, beginner explanation, assumptions, manual checklist, and links to existing tabs such as Bulk Appraisal, Industry Library, Hauler Routes, Reprocessing, Shared Fittings, and Trade P&L. Combat context such as D-scan or killmail links is kept lightweight and points to manual external review; it is not a new shared intel platform.
@@ -456,6 +466,22 @@ Start with a local saved posting-settings file:
 ```powershell
 .\scripts\run_corp_market.ps1 serve --discord-post-settings-path ".\profiles\corp_discord_post_settings_test.json"
 ```
+
+For public hosting, keep Discord webhook settings operator/admin-only. If a webhook URL is ever pasted into the wrong place or shown to an unintended viewer, rotate it in Discord, clear the saved local destination, and run the decision-history export/clear flow if the value could have entered local snapshots.
+
+## Deployment Contract
+
+Public hosting should use the templates under `deploy/`:
+
+- `deploy/systemd/corp-market.service`
+- `deploy/systemd/corp-market.env.example`
+- `deploy/caddy/Caddyfile`
+- `deploy/scripts/backup-corp-market.sh`
+- `deploy/scripts/restore-corp-market.sh`
+- `deploy/scripts/smoke-corp-market.sh`
+- `scripts/smoke_corp_market_accessibility.py`
+
+The Python process should bind to `127.0.0.1`, with HTTPS and HSTS handled by Caddy or Cloudflare Tunnel in front. Run the shell smoke check after each deploy. Run the Playwright smoke script in a dev environment before public release or after major UI changes.
 
 For forum/media channels, copy tag ids from Discord developer mode and enter either default tag ids or key-tag mappings in the tab. The tag map uses the same key format as the CLI:
 

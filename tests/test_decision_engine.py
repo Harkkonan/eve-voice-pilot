@@ -98,3 +98,29 @@ def test_data_source_and_parsed_input_serialization():
     assert parsed["detected_type"] == "wallet"
     assert parsed["stored"] is False
     assert parsed["summary"]["row_count"] == 2
+
+
+def test_discord_handoff_redacts_webhooks_and_token_shaped_text():
+    handoff = discord_handoff(
+        workflow_key="portfolio",
+        destination_hint="https://discord.com/api/webhooks/111/secret-token",
+        destination_label="Corp Needs",
+        post_type="wtb",
+        category="minerals",
+        title="Bearer abc.def.ghi",
+        item_name="Tritanium",
+        details="Post this without leaking https://discord.com/api/webhooks/222/hidden",
+        link_url="https://discord.com/api/webhooks/333/hidden",
+        source="client_secret",
+    )
+
+    encoded = str(handoff).lower()
+
+    assert handoff["destination_hint"] == ""
+    assert handoff["destination_label"] == "Corp Needs"
+    assert handoff["title"] == "[redacted sensitive value]"
+    assert handoff["details"] == "[redacted sensitive value]"
+    assert handoff["link_url"] == ""
+    assert handoff["source"] == "[redacted sensitive value]"
+    assert "discord.com/api/webhooks" not in encoded
+    assert "secret-token" not in encoded

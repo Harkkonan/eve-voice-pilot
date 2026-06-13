@@ -44,7 +44,6 @@ from eve_voice_pilot.corp_intel import (
     VerifiedPilot,
     build_sso_authorization_url,
     exchange_sso_code,
-    get_json,
     verify_sso_character,
 )
 from eve_voice_pilot.decision_engine import DataSourceBadge, LearningSummary
@@ -115,6 +114,9 @@ DEFAULT_MAX_FITTING_TEXT_LENGTH = 12000
 MAX_JSON_BODY_BYTES = 256 * 1024
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10.0
 MAX_UI_PERFORMANCE_EVENTS = 300
+ESI_MAX_ATTEMPTS = 3
+ESI_MAX_INLINE_RETRY_AFTER_SECONDS = 5.0
+ESI_RETRYABLE_STATUS_CODES = {420, 429, 500, 502, 503, 504}
 DEFAULT_DISCORD_ALERT_SENDER_NAME = "IntelPet"
 DEFAULT_DISCORD_ALERT_ROUTE_NAME = "IntelPet server webhook"
 DEFAULT_DISCORD_ALERT_DESTINATION = "Configured Discord alert channel"
@@ -2065,11 +2067,11 @@ def fetch_flight_asset_names(
             },
             method="POST",
         )
-        try:
-            with urlopen(request, timeout=45.0) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise CorpMarketError(f"ESI asset-name lookup failed: {exc}") from exc
+        payload = read_json_http_request(
+            request,
+            timeout_seconds=45.0,
+            label="ESI asset-name lookup",
+        ).payload
         if not isinstance(payload, list):
             raise CorpMarketError("ESI asset-name lookup returned unexpected data.")
         for item in payload:
@@ -2198,15 +2200,11 @@ def fetch_flight_wallet_transactions(
             headers={"Accept": "application/json", **flight_esi_headers(session.access_token)},
             method="GET",
         )
-        try:
-            with urlopen(request, timeout=45.0) as response:
-                raw = response.read().decode("utf-8")
-        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-            raise CorpMarketError(f"ESI wallet transactions request failed: {exc}") from exc
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise CorpMarketError(f"ESI wallet transactions returned non-JSON data: {raw[:200]!r}") from exc
+        payload = read_json_http_request(
+            request,
+            timeout_seconds=45.0,
+            label="ESI wallet transactions request",
+        ).payload
         if not isinstance(payload, list):
             raise CorpMarketError("ESI wallet transactions returned unexpected data.")
         page_transactions = []
@@ -2251,16 +2249,13 @@ def fetch_flight_wallet_journal(
             headers={"Accept": "application/json", **flight_esi_headers(session.access_token)},
             method="GET",
         )
-        try:
-            with urlopen(request, timeout=45.0) as response:
-                raw = response.read().decode("utf-8")
-                page_count = max(1, int(response.headers.get("X-Pages") or "1"))
-        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-            raise CorpMarketError(f"ESI wallet journal request failed: {exc}") from exc
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise CorpMarketError(f"ESI wallet journal returned non-JSON data: {raw[:200]!r}") from exc
+        result = read_json_http_request(
+            request,
+            timeout_seconds=45.0,
+            label="ESI wallet journal request",
+        )
+        payload = result.payload
+        page_count = max(1, int(result.header("X-Pages") or "1"))
         if not isinstance(payload, list):
             raise CorpMarketError("ESI wallet journal returned unexpected data.")
         entries.extend(item for item in payload if isinstance(item, dict))
@@ -5080,16 +5075,13 @@ def fetch_market_history(config: EveSsoConfig, *, region_id: int, type_id: int) 
         {"type_id": str(type_id)},
     )
     request = Request(url, headers={"Accept": "application/json", **flight_esi_headers()}, method="GET")
-    try:
-        with urlopen(request, timeout=45.0) as response:
-            raw = response.read().decode("utf-8")
-            expires_at = market_history_expiry_timestamp(response.headers.get("Expires"))
-    except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-        raise CorpMarketError(f"ESI market history for type {type_id} in region {region_id} request failed: {exc}") from exc
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise CorpMarketError(f"ESI market history returned non-JSON data: {raw[:200]!r}") from exc
+    result = read_json_http_request(
+        request,
+        timeout_seconds=45.0,
+        label=f"ESI market history for type {type_id} in region {region_id} request",
+    )
+    payload = result.payload
+    expires_at = market_history_expiry_timestamp(result.header("Expires"))
     if not isinstance(payload, list):
         raise CorpMarketError("ESI market history returned unexpected data.")
     history = [item for item in payload if isinstance(item, dict)]
@@ -5235,16 +5227,13 @@ def get_esi_json_pages(url: str, *, headers: dict[str, str], label: str) -> list
             headers={"Accept": "application/json", **headers},
             method="GET",
         )
-        try:
-            with urlopen(request, timeout=45.0) as response:
-                raw = response.read().decode("utf-8")
-                page_count = max(1, int(response.headers.get("X-Pages") or "1"))
-        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-            raise CorpMarketError(f"{label} request failed: {exc}") from exc
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise CorpMarketError(f"{label} returned non-JSON data: {raw[:200]!r}") from exc
+        result = read_json_http_request(
+            request,
+            timeout_seconds=45.0,
+            label=f"{label} request",
+        )
+        payload = result.payload
+        page_count = max(1, int(result.header("X-Pages") or "1"))
         if not isinstance(payload, list):
             raise CorpMarketError(f"{label} returned unexpected data.")
         for item in payload:
@@ -5272,11 +5261,11 @@ def fetch_universe_names(config: EveSsoConfig, ids: Iterable[int]) -> dict[int, 
             },
             method="POST",
         )
-        try:
-            with urlopen(request, timeout=30.0) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise CorpMarketError(f"ESI universe name lookup failed: {exc}") from exc
+        payload = read_json_http_request(
+            request,
+            timeout_seconds=30.0,
+            label="ESI universe name lookup",
+        ).payload
         if not isinstance(payload, list):
             raise CorpMarketError("ESI universe name lookup returned unexpected data.")
         for item in payload:
@@ -15105,6 +15094,126 @@ def esi_compatibility_date() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=11)).date().isoformat()
 
 
+@dataclass(frozen=True)
+class JsonHttpResponse:
+    payload: Any
+    headers: Mapping[str, Any]
+
+    def header(self, name: str) -> str:
+        wanted = name.lower()
+        for key, value in self.headers.items():
+            if str(key).lower() == wanted:
+                return str(value)
+        return ""
+
+
+def get_json(url: str, *, timeout_seconds: float = 30.0, headers: dict[str, str] | None = None) -> Any:
+    request_headers = {"Accept": "application/json", "User-Agent": "EveVoicePilot-FlightAttendant/0.1"}
+    if headers:
+        request_headers.update(headers)
+    request = Request(url, headers=request_headers, method="GET")
+    return read_json_http_request(
+        request,
+        timeout_seconds=timeout_seconds,
+        label=f"GET {url}",
+        error_factory=CorpIntelError,
+    ).payload
+
+
+def read_json_http_request(
+    request: Request,
+    *,
+    timeout_seconds: float,
+    label: str,
+    error_factory: Callable[[str], Exception] = CorpMarketError,
+) -> JsonHttpResponse:
+    last_error = ""
+    for attempt in range(ESI_MAX_ATTEMPTS):
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+                headers = response_headers_mapping(getattr(response, "headers", {}))
+                try:
+                    return JsonHttpResponse(json.loads(raw), headers)
+                except json.JSONDecodeError as exc:
+                    raise error_factory(f"{label} returned non-JSON data: {raw[:200]!r}") from exc
+        except HTTPError as exc:
+            headers = response_headers_mapping(exc.headers)
+            context = esi_rate_limit_context(headers)
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            last_error = f"{label} returned HTTP {exc.code}: {detail or exc.reason}"
+            if context:
+                last_error = f"{last_error} ({context})"
+            delay = esi_retry_delay_seconds(exc.code, headers, attempt)
+            if delay is not None and attempt < ESI_MAX_ATTEMPTS - 1:
+                if delay > 0:
+                    time.sleep(delay)
+                continue
+            raise error_factory(last_error) from exc
+        except (URLError, TimeoutError, ValueError) as exc:
+            last_error = f"{label} failed: {exc}"
+            delay = min(0.25 * (attempt + 1), 1.0)
+            if attempt < ESI_MAX_ATTEMPTS - 1:
+                time.sleep(delay)
+                continue
+            raise error_factory(last_error) from exc
+    raise error_factory(last_error or f"{label} failed.")
+
+
+def response_headers_mapping(headers: Any) -> dict[str, str]:
+    if not headers:
+        return {}
+    try:
+        items = headers.items()
+    except AttributeError:
+        return {}
+    return {str(key): str(value) for key, value in items}
+
+
+def header_value(headers: Mapping[str, Any], name: str) -> str:
+    wanted = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == wanted:
+            return str(value)
+    return ""
+
+
+def esi_rate_limit_context(headers: Mapping[str, Any]) -> str:
+    names = (
+        "Retry-After",
+        "X-Ratelimit-Group",
+        "X-Ratelimit-Limit",
+        "X-Ratelimit-Remaining",
+        "X-Ratelimit-Used",
+        "X-ESI-Error-Limit-Remain",
+        "X-ESI-Error-Limit-Reset",
+    )
+    parts = [f"{name}={value}" for name in names for value in [header_value(headers, name)] if value]
+    return ", ".join(parts)
+
+
+def retry_after_seconds(headers: Mapping[str, Any]) -> float | None:
+    value = header_value(headers, "Retry-After")
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, seconds)
+
+
+def esi_retry_delay_seconds(status_code: int, headers: Mapping[str, Any], attempt: int) -> float | None:
+    if int(status_code or 0) not in ESI_RETRYABLE_STATUS_CODES:
+        return None
+    retry_after = retry_after_seconds(headers)
+    if retry_after is not None:
+        if retry_after > ESI_MAX_INLINE_RETRY_AFTER_SECONDS:
+            return None
+        return retry_after
+    return min(0.25 * (attempt + 1), 1.0)
+
+
 def resolve_static_asset_path(request_path: str) -> Path | None:
     relative_path = request_path.removeprefix("/static/").strip("/")
     if not relative_path or "\\" in relative_path:
@@ -15197,6 +15306,11 @@ def build_http_server(
                     return
                 self._handle_flight_diagnostics()
                 return
+            if path == "/api/flight/decision-history/export":
+                if not self._require_admin_write_access("decision history export"):
+                    return
+                self._handle_decision_history_export()
+                return
             if dispatch_flight_get_route(self, path):
                 return
             if path == "/api/ui-performance":
@@ -15277,6 +15391,16 @@ def build_http_server(
                 if not self._require_public_read_access():
                     return
                 self._handle_flight_intake()
+                return
+            if path == "/api/flight/decision-history/prune":
+                if not self._require_admin_write_access("decision history pruning"):
+                    return
+                self._handle_decision_history_prune()
+                return
+            if path == "/api/flight/decision-history/clear":
+                if not self._require_admin_write_access("decision history clearing"):
+                    return
+                self._handle_decision_history_clear()
                 return
             if path.startswith("/api/offers/") and path.endswith("/reserve"):
                 if not self._require_write_access():
@@ -15664,6 +15788,57 @@ def build_http_server(
                     discord_forum_tag_map=discord_forum_tag_map or {},
                 )
             )
+
+        def _handle_decision_history_export(self) -> None:
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                payload = store.export_decision_history(
+                    character_id=first_query_value(query, "character_id") or None,
+                    workflow_key=first_query_value(query, "workflow_key"),
+                    limit=first_query_value(query, "limit") or 500,
+                )
+            except (ValueError, CorpMarketError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+
+        def _handle_decision_history_prune(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, Mapping):
+                self._send_json({"ok": False, "error": "Decision history prune payload must be a JSON object."}, status=400)
+                return
+            try:
+                result = store.prune_decision_history(
+                    retention_days=payload.get("retention_days", 90),
+                    max_snapshots_per_character=payload.get("max_snapshots_per_character", 500),
+                )
+            except (ValueError, CorpMarketError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(result)
+
+        def _handle_decision_history_clear(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, Mapping):
+                self._send_json({"ok": False, "error": "Decision history clear payload must be a JSON object."}, status=400)
+                return
+            try:
+                result = store.clear_decision_history(
+                    character_id=payload.get("character_id"),
+                    workflow_key=str(payload.get("workflow_key") or ""),
+                )
+            except (ValueError, CorpMarketError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(result)
 
         def _handle_flight_systems(self) -> None:
             query = parse_qs(urlparse(self.path).query)
@@ -16782,6 +16957,8 @@ def build_http_server(
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+            if is_https_url(public_base_url):
+                self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
             self.send_header(
                 "Content-Security-Policy",
                 (
@@ -22592,7 +22769,7 @@ help</textarea>
                 </div>
                 <details class="discord-json-details">
                   <summary>JSON payload</summary>
-                  <textarea id="direct-discord-preview" class="discord-alert-preview" readonly>Build a direct Discord post preview...</textarea>
+                  <textarea id="direct-discord-preview" class="discord-alert-preview" readonly aria-label="Direct Discord post preview">Build a direct Discord post preview...</textarea>
                 </details>
               </section>
             </div>
