@@ -17,6 +17,8 @@ build/
 .env
 .env.*
 !.env.example
+deploy/docker/secrets/*
+!deploy/docker/secrets/README.md
 local_settings.json
 local_archives/
 logs/

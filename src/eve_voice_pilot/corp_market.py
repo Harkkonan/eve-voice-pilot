@@ -107,7 +107,7 @@ DEFAULT_ROUTE_GRAPH_CACHE_PATH = ROOT / "cache" / "eve_route_graph.json"
 DEFAULT_REPROCESSING_CACHE_PATH = ROOT / "cache" / "eve_reprocessing.json"
 DEFAULT_PLANETARY_CACHE_PATH = ROOT / "cache" / "eve_planetary_industry.json"
 DEFAULT_STATIC_DATA_ZIP_PATH = ROOT / "cache" / "eve-online-static-data-3374020-jsonl.zip"
-STATIC_ASSET_ROOT = ROOT / "src" / "eve_voice_pilot" / "static"
+STATIC_ASSET_ROOT = Path(__file__).resolve().parent / "static"
 DEFAULT_PORT = 8770
 DEFAULT_MAX_NOTES_LENGTH = 5000
 DEFAULT_MAX_FITTING_TEXT_LENGTH = 12000
@@ -37961,28 +37961,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--discord-webhook-url",
-        default=os.environ.get("CORP_MARKET_DISCORD_WEBHOOK_URL", ""),
+        default=env_text("CORP_MARKET_DISCORD_WEBHOOK_URL"),
         help="Discord channel webhook URL used to post new offers.",
     )
     serve.add_argument(
         "--discord-alert-settings-path",
         type=Path,
-        default=Path(os.environ.get("CORP_MARKET_DISCORD_ALERT_SETTINGS_PATH", DEFAULT_DISCORD_ALERT_SETTINGS_PATH)),
+        default=Path(env_text("CORP_MARKET_DISCORD_ALERT_SETTINGS_PATH", str(DEFAULT_DISCORD_ALERT_SETTINGS_PATH))),
         help="Local JSON file used to persist Discord alert route and rule settings.",
     )
     serve.add_argument(
         "--discord-post-settings-path",
         type=Path,
-        default=Path(os.environ.get("CORP_MARKET_DISCORD_POST_SETTINGS_PATH", DEFAULT_DISCORD_POST_SETTINGS_PATH)),
+        default=Path(env_text("CORP_MARKET_DISCORD_POST_SETTINGS_PATH", str(DEFAULT_DISCORD_POST_SETTINGS_PATH))),
         help="Local JSON file used to persist Discord market-posting settings.",
     )
     serve.add_argument(
         "--discord-fitting-post-settings-path",
         type=Path,
         default=Path(
-            os.environ.get(
+            env_text(
                 "CORP_MARKET_DISCORD_FITTING_POST_SETTINGS_PATH",
-                DEFAULT_DISCORD_FITTING_POST_SETTINGS_PATH,
+                str(DEFAULT_DISCORD_FITTING_POST_SETTINGS_PATH),
             )
         ),
         help="Local JSON file used to persist Discord shared-fitting posting settings.",
@@ -38000,12 +38000,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--discord-forum-tag-ids",
-        default=os.environ.get("CORP_MARKET_DISCORD_FORUM_TAG_IDS", ""),
+        default=env_text("CORP_MARKET_DISCORD_FORUM_TAG_IDS"),
         help="Optional comma-separated Discord forum tag ids to apply to created posts.",
     )
     serve.add_argument(
         "--discord-forum-tag-map",
-        default=os.environ.get("CORP_MARKET_DISCORD_FORUM_TAG_MAP", ""),
+        default=env_text("CORP_MARKET_DISCORD_FORUM_TAG_MAP"),
         help=(
             "Optional tag mapping like sell:TAGID,want:TAGID,ships:TAGID,pi:TAGID. "
             "Keys can be listing types, WTS/WTB, or category names."
@@ -38013,7 +38013,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--public-base-url",
-        default=os.environ.get("CORP_MARKET_PUBLIC_BASE_URL", ""),
+        default=env_text("CORP_MARKET_PUBLIC_BASE_URL"),
         help="Base URL placed in Discord offer links. Use a LAN or tunnel URL for corp access.",
     )
     serve.add_argument(
@@ -38024,42 +38024,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--admin-token",
-        default=os.environ.get("CORP_MARKET_ADMIN_TOKEN", ""),
+        default=env_text("CORP_MARKET_ADMIN_TOKEN"),
         help="Optional token for remote offer creation and status changes.",
     )
     serve.add_argument(
         "--sso-client-id",
-        default=os.environ.get("CORP_MARKET_SSO_CLIENT_ID", os.environ.get("EVE_SSO_CLIENT_ID", "")),
+        default=env_text("CORP_MARKET_SSO_CLIENT_ID", env_text("EVE_SSO_CLIENT_ID")),
         help="EVE SSO application client ID for Flight Attendant ESI login.",
     )
     serve.add_argument(
         "--sso-client-secret",
-        default=os.environ.get("CORP_MARKET_SSO_CLIENT_SECRET", os.environ.get("EVE_SSO_CLIENT_SECRET", "")),
+        default=env_text("CORP_MARKET_SSO_CLIENT_SECRET", env_text("EVE_SSO_CLIENT_SECRET")),
         help="EVE SSO application client secret for Flight Attendant ESI login.",
     )
     serve.add_argument(
         "--sso-callback-url",
-        default=os.environ.get("CORP_MARKET_SSO_CALLBACK_URL", ""),
+        default=env_text("CORP_MARKET_SSO_CALLBACK_URL"),
         help="Registered EVE SSO callback URL. Defaults to this board's /flight/callback URL.",
     )
     serve.add_argument(
         "--sso-scopes",
-        default=os.environ.get("CORP_MARKET_SSO_SCOPES", " ".join(DEFAULT_FLIGHT_ESI_SCOPES)),
+        default=env_text("CORP_MARKET_SSO_SCOPES", " ".join(DEFAULT_FLIGHT_ESI_SCOPES)),
         help="Space or comma-separated EVE SSO scopes for Flight Attendant.",
     )
     serve.add_argument(
         "--allowed-character-ids",
-        default=os.environ.get("CORP_MARKET_ALLOWED_CHARACTER_IDS", ""),
+        default=env_text("CORP_MARKET_ALLOWED_CHARACTER_IDS"),
         help="Comma-separated character ids allowed to use the hosted Flight Attendant.",
     )
     serve.add_argument(
         "--allowed-corporation-ids",
-        default=os.environ.get("CORP_MARKET_ALLOWED_CORPORATION_IDS", ""),
+        default=env_text("CORP_MARKET_ALLOWED_CORPORATION_IDS"),
         help="Comma-separated corporation ids allowed to use the hosted Flight Attendant.",
     )
     serve.add_argument(
         "--allowed-alliance-ids",
-        default=os.environ.get("CORP_MARKET_ALLOWED_ALLIANCE_IDS", ""),
+        default=env_text("CORP_MARKET_ALLOWED_ALLIANCE_IDS"),
         help="Comma-separated alliance ids allowed to use the hosted Flight Attendant.",
     )
     serve.add_argument(
@@ -38070,7 +38070,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--esi-base-url",
-        default=os.environ.get("CORP_MARKET_ESI_BASE_URL", DEFAULT_ESI_BASE_URL),
+        default=env_text("CORP_MARKET_ESI_BASE_URL", DEFAULT_ESI_BASE_URL),
         help="Base ESI URL.",
     )
     serve.add_argument(
@@ -38085,9 +38085,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(list(argv) if argv is not None else None)
     try:
+        parser = build_parser()
+        args = parser.parse_args(list(argv) if argv is not None else None)
         return int(args.func(args))
     except CorpMarketError as exc:
         print(f"Corp market error: {exc}", file=sys.stderr)
@@ -38238,9 +38238,24 @@ def parse_int_csv(value: str | None) -> tuple[int, ...]:
 
 
 def env_bool(name: str, *, default: bool = False) -> bool:
-    if name not in os.environ:
+    if name not in os.environ and f"{name}_FILE" not in os.environ:
         return default
-    return query_bool(os.environ.get(name), default=default)
+    return query_bool(env_text(name), default=default)
+
+
+def env_text(name: str, default: str = "") -> str:
+    value = os.environ.get(name)
+    file_path = os.environ.get(f"{name}_FILE")
+    if value and file_path:
+        raise CorpMarketError(f"Set either {name} or {name}_FILE, not both.")
+    if file_path:
+        try:
+            return Path(file_path).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise CorpMarketError(f"Could not read {name}_FILE at {file_path}: {exc}") from exc
+    if value is not None:
+        return value
+    return default
 
 
 def parse_forum_tag_map(value: str | None) -> dict[str, tuple[str, ...]]:

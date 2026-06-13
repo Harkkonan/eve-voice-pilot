@@ -6,11 +6,15 @@ SQLite databases, or profile files in this folder.
 
 ## Runtime Shape
 
-- The Python app binds to `127.0.0.1:8770`.
+- On a VM/systemd install, the Python app binds to `127.0.0.1:8770`.
+- In Docker, the Python app binds to `0.0.0.0` inside the container and is
+  exposed only to the Compose network.
 - Public HTTPS is provided by Caddy or Cloudflare Tunnel in front of the app.
 - Public hosting mode requires EVE SSO, an HTTPS callback URL, and at least one
   allowed character, corporation, or alliance ID.
 - The Workbench remains local-only and must not be reverse-proxied.
+- Docker support is for Corp Market / Flight Attendant only. Do not add Voice
+  Pilot, Intel Pet, or Workbench to this Compose stack without a fresh review.
 
 ## First VM Setup
 
@@ -21,20 +25,68 @@ SQLite databases, or profile files in this folder.
    cd /opt/eve-voice-pilot
    python3 -m venv .venv
    .venv/bin/python -m pip install --upgrade pip
-   .venv/bin/python -m pip install -r requirements.txt
+   .venv/bin/python -m pip install -r requirements-web.txt
    ```
+
+   Use `requirements.txt` only on machines that also run the desktop voice app.
 
 3. Copy `deploy/systemd/corp-market.env.example` to
    `/etc/eve-voice-pilot/corp-market.env` and fill in real values on the VM.
 4. Copy `deploy/systemd/corp-market.service` to
    `/etc/systemd/system/corp-market.service`.
-5. Copy `deploy/caddy/Caddyfile` into your Caddy config and replace
-   `market.example.com`.
+5. Copy `deploy/caddy/Caddyfile` into your Caddy config and either set
+   `CORP_MARKET_PUBLIC_HOST` for Caddy or replace the `market.example.com`
+   default.
 6. Run the smoke check after every deploy:
 
    ```sh
    deploy/scripts/smoke-corp-market.sh https://market.example.com
    ```
+
+## Docker Compose Setup
+
+Docker is optional, and this checkout keeps it scoped to the web service.
+
+1. Copy `deploy/docker/.env.example` to `.env` in the repository root and fill
+   in the public host, public URL, callback URL, SSO client ID, and at least one
+   allowed character, corporation, or alliance ID.
+2. Create secret files on the Docker host:
+
+   ```sh
+   mkdir -p deploy/docker/secrets
+   printf '%s' 'real-sso-client-secret' > deploy/docker/secrets/corp_market_sso_client_secret.txt
+   printf '%s' 'optional-admin-token-or-empty' > deploy/docker/secrets/corp_market_admin_token.txt
+   printf '%s' 'optional-discord-webhook-or-empty' > deploy/docker/secrets/corp_market_discord_webhook_url.txt
+   ```
+
+3. Build the static EVE SDE cache into the Docker cache volume before inviting
+   testers:
+
+   ```sh
+   docker compose --profile tools run --rm cache-refresh
+   ```
+
+4. Start the app behind Caddy:
+
+   ```sh
+   docker compose up -d corp-market caddy
+   ```
+
+5. Run the smoke check from the host:
+
+   ```sh
+   . ./.env
+   deploy/scripts/smoke-corp-market.sh "$CORP_MARKET_PUBLIC_BASE_URL"
+   ```
+
+The Compose app service stores SQLite/settings under the `corp_market_profiles`
+volume and generated SDE cache files under the `corp_market_cache` volume. The
+cache-refresh service writes to that same cache volume; rerun it after updates
+that require a fresh SDE cache.
+
+The app and service wrapper support Docker-style `_FILE` environment variables
+for SSO credentials, admin tokens, Discord webhooks, allowlists, and other
+string settings. Do not set a non-empty `NAME` and `NAME_FILE` at the same time.
 
 ## Backup Contract
 

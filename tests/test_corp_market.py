@@ -97,6 +97,36 @@ Tranquil Electrical Filament x3
 Tranquil Dark Filament x97
 Tranquil Firestorm Filament x3"""
 
+CORP_MARKET_ENV_NAMES = (
+    "CORP_MARKET_DISCORD_WEBHOOK_URL",
+    "CORP_MARKET_DISCORD_ALERT_SETTINGS_PATH",
+    "CORP_MARKET_DISCORD_POST_SETTINGS_PATH",
+    "CORP_MARKET_DISCORD_FITTING_POST_SETTINGS_PATH",
+    "CORP_MARKET_DISCORD_FORUM_TAG_IDS",
+    "CORP_MARKET_DISCORD_FORUM_TAG_MAP",
+    "CORP_MARKET_PUBLIC_BASE_URL",
+    "CORP_MARKET_PUBLIC_HOSTING_MODE",
+    "CORP_MARKET_ADMIN_TOKEN",
+    "CORP_MARKET_SSO_CLIENT_ID",
+    "CORP_MARKET_SSO_CLIENT_SECRET",
+    "CORP_MARKET_SSO_CALLBACK_URL",
+    "CORP_MARKET_SSO_SCOPES",
+    "CORP_MARKET_ALLOWED_CHARACTER_IDS",
+    "CORP_MARKET_ALLOWED_CORPORATION_IDS",
+    "CORP_MARKET_ALLOWED_ALLIANCE_IDS",
+    "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET",
+    "CORP_MARKET_ESI_BASE_URL",
+    "CORP_MARKET_UI_PERFORMANCE_MONITOR",
+    "EVE_SSO_CLIENT_ID",
+    "EVE_SSO_CLIENT_SECRET",
+)
+
+
+def clear_corp_market_env(monkeypatch):
+    for name in CORP_MARKET_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(f"{name}_FILE", raising=False)
+
 
 def bulk_appraisal_static_data(tmp_path: Path) -> corp_market.StaticMarketData:
     return corp_market.StaticMarketData(
@@ -158,6 +188,67 @@ def test_parse_fit_note_reads_eft_clipboard_format():
     assert fit_note.empty_slots == 1
     assert fit_note.cargo_lines[0] == "Scourge Rage Rocket x4772"
     assert fit_note.cargo_lines[-1] == "Tranquil Firestorm Filament x3"
+
+
+def test_build_parser_reads_file_backed_secret_defaults(tmp_path, monkeypatch):
+    clear_corp_market_env(monkeypatch)
+    sso_secret_path = tmp_path / "sso_secret.txt"
+    admin_token_path = tmp_path / "admin_token.txt"
+    webhook_path = tmp_path / "discord_webhook.txt"
+    sso_secret_path.write_text("sso-secret-from-file\n", encoding="utf-8")
+    admin_token_path.write_text("admin-token-from-file\r\n", encoding="utf-8")
+    webhook_path.write_text("https://discord.example/webhook\n", encoding="utf-8")
+
+    monkeypatch.setenv("CORP_MARKET_SSO_CLIENT_ID", "client-id")
+    monkeypatch.setenv("CORP_MARKET_SSO_CLIENT_SECRET_FILE", str(sso_secret_path))
+    monkeypatch.setenv("CORP_MARKET_ADMIN_TOKEN_FILE", str(admin_token_path))
+    monkeypatch.setenv("CORP_MARKET_DISCORD_WEBHOOK_URL_FILE", str(webhook_path))
+
+    parser = corp_market.build_parser()
+    args = parser.parse_args(["serve"])
+
+    assert args.sso_client_id == "client-id"
+    assert args.sso_client_secret == "sso-secret-from-file"
+    assert args.admin_token == "admin-token-from-file"
+    assert args.discord_webhook_url == "https://discord.example/webhook"
+
+
+def test_build_parser_reads_eve_sso_file_fallback(tmp_path, monkeypatch):
+    clear_corp_market_env(monkeypatch)
+    client_id_path = tmp_path / "eve_client_id.txt"
+    client_secret_path = tmp_path / "eve_client_secret.txt"
+    client_id_path.write_text("eve-client-id\n", encoding="utf-8")
+    client_secret_path.write_text("eve-client-secret\n", encoding="utf-8")
+
+    monkeypatch.setenv("EVE_SSO_CLIENT_ID_FILE", str(client_id_path))
+    monkeypatch.setenv("EVE_SSO_CLIENT_SECRET_FILE", str(client_secret_path))
+
+    parser = corp_market.build_parser()
+    args = parser.parse_args(["serve"])
+
+    assert args.sso_client_id == "eve-client-id"
+    assert args.sso_client_secret == "eve-client-secret"
+
+
+def test_build_parser_rejects_nonempty_env_and_file_for_secret(tmp_path, monkeypatch):
+    clear_corp_market_env(monkeypatch)
+    secret_path = tmp_path / "sso_secret.txt"
+    secret_path.write_text("file-secret\n", encoding="utf-8")
+
+    monkeypatch.setenv("CORP_MARKET_SSO_CLIENT_SECRET", "env-secret")
+    monkeypatch.setenv("CORP_MARKET_SSO_CLIENT_SECRET_FILE", str(secret_path))
+
+    with pytest.raises(CorpMarketError, match="Set either CORP_MARKET_SSO_CLIENT_SECRET"):
+        corp_market.build_parser()
+
+
+def test_main_reports_unreadable_file_secret(monkeypatch, capsys):
+    clear_corp_market_env(monkeypatch)
+    monkeypatch.setenv("CORP_MARKET_ADMIN_TOKEN_FILE", "missing-admin-token.txt")
+
+    assert corp_market.main(["serve"]) == 1
+    captured = capsys.readouterr()
+    assert "Could not read CORP_MARKET_ADMIN_TOKEN_FILE" in captured.err
 
 
 def test_bulk_appraisal_parser_resolves_fits_inventory_and_bpc_rows(tmp_path):

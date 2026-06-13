@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eve-voice-pilot"
+version = "0.1.0"
+description = "Local-first EVE Online helpers, including the Corp Market and Flight Attendant web service."
+requires-python = ">=3.12"
+dependencies = [
+    "PyJWT[crypto]>=2.8.0,<3",
+]
+
+[project.optional-dependencies]
+desktop = [
+    "sounddevice>=0.5.1",
+    "vosk>=0.3.45",
+    "websocket-client>=1.8.0",
+]
+web = [
+    "PyJWT[crypto]>=2.8.0,<3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+eve_voice_pilot = [
+    "static/corp-market/*.png",
+    "static/intel-pet/*.png",
+]

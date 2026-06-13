@@ -1,7 +1,7 @@
-# Replace market.example.com with the real public host.
-# Keep the Python app bound to 127.0.0.1; do not expose its port directly.
+# Replace CORP_MARKET_PUBLIC_HOST with the real public host.
+# Keep the Python app bound to 127.0.0.1 on a VM; Docker uses the internal service upstream.
 
-market.example.com {
+{$CORP_MARKET_PUBLIC_HOST:market.example.com} {
 	encode zstd gzip
 
 	header {
@@ -14,5 +14,5 @@ market.example.com {
 		-Server
 	}
 
-	reverse_proxy 127.0.0.1:8770
+	reverse_proxy {$CORP_MARKET_UPSTREAM:127.0.0.1:8770}
 }
