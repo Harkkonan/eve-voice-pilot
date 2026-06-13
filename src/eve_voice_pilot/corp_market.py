@@ -67,6 +67,12 @@ from eve_voice_pilot.flight_server_routes import (
     should_secure_flight_cookie,
     verified_pilot_has_member_access,
 )
+from eve_voice_pilot.intake_router import (
+    INTAKE_GOALS,
+    INTAKE_HUBS,
+    INTAKE_TIME_BUDGETS,
+    build_intake_router_payload,
+)
 from eve_voice_pilot.planetary_industry import (
     PlanetaryChainNode,
     PlanetaryChainPlan,
@@ -398,6 +404,11 @@ FLIGHT_TAB_SCOPE_DISCLOSURES: dict[str, dict[str, Any]] = {
     "market": {
         "label": "Discord Alerts",
         "summary": "No character ESI scopes are used by this tab. Market board writes stay manual and gated by local/public-hosting access rules.",
+        "scopes": (),
+    },
+    "intake": {
+        "label": "Intake + Goals",
+        "summary": "No character ESI scope is used by this tab. It classifies pasted EVE text locally, explains the likely workflow, and hands the pilot to manual follow-up tools.",
         "scopes": (),
     },
     "flight": {
@@ -14763,6 +14774,11 @@ def build_http_server(
                     return
                 self._handle_flight_appraisal()
                 return
+            if path == "/api/flight/intake":
+                if not self._require_public_read_access():
+                    return
+                self._handle_flight_intake()
+                return
             if path.startswith("/api/offers/") and path.endswith("/reserve"):
                 if not self._require_write_access():
                     return
@@ -15497,6 +15513,30 @@ def build_http_server(
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
             self._send_json(appraisal)
+
+        def _handle_flight_intake(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+                return
+            if not isinstance(payload, dict):
+                self._send_json({"ok": False, "error": "Intake payload must be a JSON object."}, status=400)
+                return
+            raw_text = payload.get("text")
+            if raw_text is None:
+                raw_text = payload.get("raw_text")
+            try:
+                intake = build_intake_router_payload(
+                    raw_text=raw_text,
+                    goal=payload.get("goal") or "auto",
+                    time_budget=payload.get("time_budget") or "any",
+                    preferred_hub=payload.get("preferred_hub") or payload.get("hub") or "jita",
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(intake)
 
         def _handle_flight_asset_ledger(self) -> None:
             session = self._require_flight_session("loading the trade asset ledger")
@@ -16907,6 +16947,44 @@ def _render_flight_attendant_dashboard() -> str:
         f'                    <option value="{html.escape(key)}">{html.escape(label)}</option>'
         for key, label in LISTING_CATEGORIES.items()
     )
+    intake_goal_labels = {
+        "auto": "Auto detect",
+        "what_now": "What should I do now?",
+        "sell": "Sell or appraise",
+        "buy_ship": "Get a specific ship",
+        "manufacture": "Manufacture",
+        "gather": "Gather resources",
+        "reprocess": "Reprocess/refine",
+        "haul": "Haul or stage",
+        "explore": "Exploration prep",
+        "audit_profit": "Audit profit",
+        "learn": "Explain and teach",
+    }
+    intake_goal_options = "\n".join(
+        f'                    <option value="{html.escape(goal)}"{ " selected" if goal == "auto" else ""}>{html.escape(intake_goal_labels.get(goal, goal.replace("_", " ").title()))}</option>'
+        for goal in sorted(INTAKE_GOALS, key=lambda value: (value != "auto", intake_goal_labels.get(value, value)))
+    )
+    intake_time_options = "\n".join(
+        f'                    <option value="{html.escape(value)}"{ " selected" if value == "any" else ""}>{html.escape(label)}</option>'
+        for value, label in (
+            ("any", "Any session length"),
+            ("short", "Short: under 30 minutes"),
+            ("medium", "Medium: 30-90 minutes"),
+            ("long", "Long: 90+ minutes"),
+        )
+        if value in INTAKE_TIME_BUDGETS
+    )
+    intake_hub_options = "\n".join(
+        f'                    <option value="{html.escape(value)}"{ " selected" if value == "jita" else ""}>{html.escape(label)}</option>'
+        for value, label in (
+            ("jita", "Jita"),
+            ("amarr", "Amarr"),
+            ("dodixie", "Dodixie"),
+            ("hek", "Hek"),
+            ("rens", "Rens"),
+        )
+        if value in INTAKE_HUBS
+    )
     haul_market_group_options = render_market_group_picker_options(
         input_id_prefix="haul-market-group",
         input_name="market_group_ids",
@@ -18217,6 +18295,51 @@ def _render_flight_attendant_dashboard() -> str:
       font-weight: 800;
       white-space: nowrap;
     }
+    .intake-workspace .profit-panel { min-height: 380px; }
+    .intake-input-panel textarea { min-height: 260px; font-family: Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.35; }
+    .intake-trust-list { display: grid; gap: 8px; margin-bottom: 12px; }
+    .intake-source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
+    .intake-source-card {
+      border: 1px solid rgba(63, 85, 80, .64);
+      border-radius: 7px;
+      background: rgba(8, 13, 15, .42);
+      padding: 9px;
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .intake-source-card strong { color: var(--text); overflow-wrap: anywhere; }
+    .intake-source-card span { color: var(--cyan); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
+    .intake-source-card small { color: var(--muted); line-height: 1.35; overflow-wrap: anywhere; }
+    .intake-signal-row,
+    .intake-assumption-list,
+    .intake-action-list,
+    .intake-link-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .intake-assumption-list,
+    .intake-action-list,
+    .intake-link-list { display: grid; }
+    .intake-assumption-list { gap: 5px; }
+    .intake-assumption-list div,
+    .intake-action-list a,
+    .intake-link-list a {
+      border: 1px solid rgba(63, 85, 80, .55);
+      border-radius: 6px;
+      background: rgba(5, 9, 11, .34);
+      padding: 7px 8px;
+      color: var(--text);
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+    .intake-action-list a strong,
+    .intake-link-list a strong { color: var(--cyan); display: block; }
+    .intake-action-list a small,
+    .intake-link-list a small { color: var(--muted); display: block; margin-top: 2px; line-height: 1.3; }
+    .intake-signal-row .pill { white-space: normal; }
     .module-title {
       display: flex;
       align-items: center;
@@ -21407,6 +21530,14 @@ def _render_flight_attendant_dashboard() -> str:
           <a class="button-link ghost-link" href="#trade-pnl">Trade P&amp;L</a>
         </div>
       </div>
+      <div class="ops-launcher-card primary">
+        <strong>Intake + Goals</strong>
+        <div class="meta">Paste an EVE artifact, choose the goal, and get a manual next-step checklist.</div>
+        <div class="ops-launcher-stat"><span>Input</span><b>Paste router</b></div>
+        <div class="ops-launcher-actions">
+          <a class="button-link ghost-link" href="#intake">Open Intake</a>
+        </div>
+      </div>
       <div class="ops-launcher-card">
         <strong>Trade Asset Ledger</strong>
         <div class="meta">Managed bridge for portfolio fills, ESI assets, and hauler plans.</div>
@@ -21421,6 +21552,7 @@ def _render_flight_attendant_dashboard() -> str:
       <label for="dashboard-tab-select">Workspace</label>
       <select id="dashboard-tab-select" aria-label="Dashboard workspace">
         <option value="market">Market Posts</option>
+        <option value="intake">Intake + Goals</option>
         <option value="fittings">Shared Fittings</option>
         <option value="flight">Flight Attendant</option>
         <option value="industry">Industry Library</option>
@@ -21437,6 +21569,7 @@ def _render_flight_attendant_dashboard() -> str:
 
     <nav class="tabbar" aria-label="Dashboard tabs">
       <button type="button" data-tab-target="market" data-tab-group="Market" aria-selected="true">Market Posts</button>
+      <button type="button" data-tab-target="intake" data-tab-group="Pilot" aria-selected="false">Intake + Goals</button>
       <button type="button" data-tab-target="fittings" data-tab-group="Fleet" aria-selected="false">Shared Fittings</button>
       <button type="button" data-tab-target="flight" data-tab-group="ESI" aria-selected="false">Flight Attendant</button>
       <button type="button" data-tab-target="industry" data-tab-group="Industry" aria-selected="false">Industry Library</button>
@@ -21844,6 +21977,100 @@ help</textarea>
               </section>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section id="tab-intake" class="tab-panel" data-tab-panel="intake" hidden>
+        <div class="flight-grid intake-workspace">
+          <section class="panel intake-input-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Intake + Goals</h2>
+                <div class="meta">Paste a fit, cargo, contract, wallet rows, ore list, BOM, D-scan, or killmail and get the next manual workflow.</div>
+              </div>
+              <span class="pill reserved">Local Router</span>
+            </div>
+@@TAB_SCOPE_INTAKE@@
+            <form id="intake-form" class="note-form">
+              <div class="row">
+                <label>Goal
+                  <select id="intake-goal" name="goal">
+@@INTAKE_GOAL_OPTIONS@@
+                  </select>
+                  <small class="input-note">The selected goal steers priority; the parser still reports what it sees.</small>
+                </label>
+                <label>Time budget
+                  <select id="intake-time-budget" name="time_budget">
+@@INTAKE_TIME_OPTIONS@@
+                  </select>
+                  <small class="input-note">Used as planning context for the manual checklist.</small>
+                </label>
+                <label>Preferred hub
+                  <select id="intake-preferred-hub" name="preferred_hub">
+@@INTAKE_HUB_OPTIONS@@
+                  </select>
+                  <small class="input-note">First hub to suggest for appraisal or market follow-up.</small>
+                </label>
+              </div>
+              <label>Paste EVE text
+                <textarea id="intake-paste" name="text" rows="14" spellcheck="false" placeholder="[Hawk, Example fit]&#10;Ballistic Control System II&#10;Scourge Rage Rocket x4772&#10;&#10;Tritanium&#9;100000&#10;Merlin Blueprint (Copy)&#9;1&#10;&#10;or paste wallet rows, contract text, D-scan, ore lists, killmail links, or cargo."></textarea>
+                <small class="input-note">Raw paste text is analyzed for this request only, is not echoed back, and is not stored by the app.</small>
+              </label>
+              <div class="bulk-appraisal-actions">
+                <button id="intake-analyze" class="ghost" type="submit" data-no-plex>Analyze Paste</button>
+                <button id="intake-clear" class="secondary" type="button" data-no-plex>Clear</button>
+                <span id="intake-status" class="meta quickbar-copy-status" aria-live="polite">No intake analysis has run yet.</span>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel intake-trust-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Trust Posture</h2>
+                <div class="meta">Shows what data this router used before recommending any follow-up workflow.</div>
+              </div>
+              <span class="pill sell">No ESI</span>
+            </div>
+            <div id="intake-trust" class="intake-trust-list">
+              <div class="state-callout is-empty">
+                <strong>Waiting for paste</strong>
+                <span>No ESI call, token, cache write, Discord send, or EVE client action happens in this router.</span>
+              </div>
+            </div>
+            <ul class="charter-list">
+              <li><strong>Manual only:</strong> recommendations become checklists and links, never in-game actions.</li>
+              <li><strong>Beginner-facing:</strong> each result explains why it matters and what assumption could be wrong.</li>
+              <li><strong>Router first:</strong> use specialist tabs for prices, refining, hauling, P&amp;L, fittings, or industry.</li>
+            </ul>
+          </section>
+
+          <section class="panel profit-panel full-span" aria-labelledby="intake-results-title">
+            <div class="panel-header">
+              <div>
+                <div class="profit-title">
+                  <h2 id="intake-results-title">Recommendation Output</h2>
+                  <span class="pill reserved">Manual Checklist</span>
+                </div>
+                <div class="meta">Detected type, source posture, assumptions, links, and the recommended next workflow.</div>
+              </div>
+            </div>
+            <details class="output-details" open>
+              <summary>Intake Analysis</summary>
+              <div class="output-details-body">
+                <div id="intake-summary" class="profit-summary">Paste EVE text and choose a goal to build a manual plan.</div>
+                <div id="intake-copy-panel" class="quickbar-copy-panel" hidden>
+                  <div>
+                    <strong>Share Text</strong>
+                    <div class="meta">Copies the detected workflow and top recommendations. Raw pasted contents are not included.</div>
+                    <div id="intake-copy-status" class="meta quickbar-copy-status" aria-live="polite"></div>
+                  </div>
+                  <button id="intake-copy-share" class="secondary" type="button" data-no-plex>Copy Summary</button>
+                </div>
+                <div id="intake-results" class="decision-output"></div>
+              </div>
+            </details>
+          </section>
         </div>
       </section>
 
@@ -23769,6 +23996,20 @@ help</textarea>
     const miningYieldTimerStop = document.querySelector("#mining-yield-timer-stop");
     const miningYieldTimerReset = document.querySelector("#mining-yield-timer-reset");
     const miningYieldTimerStatus = document.querySelector("#mining-yield-timer-status");
+    const intakeForm = document.querySelector("#intake-form");
+    const intakeGoal = document.querySelector("#intake-goal");
+    const intakeTimeBudget = document.querySelector("#intake-time-budget");
+    const intakePreferredHub = document.querySelector("#intake-preferred-hub");
+    const intakePaste = document.querySelector("#intake-paste");
+    const intakeAnalyze = document.querySelector("#intake-analyze");
+    const intakeClear = document.querySelector("#intake-clear");
+    const intakeStatus = document.querySelector("#intake-status");
+    const intakeTrust = document.querySelector("#intake-trust");
+    const intakeSummary = document.querySelector("#intake-summary");
+    const intakeCopyPanel = document.querySelector("#intake-copy-panel");
+    const intakeCopyShare = document.querySelector("#intake-copy-share");
+    const intakeCopyStatus = document.querySelector("#intake-copy-status");
+    const intakeResults = document.querySelector("#intake-results");
     const bulkAppraisalForm = document.querySelector("#bulk-appraisal-form");
     const bulkAppraisalHub = document.querySelector("#bulk-appraisal-hub");
     const bulkAppraisalMode = document.querySelector("#bulk-appraisal-mode");
@@ -23892,6 +24133,9 @@ help</textarea>
     const acqPastedItemsOnlyKey = "eve-flight-acq-pasted-items-only-v1";
     const acqAssetsOnlyKey = "eve-flight-acq-assets-only-v1";
     const acqCompareSourceHubsKey = "eve-flight-acq-compare-source-hubs-v1";
+    const intakeGoalKey = "eve-flight-intake-goal-v1";
+    const intakeTimeBudgetKey = "eve-flight-intake-time-budget-v1";
+    const intakePreferredHubKey = "eve-flight-intake-preferred-hub-v1";
     const bulkAppraisalHubKey = "eve-flight-bulk-appraisal-hub-v1";
     const bulkAppraisalTextKey = "eve-flight-bulk-appraisal-text-v1";
     const bulkAppraisalModeKey = "eve-flight-bulk-appraisal-mode-v1";
@@ -23937,15 +24181,19 @@ help</textarea>
       .filter((entry) => entry && entry.optional_mining && entry.scope)
       .map((entry) => entry.scope));
     const optionalActivityScopeNames = new Set([...optionalReprocessingScopeNames, ...optionalMiningScopeNames]);
-    const validTabs = new Set(["market", "fittings", "flight", "industry", "hauling", "acquisition", "asset-ledger", "mining-yield", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
+    const validTabs = new Set(["market", "intake", "fittings", "flight", "industry", "hauling", "acquisition", "asset-ledger", "mining-yield", "appraisal", "trade-pnl", "planetary", "reprocessing"]);
     const tabAliases = new Map([
       ["discord-alerts", "market"],
       ["discord", "market"],
       ["alerts", "market"],
       ["diagnostics", "industry"],
+      ["goals", "intake"],
+      ["what-now", "intake"],
+      ["paste", "intake"],
     ]);
     const tabWorkflowDetails = {
       market: "Discord-facing market posts and manual offer coordination.",
+      intake: "Paste recognition, goal triage, trust posture, and manual next-step checklists.",
       fittings: "Shared EVE fitting blocks with Discord handoff.",
       flight: "Current-system briefing, ESI transparency, notes, and safety.",
       industry: "Blueprints, assets, recipes, nearby buyers, and profitability estimates.",
@@ -23998,6 +24246,7 @@ help</textarea>
     let assetLedgerPreviewCount = 0;
     let assetLedgerHandoffRows = [];
     let miningYieldTimerInterval = null;
+    let intakeLastShareText = "";
     let bulkAppraisalLastExportText = "";
     let planetaryShoppingQuickbarItems = [];
     let planetarySellQuickbarItems = [];
@@ -26654,6 +26903,272 @@ help</textarea>
       const value = Math.max(0, Number(seconds || 0));
       if (value >= 10) return `${value.toFixed(1)}s`;
       return `${value.toFixed(2)}s`;
+    }
+
+    function setIntakeStatus(message, isError = false) {
+      if (!intakeStatus) return;
+      intakeStatus.textContent = message || "";
+      intakeStatus.classList.toggle("error", Boolean(isError));
+    }
+
+    function readIntakeSettings() {
+      return {
+        goal: intakeGoal ? intakeGoal.value || "auto" : "auto",
+        timeBudget: intakeTimeBudget ? intakeTimeBudget.value || "any" : "any",
+        preferredHub: intakePreferredHub ? intakePreferredHub.value || "jita" : "jita",
+      };
+    }
+
+    function writeIntakeSettings(settings) {
+      const cleanSettings = settings || readIntakeSettings();
+      if (intakeGoal) {
+        intakeGoal.value = cleanSettings.goal || intakeGoal.value || "auto";
+        window.localStorage.setItem(intakeGoalKey, intakeGoal.value || "auto");
+      }
+      if (intakeTimeBudget) {
+        intakeTimeBudget.value = cleanSettings.timeBudget || intakeTimeBudget.value || "any";
+        window.localStorage.setItem(intakeTimeBudgetKey, intakeTimeBudget.value || "any");
+      }
+      if (intakePreferredHub) {
+        intakePreferredHub.value = cleanSettings.preferredHub || intakePreferredHub.value || "jita";
+        window.localStorage.setItem(intakePreferredHubKey, intakePreferredHub.value || "jita");
+      }
+      return readIntakeSettings();
+    }
+
+    function resetIntake(clearText = false) {
+      intakeLastShareText = "";
+      if (intakeSummary) intakeSummary.textContent = "Paste EVE text and choose a goal to build a manual plan.";
+      if (intakeTrust) {
+        intakeTrust.innerHTML = renderDashboardStateMessage(
+          "No ESI call, token, cache write, Discord send, or EVE client action happens in this router.",
+          {state: "empty", label: "Waiting for paste"},
+        );
+      }
+      if (intakeResults) intakeResults.innerHTML = "";
+      if (intakeCopyPanel) intakeCopyPanel.hidden = true;
+      if (intakeCopyStatus) intakeCopyStatus.textContent = "";
+      setIntakeStatus("No intake analysis has run yet.");
+      if (clearText && intakePaste) intakePaste.value = "";
+    }
+
+    function renderIntakeSourceCards(sources) {
+      const safeSources = Array.isArray(sources) ? sources : [];
+      if (!safeSources.length) {
+        return renderDashboardStateMessage("No source metadata was returned.", {state: "empty", label: "No sources"});
+      }
+      return `<div class="intake-source-grid">${safeSources.map((source) => `
+        <div class="intake-source-card">
+          <span>${escapeHtml(source.posture || "source")}</span>
+          <strong>${escapeHtml(source.label || source.key || "Source")}</strong>
+          <small>${escapeHtml(source.detail || "")}</small>
+          <small>Freshness: ${escapeHtml(source.freshness || "unknown")} | Persistence: ${escapeHtml(source.persistence || "unknown")}</small>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function renderIntakeSourceBadges(sourceKeys) {
+      const keys = Array.isArray(sourceKeys) ? sourceKeys : [];
+      if (!keys.length) return '<span class="source-badge">local router</span>';
+      return keys.map((key) => `<span class="source-badge">${escapeHtml(key)}</span>`).join("");
+    }
+
+    function renderIntakeSignals(signals) {
+      const safeSignals = Array.isArray(signals) ? signals : [];
+      if (!safeSignals.length) return "";
+      return `
+        <div class="intake-signal-row">
+          ${safeSignals.slice(0, 6).map((signal) => `<span class="pill reserved">${escapeHtml(signal.label || signal.kind || "signal")} ${formatNumber(signal.strength || 0)}%</span>`).join("")}
+        </div>
+      `;
+    }
+
+    function renderIntakeParsedPreview(parsed) {
+      const itemCount = Number(parsed?.item_count || 0);
+      const unresolvedCount = Number(parsed?.unresolved_count || 0);
+      const fit = parsed?.fit || null;
+      const cards = [
+        {label: "Parsed rows", value: formatNumber(itemCount), detail: "Item-like rows for follow-up appraisal or route planning.", warning: false},
+        {label: "Unresolved", value: formatNumber(unresolvedCount), detail: "Clean these before trusting prices or checklist output.", warning: unresolvedCount > 0},
+        {label: "Ore-like", value: formatNumber(parsed?.ore_count || 0), detail: "Potential reprocessing candidates.", warning: false},
+        {label: "Blueprint/BOM", value: formatNumber(parsed?.blueprint_count || 0), detail: "Potential manufacturing context.", warning: false},
+      ];
+      if (fit) {
+        cards.unshift({
+          label: "Fit",
+          value: `${fit.hull || "Ship"} - ${fit.fit_name || "Fit"}`,
+          detail: `${formatNumber(fit.fitted_line_count || 0)} fitted lines and ${formatNumber(fit.cargo_line_count || 0)} cargo lines.`,
+          warning: false,
+        });
+      }
+      return renderDashboardChecklist(cards);
+    }
+
+    function renderIntakeAssumptions(assumptions) {
+      const safeAssumptions = Array.isArray(assumptions) ? assumptions.filter(Boolean) : [];
+      if (!safeAssumptions.length) return "";
+      return `
+        <details class="output-details" open>
+          <summary>Assumptions</summary>
+          <div class="output-details-body intake-assumption-list">
+            ${safeAssumptions.map((assumption) => `<div>${escapeHtml(assumption)}</div>`).join("")}
+          </div>
+        </details>
+      `;
+    }
+
+    function renderIntakeActions(actions) {
+      const safeActions = Array.isArray(actions) ? actions : [];
+      if (!safeActions.length) return "";
+      return `
+        <div class="intake-action-list">
+          ${safeActions.map((item) => `
+            <a href="${escapeHtml(item.href || "#intake")}" data-intake-action-target="${escapeHtml(item.target_tab || "")}">
+              <strong>${escapeHtml(item.label || "Open workflow")}</strong>
+              <small>${escapeHtml(item.detail || "")}</small>
+            </a>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderIntakeLinks(links) {
+      const safeLinks = Array.isArray(links) ? links : [];
+      if (!safeLinks.length) return "";
+      return `
+        <div class="intake-link-list">
+          ${safeLinks.map((item) => `
+            <a href="${escapeHtml(item.url || "#")}" target="_blank" rel="noreferrer">
+              <strong>${escapeHtml(item.label || "Reference")}</strong>
+              <small>${escapeHtml(item.url || "")}</small>
+            </a>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderIntakeRecommendations(recommendations) {
+      const safeRecommendations = Array.isArray(recommendations) ? recommendations : [];
+      if (!safeRecommendations.length) {
+        return renderDashboardEmptyState("No recommendations were returned.", {detail: "Try a fit block, item list, wallet rows, contract text, ore list, or killmail link."});
+      }
+      return `
+        <div class="decision-list">
+          ${safeRecommendations.map((rec) => `
+            <article class="decision-row">
+              <div class="decision-head">
+                <strong>${escapeHtml(rec.title || "Recommendation")}</strong>
+                <span class="pill sell">P${formatNumber(rec.priority || 0)}</span>
+              </div>
+              <div class="fitting-meta-row">${renderIntakeSourceBadges(rec.source_keys)}</div>
+              <div class="decision-lede">${escapeHtml(rec.explanation || "")}</div>
+              ${renderDashboardChecklist(rec.manual_checklist || [])}
+              ${renderIntakeAssumptions(rec.assumptions || [])}
+              ${renderIntakeActions(rec.next_actions || [])}
+              ${renderIntakeLinks(rec.links || [])}
+            </article>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderIntakeRouter(data) {
+      const classification = data?.classification || {};
+      const parsed = data?.parsed || {};
+      if (intakeSummary) {
+        intakeSummary.innerHTML = `
+          <div><strong>${escapeHtml(classification.label || "Unknown EVE text")}</strong> | ${formatNumber(classification.confidence || 0)}% confidence | ${formatNumber(data?.input?.nonempty_line_count || 0)} non-empty line${Number(data?.input?.nonempty_line_count || 0) === 1 ? "" : "s"}</div>
+          ${renderIntakeSignals(classification.signals || [])}
+          <div class="meta">${escapeHtml(data?.beginner_translation || "Use the checklist as a manual plan.")}</div>
+        `;
+      }
+      if (intakeTrust) {
+        intakeTrust.innerHTML = `
+          ${renderIntakeSourceCards(data?.data_sources || [])}
+          ${renderDashboardChecklist([
+            {label: "ESI scopes", value: (data?.trust?.esi_scopes || []).length ? (data.trust.esi_scopes || []).join(", ") : "none", detail: "This classifier does not need character ESI access."},
+            {label: "Token storage", value: data?.trust?.token_storage || "none", detail: "No access or refresh token is used by this request."},
+            {label: "Server persistence", value: data?.trust?.server_persistence || "none", detail: data?.trust?.redaction || "Raw paste is not echoed back."},
+          ])}
+        `;
+      }
+      if (intakeResults) {
+        intakeResults.innerHTML = `
+          ${renderIntakeParsedPreview(parsed)}
+          ${renderIntakeRecommendations(data?.recommendations || [])}
+        `;
+      }
+      intakeLastShareText = data?.share_text || "";
+      if (intakeCopyPanel) intakeCopyPanel.hidden = !intakeLastShareText;
+      if (intakeCopyStatus) intakeCopyStatus.textContent = "";
+      const recCount = (data?.recommendations || []).length;
+      setIntakeStatus(`Detected ${classification.label || "EVE text"} with ${formatNumber(recCount)} recommendation${recCount === 1 ? "" : "s"}.`);
+    }
+
+    async function runIntakeRouter() {
+      if (!intakePaste) return;
+      const text = String(intakePaste.value || "").trim();
+      if (!text) {
+        setIntakeStatus("Paste EVE text before running intake analysis.", true);
+        return;
+      }
+      const settings = writeIntakeSettings(readIntakeSettings());
+      if (intakeAnalyze) intakeAnalyze.disabled = true;
+      setIntakeStatus("Analyzing pasted EVE text...");
+      try {
+        const response = await fetch("/api/flight/intake", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            text,
+            goal: settings.goal,
+            time_budget: settings.timeBudget,
+            preferred_hub: settings.preferredHub,
+          }),
+        });
+        const data = await readJsonApiResponse(response, "Could not analyze pasted EVE text");
+        renderIntakeRouter(data);
+        recordEsiActivity({
+          label: "Paste intake analyzed",
+          scopes: [],
+          description: `Classified pasted text as ${data?.classification?.label || "EVE text"}.`,
+          reason: "The router builds a manual next-step checklist before specialist tools run.",
+        });
+      } catch (error) {
+        setIntakeStatus(error.message || "Intake analysis failed.", true);
+        if (intakeResults) intakeResults.innerHTML = renderDashboardErrorState(error.message || "Intake analysis failed.");
+      } finally {
+        if (intakeAnalyze) intakeAnalyze.disabled = false;
+      }
+    }
+
+    async function copyIntakeShareText() {
+      if (!intakeLastShareText) {
+        if (intakeCopyStatus) intakeCopyStatus.textContent = "Run intake analysis first.";
+        return;
+      }
+      const previousText = intakeCopyShare ? intakeCopyShare.textContent : "";
+      try {
+        if (intakeCopyShare) {
+          intakeCopyShare.disabled = true;
+          intakeCopyShare.textContent = "Copying...";
+        }
+        await writeTextToClipboard(intakeLastShareText);
+        if (intakeCopyStatus) {
+          intakeCopyStatus.textContent = "Copied intake summary.";
+          intakeCopyStatus.classList.remove("error");
+        }
+      } catch (error) {
+        if (intakeCopyStatus) {
+          intakeCopyStatus.textContent = error.message || "Clipboard copy failed.";
+          intakeCopyStatus.classList.add("error");
+        }
+      } finally {
+        if (intakeCopyShare) {
+          intakeCopyShare.disabled = false;
+          intakeCopyShare.textContent = previousText;
+        }
+      }
     }
 
     function formatAppraisalIsk(value) {
@@ -34894,6 +35409,35 @@ help</textarea>
       image.remove();
     }, true);
 
+    if (intakeForm) {
+      intakeForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        runIntakeRouter();
+      });
+    }
+    [intakeGoal, intakeTimeBudget, intakePreferredHub].filter(Boolean).forEach((control) => {
+      control.addEventListener("change", () => {
+        writeIntakeSettings(readIntakeSettings());
+      });
+    });
+    if (intakePaste) {
+      intakePaste.addEventListener("input", () => {
+        if (intakePaste.value.trim()) {
+          setIntakeStatus("Paste ready for local intake analysis.");
+        } else {
+          resetIntake(false);
+        }
+      });
+    }
+    if (intakeClear) {
+      intakeClear.addEventListener("click", () => {
+        resetIntake(true);
+      });
+    }
+    if (intakeCopyShare) {
+      intakeCopyShare.addEventListener("click", copyIntakeShareText);
+    }
+
     if (bulkAppraisalForm) {
       bulkAppraisalForm.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -35303,6 +35847,16 @@ help</textarea>
     }
     writeMiningYieldSettings(readMiningYieldSettings());
     renderMiningYieldTimer();
+    if (intakeGoal) {
+      intakeGoal.value = window.localStorage.getItem(intakeGoalKey) || intakeGoal.value || "auto";
+    }
+    if (intakeTimeBudget) {
+      intakeTimeBudget.value = window.localStorage.getItem(intakeTimeBudgetKey) || intakeTimeBudget.value || "any";
+    }
+    if (intakePreferredHub) {
+      intakePreferredHub.value = window.localStorage.getItem(intakePreferredHubKey) || intakePreferredHub.value || "jita";
+    }
+    resetIntake(false);
     if (bulkAppraisalHub) {
       bulkAppraisalHub.value = window.localStorage.getItem(bulkAppraisalHubKey) || bulkAppraisalHub.value || "jita";
     }
@@ -35342,6 +35896,9 @@ help</textarea>
 """
     replacements = {
         "@@CATEGORY_OPTIONS@@": category_options,
+        "@@INTAKE_GOAL_OPTIONS@@": intake_goal_options,
+        "@@INTAKE_TIME_OPTIONS@@": intake_time_options,
+        "@@INTAKE_HUB_OPTIONS@@": intake_hub_options,
         "@@HAUL_MARKET_GROUP_OPTIONS@@": haul_market_group_options,
         "@@ACQ_MARKET_GROUP_OPTIONS@@": acquisition_market_group_options,
         "@@ACQUISITION_COMMON_MATERIAL_LIMIT@@": f"{MAX_FLIGHT_ACQUISITION_COMMON_MATERIAL_TYPES:,}",
@@ -35350,6 +35907,7 @@ help</textarea>
         "@@SCOPE_JUSTIFICATION_PANEL@@": render_flight_scope_justification(),
         "@@FLIGHT_SCOPE_METADATA_JSON@@": render_flight_scope_metadata_json(),
         "@@TAB_SCOPE_MARKET@@": render_flight_scope_summary("market"),
+        "@@TAB_SCOPE_INTAKE@@": render_flight_scope_summary("intake"),
         "@@TAB_SCOPE_FLIGHT@@": render_flight_scope_summary("flight"),
         "@@TAB_SCOPE_INDUSTRY@@": render_flight_scope_summary("industry"),
         "@@TAB_SCOPE_HAULING@@": render_flight_scope_summary("hauling"),

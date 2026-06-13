@@ -828,6 +828,7 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "/api/flight/acquisition/progress" in page
     assert "/api/flight/asset-ledger" in page
     assert "/api/flight/mining-yield" in page
+    assert "/api/flight/intake" in page
     assert "/api/flight/appraisal" in page
     assert "/api/flight/trade-pnl" in page
     assert "/api/flight/planetary" in page
@@ -835,6 +836,15 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"flight-system-name\"" in page
     assert "id=\"flight-login-link\"" in page
     assert "data-tab-target=\"industry\"" in page
+    assert "data-tab-target=\"intake\"" in page
+    assert "id=\"tab-intake\"" in page
+    assert "id=\"intake-form\"" in page
+    assert "id=\"intake-results\" class=\"decision-output\"" in page
+    assert "Paste an EVE artifact, choose the goal, and get a manual next-step checklist." in page
+    assert "Raw paste text is analyzed for this request only" in page
+    assert "No ESI call, token, cache write, Discord send, or EVE client action happens in this router." in page
+    assert "function renderIntakeRouter" in page
+    assert "recordEsiActivity" in page
     assert "Industry Library" in page
     assert "data-scope-tab=\"industry\"" in page
     assert "Industry Library workflow" in industry_section
