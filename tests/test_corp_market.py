@@ -1056,8 +1056,15 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"mining-yield-timer-reset\"" in page
     assert "Local browser timer only" in page
     assert "Stop + Use Hours" in page
+    assert "id=\"mining-yield-copy-csv\"" in page
+    assert "id=\"mining-yield-download-csv\"" in page
+    assert "id=\"mining-yield-csv-status\"" in page
+    assert "miningYieldRowsToCsv" in page
+    assert "data-copy-mining-yield-csv" in page
     assert "id=\"mining-yield-results\"" in page
     assert "Opt In To Mining Ledger" in page
+    assert "is connected, but Mining Yield is not opted in for this session" in page
+    assert "optional character mining ledger scope" in page
     assert "ore/sec and m3/sec" in page
     assert "No inventory deltas" in page
     assert "Server memory" in page
@@ -3078,11 +3085,30 @@ def test_build_flight_mining_yield_payload_uses_daily_ledger_and_manual_session_
     assert totals["volume_m3"] == 20.0
     assert totals["quantity_per_day"] == pytest.approx(285.71)
     assert totals["volume_m3_per_day"] == pytest.approx(2.86)
-    assert totals["quantity_per_second"] == pytest.approx(0.28)
-    assert totals["volume_m3_per_second"] == pytest.approx(0.0)
+    assert totals["quantity_per_second"] == pytest.approx(2000 / (2 * 3600))
+    assert totals["volume_m3_per_second"] == pytest.approx(20 / (2 * 3600))
     assert mining["items"][0]["type_name"] == "Tritanium"
     assert mining["items"][0]["quantity"] == 1500
+    assert mining["items"][0]["quantity_per_day"] == pytest.approx(round(1500 / 7, 2))
+    assert mining["items"][0]["quantity_per_second"] == pytest.approx(1500 / (2 * 3600))
+    assert mining["items"][0]["volume_m3_per_second"] == pytest.approx(15 / (2 * 3600))
     assert mining["daily"][0]["date"] == today.isoformat()
+    assert mining["csv_columns"] == [
+        "Date",
+        "Ore Type",
+        "Type ID",
+        "Units",
+        "m3",
+        "Ore / Day",
+        "Session Units / Sec",
+        "Session m3 / Sec",
+    ]
+    csv_keys = {(row["date"], row["type_id"]) for row in mining["csv_rows"]}
+    assert csv_keys == {(today.isoformat(), 34), (yesterday.isoformat(), 34), (yesterday.isoformat(), 35)}
+    today_tritanium = next(row for row in mining["csv_rows"] if row["date"] == today.isoformat() and row["type_id"] == 34)
+    assert today_tritanium["quantity"] == 1000
+    assert today_tritanium["volume_m3"] == pytest.approx(10.0)
+    assert today_tritanium["quantity_per_second"] == pytest.approx(1000 / (2 * 3600))
     corp_market.clear_mining_ledger_cache()
 
 

@@ -2523,6 +2523,7 @@ def build_flight_mining_yield_payload(
     type_metadata, static_cache_available = resolve_mining_type_metadata(config, type_ids)
     by_type: dict[int, dict[str, Any]] = {}
     by_date: dict[str, dict[str, Any]] = {}
+    by_date_type: dict[tuple[str, int], dict[str, Any]] = {}
     total_quantity = 0
     total_volume_m3 = 0.0
     known_volume_quantity = 0
@@ -2570,12 +2571,30 @@ def build_flight_mining_yield_payload(
             day["volume_m3"] = float(day["volume_m3"]) + row_volume
         else:
             day["volume_partial"] = True
+        date_type = by_date_type.setdefault(
+            (date_key, type_id),
+            {
+                "date": date_key,
+                "type_id": type_id,
+                "type_name": metadata.get("name") or f"Type {type_id}",
+                "quantity": 0,
+                "volume_m3": 0.0,
+                "volume_known": unit_volume is not None and unit_volume > 0,
+            },
+        )
+        date_type["quantity"] = int(date_type["quantity"]) + quantity
+        if row_volume is not None:
+            date_type["volume_m3"] = float(date_type["volume_m3"]) + row_volume
+        else:
+            date_type["volume_known"] = False
+    session_seconds = clean_session_hours * 3600.0
     items: list[dict[str, Any]] = []
     for item in by_type.values():
         date_values = sorted(str(value) for value in item.pop("dates"))
         item_system_ids = sorted(int(value) for value in item.pop("solar_system_ids"))
         volume_known = bool(item["volume_known"])
-        total_item_volume = round(float(item["total_volume_m3"]), 2) if volume_known else None
+        raw_item_volume = float(item["total_volume_m3"]) if volume_known else None
+        total_item_volume = round(raw_item_volume, 2) if raw_item_volume is not None else None
         items.append(
             {
                 **item,
@@ -2584,6 +2603,10 @@ def build_flight_mining_yield_payload(
                 "first_date": date_values[0] if date_values else "",
                 "last_date": date_values[-1] if date_values else "",
                 "solar_system_count": len(item_system_ids),
+                "quantity_per_day": round(int(item["quantity"]) / clean_days, 2),
+                "quantity_per_second": int(item["quantity"]) / session_seconds if session_seconds > 0 else None,
+                "volume_m3_per_day": round(float(total_item_volume) / clean_days, 2) if total_item_volume is not None else None,
+                "volume_m3_per_second": raw_item_volume / session_seconds if raw_item_volume is not None and session_seconds > 0 else None,
             }
         )
     items.sort(key=lambda item: (-int(item["quantity"]), str(item["type_name"]).casefold(), int(item["type_id"])))
@@ -2601,7 +2624,24 @@ def build_flight_mining_yield_payload(
                 "volume_partial": bool(row["volume_partial"]),
             }
         )
-    session_seconds = clean_session_hours * 3600.0
+    csv_rows = []
+    for row in sorted(by_date_type.values(), key=lambda value: (str(value["date"]), str(value["type_name"]).casefold()), reverse=True):
+        quantity = int(row["quantity"])
+        raw_volume = float(row["volume_m3"]) if bool(row["volume_known"]) else None
+        volume = round(raw_volume, 2) if raw_volume is not None else None
+        csv_rows.append(
+            {
+                "date": row["date"],
+                "type_id": row["type_id"],
+                "type_name": row["type_name"],
+                "quantity": quantity,
+                "volume_m3": volume,
+                "quantity_per_day": round(quantity / clean_days, 2),
+                "quantity_per_second": quantity / session_seconds if session_seconds > 0 else None,
+                "volume_m3_per_day": round(float(volume) / clean_days, 2) if volume is not None else None,
+                "volume_m3_per_second": raw_volume / session_seconds if raw_volume is not None and session_seconds > 0 else None,
+            }
+        )
     volume_unknown_quantity = max(0, total_quantity - known_volume_quantity)
     generated_at = now_iso()
     data_sources = [
@@ -2682,11 +2722,22 @@ def build_flight_mining_yield_payload(
                 "unknown_volume_quantity": volume_unknown_quantity,
                 "quantity_per_day": round(total_quantity / clean_days, 2),
                 "volume_m3_per_day": round(total_volume_m3 / clean_days, 2) if total_volume_m3 > 0 else None,
-                "quantity_per_second": round(total_quantity / session_seconds, 2) if session_seconds > 0 else None,
-                "volume_m3_per_second": round(total_volume_m3 / session_seconds, 2) if total_volume_m3 > 0 and session_seconds > 0 else None,
+                "quantity_per_second": total_quantity / session_seconds if session_seconds > 0 else None,
+                "volume_m3_per_second": total_volume_m3 / session_seconds if total_volume_m3 > 0 and session_seconds > 0 else None,
             },
             "items": visible_items,
             "daily": daily,
+            "csv_rows": csv_rows,
+            "csv_columns": [
+                "Date",
+                "Ore Type",
+                "Type ID",
+                "Units",
+                "m3",
+                "Ore / Day",
+                "Session Units / Sec",
+                "Session m3 / Sec",
+            ],
             "notes": [
                 "Ore/day uses the selected calendar window, including days with no ledger rows.",
                 "Session average divides the selected-window ledger total by the manual session-hours field.",
@@ -23992,6 +24043,11 @@ help</textarea>
                 <div class="meta">Top mined types, daily totals, volume coverage, and manual session averages.</div>
               </div>
             </div>
+            <div class="completed-run-actions">
+              <button id="mining-yield-copy-csv" class="secondary" type="button" data-copy-mining-yield-csv>Copy CSV</button>
+              <button id="mining-yield-download-csv" class="secondary" type="button" data-download-mining-yield-csv>Download CSV</button>
+              <span id="mining-yield-csv-status" class="meta quickbar-copy-status" aria-live="polite">Refresh Mining Ledger before exporting CSV.</span>
+            </div>
             <details class="output-details" open>
               <summary>Mining Yield Results</summary>
               <div class="output-details-body">
@@ -24930,6 +24986,9 @@ help</textarea>
     const miningYieldStatus = document.querySelector("#mining-yield-status");
     const miningYieldSummary = document.querySelector("#mining-yield-summary");
     const miningYieldResults = document.querySelector("#mining-yield-results");
+    const miningYieldCopyCsv = document.querySelector("#mining-yield-copy-csv");
+    const miningYieldDownloadCsv = document.querySelector("#mining-yield-download-csv");
+    const miningYieldCsvStatus = document.querySelector("#mining-yield-csv-status");
     const miningYieldTimerDisplay = document.querySelector("#mining-yield-timer-display");
     const miningYieldTimerStart = document.querySelector("#mining-yield-timer-start");
     const miningYieldTimerStop = document.querySelector("#mining-yield-timer-stop");
@@ -25194,6 +25253,7 @@ help</textarea>
     let acquisitionReportRows = [];
     let assetLedgerPreviewCount = 0;
     let assetLedgerHandoffRows = [];
+    let miningYieldCsvRows = [];
     let miningYieldTimerInterval = null;
     let personalCoreShareText = "";
     let intakeLastShareText = "";
@@ -26399,6 +26459,48 @@ help</textarea>
       return [header, ...body].join("\\n");
     }
 
+    const miningYieldCsvColumns = [
+      "Date",
+      "Ore Type",
+      "Type ID",
+      "Units",
+      "m3",
+      "Ore / Day",
+      "Session Units / Sec",
+      "Session m3 / Sec",
+    ];
+
+    function miningCsvNumber(value) {
+      if (value == null) return "";
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "";
+      if (number === 0) return "0";
+      const digits = Math.abs(number) >= 1 ? 4 : 8;
+      return String(Number(number.toFixed(digits)));
+    }
+
+    function miningYieldCsvRecord(row) {
+      return {
+        "Date": row?.date || "",
+        "Ore Type": row?.type_name || "",
+        "Type ID": row?.type_id || "",
+        "Units": row?.quantity || 0,
+        "m3": miningCsvNumber(row?.volume_m3),
+        "Ore / Day": miningCsvNumber(row?.quantity_per_day),
+        "Session Units / Sec": miningCsvNumber(row?.quantity_per_second),
+        "Session m3 / Sec": miningCsvNumber(row?.volume_m3_per_second),
+      };
+    }
+
+    function miningYieldRowsToCsv(rows) {
+      const records = (Array.isArray(rows) ? rows : []).map(miningYieldCsvRecord);
+      const header = miningYieldCsvColumns.map(reportCsvCell).join(",");
+      const body = records.map((row) => (
+        miningYieldCsvColumns.map((column) => reportCsvCell(row[column])).join(",")
+      ));
+      return [header, ...body].join("\\n");
+    }
+
     function setReportStatus(statusEl, message, isError = false) {
       if (!statusEl) return;
       statusEl.textContent = message;
@@ -26948,6 +27050,70 @@ help</textarea>
         setReportStatus(source.status, `Downloaded ${formatNumber(rows.length)} ${source.label} CSV row${rows.length === 1 ? "" : "s"}.`);
       } catch (error) {
         setReportStatus(source.status, error.message || "CSV download failed.", true);
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = previousText;
+        }
+      }
+    }
+
+    function setMiningYieldCsvStatus(message, isError = false) {
+      if (!miningYieldCsvStatus) return;
+      miningYieldCsvStatus.textContent = message;
+      miningYieldCsvStatus.classList.toggle("error", Boolean(isError));
+    }
+
+    async function copyMiningYieldCsv(button) {
+      const rows = miningYieldCsvRows || [];
+      if (!rows.length) {
+        setMiningYieldCsvStatus("No mining yield CSV rows are ready. Refresh Mining Ledger first.", true);
+        return;
+      }
+      const previousText = button ? button.textContent : "";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Copying...";
+      }
+      try {
+        await writeTextToClipboard(miningYieldRowsToCsv(rows));
+        setMiningYieldCsvStatus(`Copied ${formatNumber(rows.length)} mining yield CSV row${rows.length === 1 ? "" : "s"}.`);
+      } catch (error) {
+        setMiningYieldCsvStatus(error.message || "Mining yield CSV copy failed.", true);
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = previousText;
+        }
+      }
+    }
+
+    function downloadMiningYieldCsv(button) {
+      const rows = miningYieldCsvRows || [];
+      if (!rows.length) {
+        setMiningYieldCsvStatus("No mining yield CSV rows are ready. Refresh Mining Ledger first.", true);
+        return;
+      }
+      const previousText = button ? button.textContent : "";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Preparing...";
+      }
+      try {
+        const csvText = miningYieldRowsToCsv(rows);
+        const blob = new Blob([csvText], {type: "text/csv;charset=utf-8"});
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        const dateStamp = new Date().toISOString().slice(0, 10);
+        link.href = url;
+        link.download = `corp-market-mining-yield-${dateStamp}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        setMiningYieldCsvStatus(`Downloaded ${formatNumber(rows.length)} mining yield CSV row${rows.length === 1 ? "" : "s"}.`);
+      } catch (error) {
+        setMiningYieldCsvStatus(error.message || "Mining yield CSV download failed.", true);
       } finally {
         if (button) {
           button.disabled = false;
@@ -29978,7 +30144,8 @@ help</textarea>
         return;
       }
       if (missingScopes.length) {
-        miningYieldStatus.textContent = `Mining ledger reads are off for this session. Opt in to add: ${missingScopes.join(", ")}.`;
+        const character = data.character || {};
+        miningYieldStatus.textContent = `${character.character_name || "Pilot"} is connected, but Mining Yield is not opted in for this session. Click Opt In To Mining Ledger to add: ${missingScopes.join(", ")}.`;
         return;
       }
       miningYieldStatus.textContent = "Mining ledger scope is connected for this session. Refresh when you want a cache-limited ledger summary.";
@@ -29988,6 +30155,7 @@ help</textarea>
     function renderFlightStatus(data) {
       const requiredScopes = data.required_scopes || [];
       const missingRequiredScopes = data.missing_required_scopes || [];
+      const missingMiningScopes = Array.isArray(data.missing_optional_mining_scopes) ? data.missing_optional_mining_scopes : [];
       const scopeLabel = requiredScopes.join(", ") || "esi-location.read_location.v1";
       const character = data.character || {};
       currentFlightGrantedScopes = new Set(Array.isArray(character.scopes) ? character.scopes : []);
@@ -30167,7 +30335,11 @@ help</textarea>
       const tradePnlSettings = readTradePnlSettings();
       resetTradePnl(`Ready to analyze ${tradePnlWindowLabel(tradePnlSettings.windowHours)} of trade history.`);
       const miningSettings = readMiningYieldSettings();
-      resetMiningYield(`Ready to summarize ${formatNumber(miningSettings.days)} ledger day${miningSettings.days === 1 ? "" : "s"} with a ${formatNumber(miningSettings.sessionHours)} hour manual session average.`);
+      if (missingMiningScopes.length) {
+        resetMiningYield(`${character.character_name || "Pilot"} is connected, but Mining Yield is not opted in for this session. Click Opt In To Mining Ledger to add the optional character mining ledger scope.`);
+      } else {
+        resetMiningYield(`Ready to summarize ${formatNumber(miningSettings.days)} ledger day${miningSettings.days === 1 ? "" : "s"} with a ${formatNumber(miningSettings.sessionHours)} hour manual session average.`);
+      }
       const reprocessSettings = readReprocessingSettings();
       resetReprocessing(`Ready to calculate ${formatNumber(reprocessSettings.quantity)} ore units.`);
       resetPersonalCore("Ready to refresh Personal Core from authorized ESI summaries.");
@@ -33148,15 +33320,22 @@ help</textarea>
     }
 
     function resetMiningYield(message) {
+      miningYieldCsvRows = [];
       if (miningYieldStatus) miningYieldStatus.textContent = message;
       if (miningYieldSummary) miningYieldSummary.textContent = message;
       if (miningYieldResults) miningYieldResults.innerHTML = `<div class="decision-empty">${escapeHtml(message)}</div>`;
+      setMiningYieldCsvStatus("Refresh Mining Ledger before exporting CSV.");
       if (miningYieldRefresh) miningYieldRefresh.disabled = false;
     }
 
     function formatMiningRate(value, suffix) {
       if (value == null) return "unknown";
-      return `${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2})} ${suffix}`;
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "unknown";
+      if (number === 0) return `0 ${suffix}`;
+      if (Math.abs(number) < 0.000001) return `<0.000001 ${suffix}`;
+      const maximumFractionDigits = Math.abs(number) >= 100 ? 2 : Math.abs(number) >= 1 ? 3 : Math.abs(number) >= 0.01 ? 4 : 6;
+      return `${number.toLocaleString(undefined, {maximumFractionDigits})} ${suffix}`;
     }
 
     function miningCacheSummary(cache) {
@@ -33216,7 +33395,10 @@ help</textarea>
       const yieldData = data.mining_yield || {};
       const dataSources = data.data_sources || yieldData.data_sources || [];
       const totals = yieldData.totals || {};
-      const cacheSummary = miningCacheSummary(yieldData.cache || {});
+      const cacheData = yieldData.cache || {};
+      const cacheSummary = miningCacheSummary(cacheData);
+      const cacheLabel = cacheData.reused ? "Server Cache Reused" : "Fresh ESI Read";
+      const refreshedLabel = cacheData.fetched_at ? `Last refreshed ${cacheData.fetched_at}` : "Last refreshed this request";
       const volumeNote = totals.volume_partial
         ? ` m3 totals are partial because ${formatNumber(totals.unknown_volume_quantity || 0)} units lacked local static volume.`
         : "";
@@ -33228,6 +33410,10 @@ help</textarea>
       }
       if (miningYieldSummary) {
         miningYieldSummary.innerHTML = `
+          <div class="filters">
+            <span class="pill decision-source">${escapeHtml(cacheLabel)}</span>
+            <span class="pill reserved">${escapeHtml(refreshedLabel)}</span>
+          </div>
           <div class="profit-stats">
             <div class="profit-stat"><span>Ore Units</span><b>${formatNumber(totals.quantity || 0)}</b></div>
             <div class="profit-stat"><span>Known m3</span><b>${formatVolume(totals.volume_m3)}</b></div>
@@ -33242,6 +33428,13 @@ help</textarea>
           ${renderWorkflowSourceCards(dataSources)}
         `;
       }
+      miningYieldCsvRows = Array.isArray(yieldData.csv_rows) ? yieldData.csv_rows : [];
+      setMiningYieldCsvStatus(
+        miningYieldCsvRows.length
+          ? `${formatNumber(miningYieldCsvRows.length)} mining yield CSV row${miningYieldCsvRows.length === 1 ? "" : "s"} ready. ${cacheLabel}.`
+          : "No mining yield CSV rows are ready from this refresh.",
+        miningYieldCsvRows.length === 0,
+      );
       if (miningYieldResults) {
         miningYieldResults.innerHTML = renderMiningYieldRows(yieldData);
       }
@@ -33267,6 +33460,9 @@ help</textarea>
             <div class="profit-detail-grid">
               <div class="profit-detail-row"><span>Total units</span><b>${formatNumber(item.quantity || 0)}</b><small>Daily ESI ledger total.</small></div>
               <div class="profit-detail-row"><span>Total m3</span><b>${escapeHtml(volumeText)}</b><small>${escapeHtml(item.volume_known ? "Calculated from local static type volume." : "Volume unavailable in local static cache.")}</small></div>
+              <div class="profit-detail-row"><span>Units / Day</span><b>${formatMiningRate(item.quantity_per_day, "units/day")}</b><small>Selected-window average for this ore type.</small></div>
+              <div class="profit-detail-row"><span>Units / Sec</span><b>${formatMiningRate(item.quantity_per_second, "units/sec")}</b><small>Manual session average for this ore type.</small></div>
+              <div class="profit-detail-row"><span>m3 / Sec</span><b>${formatMiningRate(item.volume_m3_per_second, "m3/sec")}</b><small>${escapeHtml(item.volume_known ? "Manual session m3 average." : "Unknown without static volume.")}</small></div>
               <div class="profit-detail-row"><span>Mining days</span><b>${formatNumber(item.active_day_count || 0)}</b><small>${escapeHtml(item.first_date || "unknown")} through ${escapeHtml(item.last_date || "unknown")}.</small></div>
               <div class="profit-detail-row"><span>Systems</span><b>${formatNumber(item.solar_system_count || 0)}</b><small>Count only; system names are not resolved.</small></div>
             </div>
@@ -36902,6 +37098,16 @@ help</textarea>
       copyQuickbarItems(button.dataset.copyQuickbar, button);
     });
     document.addEventListener("click", (event) => {
+      const miningCopyButton = event.target.closest("button[data-copy-mining-yield-csv]");
+      if (miningCopyButton) {
+        copyMiningYieldCsv(miningCopyButton);
+        return;
+      }
+      const miningDownloadButton = event.target.closest("button[data-download-mining-yield-csv]");
+      if (miningDownloadButton) {
+        downloadMiningYieldCsv(miningDownloadButton);
+        return;
+      }
       const copyButton = event.target.closest("button[data-copy-report]");
       if (copyButton) {
         copyReportCsv(copyButton.dataset.copyReport, copyButton);
