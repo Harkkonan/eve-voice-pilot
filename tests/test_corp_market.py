@@ -1102,12 +1102,13 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "id=\"haul-min-profit-per-extra-jump\"" in page
     assert "id=\"haul-common-materials\"" in page
     assert (
-        "id=\"haul-item-search\" name=\"market_type_search\" type=\"search\" autocomplete=\"off\" "
-        "placeholder=\"Search bombs, ships, blueprints...\" aria-autocomplete=\"list\" "
-        "aria-controls=\"haul-item-search-results\" aria-describedby=\"haul-item-search-status\""
+        "id=\"haul-item-search\" name=\"market_type_search\" type=\"search\" role=\"combobox\" autocomplete=\"off\" "
+        "placeholder=\"Search bombs, ships, blueprints...\" aria-autocomplete=\"list\" aria-expanded=\"false\" "
+        "aria-controls=\"haul-item-search-results\" aria-describedby=\"haul-item-search-note haul-item-search-status\""
     ) in page
+    assert "id=\"haul-item-search-note\" class=\"input-note\"" in page
     assert "id=\"haul-item-search-status\"" in page
-    assert "id=\"haul-item-search-results\"" in page
+    assert "id=\"haul-item-search-results\" class=\"market-type-search-results\" role=\"listbox\" aria-label=\"Hauling exact item search results\" aria-live=\"polite\" hidden" in page
     assert "Search exact item names, then add matches to the pasted item list below." in page
     assert "/api/flight/market-types" in page
     assert "id=\"haul-pasted-items\" name=\"market_type_names\"" in page
@@ -1153,14 +1154,18 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "Ammunition &amp; Charges" in page
     assert "Scanning more item types increases route calculation time." in page
     assert (
-        "id=\"acq-item-search\" name=\"market_type_search\" type=\"search\" autocomplete=\"off\" "
-        "placeholder=\"Search ammo, crystals, modules...\" aria-autocomplete=\"list\" "
-        "aria-controls=\"acq-item-search-results\" aria-describedby=\"acq-item-search-status\""
+        "id=\"acq-item-search\" name=\"market_type_search\" type=\"search\" role=\"combobox\" autocomplete=\"off\" "
+        "placeholder=\"Search ammo, crystals, modules...\" aria-autocomplete=\"list\" aria-expanded=\"false\" "
+        "aria-controls=\"acq-item-search-results\" aria-describedby=\"acq-item-search-note acq-item-search-status\""
     ) in page
-    assert "id=\"acq-item-search-results\"" in page
+    assert "id=\"acq-item-search-note\" class=\"input-note\"" in page
+    assert "id=\"acq-item-search-results\" class=\"market-type-search-results\" role=\"listbox\" aria-label=\"Portfolio exact item search results\" aria-live=\"polite\" hidden" in page
     assert "id=\"acq-compare-source-amarr\" name=\"compare_source_hubs\" value=\"Amarr\"" in page
     assert "id=\"shared-fitting-text-${escapeHtml(htmlIdSuffix" in page
     assert "name=\"fitting_text_preview\" readonly spellcheck=\"false\" data-fitting-text" in page
+    assert "function setSearchState" in page
+    assert "aria-busy" in page
+    assert "role=\"option\" aria-selected=\"false\" aria-label=\"Add ${escapeHtml(itemName)} to pasted item list\"" in page
     assert "id=\"haul-progress-log\"" in page
     assert "id=\"haul-scan\"" in page
     assert "id=\"haul-route-summary\"" in page

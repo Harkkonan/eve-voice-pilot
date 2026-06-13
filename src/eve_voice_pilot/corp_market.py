@@ -18332,11 +18332,13 @@ def _render_flight_attendant_dashboard() -> str:
       gap: 6px;
       margin: 4px 0 8px;
     }
+    .market-type-search-results[hidden] { display: none; }
     .market-type-result {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 3px 10px;
       align-items: center;
+      width: 100%;
       min-height: 42px;
       padding: 7px 9px;
       text-align: left;
@@ -23241,12 +23243,13 @@ help</textarea>
                     <small>Default: the current top 80 industry materials used by blueprint profit checks.</small>
                   </span>
                 </label>
-                <label class="market-item-search">Find exact item
-                  <input id="haul-item-search" name="market_type_search" type="search" autocomplete="off" placeholder="Search bombs, ships, blueprints..." aria-autocomplete="list" aria-controls="haul-item-search-results" aria-describedby="haul-item-search-status">
-                  <small class="input-note">Search exact item names, then add matches to the pasted item list below.</small>
+                <label class="market-item-search" for="haul-item-search">
+                  <span id="haul-item-search-label">Find exact item</span>
+                  <input id="haul-item-search" name="market_type_search" type="search" role="combobox" autocomplete="off" placeholder="Search bombs, ships, blueprints..." aria-autocomplete="list" aria-expanded="false" aria-controls="haul-item-search-results" aria-describedby="haul-item-search-note haul-item-search-status">
+                  <small id="haul-item-search-note" class="input-note">Search exact item names, then add matches to the pasted item list below.</small>
                 </label>
                 <div id="haul-item-search-status" class="meta market-search-status">Exact item search is idle.</div>
-                <div id="haul-item-search-results" class="market-type-search-results" aria-live="polite"></div>
+                <div id="haul-item-search-results" class="market-type-search-results" role="listbox" aria-label="Hauling exact item search results" aria-live="polite" hidden></div>
                 <label class="market-item-paste">Paste item names
                   <textarea id="haul-pasted-items" name="market_type_names" rows="3" spellcheck="false" placeholder="Tritanium&#10;PLEX&#10;Nanite Repair Paste"></textarea>
                   <small class="input-note">One item per line. EVE copied-list formats, commas, and semicolons also work.</small>
@@ -23476,12 +23479,13 @@ help</textarea>
                     <small>Default: top @@ACQUISITION_COMMON_MATERIAL_LIMIT@@ industry inputs by recipe use for a faster hosted scan.</small>
                   </span>
                 </label>
-                <label class="market-item-search">Find exact item
-                  <input id="acq-item-search" name="market_type_search" type="search" autocomplete="off" placeholder="Search ammo, crystals, modules..." aria-autocomplete="list" aria-controls="acq-item-search-results" aria-describedby="acq-item-search-status">
-                  <small class="input-note">Search exact item names, then add matches to the pasted item list below.</small>
+                <label class="market-item-search" for="acq-item-search">
+                  <span id="acq-item-search-label">Find exact item</span>
+                  <input id="acq-item-search" name="market_type_search" type="search" role="combobox" autocomplete="off" placeholder="Search ammo, crystals, modules..." aria-autocomplete="list" aria-expanded="false" aria-controls="acq-item-search-results" aria-describedby="acq-item-search-note acq-item-search-status">
+                  <small id="acq-item-search-note" class="input-note">Search exact item names, then add matches to the pasted item list below.</small>
                 </label>
                 <div id="acq-item-search-status" class="meta market-search-status">Exact item search is idle.</div>
-                <div id="acq-item-search-results" class="market-type-search-results" aria-live="polite"></div>
+                <div id="acq-item-search-results" class="market-type-search-results" role="listbox" aria-label="Portfolio exact item search results" aria-live="polite" hidden></div>
                 <label class="market-item-paste">Paste item names
                   <textarea id="acq-pasted-items" name="market_type_names" rows="3" spellcheck="false" placeholder="Epithal&#10;Warp Core Stabilizer I&#10;Type-D Restrained Inertial Stabilizers"></textarea>
                   <small class="input-note">One item per line. EVE copied-list formats, commas, and semicolons also work.</small>
@@ -26866,15 +26870,22 @@ help</textarea>
       const rows = Array.isArray(suggestions) ? suggestions : [];
       if (!rows.length) {
         resultsEl.innerHTML = "";
+        resultsEl.hidden = true;
         return;
       }
-      resultsEl.innerHTML = rows.map((item) => `
-        <button class="market-type-result" type="button" data-market-type-name="${escapeHtml(item.name || "")}">
-          <span>${escapeHtml(item.name || `Type ${item.type_id || ""}`)}</span>
+      const resultIdPrefix = resultsEl.id || "market-type-search-result";
+      resultsEl.hidden = false;
+      resultsEl.innerHTML = rows.map((item, index) => {
+        const itemName = item.name || `Type ${item.type_id || ""}`;
+        const optionId = `${resultIdPrefix}-option-${index}`;
+        return `
+        <button id="${escapeHtml(optionId)}" class="market-type-result" type="button" role="option" aria-selected="false" aria-label="Add ${escapeHtml(itemName)} to pasted item list" data-market-type-name="${escapeHtml(item.name || "")}">
+          <span>${escapeHtml(itemName)}</span>
           <small>${escapeHtml(item.market_group_name || "Market item")}</small>
           <b>Add</b>
         </button>
-      `).join("");
+      `;
+      }).join("");
     }
 
     function appendPastedItemName(textarea, itemName) {
@@ -26896,20 +26907,31 @@ help</textarea>
       let requestId = 0;
       const label = options.label || "item";
 
+      function setSearchState({expanded = false, busy = false} = {}) {
+        input.setAttribute("aria-expanded", expanded ? "true" : "false");
+        input.setAttribute("aria-busy", busy ? "true" : "false");
+        if (!expanded) input.removeAttribute("aria-activedescendant");
+        if (!expanded && resultsEl) resultsEl.hidden = true;
+      }
+
       function setIdle() {
         statusEl.textContent = "Exact item search is idle.";
         resultsEl.innerHTML = "";
+        setSearchState({expanded: false, busy: false});
       }
+
+      setSearchState({expanded: false, busy: false});
 
       function scheduleSearch() {
         const query = String(input.value || "").trim();
+        const thisRequest = ++requestId;
         if (timer) window.clearTimeout(timer);
         if (query.length < 2) {
           setIdle();
           return;
         }
-        const thisRequest = ++requestId;
         statusEl.textContent = `Searching exact ${label} names...`;
+        setSearchState({expanded: false, busy: true});
         timer = window.setTimeout(async () => {
           try {
             const params = new URLSearchParams({q: query, limit: "12"});
@@ -26918,6 +26940,7 @@ help</textarea>
             if (thisRequest !== requestId) return;
             const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
             renderMarketTypeSearchResults(resultsEl, suggestions);
+            setSearchState({expanded: Boolean(suggestions.length), busy: false});
             if (!data.available) {
               statusEl.textContent = "Static market cache is missing; run the cache update before exact item search.";
             } else if (suggestions.length) {
@@ -26928,6 +26951,7 @@ help</textarea>
           } catch (error) {
             if (thisRequest !== requestId) return;
             resultsEl.innerHTML = "";
+            setSearchState({expanded: false, busy: false});
             statusEl.textContent = error.message || "Exact item search failed.";
           }
         }, 180);
