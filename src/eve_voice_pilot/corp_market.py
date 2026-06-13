@@ -48,6 +48,7 @@ from eve_voice_pilot.corp_intel import (
     verify_sso_character,
 )
 from eve_voice_pilot.decision_engine import DataSourceBadge, LearningSummary
+from eve_voice_pilot.decision_engine import discord_handoff as decision_discord_handoff
 from eve_voice_pilot.flight_server_routes import (
     FLIGHT_SESSION_COOKIE_NAME,
     admin_token_write_access_allowed,
@@ -2434,6 +2435,7 @@ def build_flight_trade_pnl_payload(
             )
         )
     trade_pnl["data_sources"] = data_sources
+    trade_pnl["discord_handoff"] = trade_pnl_discord_handoff(trade_pnl)
     return {
         "ok": True,
         "generated_at": generated_at,
@@ -3766,6 +3768,73 @@ def sqlite_source_badge(*, enabled: bool, detail: str) -> dict[str, Any]:
         freshness="latest local rows" if enabled else "not used in this request",
         persistence="local ignored profile database" if enabled else "not written",
         detail=detail,
+    )
+
+
+def acquisition_discord_handoff(
+    *,
+    route: Mapping[str, Any],
+    acquisition: Mapping[str, Any],
+) -> dict[str, Any]:
+    portfolio = acquisition.get("portfolio") if isinstance(acquisition.get("portfolio"), Mapping) else {}
+    lines = [item for item in portfolio.get("lines") or [] if isinstance(item, Mapping)]
+    opportunities = [item for item in acquisition.get("opportunities") or [] if isinstance(item, Mapping)]
+    target_item = lines[0] if lines else (opportunities[0] if opportunities else {})
+    origin = route.get("origin") if isinstance(route.get("origin"), Mapping) else {}
+    destination = route.get("destination") if isinstance(route.get("destination"), Mapping) else {}
+    line_count = int(portfolio.get("line_count") or len(lines))
+    opportunity_count = int(acquisition.get("opportunity_count") or len(opportunities))
+    possible_traps = int(portfolio.get("possible_trap_excluded_count") or acquisition.get("possible_trap_count") or 0)
+    invested_isk = float(portfolio.get("invested_isk") or 0.0)
+    estimated_net_profit = float(portfolio.get("estimated_net_profit") or 0.0)
+    destination_name = str(destination.get("name") or route.get("destination_query") or "destination")
+    origin_name = str(origin.get("name") or route.get("origin_query") or "selected buy hub")
+    return decision_discord_handoff(
+        workflow_key="portfolio",
+        destination_hint="portfolio market buy orders procurement",
+        destination_label="Portfolio",
+        post_type="wtb",
+        category="general",
+        title=f"Corp-first buy-order plan toward {destination_name}",
+        item_name=str(target_item.get("item_name") or f"{line_count or opportunity_count} portfolio candidate rows"),
+        quantity=f"{line_count} funded line{'s' if line_count != 1 else ''}; {opportunity_count} viable candidate{'s' if opportunity_count != 1 else ''}",
+        price_text=f"{format_isk(invested_isk)} planned; {format_isk(estimated_net_profit)} est. net",
+        location=f"{origin_name} -> {destination_name}",
+        details=(
+            "Portfolio scan produced a manual buy-order plan. Ask corp first before public orders; verify "
+            f"current EVE prices, quantities, range, escrow, and delivery terms. Possible trap rows excluded: {possible_traps}."
+        ),
+        source="flight-acquisition",
+    )
+
+
+def trade_pnl_discord_handoff(trade_pnl: Mapping[str, Any]) -> dict[str, Any]:
+    totals = trade_pnl.get("totals") if isinstance(trade_pnl.get("totals"), Mapping) else {}
+    learning = trade_pnl.get("learning") if isinstance(trade_pnl.get("learning"), Mapping) else {}
+    transaction_count = int(trade_pnl.get("transaction_count") or totals.get("transaction_count") or 0)
+    item_count = int(trade_pnl.get("item_count") or totals.get("item_count") or 0)
+    planned_count = int(totals.get("planned_item_count") or 0)
+    signal_count = int(learning.get("signal_count") or 0)
+    considered = float(totals.get("considered_result_isk") or 0.0)
+    realized = float(totals.get("actual_profit_isk") or 0.0)
+    plan_delta = float(totals.get("actual_vs_plan_profit_isk") or 0.0)
+    fees = float(totals.get("allocated_fee_isk") or totals.get("market_fee_isk") or 0.0)
+    return decision_discord_handoff(
+        workflow_key="trade-pnl",
+        destination_hint="trade pnl accounting portfolio market accuracy",
+        destination_label="Trade P&L",
+        post_type="announcement",
+        category="general",
+        title=f"Trade P&L review: {format_isk(considered)} considered result",
+        item_name="Trade P&L accuracy review",
+        quantity=f"{transaction_count} transaction{'s' if transaction_count != 1 else ''}; {item_count} item type{'s' if item_count != 1 else ''}",
+        price_text=f"Realized {format_isk(realized)}; plan delta {format_isk(plan_delta)}",
+        details=(
+            "Trade P&L summary only. Review wallet rows in EVE before acting. "
+            f"Planned item types matched: {planned_count}. Allocated fees: {format_isk(fees)}. "
+            f"Active learning signals: {signal_count}."
+        ),
+        source="trade-pnl",
     )
 
 
@@ -6833,6 +6902,7 @@ def build_flight_acquisition_payload(
         ),
     ]
     acquisition["data_sources"] = data_sources
+    acquisition["discord_handoff"] = acquisition_discord_handoff(route=route_payload, acquisition=acquisition)
     decision_snapshot = {"saved": 0, "snapshot_id": "", "source": "local-corp-market-sqlite"}
     if expectation_store is not None:
         portfolio_lines = [item for item in portfolio.get("lines") or [] if isinstance(item, Mapping)]
@@ -21521,6 +21591,17 @@ def _render_flight_attendant_dashboard() -> str:
       align-self: center;
       margin: 0;
     }
+    .discord-workflow-handoff {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      margin-top: 12px;
+    }
+    .discord-workflow-handoff .meta {
+      flex: 1 1 220px;
+      margin: 0;
+    }
     .discord-hidden-select {
       position: absolute;
       left: -9999px;
@@ -27059,6 +27140,18 @@ help</textarea>
       scrollTabIntoView(targetTab);
     }
 
+    function handleWorkflowDiscordHandoffClick(event) {
+      const button = event.target.closest("button[data-workflow-discord-handoff]");
+      if (!button) return;
+      event.preventDefault();
+      const handoff = parseDecisionDataAttribute(button.dataset.workflowDiscordHandoff);
+      if (!Object.keys(handoff).length) return;
+      showTab("market");
+      applyDiscordHandoff(handoff);
+      window.history.replaceState(null, "", "#market");
+      scrollTabIntoView("market");
+    }
+
     function updateFilterButtons() {
       document.querySelectorAll(".filters button").forEach((button) => {
         const isClosed = Boolean(button.dataset.closed);
@@ -27774,6 +27867,16 @@ help</textarea>
       const rows = Array.isArray(sources) ? sources : [];
       if (!rows.length) return "";
       return renderDecisionSourceCards(rows, {emptyMessage: "No workflow source metadata was returned."});
+    }
+
+    function renderWorkflowDiscordHandoff(label, handoff, detail = "") {
+      if (!handoff || typeof handoff !== "object" || !Object.keys(handoff).length) return "";
+      return `
+        <div class="discord-workflow-handoff">
+          <button type="button" class="secondary" data-workflow-discord-handoff="${decisionDataAttribute(handoff)}">${escapeHtml(label)}</button>
+          <span class="meta">${escapeHtml(detail || `Routes toward ${handoff.destination_label || handoff.destination_hint || "the relevant Discord destination"}.`)}</span>
+        </div>
+      `;
     }
 
     function renderIntakeSourceBadges(sourceKeys) {
@@ -32187,6 +32290,7 @@ help</textarea>
         <div class="meta">Accounting ${formatNumber(salesTax.accounting_level)} gives ${formatRatePercent(salesTax.rate)} sales tax on downstream buy-order sales.</div>
         <div class="meta">Order cache: ${formatNumber(marketCache.entries)} entries. History cache: ${formatNumber(historyCache.entries)} entries.</div>
         <div class="meta">${escapeHtml(acquisition.pricing_note || "Planner is advisory only; verify in EVE before posting buy orders.")}</div>
+        ${renderWorkflowDiscordHandoff("Draft Portfolio Discord Ask", acquisition.discord_handoff, "Prefills the Direct Discord composer for a corp-first buy-order ask before public orders.")}
       `;
       acqStrategy.innerHTML = renderAcquisitionStrategy(acquisition.strategy || {});
       acquisitionQuickbarItems = Array.isArray(portfolio.lines) && portfolio.lines.length
@@ -33019,6 +33123,7 @@ help</textarea>
         <div class="meta">${escapeHtml(pnl.accounting_lens_label || "Inventory Mode")} with ${escapeHtml(pnl.consideration_rule_label || "Count every item")} across ${escapeHtml(pnl.window_label || `${formatNumber(pnl.days)} days`)}. ${formatNumber(pnl.transaction_count)} market transactions and ${formatNumber(pnl.journal_entry_count)} wallet journal rows.${escapeHtml(itemLimit + excludedText)}</div>
         <div class="meta">${escapeHtml(pnl.expectation_source || "Expected spread is before wallet fees.")}</div>
         <div class="meta">${escapeHtml(pnl.limits_note || "Unmatched sells can mean the buy happened before the visible ESI history window.")}</div>
+        ${renderWorkflowDiscordHandoff("Draft Trade P&L Discord Summary", pnl.discord_handoff, "Prefills the Direct Discord composer for an accounting or portfolio accuracy channel.")}
         ${renderWorkflowSourceCards(dataSources)}
       `;
       tradePnlFees.innerHTML = `
@@ -36533,6 +36638,11 @@ help</textarea>
     });
 
     document.addEventListener("click", (event) => {
+      const workflowDiscordButton = event.target.closest("button[data-workflow-discord-handoff]");
+      if (workflowDiscordButton) {
+        handleWorkflowDiscordHandoffClick(event);
+        return;
+      }
       const assetLedgerHaulerButton = event.target.closest("button[data-asset-ledger-hauler]");
       if (assetLedgerHaulerButton) {
         useAssetLedgerRowInHauler(assetLedgerHaulerButton.dataset.assetLedgerHauler);

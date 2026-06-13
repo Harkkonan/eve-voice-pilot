@@ -912,6 +912,11 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "data-discord-handoff" in page
     assert "function applyDecisionPrefill" in page
     assert "function applyDiscordHandoff" in page
+    assert "function renderWorkflowDiscordHandoff" in page
+    assert "function handleWorkflowDiscordHandoffClick" in page
+    assert "data-workflow-discord-handoff" in page
+    assert "Draft Portfolio Discord Ask" in page
+    assert "Draft Trade P&L Discord Summary" in page
     assert "handleDecisionActionClick(event, \"a[data-intake-action-target]\")" in page
     assert "handleDecisionActionClick(event, \"a[data-core-action-tab]\")" in page
     assert "function renderWorkflowSourceCards" in page
@@ -2295,6 +2300,12 @@ def test_build_flight_trade_pnl_payload_uses_wallet_scope(monkeypatch):
     source_keys = {source["key"] for source in payload["data_sources"]}
     assert {"wallet-esi", "trade-pnl-analyzer", "local-corp-market-sqlite"} <= source_keys
     assert payload["trade_pnl"]["data_sources"] == payload["data_sources"]
+    handoff = payload["trade_pnl"]["discord_handoff"]
+    assert handoff["workflow_key"] == "trade-pnl"
+    assert "accounting" in handoff["destination_hint"]
+    assert handoff["post_type"] == "announcement"
+    assert "300 ISK" in handoff["price_text"]
+    assert "access-token" not in json.dumps(handoff)
 
     missing_scope_session = FlightEsiSession(
         character_id=123456789,
@@ -6344,6 +6355,12 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
     assert "manual-portfolio-settings" in snapshot["redacted_summary"]["data_source_keys"]
     assert "access-token" not in encoded_snapshot
     assert "raw_paste" not in encoded_snapshot
+    handoff = snapshot_payload["acquisition"]["discord_handoff"]
+    assert handoff["workflow_key"] == "portfolio"
+    assert "buy orders" in handoff["destination_hint"]
+    assert handoff["post_type"] == "wtb"
+    assert handoff["item_name"] == "Tritanium"
+    assert "access-token" not in json.dumps(handoff)
 
 
 def test_acquisition_item_scan_skips_destination_history_without_source_signal(monkeypatch):
