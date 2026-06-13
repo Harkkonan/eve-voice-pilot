@@ -152,16 +152,16 @@ For a corp-clickable Flight Attendant link, use HTTPS, EVE SSO, and a character,
 Register the hosted callback URL in the EVE Developers portal:
 
 ```text
-https://YOUR-DOMAIN-OR-TUNNEL/flight/callback
+https://YOUR-DOMAIN/flight/callback
 ```
 
-Then start the local server behind your HTTPS tunnel or reverse proxy:
+Then start the server on the VM or container host behind Caddy:
 
 ```powershell
 $env:CORP_MARKET_SSO_CLIENT_ID = "client-id"
 $env:CORP_MARKET_SSO_CLIENT_SECRET = "client-secret"
-$env:CORP_MARKET_PUBLIC_BASE_URL = "https://YOUR-DOMAIN-OR-TUNNEL"
-$env:CORP_MARKET_SSO_CALLBACK_URL = "https://YOUR-DOMAIN-OR-TUNNEL/flight/callback"
+$env:CORP_MARKET_PUBLIC_BASE_URL = "https://YOUR-DOMAIN"
+$env:CORP_MARKET_SSO_CALLBACK_URL = "https://YOUR-DOMAIN/flight/callback"
 $env:CORP_MARKET_ALLOWED_CHARACTER_IDS = "2124413713"
 $env:CORP_MARKET_ALLOWED_CORPORATION_IDS = "123456789"
 .\scripts\run_corp_market.ps1 serve --public-hosting-mode
@@ -172,7 +172,7 @@ Public hosting mode refuses to start unless the public base URL and callback URL
 Keep the operator diagnostics endpoint available for deployment checks after startup:
 
 ```text
-https://YOUR-DOMAIN-OR-TUNNEL/api/flight/diagnostics
+https://YOUR-DOMAIN/api/flight/diagnostics
 ```
 
 The member-facing dashboard no longer includes a dedicated QA cockpit or embedded test directions. The remaining manual and technical verification work lives in `docs/corp_market_remaining_tests.md`, which is the working checklist for "what tests are left?" and "what should be tested in game next?"
@@ -482,7 +482,15 @@ Public hosting should use the templates under `deploy/`:
 - `deploy/scripts/smoke-corp-market.sh`
 - `scripts/smoke_corp_market_accessibility.py`
 
-The Python process should bind to `127.0.0.1`, with HTTPS and HSTS handled by Caddy or Cloudflare Tunnel in front. Run the shell smoke check after each deploy. Run the Playwright smoke script in a dev environment before public release or after major UI changes.
+The default production shape is Oracle VM + Docker Compose + Caddy. In the
+systemd path, the Python process should bind to `127.0.0.1`; in Docker, the app
+binds to `0.0.0.0` inside the container and is exposed only to the Compose
+network. Caddy handles HTTPS and HSTS on the VM. Cloudflare Tunnel is an
+optional VM-side front door only when you have a standard operational reason,
+such as not opening inbound `80/443`; it is not the normal plan for hosting from
+your Windows PC. Run the shell smoke check after each deploy. Run the Playwright
+smoke script in a dev environment before public release or after major UI
+changes.
 
 For forum/media channels, copy tag ids from Discord developer mode and enter either default tag ids or key-tag mappings in the tab. The tag map uses the same key format as the CLI:
 
@@ -540,7 +548,8 @@ If corp members need to open links from other computers on a trusted LAN, set a 
 .\scripts\run_corp_market.ps1 serve --host 0.0.0.0 --public-base-url "http://HOST-LAN-IP:8770" --discord-webhook-url "https://discord.com/api/webhooks/..."
 ```
 
-Use the public-hosting mode above for an Internet-accessible tunnel or domain.
+Use the public-hosting mode above for an Internet-accessible domain. If a tunnel
+is needed, run it on the VM and keep it behind the same public-hosting checks.
 
 For remote offer creation and status changes, add an admin token:
 

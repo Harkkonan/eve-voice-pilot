@@ -86,7 +86,9 @@ then the EVE Developer application must use that exact callback URL.
 The first version allows fixed, allowlisted actions only:
 
 - Start or stop the local Corp Market server through `scripts/run_corp_market.ps1`.
-- Start or stop a managed SSH tunnel from the saved config. The local app host and tunnel remote host must stay loopback-only.
+- Start or stop an optional local SSH tunnel from the saved config for operator
+  access to a VM loopback service. This is not the public hosting path. The
+  local app host and tunnel remote host must stay loopback-only.
 - Check local `/api/health` and `/api/flight/diagnostics`.
 - Check static cache preflight.
 - Run local `git status --short --branch` and `git diff --check`.
@@ -140,7 +142,8 @@ Keep these outside the workbench for now:
 - Oracle instance creation, termination, VCN changes, firewall rules, and security list edits.
 - First SSH host-key trust prompts.
 - Git push, Git reset, cleanup commands, and any Git operation other than the fixed VM fast-forward update button.
-- Public hosting and tunnel-token setup.
+- Public hosting, Cloudflare tunnel-token setup, and production DNS/proxy
+  changes.
 
 ## Security Notes
 

@@ -1,6 +1,7 @@
 # Corp Market / Flight Attendant Deployment Contract
 
-This folder contains public-safe templates for a low-monitoring VM deployment.
+This folder contains public-safe templates for a low-monitoring Oracle VM
+deployment.
 Do not put real SSO secrets, Discord webhooks, admin tokens, private chat logs,
 SQLite databases, or profile files in this folder.
 
@@ -9,12 +10,25 @@ SQLite databases, or profile files in this folder.
 - On a VM/systemd install, the Python app binds to `127.0.0.1:8770`.
 - In Docker, the Python app binds to `0.0.0.0` inside the container and is
   exposed only to the Compose network.
-- Public HTTPS is provided by Caddy or Cloudflare Tunnel in front of the app.
+- The default production path is Oracle VM + Docker Compose + Caddy on the VM.
+- Public HTTPS is provided by Caddy on the VM. Do not host the public site from
+  your Windows PC.
 - Public hosting mode requires EVE SSO, an HTTPS callback URL, and at least one
   allowed character, corporation, or alliance ID.
 - The Workbench remains local-only and must not be reverse-proxied.
 - Docker support is for Corp Market / Flight Attendant only. Do not add Voice
   Pilot, Intel Pet, or Workbench to this Compose stack without a fresh review.
+
+Recommended production traffic shape:
+
+```text
+Internet
+  -> DNS for your domain
+  -> Oracle VM public IP
+  -> Caddy on 80/443
+  -> Docker internal network
+  -> corp-market container on 8770
+```
 
 ## First VM Setup
 
@@ -45,7 +59,8 @@ SQLite databases, or profile files in this folder.
 
 ## Docker Compose Setup
 
-Docker is optional, and this checkout keeps it scoped to the web service.
+Docker Compose is the preferred VM deployment path, and this checkout keeps it
+scoped to the web service.
 
 1. Copy `deploy/docker/.env.example` to `.env` in the repository root and fill
    in the public host, public URL, callback URL, SSO client ID, and at least one
@@ -87,6 +102,24 @@ that require a fresh SDE cache.
 The app and service wrapper support Docker-style `_FILE` environment variables
 for SSO credentials, admin tokens, Discord webhooks, allowlists, and other
 string settings. Do not set a non-empty `NAME` and `NAME_FILE` at the same time.
+
+## Optional Cloudflare Tunnel
+
+Cloudflare Tunnel is not the default plan for this project and should not be
+used to serve the public site from your Windows PC.
+
+Keep it as an optional VM-side alternative when there is a standard operational
+reason:
+
+- you do not want to open inbound `80/443` on the Oracle VM;
+- you want Cloudflare to front the VM without exposing the VM's public IP;
+- Oracle networking, DNS, or firewall rules are temporarily blocking normal
+  Caddy access;
+- you want Cloudflare Access, WAF, or similar controls in front of Caddy.
+
+If you use a tunnel, run the tunnel connector on the VM, point it at Caddy or
+the internal app on the VM, and keep the same public-hosting, SSO allowlist, and
+smoke-check requirements.
 
 ## Backup Contract
 
