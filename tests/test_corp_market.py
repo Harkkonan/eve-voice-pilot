@@ -858,6 +858,8 @@ def test_dashboard_includes_flight_esi_hooks():
     assert "function applyDiscordHandoff" in page
     assert "handleDecisionActionClick(event, \"a[data-intake-action-target]\")" in page
     assert "handleDecisionActionClick(event, \"a[data-core-action-tab]\")" in page
+    assert "function renderWorkflowSourceCards" in page
+    assert "${renderWorkflowSourceCards(dataSources)}" in page
     assert "recordEsiActivity" in page
     assert "Industry Library" in page
     assert "data-scope-tab=\"industry\"" in page
@@ -2234,6 +2236,9 @@ def test_build_flight_trade_pnl_payload_uses_wallet_scope(monkeypatch):
     assert payload["trade_pnl"]["items"][0]["item_name"] == "Tritanium"
     assert payload["trade_pnl"]["items"][0]["matches"][0]["buy_transaction_id"] == 100
     assert payload["trade_pnl"]["totals"]["actual_profit_isk"] == pytest.approx(300)
+    source_keys = {source["key"] for source in payload["data_sources"]}
+    assert {"wallet-esi", "trade-pnl-analyzer", "local-corp-market-sqlite"} <= source_keys
+    assert payload["trade_pnl"]["data_sources"] == payload["data_sources"]
 
     missing_scope_session = FlightEsiSession(
         character_id=123456789,
@@ -2856,6 +2861,9 @@ def test_build_flight_mining_yield_payload_uses_daily_ledger_and_manual_session_
     totals = mining["totals"]
     assert payload["ok"] is True
     assert mining["source"] == corp_market.FLIGHT_MINING_SCOPE
+    source_keys = {source["key"] for source in mining["data_sources"]}
+    assert {"mining-ledger-esi", "mining-ledger-cache", "static-type-cache", "manual-session-hours"} <= source_keys
+    assert payload["data_sources"] == mining["data_sources"]
     assert mining["cache"]["reused"] is False
     assert mining["cache"]["ttl_seconds"] == 600
     assert mining["cache"]["storage"] == "server-memory-only"
@@ -6189,6 +6197,17 @@ def test_build_flight_acquisition_payload_flags_history_spike_as_possible_trap(m
 
     assert payload["ok"] is True
     acquisition = payload["acquisition"]
+    source_keys = {source["key"] for source in payload["data_sources"]}
+    assert {
+        "location-esi",
+        "skills-esi",
+        "route-cache",
+        "recipe-cache",
+        "market-order-cache",
+        "market-history-cache",
+        "manual-portfolio-settings",
+    } <= source_keys
+    assert acquisition["data_sources"] == payload["data_sources"]
     assert acquisition["opportunity_count"] == 1
     assert acquisition["possible_trap_count"] == 1
     assert acquisition["history_analysis_mode"] == "basic"
@@ -6633,6 +6652,17 @@ def test_build_flight_hauling_payload_ranks_route_corridor_opportunities(monkeyp
     )
 
     assert payload["ok"] is True
+    source_keys = {source["key"] for source in payload["data_sources"]}
+    assert {
+        "location-esi",
+        "skills-esi",
+        "route-cache",
+        "recipe-cache",
+        "market-order-cache",
+        "market-history-cache",
+        "manual-route-settings",
+    } <= source_keys
+    assert payload["hauling"]["data_sources"] == payload["data_sources"]
     assert payload["route"]["origin"]["name"] == "Start"
     assert payload["route"]["origin_query"] == ""
     assert payload["route"]["origin_source"] == "esi-location"

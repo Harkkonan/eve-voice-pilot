@@ -47,7 +47,7 @@ from eve_voice_pilot.corp_intel import (
     get_json,
     verify_sso_character,
 )
-from eve_voice_pilot.decision_engine import LearningSummary
+from eve_voice_pilot.decision_engine import DataSourceBadge, LearningSummary
 from eve_voice_pilot.flight_server_routes import (
     FLIGHT_SESSION_COOKIE_NAME,
     admin_token_write_access_allowed,
@@ -2396,12 +2396,49 @@ def build_flight_trade_pnl_payload(
             include_empty=True,
         )
     trade_pnl["learning"] = trade_learning_summary(learning_signals, saved=learning_saved)
-    trade_pnl["market_valuation"]["cache"] = fuzzwork_market_aggregate_cache_status()
+    fuzzwork_cache = fuzzwork_market_aggregate_cache_status()
+    trade_pnl["market_valuation"]["cache"] = fuzzwork_cache
     trade_pnl["trade_ledger"] = ledger_status
+    data_sources = [
+        workflow_source_badge(
+            key="wallet-esi",
+            label="Wallet ESI",
+            status="ready",
+            posture="read-only ESI",
+            freshness=generated_at,
+            persistence="response summary; optional local ledger rows",
+            scope=FLIGHT_WALLET_SCOPE,
+            detail="Recent wallet transactions and market fee journal rows are read for P&L matching.",
+        ),
+        workflow_source_badge(
+            key="trade-pnl-analyzer",
+            label="Local P&L analyzer",
+            status="ready",
+            posture="local calculation",
+            freshness="current request",
+            persistence="not stored",
+            detail="FIFO matching, fee allocation, open-stock accounting, and plan reconciliation run locally.",
+        ),
+        sqlite_source_badge(
+            enabled=bool(ledger_store or expectation_store),
+            detail="Stores acquisition expectations, wallet ledger rows, and repeated accuracy signals only when the local market store is available.",
+        ),
+    ]
+    if market_valuation_requested:
+        data_sources.append(
+            market_cache_source_badge(
+                key="fuzzwork-market-aggregates",
+                label="Fuzzwork market aggregates",
+                cache_status=fuzzwork_cache,
+                detail="Open inventory value uses Fuzzwork aggregate prices for Jita 4-4 when inventory mode has open stock.",
+            )
+        )
+    trade_pnl["data_sources"] = data_sources
     return {
         "ok": True,
         "generated_at": generated_at,
         "character": session.to_public_dict(),
+        "data_sources": data_sources,
         "trade_pnl": trade_pnl,
     }
 
@@ -2569,11 +2606,53 @@ def build_flight_mining_yield_payload(
         )
     session_seconds = clean_session_hours * 3600.0
     volume_unknown_quantity = max(0, total_quantity - known_volume_quantity)
+    generated_at = now_iso()
+    data_sources = [
+        workflow_source_badge(
+            key="mining-ledger-esi",
+            label="Mining ledger ESI",
+            status="ready",
+            posture="read-only ESI",
+            freshness=str(ledger_cache.get("fetched_at") or generated_at),
+            persistence="server-memory cache",
+            scope=FLIGHT_MINING_SCOPE,
+            detail="Daily character mining ledger rows are cached and never read from the EVE client.",
+        ),
+        workflow_source_badge(
+            key="mining-ledger-cache",
+            label="Mining ledger cache",
+            status="ready" if ledger_cache.get("cache_hit") else "ready",
+            posture="server-memory cache",
+            freshness=f"{int(ledger_cache.get('expires_in_seconds') or 0)}s until refresh" if ledger_cache.get("cache_hit") else "fresh ESI read",
+            persistence="server-memory only",
+            detail="Ledger rows are reused during the ESI cache window and cleared when the pilot logs out.",
+        ),
+        workflow_source_badge(
+            key="static-type-cache",
+            label="Static type metadata",
+            status="ready" if static_cache_available else "error",
+            posture="local static cache",
+            freshness="current host cache" if static_cache_available else "missing",
+            persistence="local ignored cache file",
+            detail="Local static market data supplies ore names, market groups, and volume where available.",
+        ),
+        workflow_source_badge(
+            key="manual-session-hours",
+            label="Manual session hours",
+            status="manual",
+            posture="browser input",
+            freshness="current form value",
+            persistence="browser localStorage only",
+            detail="The session average uses the manually entered timer/hours value; it is not live mining telemetry.",
+        ),
+    ]
     return {
         "ok": True,
-        "generated_at": now_iso(),
+        "generated_at": generated_at,
         "character": session.to_public_dict(),
+        "data_sources": data_sources,
         "mining_yield": {
+            "data_sources": data_sources,
             "source": FLIGHT_MINING_SCOPE,
             "source_label": "ESI character mining ledger",
             "cache_seconds": int(MINING_LEDGER_CACHE_TTL_SECONDS),
@@ -3615,6 +3694,79 @@ def trade_learning_summary(signals: Iterable[Mapping[str, Any]], *, saved: int =
         evidence_item_count=len(signal_rows),
         signal_counts=dict(sorted(counts.items())),
     ).to_dict()
+
+
+def workflow_source_badge(
+    *,
+    key: str,
+    label: str,
+    status: str = "ready",
+    posture: str = "",
+    freshness: str = "",
+    persistence: str = "",
+    scope: str = "",
+    detail: str = "",
+) -> dict[str, Any]:
+    return DataSourceBadge(
+        key=key,
+        label=label,
+        status=status,
+        posture=posture,
+        freshness=freshness,
+        persistence=persistence,
+        scope=scope,
+        detail=detail,
+    ).to_dict()
+
+
+def cache_source_badge(
+    *,
+    key: str,
+    label: str,
+    cache: Any,
+    detail: str,
+    persistence: str = "local ignored cache file",
+) -> dict[str, Any]:
+    available = bool(getattr(cache, "available", False))
+    build_number = str(getattr(cache, "build_number", "") or "")
+    error = str(getattr(cache, "error", "") or "")
+    freshness = f"SDE build {build_number}" if build_number else ("host cache ready" if available else "missing")
+    return workflow_source_badge(
+        key=key,
+        label=label,
+        status="ready" if available else "error",
+        posture="local static cache",
+        freshness=freshness,
+        persistence=persistence,
+        detail=detail if available else (error or detail),
+    )
+
+
+def market_cache_source_badge(*, key: str, label: str, cache_status: Mapping[str, Any], detail: str) -> dict[str, Any]:
+    entries = int(cache_status.get("entries") or 0)
+    ttl_seconds = int(cache_status.get("ttl_seconds") or 0)
+    freshness = f"{ttl_seconds}s cache window" if ttl_seconds else "current request"
+    return workflow_source_badge(
+        key=key,
+        label=label,
+        status="ready" if entries else "empty",
+        posture="public market data",
+        freshness=freshness,
+        persistence="server-memory cache",
+        detail=f"{detail} Cache currently has {entries} entr{'y' if entries == 1 else 'ies'}.",
+    )
+
+
+def sqlite_source_badge(*, enabled: bool, detail: str) -> dict[str, Any]:
+    return workflow_source_badge(
+        key="local-corp-market-sqlite",
+        label="Local accuracy store",
+        status="ready" if enabled else "manual",
+        posture="local SQLite",
+        freshness="latest local rows" if enabled else "not used in this request",
+        persistence="local ignored profile database" if enabled else "not written",
+        detail=detail,
+    )
 
 
 def trade_learning_signals_by_type(signals: Iterable[Mapping[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -5953,11 +6105,72 @@ def build_flight_hauling_payload(
         route=route_payload,
         hauling=opportunities,
     )
+    data_sources = [
+        workflow_source_badge(
+            key="location-esi",
+            label="Current location ESI",
+            status="ready",
+            posture="read-only ESI",
+            freshness=generated_at,
+            persistence="response summary only",
+            scope=FLIGHT_LOCATION_SCOPE,
+            detail="Used to anchor the route when no manual origin override is supplied.",
+        ),
+        workflow_source_badge(
+            key="skills-esi",
+            label="Skills ESI",
+            status="ready",
+            posture="read-only ESI",
+            freshness=generated_at,
+            persistence="response summary only",
+            scope=FLIGHT_SKILLS_SCOPE,
+            detail="Accounting skill is summarized for downstream sales-tax estimates.",
+        ),
+        cache_source_badge(
+            key="route-cache",
+            label="Route graph cache",
+            cache=route_cache,
+            detail="Local route graph supports route corridor, pickup radius, and fallback path calculations.",
+        ),
+        cache_source_badge(
+            key="recipe-cache",
+            label="Recipe cache",
+            cache=recipe_cache,
+            detail="Local recipe/material cache supplies common material and type candidates.",
+        ),
+        market_cache_source_badge(
+            key="market-order-cache",
+            label="Public market orders",
+            cache_status=opportunities.get("market_cache") or {},
+            detail="Pickup sell orders and destination buy orders come from public ESI market data.",
+        ),
+        market_cache_source_badge(
+            key="market-history-cache",
+            label="Public market history",
+            cache_status=opportunities.get("history_cache") or {},
+            detail="Market history labels possible traps, sparse volume, and price spikes.",
+        ),
+        workflow_source_badge(
+            key="manual-route-settings",
+            label="Manual route and cargo settings",
+            status="manual",
+            posture="browser input",
+            freshness="current form value",
+            persistence="browser localStorage only",
+            detail="Destination, cargo capacity, purchase budget, filters, and pasted item scope are user-controlled.",
+        ),
+        sqlite_source_badge(
+            enabled=learning_store is not None,
+            detail="Local Trade P&L learning signals can annotate route candidates when previous evidence exists.",
+        ),
+    ]
+    opportunities["data_sources"] = data_sources
     return {
         "ok": True,
         "generated_at": generated_at,
         "server_timing": server_timing,
         "character": session.to_public_dict(),
+        "data_sources": data_sources,
         "location": location,
         "route": route_payload,
         "hauling": opportunities,
@@ -6560,10 +6773,71 @@ def build_flight_acquisition_payload(
         route=route_payload,
         acquisition=acquisition,
     )
+    data_sources = [
+        workflow_source_badge(
+            key="location-esi",
+            label="Current location ESI",
+            status="ready",
+            posture="read-only ESI",
+            freshness=generated_at,
+            persistence="response summary only",
+            scope=FLIGHT_LOCATION_SCOPE,
+            detail="Used to anchor portfolio pickup range when no manual origin override is supplied.",
+        ),
+        workflow_source_badge(
+            key="skills-esi",
+            label="Skills ESI",
+            status="ready",
+            posture="read-only ESI",
+            freshness=generated_at,
+            persistence="response summary only",
+            scope=FLIGHT_SKILLS_SCOPE,
+            detail="Trade skills are summarized for tax and fee assumptions.",
+        ),
+        cache_source_badge(
+            key="route-cache",
+            label="Route graph cache",
+            cache=route_cache,
+            detail="Local route graph supports pickup range, jump budget, and route context.",
+        ),
+        cache_source_badge(
+            key="recipe-cache",
+            label="Recipe cache",
+            cache=recipe_cache,
+            detail="Local recipe/material cache supplies common material and type candidates.",
+        ),
+        market_cache_source_badge(
+            key="market-order-cache",
+            label="Public market orders",
+            cache_status=acquisition.get("market_cache") or {},
+            detail="Suggested bids and destination demand use public ESI market orders.",
+        ),
+        market_cache_source_badge(
+            key="market-history-cache",
+            label="Public market history",
+            cache_status=acquisition.get("history_cache") or {},
+            detail="History analysis labels traps, sparse volume, and target-day risk.",
+        ),
+        workflow_source_badge(
+            key="manual-portfolio-settings",
+            label="Manual portfolio settings",
+            status="manual",
+            posture="browser input",
+            freshness="current form value",
+            persistence="browser localStorage only",
+            detail="Budget, target days, broker fee, filters, and pasted item scope are user-controlled.",
+        ),
+        sqlite_source_badge(
+            enabled=bool(expectation_store or learning_store),
+            detail="Saves acquisition expectations and reads local Trade P&L learning signals when the local market store is available.",
+        ),
+    ]
+    acquisition["data_sources"] = data_sources
     return {
         "ok": True,
         "generated_at": generated_at,
         "character": session.to_public_dict(),
+        "data_sources": data_sources,
         "location": location,
         "route": route_payload,
         "acquisition": acquisition,
@@ -27449,6 +27723,12 @@ help</textarea>
       return renderDecisionSourceCards(sources, {emptyMessage: "No source metadata was returned."});
     }
 
+    function renderWorkflowSourceCards(sources) {
+      const rows = Array.isArray(sources) ? sources : [];
+      if (!rows.length) return "";
+      return renderDecisionSourceCards(rows, {emptyMessage: "No workflow source metadata was returned."});
+    }
+
     function renderIntakeSourceBadges(sourceKeys) {
       const keys = Array.isArray(sourceKeys) ? sourceKeys : [];
       if (!keys.length) return '<span class="source-badge">local router</span>';
@@ -30413,6 +30693,7 @@ help</textarea>
     function renderFlightHauling(data, elapsedSeconds = null) {
       const route = data.route || {};
       const hauling = data.hauling || {};
+      const dataSources = data.data_sources || hauling.data_sources || [];
       const origin = route.origin || {};
       const destination = route.destination || {};
       const salesTax = hauling.sales_tax || {};
@@ -30458,6 +30739,7 @@ help</textarea>
         ${routeWarning}
         ${routeDiagnostics}
         ${stageTiming}
+        ${renderWorkflowSourceCards(dataSources)}
       `;
       haulRoutePath.innerHTML = renderHaulRoutePath(route.systems || []);
       haulLoadPlan.innerHTML = renderHaulLoadPlan(hauling.load_plan || {});
@@ -31819,6 +32101,7 @@ help</textarea>
     function renderMarketAcquisition(data) {
       const route = data.route || {};
       const acquisition = data.acquisition || {};
+      const dataSources = data.data_sources || acquisition.data_sources || [];
       const origin = route.origin || acquisition.origin_system || {};
       const destination = route.destination || acquisition.destination_system || {};
       const salesTax = acquisition.sales_tax || {};
@@ -31842,6 +32125,7 @@ help</textarea>
         <div class="meta">Total investment ${formatIsk(acquisition.budget_isk)}; collection range ${formatNumber(acquisition.pickup_jumps)} jumps; portfolio jump budget ${formatNumber(acquisition.portfolio_jumps)}; broker fee estimate ${formatNumber(acquisition.broker_fee_percent)}%; planned order duration ${formatNumber(acquisition.order_duration_days || 30)} days; target margin ${formatNumber(acquisition.min_margin_percent)}%; target fill window ${formatNumber(acquisition.target_days)} days; history analysis ${escapeHtml(historyAnalysisLabel)}; scan speed ${formatNumber(acquisition.item_workers || 4)} workers.</div>
         ${routeWarning}
         ${stageTiming}
+        ${renderWorkflowSourceCards(dataSources)}
       `;
       acqSummary.innerHTML = `
         <div class="profit-stats">
@@ -32530,6 +32814,7 @@ help</textarea>
 
     function renderMiningYield(data) {
       const yieldData = data.mining_yield || {};
+      const dataSources = data.data_sources || yieldData.data_sources || [];
       const totals = yieldData.totals || {};
       const cacheSummary = miningCacheSummary(yieldData.cache || {});
       const volumeNote = totals.volume_partial
@@ -32554,6 +32839,7 @@ help</textarea>
           <div class="meta">${formatNumber(yieldData.ledger_row_count || 0)} ledger row${Number(yieldData.ledger_row_count || 0) === 1 ? "" : "s"} across ${formatNumber(yieldData.active_day_count || 0)} active day${Number(yieldData.active_day_count || 0) === 1 ? "" : "s"} in the selected ${formatNumber(yieldData.window_days || 0)} day window. Session average uses ${formatNumber(yieldData.session_hours || 0)} manually entered hour${Number(yieldData.session_hours || 0) === 1 ? "" : "s"}.${escapeHtml(itemLimit + volumeNote)}</div>
           <div class="meta">${escapeHtml(yieldData.cache_note || "ESI mining ledger is cached and not live telemetry.")}</div>
           <div class="meta">${cacheSummary}</div>
+          ${renderWorkflowSourceCards(dataSources)}
         `;
       }
       if (miningYieldResults) {
@@ -32664,6 +32950,7 @@ help</textarea>
 
     function renderTradePnl(data) {
       const pnl = data.trade_pnl || {};
+      const dataSources = data.data_sources || pnl.data_sources || [];
       const totals = pnl.totals || {};
       const valuation = pnl.market_valuation || {};
       const learning = pnl.learning || {};
@@ -32685,6 +32972,7 @@ help</textarea>
         <div class="meta">${escapeHtml(pnl.accounting_lens_label || "Inventory Mode")} with ${escapeHtml(pnl.consideration_rule_label || "Count every item")} across ${escapeHtml(pnl.window_label || `${formatNumber(pnl.days)} days`)}. ${formatNumber(pnl.transaction_count)} market transactions and ${formatNumber(pnl.journal_entry_count)} wallet journal rows.${escapeHtml(itemLimit + excludedText)}</div>
         <div class="meta">${escapeHtml(pnl.expectation_source || "Expected spread is before wallet fees.")}</div>
         <div class="meta">${escapeHtml(pnl.limits_note || "Unmatched sells can mean the buy happened before the visible ESI history window.")}</div>
+        ${renderWorkflowSourceCards(dataSources)}
       `;
       tradePnlFees.innerHTML = `
         Wallet-level net cashflow ${formatSignedIsk(totals.net_cashflow_isk)}.
