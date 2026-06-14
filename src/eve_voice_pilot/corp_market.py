@@ -125,6 +125,13 @@ DEFAULT_DISCORD_POST_SENDER_NAME = "Corp Market Concierge"
 DEFAULT_DISCORD_POST_DESTINATION = "Corp buy-or-sell channel"
 DEFAULT_DISCORD_FITTING_POST_SENDER_NAME = "Fittings Desk"
 DEFAULT_DISCORD_FITTING_POST_DESTINATION = "Fittings"
+PUBLIC_SITE_DEFAULT_BASE_URL = "https://market.brianridderbusch.net"
+PUBLIC_SITE_TITLE = "EVE Flight Attendant | Corp Market Concierge"
+PUBLIC_SITE_DESCRIPTION = (
+    "EVE Online planning tool for hauling, industry, blueprints, reprocessing, "
+    "market acquisition, and wallet trade P&L. Read-only ESI; every in-game action stays manual."
+)
+GOOGLE_SITE_VERIFICATION_FILE_RE = re.compile(r"^google[-A-Za-z0-9_]+\.html$")
 DISCORD_ALERT_ROUTE_TYPES = frozenset({"webhook", "user_oauth_future"})
 DISCORD_ALERT_EVENT_TYPES = frozenset({"intel", "help", "market", "location", "combat", "custom"})
 DISCORD_ALERT_SEVERITIES = frozenset({"critical", "high", "medium", "info"})
@@ -15333,6 +15340,51 @@ def resolve_static_asset_path(request_path: str) -> Path | None:
     return asset_path
 
 
+def public_site_base_url(public_base_url: str = "") -> str:
+    candidate = (public_base_url or PUBLIC_SITE_DEFAULT_BASE_URL).strip().rstrip("/")
+    return candidate or PUBLIC_SITE_DEFAULT_BASE_URL
+
+
+def public_site_canonical_url(public_base_url: str = "") -> str:
+    return f"{public_site_base_url(public_base_url)}/"
+
+
+def render_google_site_verification_meta(google_site_verification: str = "") -> str:
+    token = google_site_verification.strip()
+    if not token:
+        return ""
+    escaped_token = html.escape(token, quote=True)
+    return f'<meta name="google-site-verification" content="{escaped_token}">'
+
+
+def clean_google_site_verification_file_name(value: str = "") -> str:
+    file_name = value.strip()
+    if not file_name:
+        return ""
+    if "/" in file_name or "\\" in file_name or not GOOGLE_SITE_VERIFICATION_FILE_RE.fullmatch(file_name):
+        raise CorpMarketError(
+            "CORP_MARKET_GOOGLE_SITE_VERIFICATION_FILE must look like googleXXXXXXXX.html."
+        )
+    return file_name
+
+
+def render_robots_txt(public_base_url: str = "") -> str:
+    base_url = public_site_base_url(public_base_url)
+    return f"User-agent: *\nAllow: /\nSitemap: {base_url}/sitemap.xml\n"
+
+
+def render_sitemap_xml(public_base_url: str = "") -> str:
+    canonical_url = html.escape(public_site_canonical_url(public_base_url), quote=True)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        "  <url>\n"
+        f"    <loc>{canonical_url}</loc>\n"
+        "  </url>\n"
+        "</urlset>\n"
+    )
+
+
 def build_http_server(
     host: str,
     port: int,
@@ -15353,8 +15405,12 @@ def build_http_server(
     flight_session_store: FlightEsiSessionStore | None = None,
     public_hosting_mode: bool = False,
     ui_performance_monitor: bool = False,
+    google_site_verification: str = "",
+    google_site_verification_file: str = "",
 ) -> ThreadingHTTPServer:
     public_base_url = public_base_url.rstrip("/")
+    google_site_verification = google_site_verification.strip()
+    google_site_verification_file = clean_google_site_verification_file_name(google_site_verification_file)
     sso_config = sso_config or EveSsoConfig()
     auth_state_store = auth_state_store or AuthStateStore()
     flight_session_store = flight_session_store or FlightEsiSessionStore()
@@ -15372,7 +15428,24 @@ def build_http_server(
         def do_GET(self) -> None:
             path = request_path(self.path)
             if path in {"/", "/index.html"}:
-                self._send_html(render_dashboard())
+                self._send_html(
+                    render_dashboard(
+                        public_base_url=public_base_url,
+                        google_site_verification=google_site_verification,
+                    )
+                )
+                return
+            if path == "/robots.txt":
+                self._send_text(render_robots_txt(public_base_url), content_type="text/plain; charset=utf-8")
+                return
+            if path == "/sitemap.xml":
+                self._send_text(render_sitemap_xml(public_base_url), content_type="application/xml; charset=utf-8")
+                return
+            if google_site_verification_file and path == f"/{google_site_verification_file}":
+                self._send_text(
+                    f"google-site-verification: {google_site_verification_file}\n",
+                    content_type="text/html; charset=utf-8",
+                )
                 return
             if path == "/favicon.ico":
                 self._send_favicon()
@@ -17021,6 +17094,25 @@ def build_http_server(
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_text(
+            self,
+            text: str,
+            *,
+            content_type: str,
+            status: int = 200,
+            cache_control: str = "public, max-age=3600",
+        ) -> None:
+            body = text.encode("utf-8")
+            csp_nonce = secrets.token_urlsafe(16)
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            if cache_control:
+                self.send_header("Cache-Control", cache_control)
+            self._send_security_headers(csp_nonce)
+            self.end_headers()
+            self.wfile.write(body)
+
         def _handle_static_asset(self, path: str) -> None:
             asset_path = resolve_static_asset_path(path)
             if asset_path is None:
@@ -17085,8 +17177,11 @@ def build_http_server(
     return ThreadingHTTPServer((host, port), CorpMarketHandler)
 
 
-def render_dashboard() -> str:
-    return _render_flight_attendant_dashboard()
+def render_dashboard(public_base_url: str = "", google_site_verification: str = "") -> str:
+    return _render_flight_attendant_dashboard(
+        public_base_url=public_base_url,
+        google_site_verification=google_site_verification,
+    )
 
 
 def _render_legacy_market_dashboard() -> str:
@@ -17751,7 +17846,10 @@ def render_flight_scope_metadata_json() -> str:
     return json.dumps(metadata, sort_keys=True)
 
 
-def _render_flight_attendant_dashboard() -> str:
+def _render_flight_attendant_dashboard(
+    public_base_url: str = "",
+    google_site_verification: str = "",
+) -> str:
     category_options = "\n".join(
         f'                    <option value="{html.escape(key)}">{html.escape(label)}</option>'
         for key, label in LISTING_CATEGORIES.items()
@@ -17852,14 +17950,29 @@ def _render_flight_attendant_dashboard() -> str:
         input_name="market_group_ids",
     )
     reprocessing_ore_options = render_reprocessing_ore_options()
+    site_canonical_url = public_site_canonical_url(public_base_url)
+    site_title_html = html.escape(PUBLIC_SITE_TITLE, quote=True)
+    site_description_html = html.escape(PUBLIC_SITE_DESCRIPTION, quote=True)
+    google_verification_meta = render_google_site_verification_meta(google_site_verification)
     markup = """
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="@@PUBLIC_SITE_DESCRIPTION@@">
+  <meta name="robots" content="index,follow">
+  @@GOOGLE_SITE_VERIFICATION_META@@
+  <link rel="canonical" href="@@PUBLIC_SITE_CANONICAL_URL@@">
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
-  <title>Corp Market Concierge</title>
+  <meta property="og:title" content="@@PUBLIC_SITE_TITLE@@">
+  <meta property="og:description" content="@@PUBLIC_SITE_DESCRIPTION@@">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="@@PUBLIC_SITE_CANONICAL_URL@@">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="@@PUBLIC_SITE_TITLE@@">
+  <meta name="twitter:description" content="@@PUBLIC_SITE_DESCRIPTION@@">
+  <title>@@PUBLIC_SITE_TITLE@@</title>
   <style>
     :root {
       color-scheme: dark;
@@ -17941,6 +18054,38 @@ def _render_flight_attendant_dashboard() -> str:
       border-radius: 8px;
       padding: 9px 11px;
       min-width: 148px;
+    }
+    .public-intro {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(300px, .7fr);
+      gap: 14px;
+      margin: 0 0 14px;
+      padding: 14px;
+      border: 1px solid rgba(63, 85, 80, .72);
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(17, 24, 25, .92), rgba(7, 12, 14, .72));
+    }
+    .public-intro p {
+      margin: 0;
+      color: var(--muted);
+      max-width: 78ch;
+    }
+    .public-intro strong { color: var(--text); }
+    .public-feature-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      color: var(--text);
+      font-size: 13px;
+    }
+    .public-feature-list li {
+      min-width: 0;
+      padding-left: 12px;
+      border-left: 2px solid rgba(97, 199, 217, .52);
+      overflow-wrap: anywhere;
     }
     .ops-launcher {
       display: grid;
@@ -22223,6 +22368,8 @@ def _render_flight_attendant_dashboard() -> str:
       .reprocess-page::before { inset: -6px 0; }
       header { grid-template-columns: 1fr; align-items: start; }
       .status { text-align: left; }
+      .public-intro { grid-template-columns: 1fr; }
+      .public-feature-list { grid-template-columns: 1fr; }
       .brand { align-items: start; display: grid; grid-template-columns: 42px minmax(0, 1fr); }
       .deck { display: none; }
       .ops-status-panel { grid-template-columns: 1fr; }
@@ -22373,6 +22520,23 @@ def _render_flight_attendant_dashboard() -> str:
       </div>
       <div id="status" class="status">Loading offers...</div>
     </header>
+
+    <section class="public-intro" aria-label="EVE Flight Attendant overview">
+      <p>
+        <strong>EVE Online Flight Attendant</strong> is a read-only planning workspace for capsuleers who want
+        practical market and industry checks without handing control of the EVE client to a tool. It helps with
+        hauling routes, industry planning, blueprint and material checks, reprocessing estimates, market
+        acquisition planning, and wallet trade P&amp;L while every in-game action stays manual.
+      </p>
+      <ul class="public-feature-list">
+        <li>Hauling planner for cargo-limited route opportunities.</li>
+        <li>Industry planner for owned blueprints, skills, and materials.</li>
+        <li>Market acquisition planner with liquidity and history warnings.</li>
+        <li>Reprocessing planner for ore-to-mineral estimates.</li>
+        <li>Wallet trade P&amp;L review from authorized read-only ESI.</li>
+        <li>Manual handoff through CSV, Quickbar, and checklist exports.</li>
+      </ul>
+    </section>
 
     <section class="ops-status-panel" aria-label="Operations status">
       <div class="ops-status-card" data-state="ready">
@@ -37627,6 +37791,10 @@ help</textarea>
 </html>
 """
     replacements = {
+        "@@PUBLIC_SITE_TITLE@@": site_title_html,
+        "@@PUBLIC_SITE_DESCRIPTION@@": site_description_html,
+        "@@PUBLIC_SITE_CANONICAL_URL@@": html.escape(site_canonical_url, quote=True),
+        "@@GOOGLE_SITE_VERIFICATION_META@@": google_verification_meta,
         "@@CATEGORY_OPTIONS@@": category_options,
         "@@INTAKE_GOAL_OPTIONS@@": intake_goal_options,
         "@@INTAKE_TIME_OPTIONS@@": intake_time_options,
@@ -37904,6 +38072,8 @@ def run_server(args: argparse.Namespace) -> int:
         flight_session_store=FlightEsiSessionStore(),
         public_hosting_mode=args.public_hosting_mode,
         ui_performance_monitor=args.ui_performance_monitor,
+        google_site_verification=args.google_site_verification,
+        google_site_verification_file=args.google_site_verification_file,
     )
     url = f"http://{url_host}:{args.port}/"
     print(f"Corp market concierge listening at {url}")
@@ -38037,6 +38207,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=env_bool("CORP_MARKET_PUBLIC_HOSTING_MODE"),
         help="Require HTTPS, EVE SSO, and a corp/alliance allowlist for public Flight Attendant hosting.",
+    )
+    serve.add_argument(
+        "--google-site-verification",
+        default=env_text("CORP_MARKET_GOOGLE_SITE_VERIFICATION"),
+        help="Optional Google Search Console verification token rendered as a home-page meta tag.",
+    )
+    serve.add_argument(
+        "--google-site-verification-file",
+        default=env_text("CORP_MARKET_GOOGLE_SITE_VERIFICATION_FILE"),
+        help="Optional Google verification HTML file name, such as google123abc.html.",
     )
     serve.add_argument(
         "--admin-token",

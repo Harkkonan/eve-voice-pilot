@@ -1,4 +1,6 @@
 import json
+import http.client
+import threading
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -115,6 +117,8 @@ CORP_MARKET_ENV_NAMES = (
     "CORP_MARKET_ALLOWED_CORPORATION_IDS",
     "CORP_MARKET_ALLOWED_ALLIANCE_IDS",
     "CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET",
+    "CORP_MARKET_GOOGLE_SITE_VERIFICATION",
+    "CORP_MARKET_GOOGLE_SITE_VERIFICATION_FILE",
     "CORP_MARKET_ESI_BASE_URL",
     "CORP_MARKET_UI_PERFORMANCE_MONITOR",
     "EVE_SSO_CLIENT_ID",
@@ -126,6 +130,19 @@ def clear_corp_market_env(monkeypatch):
     for name in CORP_MARKET_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
         monkeypatch.delenv(f"{name}_FILE", raising=False)
+
+
+def get_text_response(server, path: str):
+    host, port = server.server_address
+    connection = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        headers = dict(response.getheaders())
+    finally:
+        connection.close()
+    return response.status, body, headers
 
 
 def bulk_appraisal_static_data(tmp_path: Path) -> corp_market.StaticMarketData:
@@ -900,6 +917,70 @@ def test_dashboard_includes_flight_attendant_tab_and_safety_charter():
     assert "id=\"flight-blueprint-summary\"" not in flight_section
     assert "id=\"flight-profit-scan\"" not in flight_section
     assert "id=\"flight-buyer-scan\"" not in flight_section
+
+
+def test_dashboard_includes_search_metadata_and_public_overview():
+    page = render_dashboard(
+        public_base_url="https://market.brianridderbusch.net",
+        google_site_verification="google-meta-token",
+    )
+
+    assert "<title>EVE Flight Attendant | Corp Market Concierge</title>" in page
+    assert '<meta name="description" content="EVE Online planning tool for hauling' in page
+    assert '<meta name="robots" content="index,follow">' in page
+    assert '<link rel="canonical" href="https://market.brianridderbusch.net/">' in page
+    assert '<meta name="google-site-verification" content="google-meta-token">' in page
+    assert 'property="og:url" content="https://market.brianridderbusch.net/"' in page
+    assert "EVE Online Flight Attendant" in page
+    assert "hauling routes, industry planning, blueprint and material checks" in page
+    assert "Market acquisition planner with liquidity and history warnings" in page
+    assert "Wallet trade P&amp;L review from authorized read-only ESI" in page
+
+
+def test_dashboard_omits_google_verification_meta_when_unset():
+    page = render_dashboard(public_base_url="https://market.example.test")
+
+    assert "google-site-verification" not in page
+    assert '<link rel="canonical" href="https://market.example.test/">' in page
+
+
+def test_public_crawler_routes_and_google_file_verification(tmp_path):
+    store = MarketStore(tmp_path / "market.sqlite3")
+    server = corp_market.build_http_server(
+        "127.0.0.1",
+        0,
+        store,
+        public_base_url="https://market.example.test",
+        google_site_verification_file="googleabc123.html",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, robots, headers = get_text_response(server, "/robots.txt")
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/plain")
+        assert "User-agent: *" in robots
+        assert "Allow: /" in robots
+        assert "Sitemap: https://market.example.test/sitemap.xml" in robots
+
+        status, sitemap, headers = get_text_response(server, "/sitemap.xml")
+        assert status == 200
+        assert headers["Content-Type"].startswith("application/xml")
+        assert "<loc>https://market.example.test/</loc>" in sitemap
+
+        status, verification, headers = get_text_response(server, "/googleabc123.html")
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/html")
+        assert verification == "google-site-verification: googleabc123.html\n"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_google_verification_file_name_rejects_paths():
+    with pytest.raises(CorpMarketError, match="googleXXXXXXXX.html"):
+        corp_market.clean_google_site_verification_file_name("../googleabc123.html")
 
 
 def test_dashboard_keeps_market_posts_as_primary_market_workflow():

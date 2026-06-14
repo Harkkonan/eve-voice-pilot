@@ -84,6 +84,8 @@ add_optional_arg --admin-token "$(value_from_env_or_file CORP_MARKET_ADMIN_TOKEN
 add_optional_arg --discord-webhook-url "$(value_from_env_or_file CORP_MARKET_DISCORD_WEBHOOK_URL)"
 add_optional_arg --discord-forum-tag-ids "$(value_from_env_or_file CORP_MARKET_DISCORD_FORUM_TAG_IDS)"
 add_optional_arg --discord-forum-tag-map "$(value_from_env_or_file CORP_MARKET_DISCORD_FORUM_TAG_MAP)"
+add_optional_arg --google-site-verification "$(value_from_env_or_file CORP_MARKET_GOOGLE_SITE_VERIFICATION)"
+add_optional_arg --google-site-verification-file "$(value_from_env_or_file CORP_MARKET_GOOGLE_SITE_VERIFICATION_FILE)"
 
 if [[ "${CORP_MARKET_TRUSTED_MEMBERS_CAN_WRITE_MARKET:-0}" == "1" ]]; then
   args+=(--trusted-members-can-write-market)

@@ -54,6 +54,8 @@ def test_compose_uses_internal_app_exposure_volumes_and_secrets():
     assert "CORP_MARKET_ADMIN_TOKEN_FILE: /run/secrets/corp_market_admin_token" in compose
     assert "CORP_MARKET_DISCORD_WEBHOOK_URL_FILE: /run/secrets/corp_market_discord_webhook_url" in compose
     assert "CORP_MARKET_ALLOW_ANY_AUTHENTICATED:" in compose
+    assert "CORP_MARKET_GOOGLE_SITE_VERIFICATION:" in compose
+    assert "CORP_MARKET_GOOGLE_SITE_VERIFICATION_FILE:" in compose
     assert "corp_market_profiles:/data/profiles" in compose
     assert "corp_market_cache:/data/cache" in compose
     assert "cache-refresh:" in compose
@@ -99,6 +101,9 @@ def test_service_wrapper_supports_file_backed_secrets():
     assert "CORP_MARKET_DISCORD_WEBHOOK_URL" in wrapper
     assert "CORP_MARKET_ALLOW_ANY_AUTHENTICATED" in wrapper
     assert "--allow-any-authenticated" in wrapper
+    assert "CORP_MARKET_GOOGLE_SITE_VERIFICATION" in wrapper
+    assert "--google-site-verification" in wrapper
+    assert "--google-site-verification-file" in wrapper
     assert "EVE_SSO_CLIENT_SECRET" in wrapper
 
 
@@ -106,6 +111,8 @@ def test_docker_env_example_documents_public_access_policy():
     env_example = read_text("deploy/docker/.env.example")
 
     assert "CORP_MARKET_ALLOW_ANY_AUTHENTICATED=0" in env_example
+    assert "CORP_MARKET_GOOGLE_SITE_VERIFICATION=" in env_example
+    assert "CORP_MARKET_GOOGLE_SITE_VERIFICATION_FILE=" in env_example
     assert "Public hosting requires either at least one allowlist or allow-any-authenticated mode." in env_example
 
 

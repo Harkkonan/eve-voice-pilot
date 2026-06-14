@@ -13,8 +13,8 @@ SQLite databases, or profile files in this folder.
 - The default production path is Oracle VM + Docker Compose + Caddy on the VM.
 - Public HTTPS is provided by Caddy on the VM. Do not host the public site from
   your Windows PC.
-- Public hosting mode requires EVE SSO, an HTTPS callback URL, and at least one
-  allowed character, corporation, or alliance ID.
+- Public hosting mode requires EVE SSO, an HTTPS callback URL, and either an
+  allowlist or `CORP_MARKET_ALLOW_ANY_AUTHENTICATED=1`.
 - The Workbench remains local-only and must not be reverse-proxied.
 - Docker support is for Corp Market / Flight Attendant only. Do not add Voice
   Pilot, Intel Pet, or Workbench to this Compose stack without a fresh review.
@@ -121,6 +121,39 @@ that require a fresh SDE cache.
 The app and service wrapper support Docker-style `_FILE` environment variables
 for SSO credentials, admin tokens, Discord webhooks, allowlists, and other
 string settings. Do not set a non-empty `NAME` and `NAME_FILE` at the same time.
+
+## Search Indexing
+
+The public Corp Market / Flight Attendant site is expected to live at
+`https://market.brianridderbusch.net/`. Set these deployment values together:
+
+```sh
+CORP_MARKET_PUBLIC_HOST=market.brianridderbusch.net
+CORP_MARKET_PUBLIC_BASE_URL=https://market.brianridderbusch.net
+CORP_MARKET_SSO_CALLBACK_URL=https://market.brianridderbusch.net/flight/callback
+```
+
+The app serves:
+
+- `/robots.txt`, allowing crawlers and pointing to the sitemap.
+- `/sitemap.xml`, listing the canonical home URL.
+- a canonical link, meta description, and public overview text on `/`.
+
+For Google Search Console:
+
+- A Domain property for `brianridderbusch.net` requires a DNS TXT record at the
+  DNS provider.
+- A URL-prefix property for `https://market.brianridderbusch.net/` can use
+  either the meta tag token in `CORP_MARKET_GOOGLE_SITE_VERIFICATION` or the
+  HTML file name in `CORP_MARKET_GOOGLE_SITE_VERIFICATION_FILE`.
+
+After changing verification values, redeploy the container and confirm:
+
+```sh
+curl -fsS https://market.brianridderbusch.net/robots.txt
+curl -fsS https://market.brianridderbusch.net/sitemap.xml
+deploy/scripts/smoke-corp-market.sh https://market.brianridderbusch.net
+```
 
 ## Optional Cloudflare Tunnel
 
