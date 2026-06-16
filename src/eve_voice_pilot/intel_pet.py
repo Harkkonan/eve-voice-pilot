@@ -432,6 +432,7 @@ def mission_read_options_from_settings(settings: "IntelPetSettings") -> MissionR
         include_rewards=bool(settings.mission_read_include_rewards),
         include_reward_notes=bool(settings.mission_read_include_reward_notes),
         include_source=bool(settings.mission_read_include_source),
+        include_completion=bool(settings.mission_read_include_completion),
         include_briefing=bool(settings.mission_read_include_briefing),
     )
 
@@ -1661,6 +1662,7 @@ class IntelPetSettings:
     mission_read_include_rewards: bool = True
     mission_read_include_reward_notes: bool = True
     mission_read_include_source: bool = False
+    mission_read_include_completion: bool = True
     mission_read_include_briefing: bool = True
 
     @classmethod
@@ -1704,6 +1706,9 @@ class IntelPetSettings:
             mission_read_include_source=bool(
                 payload.get("mission_read_include_source", mission_read_options.include_source)
             ),
+            mission_read_include_completion=bool(
+                payload.get("mission_read_include_completion", mission_read_options.include_completion)
+            ),
             mission_read_include_briefing=bool(
                 payload.get("mission_read_include_briefing", mission_read_options.include_briefing)
             ),
@@ -1744,6 +1749,7 @@ class IntelPetSettings:
             "mission_read_include_rewards": bool(self.mission_read_include_rewards),
             "mission_read_include_reward_notes": bool(self.mission_read_include_reward_notes),
             "mission_read_include_source": bool(self.mission_read_include_source),
+            "mission_read_include_completion": bool(self.mission_read_include_completion),
             "mission_read_include_briefing": bool(self.mission_read_include_briefing),
             "mission_read_options": mission_read_options_to_dict(mission_read_options_from_settings(self)),
         }
@@ -2408,6 +2414,7 @@ def replace_mission_read_settings(
     include_rewards: bool,
     include_reward_notes: bool,
     include_source: bool,
+    include_completion: bool,
     include_briefing: bool,
 ) -> IntelPetSettings:
     return replace(
@@ -2418,6 +2425,7 @@ def replace_mission_read_settings(
         mission_read_include_rewards=bool(include_rewards),
         mission_read_include_reward_notes=bool(include_reward_notes),
         mission_read_include_source=bool(include_source),
+        mission_read_include_completion=bool(include_completion),
         mission_read_include_briefing=bool(include_briefing),
     )
 
@@ -5152,6 +5160,7 @@ def run_overlay(
         mission_form_faction_var = tk.StringVar()
         mission_form_level_var = tk.StringVar()
         mission_form_type_var = tk.StringVar()
+        mission_form_objective_var = tk.StringVar()
         mission_form_isk_var = tk.StringVar()
         mission_form_bonus_var = tk.StringVar()
         mission_form_lp_var = tk.StringVar()
@@ -5167,6 +5176,7 @@ def run_overlay(
         mission_read_rewards_var = tk.BooleanVar(value=mission_read_settings.mission_read_include_rewards)
         mission_read_reward_notes_var = tk.BooleanVar(value=mission_read_settings.mission_read_include_reward_notes)
         mission_read_source_var = tk.BooleanVar(value=mission_read_settings.mission_read_include_source)
+        mission_read_completion_var = tk.BooleanVar(value=mission_read_settings.mission_read_include_completion)
         mission_read_briefing_var = tk.BooleanVar(value=mission_read_settings.mission_read_include_briefing)
 
         mission_search_frame = ttk.Frame(missions_frame)
@@ -5248,15 +5258,38 @@ def run_overlay(
         add_mission_field(2, "Level", mission_form_level_var, column=2)
         add_mission_field(3, "Type", mission_form_type_var)
         add_mission_field(3, "Tags", mission_form_tags_var, column=2)
-        add_mission_field(4, "ISK reward", mission_form_isk_var)
-        add_mission_field(4, "Bonus ISK", mission_form_bonus_var, column=2)
-        add_mission_field(5, "LP reward", mission_form_lp_var)
-        add_mission_field(5, "Item rewards", mission_form_items_var, column=2)
-        add_mission_field(6, "Standing rewards", mission_form_standings_var)
-        add_mission_field(6, "Source", mission_form_source_var, column=2)
-        add_mission_field(7, "Source URL", mission_form_source_url_var)
+        add_mission_field(4, "Objective", mission_form_objective_var)
+        add_mission_field(4, "ISK reward", mission_form_isk_var, column=2)
+        add_mission_field(5, "Bonus ISK", mission_form_bonus_var)
+        add_mission_field(5, "LP reward", mission_form_lp_var, column=2)
+        add_mission_field(6, "Item rewards", mission_form_items_var)
+        add_mission_field(6, "Standing rewards", mission_form_standings_var, column=2)
+        add_mission_field(7, "Source", mission_form_source_var)
+        add_mission_field(7, "Source URL", mission_form_source_url_var, column=2)
 
-        ttk.Label(mission_editor_frame, text="Reward notes").grid(row=8, column=0, sticky="nw", padx=(0, 8), pady=3)
+        ttk.Label(mission_editor_frame, text="Completion steps").grid(row=8, column=0, sticky="nw", padx=(0, 8), pady=3)
+        mission_form_completion_steps = tk.Text(
+            mission_editor_frame,
+            height=5,
+            wrap="word",
+            bg=ui_colors["field"],
+            fg="#111827",
+            insertbackground="#111827",
+        )
+        mission_form_completion_steps.grid(row=8, column=1, columnspan=3, sticky="ew", pady=3)
+
+        ttk.Label(mission_editor_frame, text="Completion notes").grid(row=9, column=0, sticky="nw", padx=(0, 8), pady=3)
+        mission_form_completion_notes = tk.Text(
+            mission_editor_frame,
+            height=3,
+            wrap="word",
+            bg=ui_colors["field"],
+            fg="#111827",
+            insertbackground="#111827",
+        )
+        mission_form_completion_notes.grid(row=9, column=1, columnspan=3, sticky="ew", pady=3)
+
+        ttk.Label(mission_editor_frame, text="Reward notes").grid(row=10, column=0, sticky="nw", padx=(0, 8), pady=3)
         mission_form_reward_notes = tk.Text(
             mission_editor_frame,
             height=3,
@@ -5265,9 +5298,9 @@ def run_overlay(
             fg="#111827",
             insertbackground="#111827",
         )
-        mission_form_reward_notes.grid(row=8, column=1, columnspan=3, sticky="ew", pady=3)
+        mission_form_reward_notes.grid(row=10, column=1, columnspan=3, sticky="ew", pady=3)
 
-        ttk.Label(mission_editor_frame, text="Briefing text").grid(row=9, column=0, sticky="nw", padx=(0, 8), pady=3)
+        ttk.Label(mission_editor_frame, text="Briefing text").grid(row=11, column=0, sticky="nw", padx=(0, 8), pady=3)
         mission_form_briefing = tk.Text(
             mission_editor_frame,
             height=6,
@@ -5276,7 +5309,7 @@ def run_overlay(
             fg="#111827",
             insertbackground="#111827",
         )
-        mission_form_briefing.grid(row=9, column=1, columnspan=3, sticky="ew", pady=3)
+        mission_form_briefing.grid(row=11, column=1, columnspan=3, sticky="ew", pady=3)
 
         mission_read_frame = ttk.LabelFrame(missions_frame, text="Read-aloud format", padding=8)
         mission_read_frame.pack(fill="x", pady=(12, 0))
@@ -5288,7 +5321,13 @@ def run_overlay(
         ttk.Checkbutton(mission_read_frame, text="Rewards", variable=mission_read_rewards_var).grid(row=2, column=0, sticky="w", pady=2)
         ttk.Checkbutton(mission_read_frame, text="Reward notes", variable=mission_read_reward_notes_var).grid(row=2, column=1, sticky="w", pady=2)
         ttk.Checkbutton(mission_read_frame, text="Source", variable=mission_read_source_var).grid(row=3, column=0, sticky="w", pady=2)
-        ttk.Checkbutton(mission_read_frame, text="Briefing text", variable=mission_read_briefing_var).grid(row=3, column=1, sticky="w", pady=2)
+        ttk.Checkbutton(mission_read_frame, text="Completion details", variable=mission_read_completion_var).grid(
+            row=3,
+            column=1,
+            sticky="w",
+            pady=2,
+        )
+        ttk.Checkbutton(mission_read_frame, text="Briefing text", variable=mission_read_briefing_var).grid(row=4, column=0, sticky="w", pady=2)
 
         def set_mission_detail(text: str) -> None:
             mission_detail.configure(state="normal")
@@ -5321,6 +5360,9 @@ def run_overlay(
                 "faction": mission_form_faction_var.get(),
                 "level": mission_form_level_var.get(),
                 "mission_type": mission_form_type_var.get(),
+                "objective_text": mission_form_objective_var.get(),
+                "completion_steps": mission_form_terms(mission_form_completion_steps.get("1.0", "end").strip()),
+                "completion_notes": get_text_widget(mission_form_completion_notes),
                 "briefing_text": get_text_widget(mission_form_briefing),
                 "standing_rewards": mission_form_terms(mission_form_standings_var.get()),
                 "isk_reward": mission_form_isk_var.get(),
@@ -5343,6 +5385,7 @@ def run_overlay(
                 mission_form_faction_var,
                 mission_form_level_var,
                 mission_form_type_var,
+                mission_form_objective_var,
                 mission_form_isk_var,
                 mission_form_bonus_var,
                 mission_form_lp_var,
@@ -5354,6 +5397,8 @@ def run_overlay(
             ):
                 variable.set("")
             set_text_widget(mission_form_reward_notes, "")
+            set_text_widget(mission_form_completion_steps, "")
+            set_text_widget(mission_form_completion_notes, "")
             set_text_widget(mission_form_briefing, "")
             mission_status_var.set(f"New local mission entry. Saves to {USER_MISSION_LIBRARY_PATH}.")
 
@@ -5365,6 +5410,7 @@ def run_overlay(
             mission_form_faction_var.set(entry.faction)
             mission_form_level_var.set(entry.level)
             mission_form_type_var.set(entry.mission_type)
+            mission_form_objective_var.set(entry.objective_text)
             mission_form_isk_var.set(entry.isk_reward)
             mission_form_bonus_var.set(entry.bonus_isk_reward)
             mission_form_lp_var.set(entry.lp_reward)
@@ -5373,6 +5419,8 @@ def run_overlay(
             mission_form_source_var.set(entry.source)
             mission_form_source_url_var.set(entry.source_url)
             mission_form_tags_var.set(", ".join(entry.tags))
+            set_text_widget(mission_form_completion_steps, "\n".join(entry.completion_steps))
+            set_text_widget(mission_form_completion_notes, entry.completion_notes)
             set_text_widget(mission_form_reward_notes, entry.reward_notes)
             set_text_widget(mission_form_briefing, entry.briefing_text)
             mission_status_var.set(f"Loaded {entry.title} for local editing.")
@@ -5385,6 +5433,7 @@ def run_overlay(
                 include_rewards=mission_read_rewards_var.get(),
                 include_reward_notes=mission_read_reward_notes_var.get(),
                 include_source=mission_read_source_var.get(),
+                include_completion=mission_read_completion_var.get(),
                 include_briefing=mission_read_briefing_var.get(),
             )
 
@@ -5398,6 +5447,7 @@ def run_overlay(
                     include_rewards=mission_read_rewards_var.get(),
                     include_reward_notes=mission_read_reward_notes_var.get(),
                     include_source=mission_read_source_var.get(),
+                    include_completion=mission_read_completion_var.get(),
                     include_briefing=mission_read_briefing_var.get(),
                 )
                 save_settings(settings_path, settings)
@@ -5571,14 +5621,14 @@ def run_overlay(
         mission_query_var.trace_add("write", refresh_mission_tree)
 
         mission_editor_buttons = ttk.Frame(mission_editor_frame)
-        mission_editor_buttons.grid(row=10, column=1, columnspan=3, sticky="w", pady=(8, 0))
+        mission_editor_buttons.grid(row=12, column=1, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Button(mission_editor_buttons, text="New Mission", command=clear_mission_form).pack(side="left")
         ttk.Button(mission_editor_buttons, text="Edit Selected", command=edit_selected_mission).pack(side="left", padx=(6, 0))
         ttk.Button(mission_editor_buttons, text="Save Local Mission", command=save_mission_form).pack(side="left", padx=(6, 0))
         ttk.Button(mission_editor_buttons, text="Delete Local Override", command=delete_mission_form).pack(side="left", padx=(6, 0))
 
         mission_read_buttons = ttk.Frame(mission_read_frame)
-        mission_read_buttons.grid(row=4, column=1, sticky="w", pady=(8, 0))
+        mission_read_buttons.grid(row=5, column=1, sticky="w", pady=(8, 0))
         ttk.Button(mission_read_buttons, text="Save Read Format", command=persist_mission_read_settings).pack(side="left")
         ttk.Button(mission_read_buttons, text="Preview Spoken Text", command=preview_mission_spoken_text).pack(
             side="left",
@@ -6437,6 +6487,7 @@ def run_overlay(
             mission_read_rewards_var.set(settings.mission_read_include_rewards)
             mission_read_reward_notes_var.set(settings.mission_read_include_reward_notes)
             mission_read_source_var.set(settings.mission_read_include_source)
+            mission_read_completion_var.set(settings.mission_read_include_completion)
             mission_read_briefing_var.set(settings.mission_read_include_briefing)
             refresh_voice_listener_summary(settings)
             refresh_heard_phrases()

@@ -24,6 +24,9 @@ class MissionLibraryEntry:
     faction: str = ""
     level: str = ""
     mission_type: str = ""
+    objective_text: str = ""
+    completion_steps: tuple[str, ...] = ()
+    completion_notes: str = ""
     briefing_text: str = ""
     standing_rewards: tuple[str, ...] = ()
     isk_reward: str = ""
@@ -63,6 +66,7 @@ class MissionReadOptions:
     include_rewards: bool = True
     include_reward_notes: bool = True
     include_source: bool = False
+    include_completion: bool = True
     include_briefing: bool = True
 
 
@@ -101,6 +105,9 @@ def mission_entry_from_dict(payload: dict[str, Any]) -> MissionLibraryEntry:
         faction=clean_mission_text(payload.get("faction")),
         level=clean_mission_text(payload.get("level")),
         mission_type=clean_mission_text(payload.get("mission_type")),
+        objective_text=clean_mission_text(payload.get("objective_text")),
+        completion_steps=clean_mission_terms(payload.get("completion_steps")),
+        completion_notes=clean_mission_text(payload.get("completion_notes")),
         briefing_text=clean_mission_text(payload.get("briefing_text")),
         standing_rewards=clean_mission_terms(payload.get("standing_rewards")),
         isk_reward=clean_mission_text(payload.get("isk_reward")),
@@ -123,6 +130,9 @@ def mission_entry_to_dict(entry: MissionLibraryEntry) -> dict[str, Any]:
         "faction": entry.faction,
         "level": entry.level,
         "mission_type": entry.mission_type,
+        "objective_text": entry.objective_text,
+        "completion_steps": list(entry.completion_steps),
+        "completion_notes": entry.completion_notes,
         "briefing_text": entry.briefing_text,
         "standing_rewards": list(entry.standing_rewards),
         "isk_reward": entry.isk_reward,
@@ -220,6 +230,7 @@ def mission_read_options_from_dict(payload: dict[str, Any] | None) -> MissionRea
         include_rewards=bool(data.get("include_rewards", True)),
         include_reward_notes=bool(data.get("include_reward_notes", True)),
         include_source=bool(data.get("include_source", False)),
+        include_completion=bool(data.get("include_completion", True)),
         include_briefing=bool(data.get("include_briefing", True)),
     )
 
@@ -232,6 +243,7 @@ def mission_read_options_to_dict(options: MissionReadOptions) -> dict[str, Any]:
         "include_rewards": bool(options.include_rewards),
         "include_reward_notes": bool(options.include_reward_notes),
         "include_source": bool(options.include_source),
+        "include_completion": bool(options.include_completion),
         "include_briefing": bool(options.include_briefing),
     }
 
@@ -319,6 +331,15 @@ def mission_detail_text(entry: MissionLibraryEntry) -> str:
     lines.extend(("", "Rewards", entry.reward_summary))
     if entry.reward_notes:
         lines.append(f"Notes: {entry.reward_notes}")
+    completion_lines: list[str] = []
+    if entry.objective_text:
+        completion_lines.append(entry.objective_text)
+    for index, step in enumerate(entry.completion_steps, start=1):
+        completion_lines.append(f"{index}. {step}")
+    if entry.completion_notes:
+        completion_lines.append(f"Notes: {entry.completion_notes}")
+    if completion_lines:
+        lines.extend(("", "Completion", *completion_lines))
     lines.extend(("", "Briefing", entry.briefing_text or "No briefing text recorded."))
     if entry.source or entry.source_url:
         lines.extend(("", "Source", " - ".join(item for item in (entry.source, entry.source_url) if item)))
@@ -339,6 +360,14 @@ def mission_read_aloud_text(entry: MissionLibraryEntry, options: MissionReadOpti
         lines.append(f"Reward note: {entry.reward_notes}.")
     if read_options.include_source and (entry.source or entry.source_url):
         lines.append(f"Source: {'; '.join(item for item in (entry.source, entry.source_url) if item)}.")
+    if read_options.include_completion:
+        if entry.objective_text:
+            lines.append(f"Objective: {entry.objective_text}.")
+        if entry.completion_steps:
+            step_text = " ".join(f"Step {index}: {step}." for index, step in enumerate(entry.completion_steps, start=1))
+            lines.append(step_text)
+        if entry.completion_notes:
+            lines.append(f"Completion note: {entry.completion_notes}.")
     if read_options.include_briefing and entry.briefing_text:
         lines.append(entry.briefing_text)
     elif read_options.include_briefing:

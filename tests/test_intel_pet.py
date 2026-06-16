@@ -972,6 +972,9 @@ def test_mission_library_loads_searches_and_builds_read_aloud_text(tmp_path):
                         "mission_giver": "Military Career Agent",
                         "level": "Career",
                         "mission_type": "Combat tutorial",
+                        "objective_text": "Clear the pocket.",
+                        "completion_steps": ["Warp to the site", "Destroy the training pirate", "Report back"],
+                        "completion_notes": "Use the journal objective if it differs.",
                         "briefing_text": "Clear the training pocket and report back.",
                         "isk_reward": "12,000 ISK",
                         "item_rewards": ["Civilian module"],
@@ -992,6 +995,8 @@ def test_mission_library_loads_searches_and_builds_read_aloud_text(tmp_path):
     assert [entry.title for entry in entries] == ["Cash Flow for Capsuleers"]
     assert matches[0].mission_giver == "Military Career Agent"
     assert "12,000 ISK" in detail
+    assert "1. Warp to the site" in detail
+    assert "Objective: Clear the pocket." in spoken
     assert "Clear the training pocket" in spoken
 
 
@@ -1055,6 +1060,9 @@ def test_mission_read_aloud_options_control_spoken_sections():
         mission_giver="Military Career Agent",
         level="Career",
         mission_type="Combat tutorial",
+        objective_text="Clear the pocket.",
+        completion_steps=("Warp to the site", "Destroy the pirates"),
+        completion_notes="Return when the journal updates.",
         briefing_text="Clear the training pocket.",
         isk_reward="12,000 ISK",
         reward_notes="Verify in game.",
@@ -1076,6 +1084,9 @@ def test_mission_read_aloud_options_control_spoken_sections():
     assert "Mission giver" not in spoken
     assert "12,000 ISK" not in spoken
     assert "Source: Unit test." in spoken
+    assert "Objective: Clear the pocket." in spoken
+    assert "Step 1: Warp to the site." in spoken
+    assert "Completion note: Return when the journal updates." in spoken
     assert "Clear the training pocket." in spoken
 
 
@@ -1088,6 +1099,7 @@ def test_mission_read_settings_round_trip_through_intel_pet_settings():
         include_rewards=True,
         include_reward_notes=False,
         include_source=True,
+        include_completion=False,
         include_briefing=True,
     )
     loaded = IntelPetSettings.from_dict(settings.to_dict())
@@ -1096,6 +1108,7 @@ def test_mission_read_settings_round_trip_through_intel_pet_settings():
     assert loaded.mission_read_opener == "Agent briefing"
     assert options.include_giver is False
     assert options.include_source is True
+    assert options.include_completion is False
 
 
 def test_mission_voice_grammar_commands_include_read_and_cache_phrases():

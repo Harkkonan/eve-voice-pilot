@@ -219,10 +219,10 @@ Use `Options` > `Missions` to:
 
 - browse missions grouped by mission giver,
 - search by mission name, giver, faction, type, or tag,
-- inspect briefing text, source notes, standing rewards, ISK, LP, and item reward fields,
+- inspect briefing text, objective, completion steps, completion notes, source notes, standing rewards, ISK, LP, and item reward fields,
 - edit or add local mission entries,
 - save starter mission edits as local overrides,
-- change the read-aloud format, including whether the pet speaks giver, level/type, rewards, reward notes, source, and briefing text,
+- change the read-aloud format, including whether the pet speaks giver, level/type, rewards, reward notes, source, completion details, and briefing text,
 - preview the exact spoken text before generating audio,
 - `Read Selected` with the configured pet voice,
 - `Cache Selected`, `Cache Visible`, or `Cache All` mission read-aloud clips.

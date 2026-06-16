@@ -14,6 +14,14 @@
       "faction": "Sisters of EVE",
       "level": "Epic Arc",
       "mission_type": "New pilot / story arc",
+      "objective_text": "Follow the Sisters of EVE epic arc chain and complete each offered objective in sequence.",
+      "completion_steps": [
+        "Accept the current epic arc mission from the active arc agent.",
+        "Read the in-game objective for the current step before undocking.",
+        "Travel to the listed destination, complete the combat, delivery, or conversation objective, then return or report as instructed.",
+        "Use the final branch choice carefully because the standing reward depends on the faction selected."
+      ],
+      "completion_notes": "This starter entry summarizes the arc. Exact step objectives should come from the in-game agent offer or a licensed mission import.",
       "briefing_text": "A Sisters of EVE arc briefing. The pet knows this as a high-level local reference only; read the in-game agent window for the exact current objective before accepting or undocking.",
       "standing_rewards": [
         "Faction standing reward varies by final arc choice"
@@ -42,6 +50,14 @@
       "faction": "Empire career agents",
       "level": "Career",
       "mission_type": "Combat tutorial",
+      "objective_text": "Complete the military career-agent combat lesson currently offered in the chain.",
+      "completion_steps": [
+        "Accept the career-agent step.",
+        "Fit the provided or recommended beginner combat equipment.",
+        "Warp to the mission location, destroy or interact with the requested targets, then return to the agent.",
+        "Check the in-game mission journal for exact target names and delivery requirements."
+      ],
+      "completion_notes": "Career-agent steps vary by empire faction and mission number.",
       "briefing_text": "A military career agent sends the pilot through early combat lessons. The local library keeps only a safe summary until source-backed briefing text is imported.",
       "standing_rewards": [
         "Career-agent standing changes vary by agent and character"
@@ -70,6 +86,14 @@
       "faction": "Empire career agents",
       "level": "Career",
       "mission_type": "Business tutorial",
+      "objective_text": "Complete the business career-agent lesson for hauling, trading, or market basics.",
+      "completion_steps": [
+        "Accept the business career-agent step.",
+        "Collect, buy, haul, or deliver the requested item shown in the in-game objective.",
+        "Use the destination in the mission journal rather than guessing from memory.",
+        "Return to the agent and complete the step once the required item or task is satisfied."
+      ],
+      "completion_notes": "Exact items and route details vary by faction and step.",
       "briefing_text": "A business career agent introduces hauling, markets, and practical capsuleer commerce. The pet summary is only a local reference; use the agent offer for the exact task.",
       "standing_rewards": [
         "Career-agent standing changes vary by agent and character"
@@ -98,6 +122,14 @@
       "faction": "Empire career agents",
       "level": "Career",
       "mission_type": "Industry tutorial",
+      "objective_text": "Complete the industry career-agent production, mining, or delivery lesson currently offered.",
+      "completion_steps": [
+        "Accept the industry career-agent step.",
+        "Mine, manufacture, refine, or haul the required item shown in the mission journal.",
+        "Wait for any manufacturing job to finish before trying to complete the mission.",
+        "Deliver the required item to the agent or destination listed in game."
+      ],
+      "completion_notes": "Blueprint, material, and item requirements vary by faction and mission step.",
       "briefing_text": "An industry career agent walks the pilot through mining, manufacturing, and basic production flow. Exact minerals, items, and rewards should come from the in-game mission offer or a licensed mission data import.",
       "standing_rewards": [
         "Career-agent standing changes vary by agent and character"
@@ -127,6 +159,14 @@
       "faction": "Empire security agents",
       "level": "Level 1",
       "mission_type": "Security encounter",
+      "objective_text": "Run the security encounter and satisfy the agent's listed combat objective.",
+      "completion_steps": [
+        "Accept the mission and review the in-game objective.",
+        "Fit an appropriate combat ship for a level 1 encounter.",
+        "Warp to the mission pocket and destroy the hostile NPCs or recover the requested item.",
+        "Return to the agent when the journal marks the objective complete."
+      ],
+      "completion_notes": "This starter entry is generic; exact pocket behavior should come from a licensed mission report or the live agent window.",
       "briefing_text": "A security agent sends the pilot into a small combat encounter. This starter text is a safe local summary, not a copied agent briefing.",
       "standing_rewards": [
         "Agent and corporation standing changes vary"
