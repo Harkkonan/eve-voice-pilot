@@ -220,6 +220,10 @@ Use `Options` > `Missions` to:
 - browse missions grouped by mission giver,
 - search by mission name, giver, faction, type, or tag,
 - inspect briefing text, source notes, standing rewards, ISK, LP, and item reward fields,
+- edit or add local mission entries,
+- save starter mission edits as local overrides,
+- change the read-aloud format, including whether the pet speaks giver, level/type, rewards, reward notes, source, and briefing text,
+- preview the exact spoken text before generating audio,
 - `Read Selected` with the configured pet voice,
 - `Cache Selected`, `Cache Visible`, or `Cache All` mission read-aloud clips.
 
@@ -245,7 +249,9 @@ To expand it locally, create:
 profiles\intel_pet_missions.json
 ```
 
-That personal file is ignored by git. Full mission text and exact reward data should be imported only from a source whose license and attribution are recorded. EVE mission ISK, LP, bonus, and standing outcomes can vary by agent, system, skills, and server-side balancing, so the in-game agent offer remains the source of truth before accepting a mission.
+The Missions tab can create and update that file for you. That personal file is ignored by git. Entries there add to or override bundled starter missions by mission ID, so you can edit a starter entry without changing the tracked starter data. `Delete Local Override` removes only your ignored local copy; the bundled starter entry remains available after reload.
+
+Full mission text and exact reward data should be imported only from a source whose license and attribution are recorded. EVE mission ISK, LP, bonus, and standing outcomes can vary by agent, system, skills, and server-side balancing, so the in-game agent offer remains the source of truth before accepting a mission.
 
 ## Optional Voice Command Listener
 

@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from eve_voice_pilot.corp_intel import ChannelFilter, ChatMessage, CorpIntelError, EveSsoConfig, watch_chat_logs
 import eve_voice_pilot.intel_pet as intel_pet_module
+import eve_voice_pilot.mission_library as mission_library_module
 from eve_voice_pilot.intel_pet import (
     ALERT_SPRITE_SEQUENCE,
     AURA_BUBBLE_NODE_COUNT,
@@ -115,6 +116,7 @@ from eve_voice_pilot.intel_pet import (
     load_sprite_frames,
     mission_action_from_text,
     mission_cheer_from_game_log_line,
+    mission_read_options_from_settings,
     mission_voice_grammar_commands,
     mission_voice_status_from_transcript,
     import_settings,
@@ -134,6 +136,7 @@ from eve_voice_pilot.intel_pet import (
     replace_extra_keywords,
     replace_spoken_alert_kinds,
     replace_voice_settings,
+    replace_mission_read_settings,
     robot_miner_sprite_frame_paths,
     save_settings,
     save_discord_note_settings,
@@ -166,12 +169,18 @@ from eve_voice_pilot.local_transcription import DEFAULT_MODEL_PATH, RECOMMENDED_
 from eve_voice_pilot.local_whisper import DEFAULT_LOCAL_WHISPER_MODEL
 from eve_voice_pilot.mission_library import (
     DEFAULT_MISSION_LIBRARY_PATH,
+    MissionReadOptions,
     MissionLibraryEntry,
+    USER_MISSION_LIBRARY_PATH,
+    delete_user_mission_entry,
     find_mission_entries,
     load_mission_library,
+    load_user_mission_library,
     mission_detail_text,
     mission_entry_from_dict,
     mission_read_aloud_text,
+    save_mission_library,
+    upsert_user_mission_entry,
 )
 from eve_voice_pilot.speech_responses import RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_WINDOWS
 
@@ -993,12 +1002,100 @@ def test_default_mission_library_starter_file_is_loadable():
     assert any(entry.title == "The Blood-Stained Stars" for entry in entries)
 
 
+def test_mission_library_merges_user_overrides_with_starter(tmp_path, monkeypatch):
+    default_path = tmp_path / "starter.json"
+    user_path = tmp_path / "user.json"
+    save_mission_library(
+        default_path,
+        (
+            MissionLibraryEntry(id="starter", title="Starter Mission", mission_giver="Starter Agent"),
+            MissionLibraryEntry(id="override-me", title="Original Mission", mission_giver="Old Agent"),
+        ),
+    )
+    save_mission_library(
+        user_path,
+        (
+            MissionLibraryEntry(id="override-me", title="Changed Mission", mission_giver="New Agent"),
+            MissionLibraryEntry(id="local-only", title="Local Mission", mission_giver="Local Agent"),
+        ),
+    )
+    monkeypatch.setattr(mission_library_module, "DEFAULT_MISSION_LIBRARY_PATH", default_path)
+    monkeypatch.setattr(mission_library_module, "USER_MISSION_LIBRARY_PATH", user_path)
+
+    entries = load_mission_library()
+
+    assert [entry.id for entry in entries] == ["local-only", "override-me", "starter"]
+    assert next(entry for entry in entries if entry.id == "override-me").title == "Changed Mission"
+
+
+def test_upsert_and_delete_user_mission_entry_use_ignored_profile_path(tmp_path, monkeypatch):
+    user_path = tmp_path / "intel_pet_missions.json"
+    monkeypatch.setattr(mission_library_module, "USER_MISSION_LIBRARY_PATH", user_path)
+
+    upsert_user_mission_entry(MissionLibraryEntry(id="custom", title="Custom Mission"))
+
+    assert user_path.exists()
+    assert load_user_mission_library()[0].title == "Custom Mission"
+    delete_user_mission_entry("custom")
+    assert load_user_mission_library() == ()
+
+
 def test_mission_entry_defaults_reward_summary_when_rewards_are_missing():
     entry = mission_entry_from_dict({"title": "Mystery Mission"})
 
     assert entry.id == "mystery-mission"
     assert entry.reward_summary == "Rewards are not recorded for this mission."
     assert "No mission briefing text is recorded" in mission_read_aloud_text(entry)
+
+
+def test_mission_read_aloud_options_control_spoken_sections():
+    entry = MissionLibraryEntry(
+        id="cash-flow",
+        title="Cash Flow for Capsuleers",
+        mission_giver="Military Career Agent",
+        level="Career",
+        mission_type="Combat tutorial",
+        briefing_text="Clear the training pocket.",
+        isk_reward="12,000 ISK",
+        reward_notes="Verify in game.",
+        source="Unit test",
+    )
+    options = MissionReadOptions(
+        opener="Aura mission readout",
+        include_giver=False,
+        include_level=False,
+        include_rewards=False,
+        include_reward_notes=False,
+        include_source=True,
+        include_briefing=True,
+    )
+
+    spoken = mission_read_aloud_text(entry, options)
+
+    assert spoken.startswith("Aura mission readout for Cash Flow for Capsuleers.")
+    assert "Mission giver" not in spoken
+    assert "12,000 ISK" not in spoken
+    assert "Source: Unit test." in spoken
+    assert "Clear the training pocket." in spoken
+
+
+def test_mission_read_settings_round_trip_through_intel_pet_settings():
+    settings = replace_mission_read_settings(
+        IntelPetSettings(),
+        opener="Agent briefing",
+        include_giver=False,
+        include_level=False,
+        include_rewards=True,
+        include_reward_notes=False,
+        include_source=True,
+        include_briefing=True,
+    )
+    loaded = IntelPetSettings.from_dict(settings.to_dict())
+    options = mission_read_options_from_settings(loaded)
+
+    assert loaded.mission_read_opener == "Agent briefing"
+    assert options.include_giver is False
+    assert options.include_source is True
 
 
 def test_mission_voice_grammar_commands_include_read_and_cache_phrases():
@@ -1027,6 +1124,7 @@ def test_mission_voice_status_reads_matching_mission_without_key_dispatch():
         (entry,),
         response_call_sign="Aura",
         voice_engine=VOICE_ENGINE_WHISPER,
+        read_options=MissionReadOptions(include_rewards=False),
         play_text=lambda text, label: played.append((text, label)),
     )
 
@@ -1035,6 +1133,7 @@ def test_mission_voice_status_reads_matching_mission_without_key_dispatch():
     assert "Reading: Cash Flow for Capsuleers" in status.detail
     assert played
     assert "Clear the training pocket" in played[0][0]
+    assert "12,000 ISK" not in played[0][0]
 
 
 def test_mission_voice_status_can_queue_cache_instead_of_playing():

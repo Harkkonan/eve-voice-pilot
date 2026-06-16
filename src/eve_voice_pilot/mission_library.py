@@ -55,6 +55,17 @@ class MissionLibraryEntry:
         return "; ".join(parts) or "Rewards are not recorded for this mission."
 
 
+@dataclass(frozen=True)
+class MissionReadOptions:
+    opener: str = "Mission briefing"
+    include_giver: bool = True
+    include_level: bool = True
+    include_rewards: bool = True
+    include_reward_notes: bool = True
+    include_source: bool = False
+    include_briefing: bool = True
+
+
 def clean_mission_text(value: Any) -> str:
     return normalize_response_text(str(value or ""))
 
@@ -125,8 +136,8 @@ def mission_entry_to_dict(entry: MissionLibraryEntry) -> dict[str, Any]:
     }
 
 
-def load_mission_library(path: Path | None = None) -> tuple[MissionLibraryEntry, ...]:
-    library_path = mission_library_path(path)
+def load_mission_entries_from_path(path: Path) -> tuple[MissionLibraryEntry, ...]:
+    library_path = path.expanduser()
     if not library_path.exists():
         return ()
     payload = json.loads(library_path.read_text(encoding="utf-8"))
@@ -136,8 +147,22 @@ def load_mission_library(path: Path | None = None) -> tuple[MissionLibraryEntry,
         mission_payloads = payload.get("missions", [])
     else:
         raise ValueError(f"Mission library should be a JSON object or array: {library_path}")
-    entries = [mission_entry_from_dict(item) for item in mission_payloads if isinstance(item, dict)]
+    return tuple(mission_entry_from_dict(item) for item in mission_payloads if isinstance(item, dict))
+
+
+def sorted_mission_entries(entries: Iterable[MissionLibraryEntry]) -> tuple[MissionLibraryEntry, ...]:
     return tuple(sorted(entries, key=lambda entry: (entry.giver_label.casefold(), entry.title.casefold())))
+
+
+def load_mission_library(path: Path | None = None) -> tuple[MissionLibraryEntry, ...]:
+    if path is not None:
+        return sorted_mission_entries(load_mission_entries_from_path(path))
+    merged: dict[str, MissionLibraryEntry] = {}
+    for entry in load_mission_entries_from_path(DEFAULT_MISSION_LIBRARY_PATH):
+        merged[entry.id] = entry
+    for entry in load_mission_entries_from_path(USER_MISSION_LIBRARY_PATH):
+        merged[entry.id] = entry
+    return sorted_mission_entries(merged.values())
 
 
 def mission_library_path(path: Path | None = None) -> Path:
@@ -146,6 +171,69 @@ def mission_library_path(path: Path | None = None) -> Path:
     if USER_MISSION_LIBRARY_PATH.exists():
         return USER_MISSION_LIBRARY_PATH
     return DEFAULT_MISSION_LIBRARY_PATH
+
+
+def save_mission_library(path: Path, entries: Iterable[MissionLibraryEntry]) -> None:
+    mission_entries = sorted_mission_entries(entries)
+    payload = {
+        "version": MISSION_LIBRARY_VERSION,
+        "notes": [
+            "Local Intel Pet mission library. This file is ignored by git.",
+            "Entries here add to or override bundled starter missions by id.",
+        ],
+        "missions": [mission_entry_to_dict(entry) for entry in mission_entries],
+    }
+    library_path = path.expanduser()
+    library_path.parent.mkdir(parents=True, exist_ok=True)
+    library_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def load_user_mission_library() -> tuple[MissionLibraryEntry, ...]:
+    return sorted_mission_entries(load_mission_entries_from_path(USER_MISSION_LIBRARY_PATH))
+
+
+def save_user_mission_library(entries: Iterable[MissionLibraryEntry]) -> None:
+    save_mission_library(USER_MISSION_LIBRARY_PATH, entries)
+
+
+def upsert_user_mission_entry(entry: MissionLibraryEntry) -> tuple[MissionLibraryEntry, ...]:
+    entries = {current.id: current for current in load_user_mission_library()}
+    entries[entry.id] = entry
+    save_user_mission_library(entries.values())
+    return load_user_mission_library()
+
+
+def delete_user_mission_entry(entry_id: str) -> tuple[MissionLibraryEntry, ...]:
+    clean_id = clean_mission_text(entry_id)
+    entries = [entry for entry in load_user_mission_library() if entry.id != clean_id]
+    save_user_mission_library(entries)
+    return tuple(entries)
+
+
+def mission_read_options_from_dict(payload: dict[str, Any] | None) -> MissionReadOptions:
+    data = payload or {}
+    opener = clean_mission_text(data.get("opener")) or MissionReadOptions.opener
+    return MissionReadOptions(
+        opener=opener,
+        include_giver=bool(data.get("include_giver", True)),
+        include_level=bool(data.get("include_level", True)),
+        include_rewards=bool(data.get("include_rewards", True)),
+        include_reward_notes=bool(data.get("include_reward_notes", True)),
+        include_source=bool(data.get("include_source", False)),
+        include_briefing=bool(data.get("include_briefing", True)),
+    )
+
+
+def mission_read_options_to_dict(options: MissionReadOptions) -> dict[str, Any]:
+    return {
+        "opener": clean_mission_text(options.opener) or MissionReadOptions.opener,
+        "include_giver": bool(options.include_giver),
+        "include_level": bool(options.include_level),
+        "include_rewards": bool(options.include_rewards),
+        "include_reward_notes": bool(options.include_reward_notes),
+        "include_source": bool(options.include_source),
+        "include_briefing": bool(options.include_briefing),
+    }
 
 
 def grouped_missions_by_giver(entries: Iterable[MissionLibraryEntry]) -> dict[str, tuple[MissionLibraryEntry, ...]]:
@@ -231,26 +319,28 @@ def mission_detail_text(entry: MissionLibraryEntry) -> str:
     lines.extend(("", "Rewards", entry.reward_summary))
     if entry.reward_notes:
         lines.append(f"Notes: {entry.reward_notes}")
-    lines.extend(("", "Briefing", entry.briefing_text or "No briefing text recorded.")
-    )
+    lines.extend(("", "Briefing", entry.briefing_text or "No briefing text recorded."))
     if entry.source or entry.source_url:
         lines.extend(("", "Source", " - ".join(item for item in (entry.source, entry.source_url) if item)))
     return "\n".join(lines)
 
 
-def mission_read_aloud_text(entry: MissionLibraryEntry) -> str:
-    lines = [
-        f"Mission briefing for {entry.title}.",
-        f"Mission giver: {entry.giver_label}.",
-    ]
-    if entry.level or entry.mission_type:
+def mission_read_aloud_text(entry: MissionLibraryEntry, options: MissionReadOptions | None = None) -> str:
+    read_options = options or MissionReadOptions()
+    opener = clean_mission_text(read_options.opener) or MissionReadOptions.opener
+    lines = [f"{opener} for {entry.title}."]
+    if read_options.include_giver:
+        lines.append(f"Mission giver: {entry.giver_label}.")
+    if read_options.include_level and (entry.level or entry.mission_type):
         lines.append(f"Level and type: {'; '.join(item for item in (entry.level, entry.mission_type) if item)}.")
-    if entry.reward_summary:
+    if read_options.include_rewards and entry.reward_summary:
         lines.append(f"Known rewards: {entry.reward_summary}.")
-    if entry.reward_notes:
+    if read_options.include_reward_notes and entry.reward_notes:
         lines.append(f"Reward note: {entry.reward_notes}.")
-    if entry.briefing_text:
+    if read_options.include_source and (entry.source or entry.source_url):
+        lines.append(f"Source: {'; '.join(item for item in (entry.source, entry.source_url) if item)}.")
+    if read_options.include_briefing and entry.briefing_text:
         lines.append(entry.briefing_text)
-    else:
+    elif read_options.include_briefing:
         lines.append("No mission briefing text is recorded in the local mission library yet.")
     return normalize_response_text(" ".join(lines))
