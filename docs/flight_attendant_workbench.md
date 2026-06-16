@@ -1,6 +1,6 @@
 # Flight Attendant Workbench
 
-Flight Attendant Workbench is a local-only operator panel for managing the Corp Market / Flight Attendant development and VM workflow.
+Flight Attendant Workbench is a local-only operator panel for the Corp Market / Flight Attendant development and public-site update workflow.
 
 It is not a corp-facing page. It binds to `127.0.0.1` by default and should not be put behind a tunnel, reverse proxy, router port forward, or public hosting setup.
 
@@ -32,7 +32,7 @@ VM and SSH details are read from an ignored local file:
 profiles/flight_workbench.local.json
 ```
 
-Create that file when you want VM buttons to work:
+Create that file when you want the public-site update button to work:
 
 ```json
 {
@@ -41,11 +41,8 @@ Create that file when you want VM buttons to work:
   "ssh_key_path": "C:\\Users\\YOUR_WINDOWS_USER\\.ssh\\YOUR_OCI_KEY.key",
   "local_app_host": "127.0.0.1",
   "local_app_port": 8770,
-  "tunnel_local_port": 8770,
-  "tunnel_remote_host": "127.0.0.1",
-  "tunnel_remote_port": 8770,
   "vm_app_dir": "/home/ubuntu/apps/eve-voice-pilot",
-  "vm_service_name": "eve-flight.service"
+  "vm_public_base_url": "https://market.brianridderbusch.net"
 }
 ```
 
@@ -61,76 +58,52 @@ profiles/flight_workbench_actions.jsonl
 
 The Configuration panel can save non-secret public-hosting settings in the same ignored local config file:
 
-- public base URL, such as `https://YOUR-DOMAIN/`
-- SSO callback URL, such as `https://YOUR-DOMAIN/flight/callback`
+- public base URL, such as `https://market.brianridderbusch.net`
+- SSO callback URL, such as `https://market.brianridderbusch.net/flight/callback`
 - allowed EVE character IDs
 - allowed corporation IDs
 - allowed alliance IDs
+- allow-any-authenticated mode
 - public-hosting mode on/off
 - trusted member market-write mode on/off
 
-Use `Save Public Config` after editing those fields. `Start Local Server` passes the saved public-hosting settings into the local Corp Market process, so you do not need to paste those non-secret public variables into PowerShell for normal workbench-started local testing. SSO client ID and secret are still read from your private Windows User environment or process environment and are intentionally not edited by the Workbench.
+Use `Save Public Config` after editing those fields. `Start Local Site` passes the saved public-hosting settings into the local Corp Market process, so you do not need to paste those non-secret public variables into PowerShell for normal workbench-started local testing. SSO client ID and secret are still read from your private Windows User environment or process environment and are intentionally not edited by the Workbench.
 
-Use `Apply VM Public Config` to write the saved public-hosting settings to `/home/ubuntu/.eve-flight-env` on the configured VM and restart the configured service. This action preserves existing SSO client ID/secret lines and does not display or rotate secrets.
+The public deploy button assumes the VM `.env` and Docker Compose deployment are already configured. It does not rotate secrets or edit the EVE Developer application for you.
 
 Keep the EVE Developer portal callback in sync manually. If the saved callback URL is:
 
 ```text
-https://YOUR-DOMAIN/flight/callback
+https://market.brianridderbusch.net/flight/callback
 ```
 
 then the EVE Developer application must use that exact callback URL.
 
 ## Button Boundaries
 
-The first version allows fixed, allowlisted actions only:
+The simplified workbench exposes only fixed, allowlisted actions:
 
-- Start or stop the local Corp Market server through `scripts/run_corp_market.ps1`.
-- Start or stop an optional local SSH tunnel from the saved config for operator
-  access to a VM loopback service. This is not the public hosting path. The
-  local app host and tunnel remote host must stay loopback-only.
-- Check local `/api/health` and `/api/flight/diagnostics`.
-- Check static cache preflight.
-- Run local `git status --short --branch` and `git diff --check`.
-- Run fixed SSH checks for VM health, service status, service restart, service logs, and VM Git status.
-- Save non-secret public-hosting config locally and apply it to the configured VM env file.
-- Fast-forward the configured VM checkout from GitHub, install `requirements.txt`, restart the configured VM service, and show service status.
-- Run the same VM update with built-in Git status and local health verification.
-- Check VM public-hosting readiness without changing Oracle networking, DNS, SSO secrets, or reverse-proxy config.
+- `Verify Local`: runs local Git status, `git diff --check`, static cache diagnostics, and local-site health. If the local site is not running, this tells you to start it before browser testing instead of failing the whole verification.
+- `Start Local Site`: starts Corp Market through `scripts/run_corp_market.ps1`.
+- `Stop Local Site`: stops the managed local site or a recognized stale local Corp Market listener.
+- `Update market.brianridderbusch.net`: connects to the configured VM over SSH, refuses dirty VM worktrees, runs `git pull --ff-only`, rebuilds/restarts `corp-market` and `caddy` with Docker Compose, checks VM-local `/api/health`, and runs the public smoke script against the public URL.
+- `View Deploy Logs`: reads recent Docker Compose logs for `corp-market` and `caddy` on the VM.
 
 The workbench does not accept arbitrary shell commands from the browser.
 
-## Routine VM Update
+## Routine Public Site Update
 
-After a local change has been tested, committed, and pushed to GitHub, use the VM buttons in this order:
-
-```text
-VM Git Status
-Update VM + Verify
-Tail VM Logs
-```
-
-`Update VM + Verify` refuses to continue if the VM checkout has uncommitted local changes. It uses `git pull --ff-only`, so it also refuses merge commits or conflict resolution on the VM. It restarts the configured service, checks VM Git status, and fetches the VM-local `/api/health` endpoint.
-
-Use `Update VM App` when you only want the update/restart portion. Use `Service Status`, `VM Health`, and `Tail VM Logs` when you need more detail.
-
-## Public Hosting Readiness
-
-Use `Public Readiness` before opening the site to other people. It checks the VM over SSH and reports:
+After a local change has been tested, committed, pushed to GitHub, and is ready for the public site, use:
 
 ```text
-eve-flight.service state
-local /api/health
-local /api/flight/diagnostics
-public-hosting mode
-HTTPS public base URL
-callback/public-base match
-SSO configured
-corp/alliance member allowlist configured
-Caddy installed and active
+Verify Local
+Start Local Site
+Update market.brianridderbusch.net
 ```
 
-This button is read-only. It does not install Caddy, edit Oracle firewall rules, change DNS, rotate secrets, or update the EVE Developers portal callback.
+Use `View Deploy Logs` only when the deploy button reports a problem or the public site behaves unexpectedly.
+
+`Update market.brianridderbusch.net` refuses to continue if the VM checkout has uncommitted local changes. It uses `git pull --ff-only`, so it also refuses merge commits or conflict resolution on the VM. The button updates the Docker Compose deployment and then verifies both the VM-local health endpoint and the public HTTPS site.
 
 ## Manual-Only Work
 
@@ -142,8 +115,7 @@ Keep these outside the workbench for now:
 - Oracle instance creation, termination, VCN changes, firewall rules, and security list edits.
 - First SSH host-key trust prompts.
 - Git push, Git reset, cleanup commands, and any Git operation other than the fixed VM fast-forward update button.
-- Public hosting, Cloudflare tunnel-token setup, and production DNS/proxy
-  changes.
+- DNS, Cloudflare zone settings, Caddyfile changes, and first-time Docker/Compose installation.
 
 ## Security Notes
 

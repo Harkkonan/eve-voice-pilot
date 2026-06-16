@@ -38,6 +38,7 @@ DEFAULT_TUNNEL_REMOTE_PORT = 8770
 DEFAULT_LOCAL_APP_HOST = "127.0.0.1"
 DEFAULT_VM_APP_DIR = "/home/ubuntu/apps/eve-voice-pilot"
 DEFAULT_VM_SERVICE_NAME = "eve-flight.service"
+DEFAULT_PUBLIC_SITE_URL = "https://market.brianridderbusch.net"
 ACTION_OUTPUT_LIMIT = 8000
 RECENT_ACTION_LIMIT = 20
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -897,6 +898,60 @@ def local_health_action(config: WorkbenchConfig) -> CommandResult:
     )
 
 
+def public_site_base_url(config: WorkbenchConfig) -> str:
+    return (config.vm_public_base_url or DEFAULT_PUBLIC_SITE_URL).strip().rstrip("/") or DEFAULT_PUBLIC_SITE_URL
+
+
+def check_public_site_health(config: WorkbenchConfig, *, timeout_seconds: float = 1.5) -> dict[str, Any]:
+    base_url = public_site_base_url(config)
+    url = f"{base_url}/api/health"
+    try:
+        payload = fetch_json(url, timeout_seconds=timeout_seconds)
+    except WorkbenchError as exc:
+        return {"ok": False, "url": url, "detail": str(exc)}
+    return {"ok": bool(payload.get("ok")), "url": url, "payload": payload}
+
+
+def format_step_result(label: str, result: CommandResult) -> str:
+    lines = [
+        f"== {label} ==",
+        f"OK: {'yes' if result.ok else 'no'}",
+        f"Summary: {result.summary}",
+    ]
+    if result.output.strip():
+        lines.extend(["", result.output.strip()])
+    return "\n".join(lines)
+
+
+def verify_local_action(config: WorkbenchConfig) -> CommandResult:
+    git_status = local_git_status(config)
+    diff_check = git_diff_check(config)
+    cache_check = cache_preflight_action(config)
+    health = check_local_health(config, timeout_seconds=1.0)
+    if health["ok"]:
+        local_check = local_health_action(config)
+    else:
+        local_check = CommandResult(
+            ok=True,
+            summary="Local site is not running; start it before browser testing.",
+            output=json.dumps({"health": health}, indent=2),
+            data={"health": health, "skipped_diagnostics": True},
+        )
+    steps = [
+        ("Git Status", git_status),
+        ("Diff Whitespace Check", diff_check),
+        ("Static Caches", cache_check),
+        ("Local Site Health", local_check),
+    ]
+    ok = all(result.ok for _, result in steps)
+    return CommandResult(
+        ok=ok,
+        summary="Local machine checks passed." if ok else "One or more local checks need attention.",
+        output="\n\n".join(format_step_result(label, result) for label, result in steps),
+        data={label.lower().replace(" ", "_"): result.data or {"summary": result.summary} for label, result in steps},
+    )
+
+
 def cache_preflight_action(config: WorkbenchConfig) -> CommandResult:
     from eve_voice_pilot.corp_market import build_static_cache_diagnostics
 
@@ -919,7 +974,7 @@ def local_server_start(config: WorkbenchConfig) -> CommandResult:
             return CommandResult(
                 ok=True,
                 summary="Corp Market is already answering, but it is not managed by this Workbench.",
-                output=f"Recognized local Corp Market listener PID(s): {pids}\nUse Stop Local Server first if you need a fresh reload.",
+                output=f"Recognized local Corp Market listener PID(s): {pids}\nUse Stop Local Site first if you need a fresh reload.",
                 data={"processes": public_process_summary(processes)},
             )
         return CommandResult(ok=True, summary="Corp Market is already answering on the configured local URL.")
@@ -990,7 +1045,7 @@ def local_server_stop(config: WorkbenchConfig) -> CommandResult:
                 summary="Corp Market is answering through the configured SSH tunnel.",
                 output=(
                     f"Port {config.local_app_port} is owned by SSH tunnel PID(s): {pids}.\n"
-                    "Use Stop Managed Tunnel to close the tunnel, then start the local server again."
+                    "Close that SSH process manually, then start the local site again."
                 ),
                 data={"tunnel_processes": public_process_summary(tunnel_processes)},
             )
@@ -1226,8 +1281,7 @@ def vm_apply_public_config(config: WorkbenchConfig) -> CommandResult:
 
 def vm_update_and_restart(config: WorkbenchConfig) -> CommandResult:
     app_dir = validate_remote_path(config.vm_app_dir, "VM app directory")
-    service = validate_remote_name(config.vm_service_name, "VM service name")
-    remote_command = build_vm_update_command(app_dir, service, verify=False)
+    remote_command = build_vm_compose_update_command(app_dir, public_site_base_url(config), verify=False)
     return run_ssh_command(
         config,
         remote_command,
@@ -1237,13 +1291,45 @@ def vm_update_and_restart(config: WorkbenchConfig) -> CommandResult:
 
 def vm_update_and_verify(config: WorkbenchConfig) -> CommandResult:
     app_dir = validate_remote_path(config.vm_app_dir, "VM app directory")
-    service = validate_remote_name(config.vm_service_name, "VM service name")
-    remote_command = build_vm_update_command(app_dir, service, verify=True)
+    remote_command = build_vm_compose_update_command(app_dir, public_site_base_url(config), verify=True)
     return run_ssh_command(
         config,
         remote_command,
         timeout_seconds=max(120.0, config.command_timeout_seconds),
     )
+
+
+def build_vm_compose_update_command(app_dir: str, public_base_url: str, *, verify: bool) -> str:
+    command = (
+        "set -e; "
+        f"cd {app_dir}; "
+        'branch="$(git rev-parse --abbrev-ref HEAD)"; '
+        'echo "Branch: $branch"; '
+        'if [ -n "$(git status --porcelain)" ]; then '
+        'echo "VM working tree has local changes; refusing to update."; '
+        "git status --short; "
+        "exit 3; "
+        "fi; "
+        'git pull --ff-only origin "$branch"; '
+        "sudo -n docker compose up -d --build corp-market caddy; "
+        "sudo -n docker compose ps"
+    )
+    if verify:
+        command += (
+            "; "
+            'echo "Git status:"; '
+            "git status --short --branch; "
+            'echo "Local health:"; '
+            "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do "
+            "if curl -fsS http://127.0.0.1:8770/api/health 2>/dev/null; then break; fi; "
+            'if [ "$attempt" = "15" ]; then echo "Health check did not answer after 15 seconds."; exit 7; fi; '
+            "sleep 1; "
+            "done; "
+            'echo; '
+            'echo "Public smoke:"; '
+            f"sh deploy/scripts/smoke-corp-market.sh {shlex.quote(public_base_url)}"
+        )
+    return command
 
 
 def build_vm_update_command(app_dir: str, service: str, *, verify: bool) -> str:
@@ -1286,14 +1372,10 @@ def build_vm_update_command(app_dir: str, service: str, *, verify: bool) -> str:
 
 
 def vm_logs_tail(config: WorkbenchConfig) -> CommandResult:
-    service = validate_remote_name(config.vm_service_name, "VM service name")
+    app_dir = validate_remote_path(config.vm_app_dir, "VM app directory")
     return run_ssh_command(
         config,
-        (
-            'if [ -x "$HOME/bin/eve-flight-logs" ]; then '
-            '"$HOME/bin/eve-flight-logs" | tail -n 120; '
-            f"else journalctl -u {service} -n 120 --no-pager; fi"
-        ),
+        f"cd {app_dir} && sudo -n docker compose logs --tail=120 corp-market caddy",
         timeout_seconds=max(30.0, config.command_timeout_seconds),
     )
 
@@ -1529,23 +1611,44 @@ def tunnel_stop(config: WorkbenchConfig) -> CommandResult:
 
 def action_definitions() -> dict[str, ActionDefinition]:
     actions = [
-        ActionDefinition("local_health", "Check Local Health", "Health Checks", "Fetch /api/health and diagnostics.", local_health_action),
-        ActionDefinition("cache_preflight", "Check Static Caches", "Health Checks", "Read local cache preflight status.", cache_preflight_action),
-        ActionDefinition("git_status", "Git Status", "Git", "Show local Git branch and dirty state.", local_git_status),
-        ActionDefinition("git_diff_check", "Diff Whitespace Check", "Git", "Run git diff --check.", git_diff_check),
-        ActionDefinition("local_server_start", "Start Local Server", "Local Server", "Start Corp Market through the existing wrapper.", local_server_start, True),
-        ActionDefinition("local_server_stop", "Stop Local Server", "Local Server", "Stop the managed server or a recognized stale Corp Market listener.", local_server_stop, True),
-        ActionDefinition("tunnel_start", "Start SSH Tunnel", "SSH Tunnel", "Start the configured local SSH tunnel.", tunnel_start, True),
-        ActionDefinition("tunnel_stop", "Stop Managed Tunnel", "SSH Tunnel", "Stop only the tunnel started by this workbench.", tunnel_stop, True),
-        ActionDefinition("vm_health", "VM Health", "VM App Service", "Run hostname, uptime, and memory checks over SSH.", vm_health),
-        ActionDefinition("vm_service_status", "Service Status", "VM App Service", "Read systemd service status over SSH.", vm_service_status),
-        ActionDefinition("vm_service_restart", "Restart VM Service", "VM App Service", "Restart the configured app service over SSH.", vm_service_restart, True),
-        ActionDefinition("vm_apply_public_config", "Apply VM Public Config", "VM App Service", "Write saved public hosting settings to the VM env file and restart the service.", vm_apply_public_config, True),
-        ActionDefinition("vm_update_restart", "Update VM App", "VM App Service", "Fast-forward VM Git checkout, install requirements, and restart the service.", vm_update_and_restart, True),
-        ActionDefinition("vm_update_verify", "Update VM + Verify", "VM App Service", "Update the VM app, restart the service, check Git status, and fetch health.", vm_update_and_verify, True),
-        ActionDefinition("vm_logs_tail", "Tail VM Logs", "VM App Service", "Read recent service logs over SSH.", vm_logs_tail),
-        ActionDefinition("vm_git_status", "VM Git Status", "VM App Service", "Show Git status in the VM app directory.", vm_git_status),
-        ActionDefinition("vm_public_readiness", "Public Readiness", "VM App Service", "Check VM public-hosting readiness without changing Oracle, DNS, or secrets.", vm_public_readiness),
+        ActionDefinition(
+            "verify_local",
+            "Verify Local",
+            "Local Machine",
+            "Run Git, diff, cache, and local-site checks.",
+            verify_local_action,
+        ),
+        ActionDefinition(
+            "local_server_start",
+            "Start Local Site",
+            "Local Machine",
+            "Start the local Corp Market site for browser testing.",
+            local_server_start,
+            True,
+        ),
+        ActionDefinition(
+            "local_server_stop",
+            "Stop Local Site",
+            "Local Machine",
+            "Stop the managed local site or a recognized stale Corp Market listener.",
+            local_server_stop,
+            True,
+        ),
+        ActionDefinition(
+            "vm_update_verify",
+            "Update market.brianridderbusch.net",
+            "Public Site",
+            "Fast-forward the VM Docker deployment and run local and public smoke checks.",
+            vm_update_and_verify,
+            True,
+        ),
+        ActionDefinition(
+            "vm_logs_tail",
+            "View Deploy Logs",
+            "Public Site",
+            "Read recent Docker Compose logs from the public site VM.",
+            vm_logs_tail,
+        ),
     ]
     return {action.action_id: action for action in actions}
 
@@ -1566,25 +1669,22 @@ def public_action_definitions() -> list[dict[str, Any]]:
 def workflow_definitions() -> list[dict[str, Any]]:
     return [
         {
-            "id": "local_test",
-            "title": "Local Test Flow",
-            "description": "Run these left to right before local testing. Stop and inspect the result if a step fails.",
+            "id": "routine_update",
+            "title": "Routine Update",
+            "description": "Normal path after a code change has been tested, committed, and pushed.",
             "steps": [
-                {"action_id": "git_status", "label": "Git Status"},
-                {"action_id": "git_diff_check", "label": "Diff Check"},
-                {"action_id": "cache_preflight", "label": "Static Caches"},
-                {"action_id": "local_server_start", "label": "Start Local Server"},
+                {"action_id": "verify_local", "label": "Verify Local"},
+                {"action_id": "local_server_start", "label": "Start Local Site"},
+                {"action_id": "vm_update_verify", "label": "Update market.brianridderbusch.net"},
             ],
         },
         {
-            "id": "deploy",
-            "title": "Deploy Flow",
-            "description": "Run these left to right after local checks pass. This is the normal public-server update path.",
+            "id": "troubleshooting",
+            "title": "Troubleshooting",
+            "description": "Use these when local testing or the public deploy needs follow-up.",
             "steps": [
-                {"action_id": "vm_git_status", "label": "VM Git Status"},
-                {"action_id": "vm_update_verify", "label": "Update VM + Verify"},
-                {"action_id": "vm_logs_tail", "label": "Tail Logs"},
-                {"action_id": "vm_public_readiness", "label": "Public Readiness"},
+                {"action_id": "local_server_stop", "label": "Stop Local Site"},
+                {"action_id": "vm_logs_tail", "label": "View Deploy Logs"},
             ],
         },
     ]
@@ -1673,6 +1773,7 @@ def recent_action_log(config: WorkbenchConfig, limit: int = RECENT_ACTION_LIMIT)
 
 def build_status_payload(config: WorkbenchConfig) -> dict[str, Any]:
     health = check_local_health(config, timeout_seconds=0.8)
+    public_health = check_public_site_health(config, timeout_seconds=1.2)
     git_status = local_git_status(config)
     local_processes, tunnel_processes = local_and_tunnel_processes_for_config(config, timeout_seconds=2.0)
     return {
@@ -1689,6 +1790,10 @@ def build_status_payload(config: WorkbenchConfig) -> dict[str, Any]:
             "configured": config.vm_configured,
             "forward": config.tunnel_forward,
             "processes": public_process_summary(tunnel_processes),
+        },
+        "public_site": {
+            "base_url": public_site_base_url(config),
+            "health": public_health,
         },
         "git": {
             "ok": git_status.ok,
@@ -2034,15 +2139,15 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
     <div class="wrap topbar">
       <div>
         <h1>Flight Attendant Workbench</h1>
-        <div class="subtitle">Local operator panel for server, tunnel, VM, Git, SSO, and health checks.</div>
+        <div class="subtitle">Local operator panel for local checks and the market.brianridderbusch.net deploy path.</div>
       </div>
       <button class="primary" id="refresh-button" type="button">Refresh Status</button>
     </div>
   </header>
   <main class="wrap">
     <section class="status-strip" aria-label="Workbench status">
-      <div class="tile"><span>Local Server</span><strong id="local-status">Checking</strong></div>
-      <div class="tile"><span>SSH Tunnel</span><strong id="tunnel-status">Checking</strong></div>
+      <div class="tile"><span>Local Site</span><strong id="local-status">Checking</strong></div>
+      <div class="tile"><span>Public Site</span><strong id="public-site-status">Checking</strong></div>
       <div class="tile"><span>SSO Env</span><strong id="sso-status">Checking</strong></div>
       <div class="tile"><span>Git</span><strong id="git-status">Checking</strong></div>
     </section>
@@ -2198,9 +2303,9 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
         : (health.ok && localProcesses.length ? `Answering PID ${{localProcesses.map(process => process.pid).join(", ")}}` : (health.ok ? "Answering" : "Offline"));
       setText("#local-status", localLabel);
       document.querySelector("#local-status").style.color = health.ok ? "var(--green)" : "var(--red)";
-      const tunnel = data.ssh_tunnel || {{}};
-      const tunnelManaged = tunnel.managed || {{}};
-      setText("#tunnel-status", tunnelManaged.running ? `Managed PID ${{tunnelManaged.pid}}` : (tunnel.configured ? "Configured" : "Not configured"));
+      const publicHealth = data.public_site?.health || {{}};
+      setText("#public-site-status", publicHealth.ok ? "Online" : "Check");
+      document.querySelector("#public-site-status").style.color = publicHealth.ok ? "var(--green)" : "var(--amber)";
       setText("#sso-status", data.environment?.sso_ready ? "Configured" : "Missing");
       document.querySelector("#sso-status").style.color = data.environment?.sso_ready ? "var(--green)" : "var(--amber)";
       setText("#git-status", data.git?.display || (data.git?.ok ? "Checked" : "Check failed"));
@@ -2211,13 +2316,13 @@ def render_dashboard(config: WorkbenchConfig, operator_token: str, csp_nonce: st
       document.querySelector("#config-rows").innerHTML = [
         row("Config file", config.config_exists ? "Found" : "Missing", config.config_exists ? "pill ok" : "pill warn"),
         row("Local URL", config.local_base_url || ""),
-        row("Tunnel", config.tunnel_forward || ""),
+        row("Public URL", data.public_site?.base_url || ""),
+        row("VM app dir", config.vm_app_dir || ""),
         row("SSH host", config.ssh_host_configured ? "Set" : "Missing", config.ssh_host_configured ? "pill ok" : "pill warn"),
         row("SSH key", config.ssh_key_exists ? "Found" : (config.ssh_key_configured ? "Missing file" : "Missing"), config.ssh_key_exists ? "pill ok" : "pill warn"),
-        row("VM service", config.vm_service_name || ""),
         row("Public mode", config.vm_public_hosting_mode ? "On" : "Off", config.vm_public_hosting_mode ? "pill ok" : "pill warn")
       ].join("");
-      setInputValue("#vm-public-base-url", config.vm_public_base_url || "");
+      setInputValue("#vm-public-base-url", config.vm_public_base_url || data.public_site?.base_url || "");
       setInputValue("#vm-sso-callback-url", config.vm_sso_callback_url || "");
       setInputValue("#vm-allowed-character-ids", idListText(config.vm_allowed_character_ids));
       setInputValue("#vm-allowed-corporation-ids", idListText(config.vm_allowed_corporation_ids));
@@ -2379,7 +2484,7 @@ def build_http_server(host: str, port: int, state: WorkbenchState) -> ThreadingH
                 self._send_json(
                     {
                         "ok": True,
-                        "summary": "Saved public hosting config locally. Use Apply VM Public Config to write it to the VM service.",
+                        "summary": "Saved public hosting config locally. The deploy button uses the VM .env that is already configured.",
                         "config": state.config.public_dict(),
                     }
                 )

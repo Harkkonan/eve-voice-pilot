@@ -247,7 +247,7 @@ def test_run_action_rejects_unknown_action():
         flight_workbench.run_action("git pull", flight_workbench.WorkbenchConfig())
 
 
-def test_git_status_action_uses_fixed_command(monkeypatch):
+def test_local_git_status_uses_fixed_command(monkeypatch):
     observed = {}
 
     def fake_run_command(args, **kwargs):
@@ -256,10 +256,34 @@ def test_git_status_action_uses_fixed_command(monkeypatch):
 
     monkeypatch.setattr(flight_workbench, "run_command", fake_run_command)
 
-    result = flight_workbench.run_action("git_status", flight_workbench.WorkbenchConfig())
+    result = flight_workbench.local_git_status(flight_workbench.WorkbenchConfig())
 
     assert result.ok is True
     assert observed["args"] == ["git", "status", "--short", "--branch"]
+
+
+def test_verify_local_action_aggregates_safe_local_checks(monkeypatch):
+    calls = []
+
+    def fake_result(name):
+        calls.append(name)
+        return flight_workbench.CommandResult(ok=True, summary=f"{name} ok", output=f"{name} output")
+
+    monkeypatch.setattr(flight_workbench, "local_git_status", lambda config: fake_result("git"))
+    monkeypatch.setattr(flight_workbench, "git_diff_check", lambda config: fake_result("diff"))
+    monkeypatch.setattr(flight_workbench, "cache_preflight_action", lambda config: fake_result("cache"))
+
+    def fake_check_local_health(config, *, timeout_seconds=1.0):
+        calls.append("local_health_probe")
+        return {"ok": False, "url": "http://127.0.0.1:8770/api/health", "detail": "offline"}
+
+    monkeypatch.setattr(flight_workbench, "check_local_health", fake_check_local_health)
+
+    result = flight_workbench.run_action("verify_local", flight_workbench.WorkbenchConfig())
+
+    assert result.ok is True
+    assert calls == ["git", "diff", "cache", "local_health_probe"]
+    assert "Local site is not running; start it before browser testing." in result.output
 
 
 def test_run_command_decodes_utf8_output():
@@ -404,7 +428,7 @@ def test_local_server_stop_points_at_configured_ssh_tunnel(monkeypatch):
     assert result.ok is False
     assert "SSH tunnel" in result.summary
     assert "28784" in result.output
-    assert "Stop Managed Tunnel" in result.output
+    assert "Close that SSH process manually" in result.output
 
 
 def test_tunnel_stop_stops_stale_configured_tunnel(monkeypatch):
@@ -591,9 +615,11 @@ def test_vm_update_and_restart_uses_fixed_fast_forward_deploy_command(tmp_path, 
     assert result.ok is True
     assert "git pull --ff-only origin" in observed["remote_command"]
     assert "git status --porcelain" in observed["remote_command"]
-    assert ".venv/bin/python -m pip install -r requirements.txt" in observed["remote_command"]
-    assert "systemctl restart eve-flight.service" in observed["remote_command"]
-    assert "eve-flight.service: $state" in observed["remote_command"]
+    assert "sudo -n docker compose up -d --build corp-market caddy" in observed["remote_command"]
+    assert "sudo -n docker compose ps" in observed["remote_command"]
+    assert ".venv/bin/python -m pip install -r requirements.txt" not in observed["remote_command"]
+    assert "systemctl restart eve-flight.service" not in observed["remote_command"]
+    assert "deploy/scripts/smoke-corp-market.sh" not in observed["remote_command"]
     assert "curl -fsS" not in observed["remote_command"]
     assert observed["timeout_seconds"] >= 90.0
 
@@ -621,26 +647,29 @@ def test_vm_update_and_verify_adds_git_and_health_checks(tmp_path, monkeypatch):
 
     assert result.ok is True
     assert "git pull --ff-only origin" in observed["remote_command"]
+    assert "sudo -n docker compose up -d --build corp-market caddy" in observed["remote_command"]
     assert 'echo "Git status:"' in observed["remote_command"]
     assert "git status --short --branch" in observed["remote_command"]
-    assert 'echo "Health:"' in observed["remote_command"]
+    assert 'echo "Local health:"' in observed["remote_command"]
     assert "curl -fsS http://127.0.0.1:8770/api/health" in observed["remote_command"]
     assert "2>/dev/null" in observed["remote_command"]
-    assert "Health check did not answer after 10 seconds." in observed["remote_command"]
-    assert "for attempt in 1 2 3 4 5 6 7 8 9 10" in observed["remote_command"]
+    assert "Health check did not answer after 15 seconds." in observed["remote_command"]
+    assert "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15" in observed["remote_command"]
+    assert 'echo "Public smoke:"' in observed["remote_command"]
+    assert "sh deploy/scripts/smoke-corp-market.sh https://market.brianridderbusch.net" in observed["remote_command"]
     assert "sleep 1" in observed["remote_command"]
     assert observed["timeout_seconds"] >= 120.0
 
 
-def test_vm_update_and_restart_rejects_unsafe_remote_values(tmp_path):
+def test_vm_update_and_restart_rejects_unsafe_remote_path(tmp_path):
     key_path = tmp_path / "oci.key"
     key_path.write_text("private", encoding="utf-8")
     config = flight_workbench.WorkbenchConfig(
         ssh_host="203.0.113.10",
         ssh_user="ubuntu",
         ssh_key_path=str(key_path),
-        vm_app_dir="/home/ubuntu/apps/eve-voice-pilot",
-        vm_service_name="eve-flight.service; reboot",
+        vm_app_dir="/home/ubuntu/apps/eve-voice-pilot; reboot",
+        vm_service_name="eve-flight.service",
     )
 
     with pytest.raises(flight_workbench.WorkbenchError):
@@ -729,7 +758,7 @@ def test_post_action_requires_operator_token_and_accepts_valid_token(tmp_path, m
     server = flight_workbench.build_http_server("127.0.0.1", 0, state)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    url = f"http://127.0.0.1:{server.server_address[1]}/api/actions/git_status"
+    url = f"http://127.0.0.1:{server.server_address[1]}/api/actions/verify_local"
 
     try:
         with pytest.raises(HTTPError) as exc:
@@ -746,7 +775,7 @@ def test_post_action_requires_operator_token_and_accepts_valid_token(tmp_path, m
 
         assert response.status == 200
         assert payload["ok"] is True
-        assert payload["summary"] == "ran git_status"
+        assert payload["summary"] == "ran verify_local"
     finally:
         server.shutdown()
         server.server_close()
@@ -783,9 +812,12 @@ def test_render_dashboard_includes_initial_action_metadata():
     assert 'nonce="YWJjMTIz"' in html
     assert "const initialActions =" in html
     assert "const initialWorkflows =" in html
-    assert "Git Status" in html
-    assert "Local Test Flow" in html
-    assert "Deploy Flow" in html
+    assert "Verify Local" in html
+    assert "Routine Update" in html
+    assert "Troubleshooting" in html
+    assert "Update market.brianridderbusch.net" in html
+    assert "Start SSH Tunnel" not in html
+    assert "Apply VM Public Config" not in html
     assert "Allow any EVE SSO character" in html
     assert "vm_allow_any_authenticated" in html
     assert "operator-token" in html
@@ -795,22 +827,20 @@ def test_public_workflows_reference_allowlisted_actions():
     actions = {action["id"] for action in flight_workbench.public_action_definitions()}
     workflows = flight_workbench.public_workflow_definitions()
 
-    assert [flow["title"] for flow in workflows] == ["Local Test Flow", "Deploy Flow"]
+    assert actions == {"verify_local", "local_server_start", "local_server_stop", "vm_update_verify", "vm_logs_tail"}
+    assert [flow["title"] for flow in workflows] == ["Routine Update", "Troubleshooting"]
     assert [step["action_id"] for step in workflows[0]["steps"]] == [
-        "git_status",
-        "git_diff_check",
-        "cache_preflight",
+        "verify_local",
         "local_server_start",
+        "vm_update_verify",
     ]
     assert [step["action_id"] for step in workflows[1]["steps"]] == [
-        "vm_git_status",
-        "vm_update_verify",
+        "local_server_stop",
         "vm_logs_tail",
-        "vm_public_readiness",
     ]
-    assert workflows[0]["sequence"] == "Git Status -> Diff Check -> Static Caches -> Start Local Server"
-    assert workflows[1]["sequence"] == "VM Git Status -> Update VM + Verify -> Tail Logs -> Public Readiness"
-    assert "Run these left to right" in workflows[0]["description"]
+    assert workflows[0]["sequence"] == "Verify Local -> Start Local Site -> Update market.brianridderbusch.net"
+    assert workflows[1]["sequence"] == "Stop Local Site -> View Deploy Logs"
+    assert "Normal path" in workflows[0]["description"]
     assert all(step["action_id"] in actions for flow in workflows for step in flow["steps"])
 
 
@@ -876,21 +906,21 @@ def test_status_payload_contains_expected_cards(monkeypatch):
         "local_git_status",
         lambda config: flight_workbench.CommandResult(ok=True, summary="ok", output="## master...origin/master"),
     )
-    monkeypatch.setattr(flight_workbench, "corp_market_processes_for_config", lambda config: [])
+    monkeypatch.setattr(flight_workbench, "check_public_site_health", lambda config, **kwargs: {"ok": True, "url": "https://market.brianridderbusch.net/api/health"})
+    monkeypatch.setattr(flight_workbench, "local_and_tunnel_processes_for_config", lambda config, **kwargs: ([], []))
     monkeypatch.setattr(flight_workbench, "recent_action_log", lambda config: [])
 
     payload = flight_workbench.build_status_payload(flight_workbench.WorkbenchConfig())
+    actions = {action["id"] for action in payload["actions"]}
 
     assert payload["local_server"]["health"]["ok"] is False
-    assert payload["ssh_tunnel"]["configured"] is False
+    assert payload["public_site"]["base_url"] == "https://market.brianridderbusch.net"
+    assert payload["public_site"]["health"]["ok"] is True
     assert payload["environment"]["sso_ready"] is False
-    assert any(action["id"] == "vm_service_restart" for action in payload["actions"])
-    assert any(action["id"] == "vm_update_restart" for action in payload["actions"])
-    assert any(action["id"] == "vm_update_verify" for action in payload["actions"])
-    assert any(action["id"] == "vm_public_readiness" for action in payload["actions"])
-    assert payload["workflows"][0]["title"] == "Local Test Flow"
-    assert payload["workflows"][1]["title"] == "Deploy Flow"
-    assert next(action for action in payload["actions"] if action["id"] == "local_server_stop")["label"] == "Stop Local Server"
+    assert actions == {"verify_local", "local_server_start", "local_server_stop", "vm_update_verify", "vm_logs_tail"}
+    assert payload["workflows"][0]["title"] == "Routine Update"
+    assert payload["workflows"][1]["title"] == "Troubleshooting"
+    assert next(action for action in payload["actions"] if action["id"] == "local_server_stop")["label"] == "Stop Local Site"
 
 
 def test_status_payload_reuses_shared_local_and_tunnel_port_query(monkeypatch):
@@ -928,6 +958,7 @@ def test_status_payload_reuses_shared_local_and_tunnel_port_query(monkeypatch):
         "local_git_status",
         lambda config: flight_workbench.CommandResult(ok=True, summary="ok", output="## master...origin/master"),
     )
+    monkeypatch.setattr(flight_workbench, "check_public_site_health", lambda config, **kwargs: {"ok": True, "url": "https://market.brianridderbusch.net/api/health"})
     monkeypatch.setattr(flight_workbench, "environment_status", lambda: {"sso_ready": True, "rows": [], "note": ""})
     monkeypatch.setattr(flight_workbench, "recent_action_log", lambda config: [])
     monkeypatch.setattr(flight_workbench, "managed_process_status", lambda name: {"managed": False, "running": False, "pid": None})
