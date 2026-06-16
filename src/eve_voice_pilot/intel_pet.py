@@ -69,6 +69,16 @@ from eve_voice_pilot.local_transcription import (
     LocalVoskTranscriber,
 )
 from eve_voice_pilot.local_whisper import DEFAULT_LOCAL_WHISPER_MODEL, LOCAL_WHISPER_MODELS, LocalWhisperTranscriber
+from eve_voice_pilot.mission_library import (
+    MissionLibraryEntry,
+    find_mission_entries,
+    grouped_missions_by_giver,
+    load_mission_library,
+    mission_detail_text,
+    mission_library_path,
+    mission_matches_query,
+    mission_read_aloud_text,
+)
 from eve_voice_pilot.speech_responses import (
     DEFAULT_ELEVENLABS_TTS_MODEL,
     DEFAULT_ELEVENLABS_TTS_VOICE_ID,
@@ -114,6 +124,21 @@ DEFAULT_DISCORD_NOTE_CLOSE_PHRASES = ("send note", "end note", "finish note", "n
 DEFAULT_DISCORD_NOTE_CANCEL_PHRASES = ("cancel note", "never mind", "forget note")
 DISCORD_NOTE_IDLE_SEND_SECONDS = 2.0
 MAX_DISCORD_NOTE_TEXT_LENGTH = 1500
+MISSION_VOICE_GRAMMAR_LIMIT = 200
+MISSION_READ_PREFIXES = (
+    "read mission",
+    "read quest",
+    "read briefing",
+    "mission briefing",
+    "quest briefing",
+    "tell me mission",
+    "tell me quest",
+)
+MISSION_CACHE_PREFIXES = (
+    "cache mission",
+    "cache quest",
+    "cache briefing",
+)
 COMMAND_PHRASE_SPLIT_RE = re.compile(r"[\n,]+")
 PET_VOICE_STYLE_PRESETS = (
     (
@@ -840,6 +865,126 @@ def voice_status_from_transcript(
             require_target_window=require_target_window,
             target_title=target_title,
         ),
+    )
+
+
+def split_mission_voice_request(cleaned_transcript: str, prefixes: Iterable[str]) -> tuple[str, bool]:
+    cleaned = normalize_phrase(cleaned_transcript)
+    if not cleaned:
+        return "", False
+    for prefix in prefixes:
+        normalized_prefix = normalize_phrase(prefix)
+        if cleaned == normalized_prefix:
+            return "", True
+        prefix_with_space = f"{normalized_prefix} "
+        if cleaned.startswith(prefix_with_space):
+            return cleaned[len(prefix_with_space) :].strip(), True
+    return "", False
+
+
+def mission_voice_grammar_commands(
+    entries: Iterable[MissionLibraryEntry],
+    *,
+    limit: int = MISSION_VOICE_GRAMMAR_LIMIT,
+) -> list[VoiceCommand]:
+    commands: list[VoiceCommand] = []
+    for entry in list(entries)[: max(0, limit)]:
+        phrases = [
+            f"{prefix} {entry.title}"
+            for prefix in (*MISSION_READ_PREFIXES, *MISSION_CACHE_PREFIXES)
+        ]
+        commands.append(
+            VoiceCommand(
+                name=f"Mission briefing: {entry.title}",
+                phrases=phrases,
+                key="",
+            )
+        )
+    return commands
+
+
+def mission_voice_status_from_transcript(
+    transcript: str,
+    entries: Iterable[MissionLibraryEntry],
+    *,
+    response_call_sign: str = DEFAULT_RESPONSE_CALL_SIGN,
+    voice_engine: str = "",
+    play_text: Callable[[str, str], None] | None = None,
+    prepare_text: Callable[[str, str, bool], None] | None = None,
+) -> "IntelPetVoiceStatus | None":
+    heard = normalize_response_text(transcript)
+    if not heard:
+        return None
+    cleaned, _response_requested = strip_response_call_sign(heard, response_call_signs(response_call_sign))
+    query, read_requested = split_mission_voice_request(cleaned, MISSION_READ_PREFIXES)
+    if not read_requested:
+        query, cache_requested = split_mission_voice_request(cleaned, MISSION_CACHE_PREFIXES)
+    else:
+        cache_requested = False
+    if not read_requested and not cache_requested:
+        return None
+
+    recorded_at = now_iso()
+    mission_entries = tuple(entries)
+    engine_label = clean_voice_engine(voice_engine) if voice_engine else ""
+    if not mission_entries:
+        return IntelPetVoiceStatus(
+            title="Mission library empty",
+            detail="No local mission library entries are loaded. Add missions to profiles\\intel_pet_missions.json or the bundled starter data.",
+            severity="high",
+            recorded_at=recorded_at,
+            heard=heard,
+            engine=engine_label,
+        )
+    if not query:
+        return IntelPetVoiceStatus(
+            title="Mission name needed",
+            detail=f"Heard: {heard}\nSay a mission name after the request, such as: {clean_voice_call_sign(response_call_sign)} read mission Cash Flow for Capsuleers.",
+            severity="info",
+            recorded_at=recorded_at,
+            heard=heard,
+            engine=engine_label,
+        )
+
+    matches = find_mission_entries(query, mission_entries, limit=4)
+    if not matches:
+        return IntelPetVoiceStatus(
+            title="Mission not found",
+            detail=f"Heard: {heard}\nNo mission matched: {query}",
+            severity="info",
+            recorded_at=recorded_at,
+            heard=heard,
+            engine=engine_label,
+        )
+
+    entry = matches[0]
+    spoken_text = mission_read_aloud_text(entry)
+    alternatives = ", ".join(match.title for match in matches[1:])
+    if cache_requested:
+        if prepare_text is not None:
+            prepare_text(spoken_text, f"mission briefing for {entry.title}", False)
+        action = "Queued cached voice for"
+        title = "Mission voice cache queued"
+    else:
+        if play_text is not None:
+            play_text(spoken_text, f"mission briefing for {entry.title}")
+        action = "Reading"
+        title = "Mission briefing"
+    detail_lines = [
+        f"Heard: {heard}",
+        f"{action}: {entry.title}",
+        f"Mission giver: {entry.giver_label}",
+        f"Rewards: {entry.reward_summary}",
+    ]
+    if alternatives:
+        detail_lines.append(f"Other close matches: {alternatives}")
+    return IntelPetVoiceStatus(
+        title=title,
+        detail="\n".join(detail_lines),
+        severity="info",
+        recorded_at=recorded_at,
+        heard=heard,
+        engine=engine_label,
     )
 
 
@@ -3115,6 +3260,25 @@ def run_overlay(
     current_system_lock = threading.Lock()
     current_system_name = ""
     pet_speech = SpeechResponseManager(lambda text: alert_queue.put(f"Pet voice: {text}"))
+    mission_entries_lock = threading.Lock()
+    mission_entries: tuple[MissionLibraryEntry, ...] = ()
+
+    def reload_mission_entries() -> tuple[MissionLibraryEntry, ...]:
+        nonlocal mission_entries
+        try:
+            loaded = load_mission_library()
+        except Exception as exc:
+            loaded = ()
+            alert_queue.put(f"Mission library failed to load: {exc}")
+        with mission_entries_lock:
+            mission_entries = loaded
+        return loaded
+
+    def current_mission_entries() -> tuple[MissionLibraryEntry, ...]:
+        with mission_entries_lock:
+            return mission_entries
+
+    reload_mission_entries()
 
     def configure_pet_speech(settings: IntelPetSettings) -> None:
         pet_speech.configure(
@@ -3248,6 +3412,8 @@ def run_overlay(
                 commands = list(profile.commands)
                 if not commands:
                     raise CorpIntelError(f"Voice profile has no commands: {profile_path}")
+                mission_voice_commands = mission_voice_grammar_commands(current_mission_entries())
+                grammar_commands = [*commands, *mission_voice_commands]
                 voice_engine = clean_voice_engine(settings.voice_engine)
                 api_key = pet_openai_api_key()
                 if voice_engine == VOICE_ENGINE_OPENAI and not api_key:
@@ -3267,7 +3433,7 @@ def run_overlay(
                     str(selected_model_path) if voice_engine == VOICE_ENGINE_LOCAL else "",
                     whisper_model if voice_engine == VOICE_ENGINE_WHISPER else "",
                     call_sign,
-                    voice_command_signature(commands),
+                    voice_command_signature(grammar_commands),
                     bool(api_key) if voice_engine == VOICE_ENGINE_OPENAI else False,
                 )
                 if transcriber is None or signature != transcriber_signature:
@@ -3287,7 +3453,7 @@ def run_overlay(
                         )
                     else:
                         transcriber = LocalVoskTranscriber(
-                            commands,
+                            grammar_commands,
                             lambda text: alert_queue.put(f"Voice listener: {text}"),
                             input_device_index=input_device_index,
                             model_path=selected_model_path,
@@ -3328,6 +3494,18 @@ def run_overlay(
                 )
                 if note_status:
                     alert_queue.put(note_status)
+                    last_error = ""
+                    continue
+                mission_status = mission_voice_status_from_transcript(
+                    transcript,
+                    current_mission_entries(),
+                    response_call_sign=call_sign,
+                    voice_engine=voice_engine,
+                    play_text=lambda text, label: pet_speech.play_text(text, label=label),
+                    prepare_text=lambda text, label, force: pet_speech.prepare_text_async(text, label=label, force=force),
+                )
+                if mission_status:
+                    alert_queue.put(mission_status)
                     last_error = ""
                     continue
                 status = voice_status_from_transcript(
@@ -3961,6 +4139,7 @@ def run_overlay(
         behavior_tab, behavior_frame = scrollable_tab(notebook)
         voice_tab, voice_frame = scrollable_tab(notebook)
         notes_tab, notes_frame = scrollable_tab(notebook)
+        missions_tab, missions_frame = scrollable_tab(notebook)
         reliability_tab, reliability_frame = scrollable_tab(notebook)
         voice_lab_tab, voice_lab_frame = scrollable_tab(notebook)
         diagnostics_tab, diagnostics_frame = scrollable_tab(notebook)
@@ -3969,6 +4148,7 @@ def run_overlay(
         notebook.add(behavior_tab, text="Behaviors")
         notebook.add(voice_tab, text="Voice")
         notebook.add(notes_tab, text="Notes")
+        notebook.add(missions_tab, text="Missions")
         notebook.add(reliability_tab, text="Reliability")
         notebook.add(voice_lab_tab, text="Voice Lab")
         notebook.add(diagnostics_tab, text="Diagnostics")
@@ -4866,6 +5046,208 @@ def run_overlay(
         note_status_frame = ttk.LabelFrame(notes_frame, text="Status", padding=8)
         note_status_frame.pack(fill="x", pady=(12, 0))
         ttk.Label(note_status_frame, textvariable=note_status_var, wraplength=620).pack(anchor="w", fill="x")
+
+        ttk.Label(missions_frame, text="Mission Library", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(
+            missions_frame,
+            text=(
+                "Browse local mission entries by giver and read a selected briefing with the configured pet voice. "
+                "Cloud voice cache buttons use your selected voice engine and may consume API quota."
+            ),
+            wraplength=700,
+        ).pack(anchor="w", pady=(2, 10))
+
+        mission_query_var = tk.StringVar()
+        mission_status_var = tk.StringVar()
+        mission_visible_entries: tuple[MissionLibraryEntry, ...] = ()
+        mission_tree_index: dict[str, MissionLibraryEntry] = {}
+
+        mission_search_frame = ttk.Frame(missions_frame)
+        mission_search_frame.pack(fill="x", pady=(0, 8))
+        mission_search_frame.columnconfigure(1, weight=1)
+        ttk.Label(mission_search_frame, text="Search").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(mission_search_frame, textvariable=mission_query_var).grid(row=0, column=1, sticky="ew")
+
+        mission_body = ttk.Frame(missions_frame)
+        mission_body.pack(fill="both", expand=True)
+        mission_body.columnconfigure(0, weight=1)
+        mission_body.columnconfigure(1, weight=1)
+        mission_body.rowconfigure(0, weight=1)
+
+        mission_tree_frame = ttk.Frame(mission_body)
+        mission_tree_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        mission_tree_frame.columnconfigure(0, weight=1)
+        mission_tree_frame.rowconfigure(0, weight=1)
+        mission_columns = ("level", "type", "rewards")
+        mission_tree = ttk.Treeview(
+            mission_tree_frame,
+            columns=mission_columns,
+            show="tree headings",
+            height=16,
+        )
+        mission_tree.heading("#0", text="Mission giver / mission")
+        mission_tree.heading("level", text="Level")
+        mission_tree.heading("type", text="Type")
+        mission_tree.heading("rewards", text="Rewards")
+        mission_tree.column("#0", width=260, minwidth=180)
+        mission_tree.column("level", width=80, minwidth=70, stretch=False)
+        mission_tree.column("type", width=130, minwidth=90)
+        mission_tree.column("rewards", width=220, minwidth=140)
+        mission_tree_scroll = ttk.Scrollbar(mission_tree_frame, orient="vertical", command=mission_tree.yview)
+        mission_tree.configure(yscrollcommand=mission_tree_scroll.set)
+        mission_tree.grid(row=0, column=0, sticky="nsew")
+        mission_tree_scroll.grid(row=0, column=1, sticky="ns")
+
+        mission_detail_frame = ttk.LabelFrame(mission_body, text="Selected mission", padding=8)
+        mission_detail_frame.grid(row=0, column=1, sticky="nsew")
+        mission_detail_frame.columnconfigure(0, weight=1)
+        mission_detail_frame.rowconfigure(0, weight=1)
+        mission_detail = tk.Text(
+            mission_detail_frame,
+            wrap="word",
+            height=16,
+            bg=ui_colors["panel"],
+            fg=ui_colors["text"],
+            insertbackground=ui_colors["text"],
+            relief="flat",
+            padx=8,
+            pady=8,
+        )
+        mission_detail_scroll = ttk.Scrollbar(mission_detail_frame, orient="vertical", command=mission_detail.yview)
+        mission_detail.configure(yscrollcommand=mission_detail_scroll.set, state="disabled")
+        mission_detail.grid(row=0, column=0, sticky="nsew")
+        mission_detail_scroll.grid(row=0, column=1, sticky="ns")
+
+        def set_mission_detail(text: str) -> None:
+            mission_detail.configure(state="normal")
+            mission_detail.delete("1.0", tk.END)
+            mission_detail.insert("1.0", text)
+            mission_detail.configure(state="disabled")
+
+        def mission_reward_label(entry: MissionLibraryEntry) -> str:
+            if entry.isk_reward or entry.lp_reward:
+                return ", ".join(item for item in (entry.isk_reward, entry.lp_reward) if item)
+            if entry.item_rewards:
+                return ", ".join(entry.item_rewards[:2])
+            return "not recorded"
+
+        def selected_mission_entry() -> MissionLibraryEntry | None:
+            selection = mission_tree.selection()
+            if not selection:
+                return None
+            return mission_tree_index.get(selection[0])
+
+        def refresh_mission_status() -> None:
+            loaded = current_mission_entries()
+            path = mission_library_path()
+            visible = len(mission_visible_entries)
+            mission_status_var.set(f"{visible} shown / {len(loaded)} loaded from {path}")
+
+        def refresh_mission_tree(*_args: Any) -> None:
+            nonlocal mission_visible_entries
+            query = mission_query_var.get()
+            mission_tree_index.clear()
+            mission_tree.delete(*mission_tree.get_children())
+            loaded = current_mission_entries()
+            mission_visible_entries = tuple(entry for entry in loaded if mission_matches_query(entry, query))
+            for giver_index, (giver, entries_for_giver) in enumerate(grouped_missions_by_giver(mission_visible_entries).items()):
+                giver_id = f"giver:{giver_index}"
+                mission_tree.insert("", tk.END, iid=giver_id, text=giver, open=True, values=("", "", ""))
+                for entry_index, entry in enumerate(entries_for_giver):
+                    item_id = f"mission:{giver_index}:{entry_index}:{entry.id}"
+                    mission_tree_index[item_id] = entry
+                    mission_tree.insert(
+                        giver_id,
+                        tk.END,
+                        iid=item_id,
+                        text=entry.title,
+                        values=(entry.level, entry.mission_type, mission_reward_label(entry)),
+                    )
+            if mission_visible_entries:
+                first_child = mission_tree.get_children(mission_tree.get_children()[0])[0]
+                mission_tree.selection_set(first_child)
+                mission_tree.focus(first_child)
+                set_mission_detail(mission_detail_text(mission_visible_entries[0]))
+            else:
+                set_mission_detail("No missions match the current search.")
+            refresh_mission_status()
+
+        def refresh_selected_mission_detail(_event: Any | None = None) -> None:
+            entry = selected_mission_entry()
+            if entry is None:
+                return
+            set_mission_detail(mission_detail_text(entry))
+
+        def read_selected_mission() -> None:
+            entry = selected_mission_entry()
+            if entry is None:
+                mission_status_var.set("Select a mission first.")
+                return
+            configure_pet_speech(engine.current_settings())
+            pet_speech.play_text(mission_read_aloud_text(entry), label=f"mission briefing for {entry.title}")
+            mission_status_var.set(f"Reading mission briefing: {entry.title}")
+            editor_status_var.set(mission_status_var.get())
+
+        def cache_mission_entries(entries: Iterable[MissionLibraryEntry], *, force: bool = False) -> None:
+            selected_entries = tuple(entries)
+            if not selected_entries:
+                mission_status_var.set("No mission briefings to cache.")
+                return
+            configure_pet_speech(engine.current_settings())
+            for entry in selected_entries:
+                pet_speech.prepare_text_async(
+                    mission_read_aloud_text(entry),
+                    label=f"mission briefing for {entry.title}",
+                    force=force,
+                )
+            mission_status_var.set(f"Queued {len(selected_entries)} mission briefing cache job(s).")
+            editor_status_var.set(mission_status_var.get())
+
+        def cache_selected_mission() -> None:
+            entry = selected_mission_entry()
+            if entry is None:
+                mission_status_var.set("Select a mission first.")
+                return
+            cache_mission_entries((entry,))
+
+        def cache_visible_missions() -> None:
+            cache_mission_entries(mission_visible_entries)
+
+        def cache_all_missions() -> None:
+            cache_mission_entries(current_mission_entries())
+
+        def reload_mission_library_ui() -> None:
+            reload_mission_entries()
+            refresh_mission_tree()
+            editor_status_var.set(mission_status_var.get())
+
+        mission_tree.bind("<<TreeviewSelect>>", refresh_selected_mission_detail)
+        mission_query_var.trace_add("write", refresh_mission_tree)
+
+        mission_buttons = ttk.Frame(missions_frame)
+        mission_buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(mission_buttons, text="Read Selected", command=read_selected_mission).pack(side="left")
+        ttk.Button(mission_buttons, text="Cache Selected", command=cache_selected_mission).pack(side="left", padx=(6, 0))
+        ttk.Button(mission_buttons, text="Cache Visible", command=cache_visible_missions).pack(side="left", padx=(6, 0))
+        ttk.Button(mission_buttons, text="Cache All", command=cache_all_missions).pack(side="left", padx=(6, 0))
+        ttk.Button(mission_buttons, text="Reload Library", command=reload_mission_library_ui).pack(side="left", padx=(6, 0))
+
+        mission_hint = ttk.LabelFrame(missions_frame, text="Voice phrases", padding=8)
+        mission_hint.pack(fill="x", pady=(12, 0))
+        ttk.Label(
+            mission_hint,
+            text=(
+                f'Say "{clean_voice_call_sign(engine.current_settings().voice_call_sign)} read mission Cash Flow for Capsuleers" '
+                'or "cache mission The Blood-Stained Stars". Add full licensed mission data to '
+                "profiles\\intel_pet_missions.json when you are ready to expand beyond the starter library."
+            ),
+            wraplength=700,
+        ).pack(anchor="w")
+
+        mission_status_frame = ttk.LabelFrame(missions_frame, text="Status", padding=8)
+        mission_status_frame.pack(fill="x", pady=(12, 0))
+        ttk.Label(mission_status_frame, textvariable=mission_status_var, wraplength=700).pack(anchor="w", fill="x")
+        refresh_mission_tree()
 
         ttk.Label(reliability_frame, text="Voice Reliability", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         reliability_status_var = tk.StringVar(value="No voice attempts yet.")

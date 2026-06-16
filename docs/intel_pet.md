@@ -199,6 +199,54 @@ Use `Options` > `Voice` to tune the pet voice:
 
 The preview cache is for the deliberate sample sentence only. It does not cache raw chat alerts or alert history.
 
+## Mission Library And Read-Aloud Briefings
+
+The pet can browse a local mission library and read a selected mission briefing aloud with the same cached voice engine used for spoken pet messages.
+
+Start with voice listening and cached ElevenLabs speech:
+
+```powershell
+$env:INTEL_PET_ELEVENLABS_API_KEY = "your-elevenlabs-api-key"
+.\scripts\run_intel_pet.ps1 `
+  --enable-voice-listener `
+  --response-engine "ElevenLabs cached" `
+  --response-voice "your-elevenlabs-voice-id"
+```
+
+You can also set the ElevenLabs key before launching and then choose `ElevenLabs cached` from `Options` > `Voice`.
+
+Use `Options` > `Missions` to:
+
+- browse missions grouped by mission giver,
+- search by mission name, giver, faction, type, or tag,
+- inspect briefing text, source notes, standing rewards, ISK, LP, and item reward fields,
+- `Read Selected` with the configured pet voice,
+- `Cache Selected`, `Cache Visible`, or `Cache All` mission read-aloud clips.
+
+Voice examples:
+
+```text
+Merlin read mission Cash Flow for Capsuleers
+Merlin read quest The Blood-Stained Stars
+Merlin cache mission Balancing the Books
+```
+
+Mission read-aloud clips are cached under the ignored local `cache\speech\` folder. Cache jobs use the selected voice engine, model, voice ID, and style, so changing those settings creates a different cached clip. ElevenLabs cache jobs can consume ElevenLabs quota the first time they generate.
+
+The bundled mission library is only a hand-authored starter file:
+
+```text
+data\intel_pet_missions_starter.json
+```
+
+To expand it locally, create:
+
+```text
+profiles\intel_pet_missions.json
+```
+
+That personal file is ignored by git. Full mission text and exact reward data should be imported only from a source whose license and attribution are recorded. EVE mission ISK, LP, bonus, and standing outcomes can vary by agent, system, skills, and server-side balancing, so the in-game agent offer remains the source of truth before accepting a mission.
+
 ## Optional Voice Command Listener
 
 The pet can also listen for the same phrases configured in EVE Voice Pilot and show what command matched. It starts in practice mode: it does not send keys, click, move the mouse, or control EVE.

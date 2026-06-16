@@ -1,0 +1,256 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import json
+from pathlib import Path
+from typing import Any, Iterable
+
+from eve_voice_pilot.commands import normalize_phrase
+from eve_voice_pilot.corp_intel import ROOT
+from eve_voice_pilot.speech_responses import normalize_response_text
+
+
+DEFAULT_MISSION_LIBRARY_PATH = ROOT / "data" / "intel_pet_missions_starter.json"
+USER_MISSION_LIBRARY_PATH = ROOT / "profiles" / "intel_pet_missions.json"
+MISSION_LIBRARY_VERSION = 1
+
+
+@dataclass(frozen=True)
+class MissionLibraryEntry:
+    id: str
+    title: str
+    mission_giver: str = ""
+    agent_corporation: str = ""
+    faction: str = ""
+    level: str = ""
+    mission_type: str = ""
+    briefing_text: str = ""
+    standing_rewards: tuple[str, ...] = ()
+    isk_reward: str = ""
+    bonus_isk_reward: str = ""
+    item_rewards: tuple[str, ...] = ()
+    lp_reward: str = ""
+    reward_notes: str = ""
+    source: str = ""
+    source_url: str = ""
+    tags: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def giver_label(self) -> str:
+        return self.mission_giver or "Unknown mission giver"
+
+    @property
+    def reward_summary(self) -> str:
+        parts: list[str] = []
+        if self.isk_reward:
+            parts.append(f"ISK: {self.isk_reward}")
+        if self.bonus_isk_reward:
+            parts.append(f"Bonus: {self.bonus_isk_reward}")
+        if self.lp_reward:
+            parts.append(f"LP: {self.lp_reward}")
+        if self.item_rewards:
+            parts.append(f"Items: {', '.join(self.item_rewards)}")
+        if self.standing_rewards:
+            parts.append(f"Standings: {', '.join(self.standing_rewards)}")
+        return "; ".join(parts) or "Rewards are not recorded for this mission."
+
+
+def clean_mission_text(value: Any) -> str:
+    return normalize_response_text(str(value or ""))
+
+
+def clean_mission_terms(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raw_items = [value]
+    else:
+        raw_items = list(value or [])
+    terms: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = clean_mission_text(item)
+        folded = text.casefold()
+        if text and folded not in seen:
+            terms.append(text)
+            seen.add(folded)
+    return tuple(terms)
+
+
+def mission_entry_from_dict(payload: dict[str, Any]) -> MissionLibraryEntry:
+    title = clean_mission_text(payload.get("title"))
+    entry_id = clean_mission_text(payload.get("id")) or normalize_phrase(title).replace(" ", "-")
+    if not title:
+        raise ValueError("Mission entry is missing title.")
+    if not entry_id:
+        raise ValueError(f"Mission entry {title!r} is missing id.")
+    return MissionLibraryEntry(
+        id=entry_id,
+        title=title,
+        mission_giver=clean_mission_text(payload.get("mission_giver")),
+        agent_corporation=clean_mission_text(payload.get("agent_corporation")),
+        faction=clean_mission_text(payload.get("faction")),
+        level=clean_mission_text(payload.get("level")),
+        mission_type=clean_mission_text(payload.get("mission_type")),
+        briefing_text=clean_mission_text(payload.get("briefing_text")),
+        standing_rewards=clean_mission_terms(payload.get("standing_rewards")),
+        isk_reward=clean_mission_text(payload.get("isk_reward")),
+        bonus_isk_reward=clean_mission_text(payload.get("bonus_isk_reward")),
+        item_rewards=clean_mission_terms(payload.get("item_rewards")),
+        lp_reward=clean_mission_text(payload.get("lp_reward")),
+        reward_notes=clean_mission_text(payload.get("reward_notes")),
+        source=clean_mission_text(payload.get("source")),
+        source_url=clean_mission_text(payload.get("source_url")),
+        tags=clean_mission_terms(payload.get("tags")),
+    )
+
+
+def mission_entry_to_dict(entry: MissionLibraryEntry) -> dict[str, Any]:
+    return {
+        "id": entry.id,
+        "title": entry.title,
+        "mission_giver": entry.mission_giver,
+        "agent_corporation": entry.agent_corporation,
+        "faction": entry.faction,
+        "level": entry.level,
+        "mission_type": entry.mission_type,
+        "briefing_text": entry.briefing_text,
+        "standing_rewards": list(entry.standing_rewards),
+        "isk_reward": entry.isk_reward,
+        "bonus_isk_reward": entry.bonus_isk_reward,
+        "item_rewards": list(entry.item_rewards),
+        "lp_reward": entry.lp_reward,
+        "reward_notes": entry.reward_notes,
+        "source": entry.source,
+        "source_url": entry.source_url,
+        "tags": list(entry.tags),
+    }
+
+
+def load_mission_library(path: Path | None = None) -> tuple[MissionLibraryEntry, ...]:
+    library_path = mission_library_path(path)
+    if not library_path.exists():
+        return ()
+    payload = json.loads(library_path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        mission_payloads = payload
+    elif isinstance(payload, dict):
+        mission_payloads = payload.get("missions", [])
+    else:
+        raise ValueError(f"Mission library should be a JSON object or array: {library_path}")
+    entries = [mission_entry_from_dict(item) for item in mission_payloads if isinstance(item, dict)]
+    return tuple(sorted(entries, key=lambda entry: (entry.giver_label.casefold(), entry.title.casefold())))
+
+
+def mission_library_path(path: Path | None = None) -> Path:
+    if path is not None:
+        return path.expanduser()
+    if USER_MISSION_LIBRARY_PATH.exists():
+        return USER_MISSION_LIBRARY_PATH
+    return DEFAULT_MISSION_LIBRARY_PATH
+
+
+def grouped_missions_by_giver(entries: Iterable[MissionLibraryEntry]) -> dict[str, tuple[MissionLibraryEntry, ...]]:
+    grouped: dict[str, list[MissionLibraryEntry]] = {}
+    for entry in entries:
+        grouped.setdefault(entry.giver_label, []).append(entry)
+    return {
+        giver: tuple(sorted(items, key=lambda entry: entry.title.casefold()))
+        for giver, items in sorted(grouped.items(), key=lambda item: item[0].casefold())
+    }
+
+
+def mission_search_text(entry: MissionLibraryEntry) -> str:
+    fields = (
+        entry.title,
+        entry.mission_giver,
+        entry.agent_corporation,
+        entry.faction,
+        entry.level,
+        entry.mission_type,
+        entry.source,
+        " ".join(entry.tags),
+    )
+    return normalize_phrase(" ".join(field for field in fields if field))
+
+
+def mission_matches_query(entry: MissionLibraryEntry, query: str) -> bool:
+    tokens = normalize_phrase(query).split()
+    if not tokens:
+        return True
+    haystack = mission_search_text(entry)
+    return all(token in haystack for token in tokens)
+
+
+def mission_match_score(entry: MissionLibraryEntry, query: str) -> float:
+    normalized_query = normalize_phrase(query)
+    if not normalized_query:
+        return 1.0
+    title = normalize_phrase(entry.title)
+    giver = normalize_phrase(entry.mission_giver)
+    haystack = mission_search_text(entry)
+    if normalized_query == title:
+        return 1.0
+    if title.startswith(normalized_query):
+        return 0.95
+    if normalized_query in title:
+        return 0.9
+    if normalized_query in giver:
+        return 0.78
+    tokens = normalized_query.split()
+    if tokens and all(token in haystack for token in tokens):
+        return 0.72 + min(0.18, len(tokens) * 0.02)
+    return 0.0
+
+
+def find_mission_entries(
+    query: str,
+    entries: Iterable[MissionLibraryEntry],
+    *,
+    limit: int = 8,
+    minimum_score: float = 0.65,
+) -> tuple[MissionLibraryEntry, ...]:
+    scored = [
+        (mission_match_score(entry, query), entry)
+        for entry in entries
+    ]
+    filtered = [(score, entry) for score, entry in scored if score >= minimum_score]
+    filtered.sort(key=lambda item: (-item[0], item[1].title.casefold()))
+    return tuple(entry for _score, entry in filtered[: max(1, limit)])
+
+
+def mission_detail_text(entry: MissionLibraryEntry) -> str:
+    lines = [
+        entry.title,
+        f"Mission giver: {entry.giver_label}",
+    ]
+    if entry.agent_corporation:
+        lines.append(f"Corporation: {entry.agent_corporation}")
+    if entry.faction:
+        lines.append(f"Faction: {entry.faction}")
+    if entry.level or entry.mission_type:
+        lines.append(f"Level/type: {' / '.join(item for item in (entry.level, entry.mission_type) if item)}")
+    lines.extend(("", "Rewards", entry.reward_summary))
+    if entry.reward_notes:
+        lines.append(f"Notes: {entry.reward_notes}")
+    lines.extend(("", "Briefing", entry.briefing_text or "No briefing text recorded.")
+    )
+    if entry.source or entry.source_url:
+        lines.extend(("", "Source", " - ".join(item for item in (entry.source, entry.source_url) if item)))
+    return "\n".join(lines)
+
+
+def mission_read_aloud_text(entry: MissionLibraryEntry) -> str:
+    lines = [
+        f"Mission briefing for {entry.title}.",
+        f"Mission giver: {entry.giver_label}.",
+    ]
+    if entry.level or entry.mission_type:
+        lines.append(f"Level and type: {'; '.join(item for item in (entry.level, entry.mission_type) if item)}.")
+    if entry.reward_summary:
+        lines.append(f"Known rewards: {entry.reward_summary}.")
+    if entry.reward_notes:
+        lines.append(f"Reward note: {entry.reward_notes}.")
+    if entry.briefing_text:
+        lines.append(entry.briefing_text)
+    else:
+        lines.append("No mission briefing text is recorded in the local mission library yet.")
+    return normalize_response_text(" ".join(lines))

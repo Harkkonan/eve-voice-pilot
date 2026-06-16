@@ -48,4 +48,5 @@ profiles/flight_workbench.local.json
 profiles/flight_workbench_actions.jsonl
 profiles/intel_pet_settings.json
 profiles/intel_pet_discord_notes*.json
+profiles/intel_pet_missions*.json
 profiles/chatlog_knowledge_link_review.md

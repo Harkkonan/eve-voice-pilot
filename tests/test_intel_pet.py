@@ -115,6 +115,8 @@ from eve_voice_pilot.intel_pet import (
     load_sprite_frames,
     mission_action_from_text,
     mission_cheer_from_game_log_line,
+    mission_voice_grammar_commands,
+    mission_voice_status_from_transcript,
     import_settings,
     load_settings,
     load_discord_note_settings,
@@ -162,6 +164,15 @@ from eve_voice_pilot.intel_pet import (
 from eve_voice_pilot.commands import VoiceCommand
 from eve_voice_pilot.local_transcription import DEFAULT_MODEL_PATH, RECOMMENDED_MODEL_PATH, LocalRecognitionDiagnostic
 from eve_voice_pilot.local_whisper import DEFAULT_LOCAL_WHISPER_MODEL
+from eve_voice_pilot.mission_library import (
+    DEFAULT_MISSION_LIBRARY_PATH,
+    MissionLibraryEntry,
+    find_mission_entries,
+    load_mission_library,
+    mission_detail_text,
+    mission_entry_from_dict,
+    mission_read_aloud_text,
+)
 from eve_voice_pilot.speech_responses import RESPONSE_ENGINE_OPENAI, RESPONSE_ENGINE_WINDOWS
 
 
@@ -938,6 +949,110 @@ def test_voice_status_from_transcript_reports_unmatched_phrase():
     assert status is not None
     assert status.title == "Voice heard"
     assert "No exact command matched." in status.detail
+
+
+def test_mission_library_loads_searches_and_builds_read_aloud_text(tmp_path):
+    library_path = tmp_path / "missions.json"
+    library_path.write_text(
+        json.dumps(
+            {
+                "missions": [
+                    {
+                        "id": "cash-flow",
+                        "title": "Cash Flow for Capsuleers",
+                        "mission_giver": "Military Career Agent",
+                        "level": "Career",
+                        "mission_type": "Combat tutorial",
+                        "briefing_text": "Clear the training pocket and report back.",
+                        "isk_reward": "12,000 ISK",
+                        "item_rewards": ["Civilian module"],
+                        "standing_rewards": ["Career agent corporation standing"],
+                        "source": "Unit test",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    entries = load_mission_library(library_path)
+    matches = find_mission_entries("cash flow", entries)
+    detail = mission_detail_text(entries[0])
+    spoken = mission_read_aloud_text(entries[0])
+
+    assert [entry.title for entry in entries] == ["Cash Flow for Capsuleers"]
+    assert matches[0].mission_giver == "Military Career Agent"
+    assert "12,000 ISK" in detail
+    assert "Clear the training pocket" in spoken
+
+
+def test_default_mission_library_starter_file_is_loadable():
+    entries = load_mission_library(DEFAULT_MISSION_LIBRARY_PATH)
+
+    assert len(entries) >= 5
+    assert any(entry.title == "The Blood-Stained Stars" for entry in entries)
+
+
+def test_mission_entry_defaults_reward_summary_when_rewards_are_missing():
+    entry = mission_entry_from_dict({"title": "Mystery Mission"})
+
+    assert entry.id == "mystery-mission"
+    assert entry.reward_summary == "Rewards are not recorded for this mission."
+    assert "No mission briefing text is recorded" in mission_read_aloud_text(entry)
+
+
+def test_mission_voice_grammar_commands_include_read_and_cache_phrases():
+    entry = MissionLibraryEntry(id="cash-flow", title="Cash Flow for Capsuleers")
+
+    commands = mission_voice_grammar_commands((entry,))
+    phrases = commands[0].phrases
+
+    assert commands[0].key == ""
+    assert "read mission Cash Flow for Capsuleers" in phrases
+    assert "cache mission Cash Flow for Capsuleers" in phrases
+
+
+def test_mission_voice_status_reads_matching_mission_without_key_dispatch():
+    entry = MissionLibraryEntry(
+        id="cash-flow",
+        title="Cash Flow for Capsuleers",
+        mission_giver="Military Career Agent",
+        briefing_text="Clear the training pocket and report back.",
+        isk_reward="12,000 ISK",
+    )
+    played: list[tuple[str, str]] = []
+
+    status = mission_voice_status_from_transcript(
+        "Aura read mission cash flow",
+        (entry,),
+        response_call_sign="Aura",
+        voice_engine=VOICE_ENGINE_WHISPER,
+        play_text=lambda text, label: played.append((text, label)),
+    )
+
+    assert status is not None
+    assert status.title == "Mission briefing"
+    assert "Reading: Cash Flow for Capsuleers" in status.detail
+    assert played
+    assert "Clear the training pocket" in played[0][0]
+
+
+def test_mission_voice_status_can_queue_cache_instead_of_playing():
+    entry = MissionLibraryEntry(id="blood-stars", title="The Blood-Stained Stars")
+    prepared: list[tuple[str, str, bool]] = []
+
+    status = mission_voice_status_from_transcript(
+        "Merlin cache quest blood stained",
+        (entry,),
+        response_call_sign="Merlin",
+        prepare_text=lambda text, label, force: prepared.append((text, label, force)),
+    )
+
+    assert status is not None
+    assert status.title == "Mission voice cache queued"
+    assert prepared
+    assert "The Blood-Stained Stars" in prepared[0][0]
+    assert prepared[0][2] is False
 
 
 def test_discord_note_intent_detects_inline_and_armed_notes():

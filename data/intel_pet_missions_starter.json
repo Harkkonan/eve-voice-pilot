@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "notes": [
+    "Starter mission library for Intel Pet. This file is intentionally small and hand-authored.",
+    "Full mission text and exact reward data should be imported only from a source whose license and attribution are recorded.",
+    "EVE mission ISK, LP, bonus, and standing outcomes can vary by agent, system, skills, and server-side balancing."
+  ],
+  "missions": [
+    {
+      "id": "the-blood-stained-stars",
+      "title": "The Blood-Stained Stars",
+      "mission_giver": "Sister Alitura / Sisters of EVE Epic Arc Agents",
+      "agent_corporation": "Sisters of EVE",
+      "faction": "Sisters of EVE",
+      "level": "Epic Arc",
+      "mission_type": "New pilot / story arc",
+      "briefing_text": "A Sisters of EVE arc briefing. The pet knows this as a high-level local reference only; read the in-game agent window for the exact current objective before accepting or undocking.",
+      "standing_rewards": [
+        "Faction standing reward varies by final arc choice"
+      ],
+      "isk_reward": "Varies by mission step",
+      "bonus_isk_reward": "Varies by mission step and completion time",
+      "item_rewards": [
+        "Varies by mission step"
+      ],
+      "lp_reward": "Varies",
+      "reward_notes": "Use this starter entry for voice/browser testing, not payout planning.",
+      "source": "Hand-authored starter entry",
+      "source_url": "",
+      "tags": [
+        "soe",
+        "sisters",
+        "epic arc",
+        "new player"
+      ]
+    },
+    {
+      "id": "cash-flow-for-capsuleers",
+      "title": "Cash Flow for Capsuleers",
+      "mission_giver": "Military Career Agent",
+      "agent_corporation": "Empire career agent corporation",
+      "faction": "Empire career agents",
+      "level": "Career",
+      "mission_type": "Combat tutorial",
+      "briefing_text": "A military career agent sends the pilot through early combat lessons. The local library keeps only a safe summary until source-backed briefing text is imported.",
+      "standing_rewards": [
+        "Career-agent standing changes vary by agent and character"
+      ],
+      "isk_reward": "Varies by mission step",
+      "bonus_isk_reward": "Varies by mission step",
+      "item_rewards": [
+        "Career-agent ships, modules, or ammunition can vary by faction and step"
+      ],
+      "lp_reward": "Not recorded",
+      "reward_notes": "Verify exact reward values in the in-game agent window.",
+      "source": "Hand-authored starter entry",
+      "source_url": "",
+      "tags": [
+        "career",
+        "military",
+        "combat",
+        "starter"
+      ]
+    },
+    {
+      "id": "balancing-the-books",
+      "title": "Balancing the Books",
+      "mission_giver": "Business Career Agent",
+      "agent_corporation": "Empire career agent corporation",
+      "faction": "Empire career agents",
+      "level": "Career",
+      "mission_type": "Business tutorial",
+      "briefing_text": "A business career agent introduces hauling, markets, and practical capsuleer commerce. The pet summary is only a local reference; use the agent offer for the exact task.",
+      "standing_rewards": [
+        "Career-agent standing changes vary by agent and character"
+      ],
+      "isk_reward": "Varies by mission step",
+      "bonus_isk_reward": "Varies by mission step",
+      "item_rewards": [
+        "Business career item rewards vary by faction and step"
+      ],
+      "lp_reward": "Not recorded",
+      "reward_notes": "Reward values are intentionally marked variable until source-backed data is imported.",
+      "source": "Hand-authored starter entry",
+      "source_url": "",
+      "tags": [
+        "career",
+        "business",
+        "market",
+        "starter"
+      ]
+    },
+    {
+      "id": "making-mountains-of-molehills",
+      "title": "Making Mountains of Molehills",
+      "mission_giver": "Industry Career Agent",
+      "agent_corporation": "Empire career agent corporation",
+      "faction": "Empire career agents",
+      "level": "Career",
+      "mission_type": "Industry tutorial",
+      "briefing_text": "An industry career agent walks the pilot through mining, manufacturing, and basic production flow. Exact minerals, items, and rewards should come from the in-game mission offer or a licensed mission data import.",
+      "standing_rewards": [
+        "Career-agent standing changes vary by agent and character"
+      ],
+      "isk_reward": "Varies by mission step",
+      "bonus_isk_reward": "Varies by mission step",
+      "item_rewards": [
+        "Industry materials, blueprints, or ships can vary by faction and step"
+      ],
+      "lp_reward": "Not recorded",
+      "reward_notes": "Starter summary only.",
+      "source": "Hand-authored starter entry",
+      "source_url": "",
+      "tags": [
+        "career",
+        "industry",
+        "mining",
+        "manufacturing",
+        "starter"
+      ]
+    },
+    {
+      "id": "a-case-of-kidnapping",
+      "title": "A Case of Kidnapping",
+      "mission_giver": "Security Agent",
+      "agent_corporation": "NPC security corporation",
+      "faction": "Empire security agents",
+      "level": "Level 1",
+      "mission_type": "Security encounter",
+      "briefing_text": "A security agent sends the pilot into a small combat encounter. This starter text is a safe local summary, not a copied agent briefing.",
+      "standing_rewards": [
+        "Agent and corporation standing changes vary"
+      ],
+      "isk_reward": "Varies by agent and system",
+      "bonus_isk_reward": "Varies by completion time",
+      "item_rewards": [
+        "Not recorded"
+      ],
+      "lp_reward": "Varies",
+      "reward_notes": "Use the in-game offer for exact payout and objective details.",
+      "source": "Hand-authored starter entry",
+      "source_url": "",
+      "tags": [
+        "security",
+        "combat",
+        "level 1"
+      ]
+    }
+  ]
+}
