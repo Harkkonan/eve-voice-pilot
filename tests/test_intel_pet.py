@@ -71,7 +71,9 @@ from eve_voice_pilot.intel_pet import (
     clean_alert_behaviors,
     clean_spoken_alert_kinds,
     build_discord_note_payload,
+    build_discord_channel_alert_payload,
     clean_voice_command_phrases,
+    clean_discord_alert_kinds,
     clean_voice_engine,
     clean_voice_input_device,
     clean_voice_whisper_model,
@@ -94,7 +96,9 @@ from eve_voice_pilot.intel_pet import (
     display_message_from_mission_cheer,
     display_message_from_voice_status,
     default_spoken_alert_kinds,
+    discord_channel_alert_event_from_alert,
     discord_note_example_phrases,
+    DiscordChannelAlertState,
     duplicate_voice_command,
     editable_voice_profile_path,
     execute_voice_command,
@@ -141,6 +145,7 @@ from eve_voice_pilot.intel_pet import (
     save_settings,
     save_discord_note_settings,
     send_discord_note,
+    send_discord_channel_alert,
     settings_from_import_payload,
     ship_sprite_frame_paths,
     should_speak_alert_kind,
@@ -1198,6 +1203,97 @@ def test_discord_note_payload_uses_sender_and_disables_mentions():
     assert payload["allowed_mentions"] == {"parse": []}
     assert "@everyone check hostile order" in payload["content"]
     assert "Dandin Ridderston" in payload["content"]
+
+
+def test_discord_channel_alert_payload_hides_matched_text_by_default():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)), system_names=("Amarr",))
+    alert = engine.analyze(make_message("gate camp near Amarr @everyone", speaker="Scout Pilot"))
+
+    assert alert is not None
+    event = discord_channel_alert_event_from_alert(alert)
+    payload = build_discord_channel_alert_payload(alert)
+    payload_text = json.dumps(payload)
+
+    assert event.source == "local opt-in Intel Pet"
+    assert payload["allowed_mentions"] == {"parse": []}
+    assert "gate camp near Amarr" not in payload_text
+    assert "@everyone" not in payload_text
+    assert "Matched Text" not in payload_text
+    assert "keyword: gate camp" in payload_text
+
+
+def test_discord_channel_alert_payload_can_include_sanitized_matched_text():
+    engine = IntelPetEngine(IntelPetSettings(extra_keywords=("gate camp",)), system_names=("Amarr",))
+    alert = engine.analyze(make_message("gate camp near Amarr @everyone", speaker="Scout Pilot"))
+
+    assert alert is not None
+    payload = build_discord_channel_alert_payload(alert, include_matched_text=True)
+    payload_text = json.dumps(payload)
+
+    assert "Matched Text" in payload_text
+    assert "gate camp near Amarr @ everyone" in payload_text
+    assert "@everyone" not in payload_text
+
+
+def test_discord_channel_alert_dry_run_does_not_call_poster():
+    engine = IntelPetEngine(IntelPetSettings(help_phrases=("need evac",)), system_names=("Amarr",))
+    alert = engine.analyze(make_message("need evac in Amarr", speaker="Scout Pilot"))
+    calls = []
+
+    assert alert is not None
+    status = send_discord_channel_alert(
+        alert,
+        enabled=True,
+        dry_run=True,
+        webhook_url="",
+        kinds=("help",),
+        poster=lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert status is not None
+    assert status.title == "Discord alert dry run"
+    assert calls == []
+    assert clean_discord_alert_kinds(("aid", "pilot-mention", "bad")) == ("help", "mention")
+
+
+def test_discord_channel_alert_live_posts_once_then_rate_limits():
+    engine = IntelPetEngine(IntelPetSettings(help_phrases=("need evac",)), system_names=("Amarr",))
+    first = engine.analyze(make_message("need evac in Amarr", speaker="Scout Pilot"))
+    second = engine.analyze(make_message("need evac in Amarr again", speaker="Scout Pilot"))
+    state = DiscordChannelAlertState()
+    calls = []
+
+    assert first is not None
+    assert second is not None
+    sent = send_discord_channel_alert(
+        first,
+        enabled=True,
+        dry_run=False,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
+        kinds=("help",),
+        state=state,
+        min_seconds=30.0,
+        now_seconds=100.0,
+        poster=lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    limited = send_discord_channel_alert(
+        second,
+        enabled=True,
+        dry_run=False,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/token-value",
+        kinds=("help",),
+        state=state,
+        min_seconds=30.0,
+        now_seconds=110.0,
+        poster=lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert sent is not None
+    assert sent.title == "Discord alert sent"
+    assert limited is not None
+    assert limited.title == "Discord alert rate-limited"
+    assert len(calls) == 1
+    assert calls[0][1]["timeout_seconds"] == 10.0
 
 
 def test_send_discord_note_posts_to_configured_webhook_without_network():

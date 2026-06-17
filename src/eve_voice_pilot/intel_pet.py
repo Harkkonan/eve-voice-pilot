@@ -46,6 +46,13 @@ from eve_voice_pilot.corp_intel import (
     scopes_from_sso_payload,
     watch_chat_logs,
 )
+from eve_voice_pilot.discord_posting import (
+    DiscordAlertEvent,
+    DiscordAlertRoute,
+    DiscordAlertRule,
+    build_discord_alert_webhook_payload,
+    validate_discord_webhook_url,
+)
 from eve_voice_pilot.commands import (
     DEFAULT_HOLD_SECONDS,
     DEFAULT_PRESS_COUNT,
@@ -126,6 +133,9 @@ DEFAULT_VOICE_MODEL_LABEL = f"Default small ({DEFAULT_MODEL_NAME})"
 RECOMMENDED_VOICE_MODEL_LABEL = f"Recommended lgraph ({RECOMMENDED_MODEL_NAME})"
 DEFAULT_DISCORD_NOTE_SETTINGS_PATH = ROOT / "profiles" / "intel_pet_discord_notes.json"
 DEFAULT_DISCORD_NOTE_SENDER = "IntelPet Notes"
+DEFAULT_DISCORD_ALERT_WEBHOOK_ENV_VAR = "INTEL_PET_DISCORD_ALERT_WEBHOOK_URL"
+DEFAULT_DISCORD_ALERT_KINDS = ("help", "hostile")
+DEFAULT_DISCORD_ALERT_MIN_SECONDS = 30.0
 DEFAULT_DISCORD_NOTE_TRIGGER_PHRASES = ("take a note", "take note", "note", "remember this")
 DEFAULT_DISCORD_NOTE_CLOSE_PHRASES = ("send note", "end note", "finish note", "note done")
 DEFAULT_DISCORD_NOTE_CANCEL_PHRASES = ("cancel note", "never mind", "forget note")
@@ -1984,6 +1994,12 @@ class IntelPetHistoryItem:
     recorded_at: str
 
 
+@dataclass
+class DiscordChannelAlertState:
+    last_sent_at: float = 0.0
+    sent_keys: set[str] = field(default_factory=set)
+
+
 @dataclass(frozen=True)
 class IntelPetVoiceReliabilityRow:
     recorded_at: str
@@ -2498,6 +2514,198 @@ def alert_behavior_key(alert: IntelPetAlert) -> str:
     if "hostile" in categories:
         return "hostile"
     return "keyword"
+
+
+def clean_discord_alert_kinds(values: Iterable[str] | str | None) -> tuple[str, ...]:
+    raw_values: Iterable[str]
+    if isinstance(values, str):
+        raw_values = re.split(r"[\s,]+", values)
+    else:
+        raw_values = values or DEFAULT_DISCORD_ALERT_KINDS
+    allowed = {kind for kind, _label, _description in ALERT_BEHAVIOR_KINDS[:4]}
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        kind = str(raw_value or "").strip().casefold().replace("_", "-")
+        if kind == "pilot-mention":
+            kind = "mention"
+        if kind == "aid":
+            kind = "help"
+        if kind not in allowed or kind in seen:
+            continue
+        seen.add(kind)
+        result.append(kind)
+    return tuple(result) or DEFAULT_DISCORD_ALERT_KINDS
+
+
+def discord_channel_event_type_for_alert(alert: IntelPetAlert) -> str:
+    kind = alert_behavior_key(alert)
+    if kind == "help":
+        return "help"
+    return "intel"
+
+
+def discord_channel_alert_event_from_alert(alert: IntelPetAlert) -> DiscordAlertEvent:
+    kind = alert_behavior_key(alert)
+    system_label = ", ".join(alert.systems)
+    context = [alert.title]
+    if system_label:
+        context.append(f"System: {system_label}")
+    if alert.channel:
+        context.append(f"Channel: {alert.channel}")
+    summary = " | ".join(context)
+    if kind == "mention":
+        summary = f"Pilot mention | {summary}"
+    return DiscordAlertEvent(
+        event_type=discord_channel_event_type_for_alert(alert),
+        severity=alert.severity,
+        summary=summary,
+        source="local opt-in Intel Pet",
+        channel=alert.channel,
+        system_name=system_label,
+        matched_text=alert.message,
+        observed_at=alert.observed_at,
+    )
+
+
+def discord_channel_alert_rule_for_alert(alert: IntelPetAlert, *, include_matched_text: bool = False) -> DiscordAlertRule:
+    kind = alert_behavior_key(alert)
+    return DiscordAlertRule(
+        name=f"Intel Pet {kind} alert",
+        event_type=discord_channel_event_type_for_alert(alert),
+        severity=alert.severity,
+        phrases=alert.keywords,
+        route_name="Intel Pet channel webhook",
+        include_matched_text=include_matched_text,
+        enabled=True,
+        source="intel_pet",
+    )
+
+
+def discord_channel_alert_route(*, sender_name: str = "IntelPet") -> DiscordAlertRoute:
+    return DiscordAlertRoute(
+        name="Intel Pet channel webhook",
+        destination="Configured Discord alert channel",
+        webhook_env_var=DEFAULT_DISCORD_ALERT_WEBHOOK_ENV_VAR,
+        enabled=True,
+        route_type="webhook",
+        sender_name=sender_name,
+    )
+
+
+def build_discord_channel_alert_payload(
+    alert: IntelPetAlert,
+    *,
+    include_matched_text: bool = False,
+    sender_name: str = "IntelPet",
+) -> dict[str, Any]:
+    return build_discord_alert_webhook_payload(
+        discord_channel_alert_event_from_alert(alert),
+        discord_channel_alert_rule_for_alert(alert, include_matched_text=include_matched_text),
+        discord_channel_alert_route(sender_name=sender_name),
+    )
+
+
+def discord_channel_alert_key(alert: IntelPetAlert) -> str:
+    return "|".join(
+        (
+            alert.observed_at,
+            alert.channel,
+            alert.speaker,
+            alert.title,
+            alert.message,
+            ",".join(alert.systems),
+        )
+    )
+
+
+def send_discord_channel_alert(
+    alert: IntelPetAlert,
+    *,
+    enabled: bool,
+    webhook_url: str = "",
+    dry_run: bool = True,
+    kinds: Iterable[str] = DEFAULT_DISCORD_ALERT_KINDS,
+    include_matched_text: bool = False,
+    sender_name: str = "IntelPet",
+    state: DiscordChannelAlertState | None = None,
+    min_seconds: float = DEFAULT_DISCORD_ALERT_MIN_SECONDS,
+    poster: Callable[..., Any] | None = None,
+    now_seconds: float | None = None,
+) -> IntelPetHistoryItem | None:
+    if not enabled:
+        return None
+    clean_kinds = clean_discord_alert_kinds(kinds)
+    kind = alert_behavior_key(alert)
+    if kind not in clean_kinds:
+        return None
+    recorded_at = now_iso()
+    payload = build_discord_channel_alert_payload(
+        alert,
+        include_matched_text=include_matched_text,
+        sender_name=sender_name,
+    )
+    route_label = "Discord channel alert"
+    detail = f"Prepared {kind} alert for Discord: {payload['content']}"
+    if dry_run:
+        return IntelPetHistoryItem(
+            title="Discord alert dry run",
+            detail=detail,
+            meta="Discord channel alerts | dry run | mentions disabled",
+            severity="info",
+            recorded_at=recorded_at,
+        )
+    if not webhook_url:
+        return IntelPetHistoryItem(
+            title="Discord alert blocked",
+            detail="No Discord alert webhook is configured.",
+            meta="Discord channel alerts",
+            severity="high",
+            recorded_at=recorded_at,
+        )
+    try:
+        validate_discord_webhook_url(webhook_url)
+    except Exception as exc:
+        return IntelPetHistoryItem(
+            title="Discord alert blocked",
+            detail=f"Discord alert webhook is invalid: {exc}",
+            meta="Discord channel alerts",
+            severity="high",
+            recorded_at=recorded_at,
+        )
+    clean_state = state or DiscordChannelAlertState()
+    key = discord_channel_alert_key(alert)
+    if key in clean_state.sent_keys:
+        return None
+    now_value = time.monotonic() if now_seconds is None else float(now_seconds)
+    if clean_state.last_sent_at and now_value - clean_state.last_sent_at < max(0.0, min_seconds):
+        return IntelPetHistoryItem(
+            title="Discord alert rate-limited",
+            detail=f"Skipped {kind} alert; minimum send gap is {max(0.0, min_seconds):.0f} seconds.",
+            meta=route_label,
+            severity="info",
+            recorded_at=recorded_at,
+        )
+    try:
+        send = poster or post_discord_note_webhook
+        send(webhook_url, payload, timeout_seconds=10.0)
+    except Exception as exc:
+        return IntelPetHistoryItem(
+            title="Discord alert failed",
+            detail=f"Could not send Discord alert: {exc}",
+            meta=route_label,
+            severity="high",
+            recorded_at=recorded_at,
+        )
+    clean_state.sent_keys.add(key)
+    clean_state.last_sent_at = now_value
+    return IntelPetHistoryItem(
+        title="Discord alert sent",
+        detail=detail,
+        meta=f"{route_label} | mentions disabled",
+        severity="info",
+        recorded_at=recorded_at,
+    )
 
 
 def behavior_for_alert(alert: IntelPetAlert, settings: IntelPetSettings) -> str:
@@ -3310,11 +3518,25 @@ def read_new_game_log_cheers(state: GameLogState) -> tuple[list[IntelPetCombatCh
 def run_console(args: argparse.Namespace, engine: IntelPetEngine) -> None:
     channel_filter = channel_filter_from_args(args)
     listener_filter = listener_filter_from_args(args, location_session=None)
+    discord_alert_state = DiscordChannelAlertState()
 
     def on_message(message: ChatMessage) -> None:
         alert = engine.analyze(message)
         if alert:
             print(format_alert(alert), flush=True)
+            discord_status = send_discord_channel_alert(
+                alert,
+                enabled=args.discord_channel_alerts,
+                webhook_url=args.discord_alert_webhook_url,
+                dry_run=args.discord_alert_dry_run,
+                kinds=args.discord_alert_kind,
+                include_matched_text=args.discord_alert_include_matched_text,
+                sender_name=args.discord_alert_sender_name,
+                state=discord_alert_state,
+                min_seconds=args.discord_alert_min_seconds,
+            )
+            if discord_status:
+                print(f"{discord_status.title}: {discord_status.detail}", flush=True)
 
     watch_chat_logs(
         log_dir=args.log_dir,
@@ -3337,7 +3559,13 @@ def run_overlay(
     from tkinter import filedialog, ttk
 
     alert_queue: queue.Queue[
-        IntelPetAlert | IntelPetLocationCheer | IntelPetCombatCheer | IntelPetMissionCheer | IntelPetVoiceStatus | str
+        IntelPetAlert
+        | IntelPetLocationCheer
+        | IntelPetCombatCheer
+        | IntelPetMissionCheer
+        | IntelPetVoiceStatus
+        | IntelPetHistoryItem
+        | str
     ] = queue.Queue()
     stop_event = threading.Event()
     channel_filter = channel_filter_from_args(args)
@@ -3346,6 +3574,7 @@ def run_overlay(
     discord_note_settings_path = args.discord_note_settings_path.expanduser()
     discord_note_settings_lock = threading.Lock()
     discord_note_settings = load_discord_note_settings(discord_note_settings_path, overrides=args)
+    discord_alert_state = DiscordChannelAlertState()
     happy_systems = clean_user_terms(args.happy_system or DEFAULT_HAPPY_SYSTEMS)
     location_poll_seconds = max(5.0, safe_float(args.location_poll_seconds, DEFAULT_LOCATION_POLL_SECONDS))
     current_system_lock = threading.Lock()
@@ -3404,7 +3633,21 @@ def run_overlay(
     def on_message(message: ChatMessage) -> None:
         alert = engine.analyze(message)
         if alert:
-            alert_queue.put(alert_with_local_system_fallback(alert, current_local_system()))
+            alert = alert_with_local_system_fallback(alert, current_local_system())
+            alert_queue.put(alert)
+            discord_status = send_discord_channel_alert(
+                alert,
+                enabled=args.discord_channel_alerts,
+                webhook_url=args.discord_alert_webhook_url,
+                dry_run=args.discord_alert_dry_run,
+                kinds=args.discord_alert_kind,
+                include_matched_text=args.discord_alert_include_matched_text,
+                sender_name=args.discord_alert_sender_name,
+                state=discord_alert_state,
+                min_seconds=args.discord_alert_min_seconds,
+            )
+            if discord_status:
+                alert_queue.put(discord_status)
 
     def on_kill(cheer: IntelPetCombatCheer) -> None:
         alert_queue.put(cheer)
@@ -6939,6 +7182,10 @@ def run_overlay(
                 mission_cheers.append(item)
             elif isinstance(item, IntelPetVoiceStatus):
                 voice_statuses.append(item)
+            elif isinstance(item, IntelPetHistoryItem):
+                remember_history(item)
+                if item.severity == "high":
+                    high_statuses.append(item)
             elif isinstance(item, str):
                 status_item = history_item_from_status(item)
                 remember_history(status_item)
@@ -7052,6 +7299,45 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_false",
         dest="enable_discord_notes",
         help="Disable Discord voice notes even if saved settings enable them.",
+    )
+    parser.add_argument(
+        "--discord-channel-alerts",
+        action="store_true",
+        help="Prepare selected chat alerts for a Discord channel webhook. Dry-run is on unless --discord-alert-live is set.",
+    )
+    parser.add_argument(
+        "--discord-alert-webhook-url",
+        default=os.environ.get(DEFAULT_DISCORD_ALERT_WEBHOOK_ENV_VAR, ""),
+        help=f"Discord channel webhook URL for selected chat alerts. Defaults to ${DEFAULT_DISCORD_ALERT_WEBHOOK_ENV_VAR}.",
+    )
+    parser.add_argument(
+        "--discord-alert-kind",
+        action="append",
+        default=(),
+        help="Alert kind to route to Discord: mention, help, hostile, or keyword. Defaults to help and hostile.",
+    )
+    parser.add_argument(
+        "--discord-alert-live",
+        action="store_false",
+        dest="discord_alert_dry_run",
+        default=True,
+        help="Actually send selected Discord channel alerts. Without this flag, alerts are previewed in History only.",
+    )
+    parser.add_argument(
+        "--discord-alert-include-matched-text",
+        action="store_true",
+        help="Include matched chat text in Discord alert payloads. Off by default.",
+    )
+    parser.add_argument(
+        "--discord-alert-sender-name",
+        default="IntelPet",
+        help="Discord webhook display name for channel alerts.",
+    )
+    parser.add_argument(
+        "--discord-alert-min-seconds",
+        type=float,
+        default=DEFAULT_DISCORD_ALERT_MIN_SECONDS,
+        help="Minimum seconds between live Discord channel alert sends.",
     )
     parser.add_argument("--pilot-name", action="append", default=(), help="Your character name for mention alerts.")
     parser.add_argument("--keyword", action="append", default=(), help="Extra keyword to alert on.")

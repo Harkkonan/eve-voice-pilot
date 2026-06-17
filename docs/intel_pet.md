@@ -80,7 +80,36 @@ You can add extra keywords or help phrases from the command line:
   --help-phrase "need evac"
 ```
 
-The current version still does not automatically forward chat alerts to Discord. Deliberate voice notes can be sent to a dedicated Discord notes channel when you opt in and configure a notes webhook.
+The current default still does not forward chat alerts to Discord. Deliberate voice notes can be sent to a dedicated Discord notes channel when you opt in and configure a notes webhook.
+
+## Optional Discord Channel Alerts
+
+Discord channel alerts are off by default. When enabled, they send selected summary-only chat alerts to a Discord channel webhook. By default the pet prepares dry-run previews in History and does not call Discord until you add `--discord-alert-live`.
+
+Dry-run help and hostile alert previews:
+
+```powershell
+$env:INTEL_PET_DISCORD_ALERT_WEBHOOK_URL = "https://discord.com/api/webhooks/..."
+.\scripts\run_intel_pet.ps1 --discord-channel-alerts
+```
+
+Live sends:
+
+```powershell
+$env:INTEL_PET_DISCORD_ALERT_WEBHOOK_URL = "https://discord.com/api/webhooks/..."
+.\scripts\run_intel_pet.ps1 --discord-channel-alerts --discord-alert-live
+```
+
+The default route includes alert type, severity, channel, matched system, source, timestamp, and matched rule keywords. Matched chat text is excluded by default. To include it deliberately:
+
+```powershell
+.\scripts\run_intel_pet.ps1 `
+  --discord-channel-alerts `
+  --discord-alert-live `
+  --discord-alert-include-matched-text
+```
+
+Mentions are disabled on the Discord payload, and user-controlled text is sanitized so `@everyone`, `@here`, role mentions, and user mentions do not ping. Live sends are rate-limited, deduped per alert, and apply only to new alerts seen while the pet is running. Use `--discord-alert-kind mention`, `--discord-alert-kind keyword`, `--discord-alert-kind help`, or `--discord-alert-kind hostile` to choose which alert types route to Discord.
 
 ## Optional Discord Voice Notes
 

@@ -56,26 +56,26 @@ Any user-controlled text sent to Discord should neutralize mentions before deliv
 
 ## Channel Message Slice
 
-The first implementation slice should support channel webhooks only.
+The first implementation slice supports channel webhooks only.
 
-Planned behavior:
+Implemented behavior:
 
-1. Add disabled-by-default settings for selected alert types.
+1. Add disabled-by-default CLI settings for selected alert types.
 2. Read the webhook URL from an environment variable or CLI argument, not from committed files.
 3. Validate the webhook URL using the same shape as the Corp Market Concierge helper.
 4. Build a summary-only payload from the current alert object.
-5. Add a dry-run preview in the Intel Pet options window before enabling sends.
-6. Send only new alerts observed after startup or after the setting is enabled.
-7. Rate-limit sends and surface failures in History and Diagnostics.
+5. Keep dry-run mode on by default and surface previews in History before enabling live sends.
+6. Send only new alerts observed after startup.
+7. Rate-limit sends and surface failures in History.
 
-Future command shape:
+Command shape:
 
 ```powershell
-$env:INTEL_PET_DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/..."
-.\scripts\run_intel_pet.ps1 --discord-channel-alerts
+$env:INTEL_PET_DISCORD_ALERT_WEBHOOK_URL = "https://discord.com/api/webhooks/..."
+.\scripts\run_intel_pet.ps1 --discord-channel-alerts --discord-alert-live
 ```
 
-This command does not exist yet. It is the intended shape for the future channel-message slice.
+The current environment variable is `INTEL_PET_DISCORD_ALERT_WEBHOOK_URL`.
 
 ## Direct Message Slice
 
