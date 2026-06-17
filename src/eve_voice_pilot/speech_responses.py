@@ -82,6 +82,20 @@ def normalize_response_text(text: str) -> str:
     return SPACE_RE.sub(" ", str(text or "").strip())
 
 
+def powershell_single_quoted(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def soundplayer_command(path: Path) -> str:
+    quoted_path = powershell_single_quoted(str(path))
+    return (
+        "$ErrorActionPreference = 'Stop'; "
+        f"$player = New-Object System.Media.SoundPlayer {quoted_path}; "
+        "$player.Load(); "
+        "$player.PlaySync()"
+    )
+
+
 def elevenlabs_model_id(model: str = "") -> str:
     clean_model = str(model or "").strip()
     if not clean_model or clean_model == DEFAULT_OPENAI_TTS_MODEL:
@@ -509,6 +523,7 @@ class SpeechResponseManager:
         self.log = log
         self.lock = threading.RLock()
         self.pending: set[Path] = set()
+        self.playback_processes: list[subprocess.Popen] = []
         self.engine = DEFAULT_RESPONSE_ENGINE
         self.api_key = ""
         self.model = DEFAULT_OPENAI_TTS_MODEL
@@ -584,11 +599,36 @@ class SpeechResponseManager:
     def _play_path(self, path: Path, label: str) -> None:
         try:
             normalize_cached_wav(path)
-            winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            self.stop()
+            process = subprocess.Popen(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    soundplayer_command(path),
+                ],
+                creationflags=CREATE_NO_WINDOW,
+            )
+            with self.lock:
+                self.playback_processes.append(process)
         except Exception as exc:
-            self.log(f"Could not play {label}: {exc}")
+            try:
+                winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            except Exception as fallback_exc:
+                self.log(f"Could not play {label}: {exc}; fallback failed: {fallback_exc}")
 
     def stop(self) -> None:
+        with self.lock:
+            processes = self.playback_processes
+            self.playback_processes = []
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
         try:
             winsound.PlaySound(None, 0)
         except RuntimeError:

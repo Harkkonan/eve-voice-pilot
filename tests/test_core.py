@@ -44,11 +44,13 @@ from eve_voice_pilot.speech_responses import (
     normalize_wav_bytes,
     normalize_response_text,
     pcm_s16le_to_wav_bytes,
+    powershell_single_quoted,
     response_cache_path,
     response_enabled,
     response_text_cache_path,
     response_text_for_command,
     sample_rate_from_pcm_output_format,
+    soundplayer_command,
 )
 from eve_voice_pilot.transcription import audio_rms, block_size_for_rate, resample_pcm, resample_pcm_to_24k
 
@@ -314,6 +316,38 @@ def test_speech_response_manager_exposes_text_cache_path():
 
     assert manager.text_cache_path("Arrived   in Amarr.") == response_text_cache_path("Arrived in Amarr.")
     assert manager.text_cached("") is False
+
+
+def test_soundplayer_command_quotes_paths_for_powershell():
+    path = Path("C:/voice cache/pilot's clip.wav")
+
+    command = soundplayer_command(path)
+
+    assert "System.Media.SoundPlayer" in command
+    assert powershell_single_quoted(str(path)) in command
+    assert "pilot''s clip.wav" in command
+
+
+def test_speech_response_manager_stop_terminates_tracked_playback_process():
+    manager = SpeechResponseManager(lambda _message: None)
+
+    class FakeProcess:
+        def __init__(self):
+            self.terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+    process = FakeProcess()
+    manager.playback_processes.append(process)
+
+    manager.stop()
+
+    assert process.terminated is True
+    assert manager.playback_processes == []
 
 
 def test_voice_standard_includes_added_catalog_shortcuts():
